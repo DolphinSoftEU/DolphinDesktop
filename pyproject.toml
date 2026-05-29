@@ -1,0 +1,171 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dolphin-desktop"
+version = "0.1.0"
+description = "Windows desktop test automation with lazy evaluation, auto-waiting, and pytest integration"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+    { name = "DolphinSoft Kamil Głuszek", email = "kontakt@dolphinsoft.pl" },
+]
+keywords = ["desktop-automation", "testing", "windows", "pytest", "uia"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pywinauto>=0.6.8",
+    "Pillow>=10.4",
+    "comtypes>=1.4",
+    "pywin32>=306",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+dolphin = "dolphin_desktop._cli:main"
+dolphin-run = "dolphin_desktop._runner:main"
+
+[project.urls]
+Homepage = "https://dolphinsoft.pl"
+Documentation = "https://dolphinsoft.pl"
+Source = "https://github.com/DolphinSoftEU/DolphinDesktop"
+
+[project.entry-points."pytest11"]
+dolphin = "dolphin_desktop.pytest_plugin"
+
+[project.entry-points."dolphin_desktop.backends"]
+uia   = "dolphin_desktop._backend:UIABackend"
+win32 = "dolphin_desktop._backend:Win32Backend"
+image = "dolphin_desktop._backend:ImageBackend"
+macos = "dolphin_desktop._backend:MacOSAccessibilityBackend"
+linux = "dolphin_desktop._backend:LinuxATSPIBackend"
+cdp   = "dolphin_desktop._backend:CDPBackend"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dolphin_desktop"]
+
+[project.optional-dependencies]
+fast = [
+    "mss>=9.0",
+]
+video = [
+    "mss>=9.0",
+]
+vision = [
+    "opencv-python>=4.9",
+    "pytesseract>=0.3.10",
+]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+    "mike>=2.0",
+]
+telemetry = [
+    "sentry-sdk>=2.0",
+]
+pytest = [
+    "pytest>=8.3",
+    "allure-pytest>=2.13",
+]
+dev = [
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "pytest-timeout>=2.3",
+    "pytest-xdist>=3.5",
+    "ruff>=0.8",
+]
+
+[dependency-groups]
+dev = [
+    "build>=1.5.0",
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "pytest-timeout>=2.3",
+    "pytest-xdist>=3.5",
+    "ruff>=0.8",
+    "twine>=6.2.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "RUF"]
+ignore = ["N818"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dolphin_desktop"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/dolphin_desktop/_trace.py" = ["E501"]   # long lines are embedded HTML/CSS template strings
+"src/dolphin_desktop/_video.py" = ["BLE001"]  # broad exception catch in background thread is intentional
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+exclude = ["^examples/"]
+
+[[tool.mypy.overrides]]
+module = ["dolphin_desktop.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+warn_return_any = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+warn_return_any = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+warn_unused_ignores = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 30
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks tests requiring a real app process",
+    "dolphin_headless: marks tests that require headless desktop mode",
+    "dolphin(timeout): overrides Dolphin runtime options for a test",
+]
+
+[tool.coverage.run]
+source_pkgs = ["dolphin_desktop"]
+branch = false
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]
+omit = [
+    "*/tests/*",
+]

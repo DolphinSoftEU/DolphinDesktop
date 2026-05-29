@@ -1,0 +1,123 @@
+site_name: Dolphin Desktop
+site_description: Windows desktop test automation for pytest
+site_url: https://dolphinsoft.pl/
+repo_url: https://github.com/DolphinSoftEU/DolphinDesktop
+repo_name: DolphinSoftEU/DolphinDesktop
+edit_uri: edit/master/docs/
+copyright: Copyright &copy; 2026 DolphinSoft Kamil Gluszek
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.annotate
+    - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: numpy
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            separate_signature: true
+            show_signature_annotations: true
+            filters: ["!^_"]
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/solid/globe
+      link: https://dolphinsoft.pl
+      name: DolphinSoft
+    - icon: fontawesome/brands/github
+      link: https://github.com/DolphinSoftEU/DolphinDesktop
+  version:
+    provider: mike
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Quickstart: quickstart.md
+  - "Tutorial: First Test": tutorials/first-test.md
+  - Core Concepts: core-concepts.md
+  - Guides:
+      - Overview: guides/index.md
+      - Native Windows Apps: guides/native.md
+      - Electron: guides/electron.md
+      - CEF and Legacy IE: guides/cef-legacy.md
+      - WebView2: guides/webview2.md
+      - Java Swing / AWT: guides/java.md
+      - Office: guides/office.md
+      - Image-Based Fallback: guides/image-based.md
+      - Headless Mode: tutorials/headless-mode.md
+      - Page Objects: tutorials/page-objects.md
+      - Fallback Selectors: tutorials/fallback-selectors.md
+      - Tracing and Debugging: tutorials/tracing.md
+      - CI Setup:
+          - Overview: ci/index.md
+          - GitHub Actions: ci/github-actions.md
+          - Jenkins: ci/jenkins.md
+          - TeamCity: ci/teamcity.md
+      - Backend Architecture: architecture.md
+  - API Reference:
+      - Overview: reference/index.md
+      - Desktop: reference/desktop.md
+      - Application: reference/application.md
+      - Window: reference/window.md
+      - Locator: reference/locator.md
+      - Keyboard: reference/keyboard.md
+      - Mouse: reference/mouse.md
+      - Clipboard: reference/clipboard.md
+      - Dialogs: reference/dialogs.md
+      - ImageLocator / Screen: reference/image.md
+      - JavaAccessBridge: reference/java.md
+      - Excel / Word: reference/office.md
+      - Exceptions: reference/exceptions.md
+      - pytest Plugin: reference/pytest-plugin.md
+  - CLI Reference: reference/cli.md
+  - FAQ: faq.md

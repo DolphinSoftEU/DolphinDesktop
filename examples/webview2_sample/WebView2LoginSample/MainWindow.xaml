@@ -1,0 +1,28 @@
+<Window x:Class="WebView2LoginSample.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Dolphin WebView2 Login Sample"
+        Width="480" Height="400"
+        AutomationProperties.Name="Dolphin WebView2 Login Sample">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="32"/>
+        </Grid.RowDefinitions>
+
+        <!-- WebView2 hosts the HTML login form -->
+        <wv2:WebView2 x:Name="WebView"
+                      Grid.Row="0"
+                      AutomationProperties.Name="WebView2Panel"
+                      CoreWebView2InitializationCompleted="WebView_Initialized"/>
+
+        <!-- Native status bar — updated via JS postMessage interop -->
+        <TextBlock x:Name="StatusBar"
+                   Grid.Row="1"
+                   Text="Status: waiting"
+                   Padding="8,6"
+                   Background="#F0F0F0"
+                   AutomationProperties.Name="StatusBar"/>
+    </Grid>
+</Window>

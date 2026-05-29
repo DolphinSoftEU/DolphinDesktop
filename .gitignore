@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Dolphin telemetry / generated artifacts
+.dolphin-selfheal.jsonl
+dolphin-screenshots/
+dolphin-traces/
+dolphin-videos/
+dolphin-report.html
+
+# MkDocs build output
+site/
+
+# .NET / demo app build output
+bin/
+obj/
+
+# IDE / tools
+.claude/
+.idea/
+.vscode/
+*.iml
+
+# pytest
+.pytest_cache/
+
+# Local scratch output
+hs_err_pid*.log
+test_out*.txt
+Nowy folder*/
+C?Users*/

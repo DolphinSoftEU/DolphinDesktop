@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Login</title>
+  <style>
+    body { font-family: Segoe UI, sans-serif; padding: 32px; background: #fff; }
+    h2   { margin-bottom: 20px; font-size: 18px; color: #333; }
+    label { display: block; margin-top: 14px; font-size: 13px; color: #555; }
+    input { width: 100%; padding: 8px; margin-top: 4px; border: 1px solid #ccc;
+            border-radius: 3px; font-size: 14px; box-sizing: border-box; }
+    button { margin-top: 20px; padding: 9px 28px; background: #0078d4;
+             color: #fff; border: none; border-radius: 3px; font-size: 14px;
+             cursor: pointer; }
+    button:hover { background: #006cbe; }
+    #response { margin-top: 16px; font-weight: bold; min-height: 20px; color: #107c10; }
+    #error    { color: #c50f1f; font-size: 13px; margin-top: 8px; min-height: 16px; }
+  </style>
+</head>
+<body>
+  <h2>Sign in</h2>
+
+  <label for="emailInput">Email</label>
+  <input id="emailInput" type="email" aria-label="Email" placeholder="user@example.com"/>
+
+  <label for="passwordInput">Password</label>
+  <input id="passwordInput" type="password" aria-label="Password" placeholder="Password"/>
+
+  <div id="error"></div>
+
+  <button id="loginBtn" onclick="doLogin()">Log In</button>
+
+  <div id="response" role="status" aria-live="polite" aria-label="Response"></div>
+
+  <script>
+    function doLogin() {
+      var email    = document.getElementById('emailInput').value.trim();
+      var password = document.getElementById('passwordInput').value;
+      var errEl    = document.getElementById('error');
+      var respEl   = document.getElementById('response');
+
+      errEl.textContent  = '';
+      respEl.textContent = '';
+
+      if (!email || !password) {
+        errEl.textContent = 'Please fill in all fields.';
+        return;
+      }
+
+      var msg = 'Logged in as ' + email;
+      respEl.textContent = msg;
+
+      if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage(msg);
+      }
+    }
+
+    // Allow Enter key to submit
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { doLogin(); }
+    });
+  </script>
+</body>
+</html>

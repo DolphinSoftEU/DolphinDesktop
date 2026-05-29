@@ -1,0 +1,41 @@
+<Window x:Class="IESampleApp.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Dolphin IE/Trident Sample"
+        Width="800" Height="600"
+        AutomationProperties.Name="Dolphin IE/Trident Sample">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="44"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="30"/>
+        </Grid.RowDefinitions>
+
+        <!-- Native WPF toolbar -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="8,6">
+            <Button x:Name="NavBtn"
+                    Content="Refresh"
+                    Width="80"
+                    AutomationProperties.Name="Refresh"
+                    Click="NavBtn_Click"/>
+            <Label Content="IE/Trident (WPF WebBrowser) Dolphin sample"
+                   Margin="12,0" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <!-- WPF WebBrowser uses the MSHTML/Trident rendering engine -->
+        <WebBrowser x:Name="WebBrowser"
+                    Grid.Row="1"
+                    AutomationProperties.Name="IEBrowserPanel"
+                    LoadCompleted="WebBrowser_LoadCompleted"/>
+
+        <!-- Native WPF status bar updated via JS→native interop -->
+        <TextBlock x:Name="StatusBar"
+                   x:Uid="StatusBar"
+                   Grid.Row="2"
+                   Text="Status: ready"
+                   Padding="8,4"
+                   VerticalAlignment="Center"
+                   AutomationProperties.AutomationId="StatusBar"
+                   AutomationProperties.Name="Status: ready"/>
+    </Grid>
+</Window>

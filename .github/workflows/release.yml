@@ -1,0 +1,183 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Publish target
+        required: true
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      target: ${{ steps.meta.outputs.target }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Validate release target
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_TARGET: ${{ inputs.target }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          version = re.search(r'^version = "([^"]+)"$', text, re.MULTILINE).group(1)
+          event_name = os.environ["EVENT_NAME"]
+          ref_name = os.environ["REF_NAME"]
+
+          if event_name == "push":
+              rc = re.fullmatch(r"v(\d+\.\d+\.\d+)-rc\.(\d+)", ref_name)
+              prod = re.fullmatch(r"v(\d+\.\d+\.\d+)", ref_name)
+              if rc:
+                  expected_version = f"{rc.group(1)}rc{rc.group(2)}"
+                  target = "testpypi"
+              elif prod:
+                  expected_version = prod.group(1)
+                  target = "pypi"
+              else:
+                  print(f"Unsupported release tag: {ref_name}", file=sys.stderr)
+                  sys.exit(1)
+              if version != expected_version:
+                  print(
+                      f"pyproject.toml version {version!r} does not match tag "
+                      f"{ref_name!r} (expected {expected_version!r})",
+                      file=sys.stderr,
+                  )
+                  sys.exit(1)
+          else:
+              target = os.environ["DISPATCH_TARGET"]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"version={version}\n")
+              fh.write(f"target={target}\n")
+          PY
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Check distribution metadata
+        run: twine check dist/*
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dolphin-desktop-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.outputs.target == 'testpypi'
+    environment: testpypi
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dolphin-desktop-dist
+          path: dist/
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.outputs.target == 'pypi'
+    environment: pypi
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dolphin-desktop-dist
+          path: dist/
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  smoke-testpypi:
+    name: Smoke TestPyPI package
+    runs-on: windows-latest
+    needs: [build, publish-testpypi]
+    if: needs.build.outputs.target == 'testpypi'
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install from TestPyPI
+        run: >
+          python -m pip install
+          --index-url https://test.pypi.org/simple/
+          --extra-index-url https://pypi.org/simple/
+          "dolphin-desktop==${{ needs.build.outputs.version }}"
+
+      - name: Import and CLI smoke
+        run: |
+          python -c "import dolphin_desktop; print(dolphin_desktop.__version__)"
+          dolphin --help
+          dolphin info backends
+
+  smoke-pypi:
+    name: Smoke PyPI package
+    runs-on: windows-latest
+    needs: [build, publish-pypi]
+    if: needs.build.outputs.target == 'pypi'
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install from PyPI
+        run: python -m pip install "dolphin-desktop==${{ needs.build.outputs.version }}"
+
+      - name: Import and CLI smoke
+        run: |
+          python -c "import dolphin_desktop; print(dolphin_desktop.__version__)"
+          dolphin --help
+          dolphin info backends

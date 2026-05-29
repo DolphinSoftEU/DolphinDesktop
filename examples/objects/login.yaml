@@ -1,0 +1,18 @@
+login_window:
+  selector:
+    title: "Login - MyApp"
+  children:
+    email_input:
+      selector:
+        automation_id: txtEmail
+        role: Edit
+      fallback:
+        - name: Email
+        - name: "E-mail address"
+    password_input:
+      selector:
+        automation_id: txtPassword
+    submit_button:
+      selector:
+        automation_id: btnLogin
+        name: Login
