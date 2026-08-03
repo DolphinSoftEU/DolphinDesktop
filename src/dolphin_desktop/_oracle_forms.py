@@ -28,12 +28,11 @@ Typical usage::
     app = Desktop().launch_oracle_forms(
         jnlp="http://forms.example.com/forms/frmservlet",
     )
-    form = app.form()
-    form.wait_ready()
-    form.block("EMPLOYEES").item("EMPNO").type_text("7369")
-    form.execute_query()
-    assert form.status_line().startswith("Record 1 of")
-    form.save()
+    app.form().wait_ready()
+    app.block("EMPLOYEES").item("EMPNO").type_text("7369")
+    app.execute_query()
+    assert app.status_line().startswith("Record 1 of")
+    app.save()
 """
 
 from __future__ import annotations
@@ -90,10 +89,10 @@ class OracleFormsKey:
        is worse than picking the wrong one wholesale — on a stock-file host
        these bindings mean:
 
-       * ``duplicate_record()`` → **Exit**, discarding uncommitted changes
-       * ``insert_record()`` → **Clear Record**
-       * ``delete_record()`` → **Duplicate Record**
-       * ``clear_form()`` → **Next Primary Key**
+       * ``DUPLICATE_RECORD`` → **Exit**, discarding uncommitted changes
+       * ``INSERT_RECORD`` → **Clear Record**
+       * ``DELETE_RECORD`` → **Duplicate Record**
+       * ``CLEAR_FORM`` → **Next Primary Key**
 
        Before relying on these, open the form and press **Ctrl+K** ("Show
        Keys") to see the bindings your runtime actually loaded. If they do not
