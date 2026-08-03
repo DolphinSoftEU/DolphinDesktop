@@ -222,20 +222,12 @@ def _element_info_from_point(x: int, y: int) -> Any | None:
 
 # Screen highlight — four click-through overlay windows forming a border.
 #
-# The border used to be XOR-drawn straight onto the screen DC and "erased"
-# by drawing it a second time. Under DWM that paints *outside* the
-# composition: the pixels reach the physical output but belong to no
-# window surface, so the compositor has no reason to restore them. Any
-# repaint underneath (the app redrawing under the moving cursor, a
-# tooltip, a blinking caret) turned the second XOR pass into garbage and
-# fragments stuck to the screen — often the previous, larger element's
-# edge, which made the highlight look like it wrapped half the GUI.
-#
-# Overlay windows are composited like any other window: nothing else's
-# pixels are touched, so hiding them *is* the erase. WS_EX_TRANSPARENT
-# keeps them out of hit-testing, so element_from_point under the cursor
-# never lands on the border, and WS_EX_NOACTIVATE keeps focus on the
-# inspected application.
+# Overlay windows rather than drawing on the screen DC: a screen-DC scribble
+# lands outside DWM's composition, belongs to no window surface, and so is
+# never restored — any repaint underneath smears it and fragments stay on
+# screen. Hiding an overlay *is* the erase. WS_EX_TRANSPARENT keeps the
+# strips out of hit-testing so element_from_point under the cursor never
+# lands on the border; WS_EX_NOACTIVATE leaves focus with the inspected app.
 
 _HIGHLIGHT_COLOR = 0x0000FF00  # BGR → green
 _HIGHLIGHT_PEN_WIDTH = 3

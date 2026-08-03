@@ -202,10 +202,9 @@ if TYPE_CHECKING:
 
 
 # Friendly aliases for pywinauto criteria keys — the same dialect the YAML
-# Object Repository accepts (see ``objects.py``). Without this, the natural
-# spellings travel into pywinauto's ``find_elements`` as unknown kwargs and
-# resolve to a silent "not found" — the docs themselves used to make that
-# mistake, so users certainly will.
+# Object Repository accepts (see ``objects.py``). Unmapped, these spellings
+# reach pywinauto's ``find_elements`` as unknown kwargs and resolve to a
+# silent "not found".
 _CRITERIA_ALIASES: dict[str, str] = {
     "automation_id": "auto_id",
     "role": "control_type",

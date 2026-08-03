@@ -94,8 +94,6 @@ exclude = [
 ]
 
 [project.optional-dependencies]
-# Every stack that needs an extra dependency lives here so a random
-# user can `pip install "dolphin-desktop[stack]"` and be ready.
 sap = []            # placeholder — SAP scripting is COM-based, no wheel
 qt = []             # placeholder — Qt agent DLL is bundled, not pip-installed
 mainframe = []      # placeholder — TN5250 is pure Python; ws3270 is out-of-band

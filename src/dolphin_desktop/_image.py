@@ -272,10 +272,9 @@ class ImageLocator:
         cannot open a path containing non-ASCII characters on Windows and
         returns ``None`` as if the file were missing.
         """
-        # cv2 is checked before numpy is imported: numpy arrives with the
-        # ``vision`` extra, so on a base install both are missing and an
-        # unguarded ``import numpy`` surfaced a bare ModuleNotFoundError
-        # instead of the message naming the extra to install.
+        # cv2 first: numpy also arrives with the ``vision`` extra, so on a
+        # base install importing it ahead of the guard replaces the message
+        # naming the extra with a bare ModuleNotFoundError.
         cv2 = _require_cv2()
 
         import numpy as np  # type: ignore[import-untyped]
