@@ -934,7 +934,6 @@ def _resolve_export_rva(dll_path: Path, export_name: bytes) -> int:
     for i in range(num_names):
         name_rva = int.from_bytes(data[names_off + i * 4 : names_off + i * 4 + 4], "little")
         name_off = rva_to_off(name_rva)
-        # Read NUL-terminated name.
         end = data.find(b"\x00", name_off)
         if end < 0:
             raise QtAgentInjectError(

@@ -11,12 +11,6 @@ import pytest
 from dolphin_desktop import Desktop, sleep
 from tests.qt._qt_helpers import QML_SCRIPT, QT6_SCRIPT, QT6_WINDOW_TITLE, launch_demo
 
-# NOTE: source files used different pytestmark values
-# (test_qt_e2e_qml_workflow.py + test_qt_e2e_qml_long_journeys.py used
-# `pytest.mark.qt_qml`; test_qt_e2e_state_persistence.py used
-# `pytest.mark.qt_agent`). Applied per-test via decorators below instead of
-# a single module-level pytestmark.
-
 
 @pytest.fixture
 def qml_app_workflow():
@@ -67,8 +61,7 @@ def persistent_app():
 
 
 # ###########################################################################
-# SOURCE 1: tests/qt/test_qt_e2e_qml_workflow.py
-# (module marker: pytest.mark.qt_qml)
+# QML workflow journeys
 # ###########################################################################
 
 
@@ -248,8 +241,7 @@ def test_e2e_rename_window_title_persists(qml_app_workflow):
 
 
 # ###########################################################################
-# SOURCE 2: tests/qt/test_qt_e2e_qml_long_journeys.py
-# (module marker: pytest.mark.qt_qml)
+# Long multi-step QML journeys
 # ###########################################################################
 
 
@@ -557,8 +549,7 @@ def test_qml_restaurant_feedback_session(qml_app_long_journeys):
 
 
 # ###########################################################################
-# SOURCE 3: tests/qt/test_qt_e2e_state_persistence.py
-# (module marker: pytest.mark.qt_agent)
+# Widget state persistence across navigation
 # ###########################################################################
 
 

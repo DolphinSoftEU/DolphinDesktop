@@ -740,20 +740,16 @@ class HllapiFn(enum.IntEnum):
     SET_CURSOR = 40
 
 
-# Legacy module-level aliases — kept for backward compatibility with
-# any external code that imported the old private constants. New code
-# should reference the ``HllapiFn`` enum.
+# Shorthands for the enum members the HLLAPI calls below pass as the
+# function code.
 _EHLLAPI_CONNECT_PS = HllapiFn.CONNECT_PS
 _EHLLAPI_DISCONNECT_PS = HllapiFn.DISCONNECT_PS
 _EHLLAPI_SENDKEY = HllapiFn.SEND_KEY
 _EHLLAPI_WAIT = HllapiFn.WAIT
-_EHLLAPI_COPY_PS = HllapiFn.COPY_PS
 _EHLLAPI_QUERY_CURSOR = HllapiFn.QUERY_CURSOR
 _EHLLAPI_COPY_PS_TO_STR = HllapiFn.COPY_PS_TO_STR
 _EHLLAPI_SET_CURSOR = HllapiFn.SET_CURSOR
 _EHLLAPI_QUERY_SESSION_STATUS = HllapiFn.QUERY_SESSION_STATUS
-_EHLLAPI_COPY_STR_TO_PS = HllapiFn.COPY_STR_TO_PS
-_EHLLAPI_COPY_PS_TO_STR_LEN = HllapiFn.COPY_PS_TO_STR  # historical typo alias
 
 # EHLLAPI SendKey (function 3) mnemonics for the AID keys. PF1-PF9 are the
 # digits, PF10-PF24 continue through the lowercase alphabet from 'a'; the

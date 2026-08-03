@@ -72,10 +72,8 @@ def _sign_in(session, cfg: dict[str, str]) -> None:
             pass  # language field is hidden on some logon screens
     session.send_vkey(0)  # Enter
     session.wait_until_ready(timeout=30)
-    # A multiple-logon prompt appears when the same user is signed in
-    # elsewhere — keeping the existing sessions is the non-destructive
-    # choice, so pick "continue with this logon and end the others"
-    # only if the popup blocks us; otherwise just dismiss it.
+    # Signing in as a user who is already signed in elsewhere raises the
+    # multiple-logon prompt, which blocks the session until answered.
     try:
         session.dismiss_all_popups()
     except Exception:
@@ -133,10 +131,8 @@ def sap_session(sap_gui):
     try:
         yield session
     finally:
-        # Close only what this run opened. A session the operator already
-        # had on screen is left exactly as found — logging it off would
-        # discard their work; the earlier version leaked every connection
-        # it opened instead, and they piled up on the desktop.
+        # Close only what this run opened: logging off a session the
+        # operator already had on screen would discard their work.
         if opened_by_us:
             try:
                 session.logoff()

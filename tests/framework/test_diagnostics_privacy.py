@@ -610,8 +610,8 @@ class TestRedactionShapesThatLeakedBefore:
     @pytest.mark.parametrize(
         "text",
         [
-            # A separator must not cross a newline: a log line ending in a
-            # keyword used to mask the first word of the next line.
+            # A separator must not cross a newline, or a log line ending in
+            # a keyword masks the first word of the next line.
             "click on Password\nWARNING dolphin: auth failed",
             "Enter your password\nTraceback (most recent call last):",
             "auth failed for host example.com",
