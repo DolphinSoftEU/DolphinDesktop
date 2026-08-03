@@ -39,7 +39,7 @@ def pb_launched_app():
 
 
 def test_pb_launch_produces_visible_window(pb_launched_app):
-    app, win = pb_launched_app
+    _app, win = pb_launched_app
     assert win.is_visible()
     assert win.exists()
     assert win.title() != ""
@@ -53,7 +53,7 @@ def test_pb_type_and_read_back(pb_launched_app):
     fallback exactly as it would for a PB control that returns empty
     window_text().
     """
-    app, win = pb_launched_app
+    _app, win = pb_launched_app
     editor = win.locator(control_type="Document")
     editor.type_text("PB smoke 123test123")
     # No wait_for_text here: text() on a Document control reads via the
@@ -81,7 +81,7 @@ def test_pb_attach_to_running_process(pb_launched_app):
 
 def test_pb_window_ops(pb_launched_app):
     """maximize/restore/focus must round-trip on a PB-path window."""
-    app, win = pb_launched_app
+    _app, win = pb_launched_app
     win.maximize()
     win.restore()
     win.focus()
@@ -116,6 +116,7 @@ def test_pb_real_attach_readonly():
     win = app.window(title_re=".+", timeout=10)
     assert win.is_visible()
     assert win.title() != ""
+
 
 skip_no_pb = pytest.mark.skipif(
     not _PB_APP,

@@ -565,11 +565,11 @@ class Screen:
             if scale == 1:
                 scaled = img
             else:
-                from PIL import Image as _PILImage
+                from PIL.Image import Resampling
 
                 scaled = img.resize(
                     (img.width * scale, img.height * scale),
-                    _PILImage.LANCZOS,
+                    Resampling.LANCZOS,
                 )
             data = tess.image_to_data(scaled, output_type=tess.Output.DICT)
             for i, word in enumerate(data["text"]):
@@ -578,4 +578,3 @@ class Screen:
                     cy = (data["top"][i] + data["height"][i] // 2) // scale
                     return cx + ox, cy + oy
         return None
-

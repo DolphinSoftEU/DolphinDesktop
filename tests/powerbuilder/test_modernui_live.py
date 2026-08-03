@@ -101,7 +101,7 @@ def _filter_row_text(region) -> str:
 
 @skip_no_modernui
 def test_chrome_and_buttons_resolve_via_uia(modernui):
-    app, win, region = modernui
+    _app, win, _region = modernui
     assert win.is_visible()
     assert "ModernUI App" in win.title()
     for name in ("Save", "Delete", "Add"):
@@ -111,7 +111,7 @@ def test_chrome_and_buttons_resolve_via_uia(modernui):
 @skip_no_modernui
 def test_city_filter_edit_roundtrip_via_uia(modernui):
     """The 'Filter by City' box is a real Edit — type, read back, clear."""
-    app, win, region = modernui
+    _app, win, region = modernui
     edit = win.locator(control_type="Edit")
     edit.type_text("Edmonton")
     edit.wait_for_text("Edmonton", timeout=5)
@@ -133,7 +133,7 @@ def test_city_filter_edit_roundtrip_via_uia(modernui):
 @skip_no_modernui
 def test_state_filter_dropdown_alaska_empties_grid(modernui):
     """Pick Alaska from the dropdown: combo updates, grid loses its rows."""
-    app, win, region = modernui
+    _app, _win, region = modernui
     try:
         _select_state(region, "Alaska")
         assert "Alaska" in _filter_row_text(region)
@@ -147,7 +147,7 @@ def test_state_filter_dropdown_alaska_empties_grid(modernui):
 @skip_no_modernui
 def test_state_filter_restored_to_alberta_repopulates_grid(modernui):
     """Back on Alberta the demo rows (Calgary/Edmonton) are visible again."""
-    app, win, region = modernui
+    _app, _win, region = modernui
     assert "Alberta" in _filter_row_text(region)
     grid_text = Screen.text(region=region)
     assert "Calgary" in grid_text, "Alberta filter shows no Calgary rows"

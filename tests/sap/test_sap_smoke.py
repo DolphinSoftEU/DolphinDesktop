@@ -11,7 +11,6 @@ whole module skips.
 from __future__ import annotations
 
 import pytest
-
 from tests.sap.conftest import sap_config
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]

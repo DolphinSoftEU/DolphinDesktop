@@ -519,9 +519,7 @@ class TestFindTextUpscale:
         }
 
     def test_found_at_native_scale_returns_screen_coords(self):
-        tess = self._tess_mock(
-            [self._data(["", "Alaska"], [(0, 0, 0, 0), (40, 80, 20, 10)])]
-        )
+        tess = self._tess_mock([self._data(["", "Alaska"], [(0, 0, 0, 0), (40, 80, 20, 10)])])
         with (
             patch("dolphin_desktop._image._require_tesseract", return_value=tess),
             patch("dolphin_desktop._image._grab") as grab,

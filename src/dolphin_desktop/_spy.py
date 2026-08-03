@@ -355,7 +355,7 @@ class _Highlighter:
                 (max(right - width, left), top, width, bottom - top),  # right edge
             )
             flags = win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW
-            for hwnd, (x, y, cx, cy) in zip(self._strips, strips):
+            for hwnd, (x, y, cx, cy) in zip(self._strips, strips, strict=True):
                 win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, x, y, cx, cy, flags)
                 win32gui.InvalidateRect(hwnd, None, True)
             self._last = new

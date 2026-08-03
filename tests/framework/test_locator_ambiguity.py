@@ -29,9 +29,7 @@ class _FakeWindow:
 
 def _ambiguous_parent() -> _FakeWindow:
     ambiguous_spec = MagicMock()
-    ambiguous_spec.wait.side_effect = ElementAmbiguousError(
-        "2 elements match the criteria"
-    )
+    ambiguous_spec.wait.side_effect = ElementAmbiguousError("2 elements match the criteria")
     parent_spec = MagicMock()
     parent_spec.child_window.return_value = ambiguous_spec
     return _FakeWindow(parent_spec)
