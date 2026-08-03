@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import itertools
 import os
 import time
 from pathlib import Path
@@ -19,9 +20,19 @@ def _yaml_file(tmp_path: Path, content: str, name: str = "repo.yaml") -> Path:
     return path
 
 
+_mtime_step = itertools.count(10)
+
+
 def _touch_future(path: Path) -> None:
-    """Bump mtime past the recorded one — 1s mtime resolution is not enough here."""
-    future = time.time() + 10
+    """Bump mtime strictly past every earlier bump.
+
+    The offset grows on every call instead of being a fixed ``+10``:
+    ``time.time()`` advances in ~15.6 ms ticks on Windows, so two bumps
+    inside one tick produced the *same* mtime, the repository correctly
+    saw no change, and a test expecting a reload failed depending on
+    where the run happened to fall in the tick.
+    """
+    future = time.time() + next(_mtime_step)
     os.utime(path, (future, future))
 
 
