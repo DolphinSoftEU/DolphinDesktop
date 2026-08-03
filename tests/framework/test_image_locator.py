@@ -152,6 +152,21 @@ class TestImageLocatorMissingCv2:
         with pytest.raises(RuntimeError, match="opencv-python"):
             loc.find_all()
 
+    def test_missing_cv2_reported_before_numpy_is_imported(self, monkeypatch):
+        """The install hint must survive a base install, where numpy is absent too.
+
+        Simulating the absence rather than requiring it keeps the guarantee
+        under test on developer machines, which have the vision extra —
+        the real gap only ever showed up on CI.
+        """
+        from dolphin_desktop import _image
+
+        monkeypatch.setattr(_image, "_CV2_ERROR", ImportError("no cv2"))
+        monkeypatch.setattr(_image, "_cv2", None)
+
+        with pytest.raises(RuntimeError, match="opencv-python"):
+            ImageLocator("nonexistent.png")._load_template()
+
 
 # Screen — screenshot and pixel_color (no cv2 required)
 
