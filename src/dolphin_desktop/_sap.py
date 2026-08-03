@@ -952,9 +952,9 @@ class SapSession:
     def logoff(self, *, confirm: bool = True) -> None:
         """Log off the current SAP session.
 
-        Navigates to the SAP Easy Access menu and triggers logoff via
-        System → Logoff.  If *confirm* is True the confirmation popup is
-        dismissed automatically.  After calling this the session is invalid.
+        Runs the ``/nex`` command, which ends the session without asking
+        for unsaved data. If *confirm* is True the confirmation popup is
+        dismissed automatically. After calling this the session is invalid.
         """
         try:
             self.transaction("/nex")

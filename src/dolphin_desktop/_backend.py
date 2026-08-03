@@ -589,7 +589,7 @@ class ImageBackend(Backend):
 _STUB_MSG = (
     "{name} is a reserved stub for a future dolphin platform backend.  "
     "It will be implemented in a later version.  "
-    "See https://github.com/dolphinsoft/dolphin for the roadmap."
+    "See https://github.com/DolphinSoftEU/DolphinDesktop for the roadmap."
 )
 
 
