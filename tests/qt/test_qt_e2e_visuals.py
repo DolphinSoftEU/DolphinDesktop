@@ -69,8 +69,7 @@ def graphics_app():
 
 
 # ###########################################################################
-# Source 1: tests/qt/test_qt_e2e_charts.py
-# Original module-level marker: pytest.mark.qt_charts  (applied per-test below)
+# Chart property round-trips
 # ###########################################################################
 
 
@@ -190,8 +189,7 @@ def test_e2e_chart_members_drives_dynamic_set(charts_app):
 
 
 # ###########################################################################
-# Source 2: tests/qt/test_qt_e2e_charts_dashboard.py
-# Original module-level marker: pytest.mark.qt_charts  (applied per-test below)
+# Chart dashboard stories
 # ###########################################################################
 
 
@@ -357,8 +355,7 @@ def test_charts_thirty_theme_cycles_no_drift(dashboard):
 
 
 # ###########################################################################
-# Source 3: tests/qt/test_qt_e2e_graphics.py
-# Original module-level marker: pytest.mark.qt_graphics  (applied per-test below)
+# QGraphicsScene interaction
 # ###########################################################################
 
 
@@ -400,7 +397,7 @@ def test_e2e_hit_test_three_zones(graphics_app):
     """Hit-test inside the rect, the circle, and the text — verify each is found."""
     view = graphics_app.graphics_view()
 
-    # Rect: scene (20,20) â†’ (120,80). Centre approx (70, 50).
+    # Rect: scene (20,20) → (120,80). Centre approx (70, 50).
     rect_hit = view.item_at(70, 50)
     assert "Rect" in rect_hit["type"] or rect_hit["type"] == "QGraphicsItem"
 

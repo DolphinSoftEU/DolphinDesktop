@@ -66,7 +66,6 @@ def test_cm_initial_seed_data_loaded(cm_app):
     assert _status(app) == "status: ready"
     assert _list_count(app) == 5
 
-    # Form fields are empty.
     for obj_name, prop in [
         ("cm_first_name", "text"),
         ("cm_last_name", "text"),
@@ -240,7 +239,6 @@ def test_cm_user_deletes_a_contact(cm_app):
     sleep(0.4)
     assert "deleted David Bowie" in _status(app)
     assert _list_count(app) == 4
-    # Form cleared.
     assert app.qt_widget(object_name="cm_first_name").get_property("text") == ""
 
 
@@ -251,26 +249,17 @@ def test_cm_user_deletes_a_contact(cm_app):
 
 @pytest.mark.timeout(120)
 def test_cm_user_searches_by_name(cm_app):
-    """Story: User types into the search box; only matching rows stay visible.
+    """Story: User searches, then clears the search.
 
     Steps:
-        1. Type "alice" — Alice row visible, others hidden
-        2. Verify status reflects search query
-        3. Clear search — all rows visible again
+        1. Type "alice" — the status bar reports the active query
+        2. Clear via the button — status reports the reset and the box empties
+
+    Row visibility itself is not asserted: the list widget's per-item
+    hidden state is not reachable through the agent's invoke chain, so the
+    application's own status mirror is the observable under test.
     """
     app, _ = cm_app
-    lst = app.qt_widget(object_name="cm_contact_list")
-
-    # Count how many items are not hidden.
-    def visible_count():
-        count = 0
-        for i in range(_list_count(app)):
-            _res = lst.invoke("item", i)
-            # We can't easily call item(i).isHidden() through invoke chain — but
-            # by inspecting the list-widget's internals would be heavy. Instead,
-            # rely on agent observing the search behavior via status mirror.
-            count += 1
-        return count
 
     app.qt_widget(object_name="cm_search").set_property("text", "alice")
     sleep(0.3)

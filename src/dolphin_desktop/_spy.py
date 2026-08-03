@@ -925,7 +925,6 @@ def pick(backend: str = "uia") -> dict[str, Any]:
                 print("Cancelled.")
                 return _pick_result("cancelled", [])
 
-            # Update highlight
             try:
                 info = _element_info_from_point(x, y)
                 if info is not None:

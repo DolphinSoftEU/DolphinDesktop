@@ -48,7 +48,6 @@ def test_fill_login_form(swing_app):
 def test_list_selection(swing_app):
     win = swing_app.window(class_name="SunAwtFrame")
 
-    # Select an item in a JList
     lst = win.get_by_role("list", name="Options")
     lst.select_item("Option B")
 

@@ -316,7 +316,6 @@ class Locator:
         if not hasattr(parent_spec, "child_window"):
             return _find_under_wrapper(parent_spec, self._criteria, self._timeout)
 
-        # Try primary selector
         from pywinauto.findwindows import (  # type: ignore[import-untyped]
             ElementAmbiguousError as _PwAmbiguousError,
         )
@@ -373,7 +372,6 @@ class Locator:
         if tree_result is not None:
             return tree_result
 
-        # All selectors exhausted
         raise ElementNotFoundError(
             _NotFoundMessage(self._criteria, self._timeout, parent_spec)
         ) from primary_exc

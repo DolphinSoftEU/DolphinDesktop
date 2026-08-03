@@ -292,13 +292,13 @@ def test_invoice_creation_review_workflow(biz_app):
         4. Volume slider = courier confidence level (matters for delivery).
         5. Notes captured.
         6. Bold/italic markers toggled for branded output.
-        7. Switch to Choices and set language to French (receipt language).
+        7. Switch to Choices and set language to German (receipt language).
         8. Switch to Containers — table data must remain unchanged (data
            integrity assumption: switching tabs doesn't mutate models).
         9. Switch back and read final total = count × price.
 
     Verifications include line item count == 4, total within 0.01 cents of
-    expected, language is French, no other field was clobbered.
+    expected, language is German, no other field was clobbered.
     """
     app, win = biz_app
 
@@ -548,36 +548,24 @@ def test_audit_trail_status_bar_every_action(biz_app):
 
 @pytest.mark.timeout(120)
 def test_user_completes_registration_via_custom_dialog(journey):
-    """As a new user, I want to register by filling name + email in a dialog,
-    so that my account is created and the app confirms my submission.
+    """Verify the entry point to the custom registration dialog is reachable.
 
     Steps:
-        1. Open the "Dialogs" tab
-        2. Click "Show custom" — a modal dialog opens
-        3. Fill in name "Anna Nowak" and email "anna@example.com"
-        4. Click OK
-        5. Verify the status bar reflects the submitted values
+        1. Find the demo main window
+        2. Find the "Show custom" button by objectName
+        3. Verify the button exposes a `click` method
+
+    The dialog itself is not opened: a modal would block the test, so this
+    only checks that the integration surface exists end-to-end.
     """
     app, _ = journey
     agent = app.qt_agent
 
-    # The CustomDialog is created on demand by clicking the Dialogs > Show
-    # custom button. We can shortcut by invoking its action method directly
-    # since this test is about the END state, not the UI plumbing.
     main = agent.find(className="DemoMainWindow")
     assert main, "demo main window not findable"
-    _main_h = main[0]["handle"]
 
-    # _show_custom is a Qt slot on the main window — invokeable.
-    # Note: this is what clicking "Show custom" calls internally.
-    # We use the agent path so the test doesn't hang waiting for a modal.
-
-    # First, just verify the widgets exist (qt_btn_show_custom is reachable).
     btn = agent.find(objectName="qt_btn_show_custom")
     assert btn, "Show custom button must exist on Dialogs tab"
-    # We can't easily click-and-dismiss a modal from this test without
-    # threading, so we instead inspect the CustomDialog class structure:
-    # the test confirms the integration surface exists end-to-end.
     members = agent.members(btn[0]["handle"])
     assert members["ok"]
     assert "click" in members["methods"] or "click()" in members["methods"]
@@ -673,9 +661,9 @@ def test_user_navigates_file_menu_actions(journey):
     so the status bar tracks what I'm doing.
 
     Steps:
-        1. Trigger File>New action â†’ status shows "menu File>New"
-        2. Trigger File>Open action â†’ status shows "menu File>Open"
-        3. Trigger View>Zoom>200% â†’ status shows "menu View>Zoom>200%"
+        1. Trigger File>New action → status shows "menu File>New"
+        2. Trigger File>Open action → status shows "menu File>Open"
+        3. Trigger View>Zoom>200% → status shows "menu View>Zoom>200%"
     """
     app, _ = journey
     actions_expected = [
@@ -748,8 +736,7 @@ def test_disabled_button_cannot_be_clicked_to_change_state(journey):
     initial = _status(app)
     disabled = app.qt_widget(object_name="qt_btn_disabled")
     assert disabled.get_property("enabled") is False
-    _res = disabled.invoke("animateClick")  # Should be no-op because disabled.
-    # animateClick on a disabled button is a no-op; status should not change.
+    disabled.invoke("animateClick")  # No-op on a disabled button: status must not change.
     sleep(0.3)
     assert _status(app) == initial, "disabled button changed status — UX bug"
 
@@ -795,7 +782,7 @@ def test_user_can_query_the_people_table_model(journey):
     Steps:
         1. Switch to Containers tab
         2. Find the QTableView
-        3. Verify its model exposes our expected 3 rows × 3 cols
+        3. Verify a QStandardItemModel is findable in the QObject tree
     """
     app, win = journey
     win.locator(control_type="TabItem", title="Containers").invoke()
@@ -806,7 +793,7 @@ def test_user_can_query_the_people_table_model(journey):
     # via the QObject tree instead.
     children = app.qt_agent.find(className="QStandardItemModel")
     assert children, "QStandardItemModel should be findable in the QObject tree"
-    # Verify the table is alive and isn't hanging.
+    # The table view itself is still enabled.
     assert table.get_property("enabled") is True
 
 
@@ -1229,7 +1216,7 @@ def test_price_double_spinbox_handles_precision(shared_app, price):
     field.set_property("value", price)
     actual = field.get_property("value")
     # Allow 0.01 tolerance for floating-point.
-    assert abs(actual - price) < 0.01, f"price {price} â†’ {actual}"
+    assert abs(actual - price) < 0.01, f"price {price} → {actual}"
 
 
 # ===========================================================================
@@ -1528,7 +1515,7 @@ def test_e2e_uia_click_observed_by_agent(mixed_app):
 def test_e2e_agent_text_shows_in_uia(mixed_app):
     """Set a QLineEdit's text via the agent; read it back via a UIA Locator.
 
-    Round-trip from C++ Q_PROPERTY â†’ UIA Value Pattern via Qt's bridge.
+    Round-trip from C++ Q_PROPERTY → UIA Value Pattern via Qt's bridge.
     """
     app, win = mixed_app
 
@@ -1618,7 +1605,7 @@ def test_e2e_widget_identity_via_object_name_matches(mixed_app):
 
 
 # ---------------------------------------------------------------------------
-# Scenario 5 — Lifecycle: detach â†’ reattach behaviour
+# Scenario 5 — Lifecycle: detach → reattach behaviour
 # ---------------------------------------------------------------------------
 
 
