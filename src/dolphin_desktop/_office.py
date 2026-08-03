@@ -18,9 +18,15 @@ def _require_win32com() -> Any:
         ) from exc
 
 
-# ---------------------------------------------------------------------------
+def _com_name(doc: Any) -> str:
+    """Name of a workbook / document, for error messages."""
+    try:
+        return str(doc.Name)
+    except Exception:
+        return "<unknown>"
+
+
 # Excel
-# ---------------------------------------------------------------------------
 
 
 class ExcelCell:
@@ -31,7 +37,6 @@ class ExcelCell:
 
     @property
     def value(self) -> Any:
-        """Cell value (Python type)."""
         return self._com.Value
 
     @value.setter
@@ -40,7 +45,6 @@ class ExcelCell:
 
     @property
     def formula(self) -> str:
-        """Cell formula string."""
         return self._com.Formula
 
     @formula.setter
@@ -92,11 +96,9 @@ class ExcelSheet:
 
     @property
     def name(self) -> str:
-        """Sheet name."""
         return self._com.Name
 
     def activate(self) -> None:
-        """Make this sheet the active sheet."""
         self._com.Activate()
 
     def cell(self, row: int, col: int) -> ExcelCell:
@@ -119,32 +121,56 @@ class ExcelWorkbook:
         return ExcelSheet(self._com.Sheets(name_or_index))
 
     def save(self) -> None:
-        """Save the workbook."""
         self._com.Save()
 
     def save_as(self, path: str | Path) -> None:
-        """Save the workbook to a new *path*."""
-        self._com.SaveAs(str(path))
+        """Save the workbook to a new *path*.
+
+        Relative paths resolve against the process cwd — Excel would
+        otherwise resolve them against its own ``CurDir``.
+        """
+        self._com.SaveAs(str(Path(path).resolve()))
 
     def close(self, *, save: bool = False) -> None:
         """Close the workbook, optionally saving changes."""
-        self._com.Close(SaveChanges=save)
+        # Positional args required — late-binding Dispatch ignores keyword names.
+        # Signature: Close(SaveChanges, Filename, RouteWorkbook)
+        self._com.Close(save)
 
 
 class ExcelApp:
     """COM wrapper for Microsoft Excel."""
 
-    def __init__(self, _com: Any) -> None:
+    def __init__(self, _com: Any, *, owned: bool = False) -> None:
         self._com = _com
+        # True only for an instance this wrapper created — see open().
+        self._owned = owned
+        self._opened: list[Any] = []
 
     @classmethod
     def open(cls, path: str | Path, *, visible: bool = True) -> ExcelApp:
-        """Open a workbook from *path* and return an ExcelApp."""
+        """Open a workbook from *path* in a private Excel instance."""
         client = _require_win32com()
-        xl = client.Dispatch("Excel.Application")
-        xl.Visible = visible
-        xl.Workbooks.Open(str(Path(path).resolve()))
-        return cls(xl)
+        # DispatchEx forces a fresh out-of-process server. A plain Dispatch
+        # binds to the operator's already-running Excel through the running
+        # object table, and quit() would then take their unsaved workbooks
+        # down with it.
+        xl = client.DispatchEx("Excel.Application")
+        app = cls(xl, owned=True)
+        try:
+            xl.Visible = visible
+            app._opened.append(xl.Workbooks.Open(str(Path(path).resolve())))
+        except BaseException:
+            # Nothing outside this call holds the private instance, so a
+            # failing Open (missing, locked, corrupt, password-prompted)
+            # would strand one visible excel.exe per call — a visible
+            # Office instance with no document never self-reaps.
+            try:
+                app.quit()
+            except Exception:
+                pass
+            raise
+        return app
 
     @classmethod
     def connect(cls) -> ExcelApp:
@@ -158,21 +184,52 @@ class ExcelApp:
 
     @property
     def active_workbook(self) -> ExcelWorkbook:
-        """The currently active workbook."""
         return ExcelWorkbook(self._com.ActiveWorkbook)
 
     @property
     def active_sheet(self) -> ExcelSheet:
-        """The currently active worksheet."""
         return ExcelSheet(self._com.ActiveSheet)
 
     def quit(self, *, save_changes: bool = False) -> None:
-        """Quit Excel, optionally saving all open workbooks."""
-        self._com.DisplayAlerts = False
-        if save_changes:
-            for wb in self._com.Workbooks:
-                wb.Save()
-        self._com.Quit()
+        """Close the workbooks this wrapper opened and quit its own instance.
+
+        Only workbooks opened through :meth:`open` are closed, and the
+        Excel process is quit only when this wrapper started it. An
+        instance reached through :meth:`connect` belongs to the operator
+        and may hold unsaved work, so it is left running.
+
+        A workbook whose ``Save()`` failed is left open and the instance
+        is left running: closing or quitting would discard exactly the
+        content the failed save was meant to keep. Calling ``quit()``
+        again retries it. Idempotent otherwise.
+        """
+        unsaved: list[str] = []
+        if self._opened:
+            # Suppressed before the saves, not after them: Save() on a
+            # read-only or never-saved workbook raises a modal Save-As
+            # dialog that blocks until someone clicks it.
+            self._com.DisplayAlerts = False
+        kept: list[Any] = []
+        for wb in self._opened:
+            if save_changes:
+                try:
+                    wb.Save()
+                except Exception as exc:
+                    unsaved.append(f"{_com_name(wb)}: {exc}")
+                    kept.append(wb)
+                    continue
+            try:
+                wb.Close(False)
+            except Exception:
+                continue
+        self._opened = kept
+        if self._owned and not kept:
+            self._com.DisplayAlerts = False
+            self._com.Quit()
+            # Quit() disconnects the proxy — a second call raises com_error.
+            self._owned = False
+        if unsaved:
+            raise RuntimeError("quit(save_changes=True) could not save: " + "; ".join(unsaved))
 
     def __enter__(self) -> ExcelApp:
         return self
@@ -181,9 +238,11 @@ class ExcelApp:
         self.quit(save_changes=False)
 
 
-# ---------------------------------------------------------------------------
 # Word
-# ---------------------------------------------------------------------------
+
+# wdSaveOptions
+_WD_SAVE_CHANGES = -1
+_WD_DO_NOT_SAVE_CHANGES = 0
 
 
 class WordDocument:
@@ -203,16 +262,22 @@ class WordDocument:
         return self._com.Name
 
     def save(self) -> None:
-        """Save the document."""
         self._com.Save()
 
     def save_as(self, path: str | Path) -> None:
-        """Save the document to a new *path*."""
-        self._com.SaveAs2(str(path))
+        """Save the document to a new *path*.
+
+        Relative paths resolve against the process cwd — Word would
+        otherwise resolve them against its own ``CurDir``.
+        """
+        self._com.SaveAs2(str(Path(path).resolve()))
 
     def close(self, *, save: bool = False) -> None:
         """Close the document, optionally saving."""
-        self._com.Close(SaveChanges=save)
+        # Positional args required — late-binding Dispatch ignores keyword names.
+        # Signature: Close(SaveChanges, OriginalFormat, RouteDocument);
+        # SaveChanges is wdSaveOptions: -1 wdSaveChanges, 0 wdDoNotSaveChanges.
+        self._com.Close(_WD_SAVE_CHANGES if save else _WD_DO_NOT_SAVE_CHANGES)
 
     def find_replace(self, find: str, replace: str) -> None:
         """Replace all occurrences of *find* with *replace*."""
@@ -229,17 +294,36 @@ class WordDocument:
 class WordApp:
     """COM wrapper for Microsoft Word."""
 
-    def __init__(self, _com: Any) -> None:
+    def __init__(self, _com: Any, *, owned: bool = False) -> None:
         self._com = _com
+        # True only for an instance this wrapper created — see open().
+        self._owned = owned
+        self._opened: list[Any] = []
 
     @classmethod
     def open(cls, path: str | Path, *, visible: bool = True) -> WordApp:
-        """Open a document from *path* and return a WordApp."""
+        """Open a document from *path* in a private Word instance."""
         client = _require_win32com()
-        wd = client.Dispatch("Word.Application")
-        wd.Visible = visible
-        wd.Documents.Open(str(Path(path).resolve()))
-        return cls(wd)
+        # DispatchEx forces a fresh out-of-process server. A plain Dispatch
+        # binds to the operator's already-running Word through the running
+        # object table, and quit() would then take their unsaved documents
+        # down with it.
+        wd = client.DispatchEx("Word.Application")
+        app = cls(wd, owned=True)
+        try:
+            wd.Visible = visible
+            app._opened.append(wd.Documents.Open(str(Path(path).resolve())))
+        except BaseException:
+            # Nothing outside this call holds the private instance, so a
+            # failing Open (missing, locked, corrupt, password-prompted)
+            # would strand one visible winword.exe per call — a visible
+            # Office instance with no document never self-reaps.
+            try:
+                app.quit()
+            except Exception:
+                pass
+            raise
+        return app
 
     @classmethod
     def connect(cls) -> WordApp:
@@ -253,16 +337,48 @@ class WordApp:
 
     @property
     def active_document(self) -> WordDocument:
-        """The currently active document."""
         return WordDocument(self._com.ActiveDocument)
 
     def quit(self, *, save_changes: bool = False) -> None:
-        """Quit Word, optionally saving all open documents."""
-        self._com.DisplayAlerts = False
-        if save_changes:
-            for doc in self._com.Documents:
-                doc.Save()
-        self._com.Quit()
+        """Close the documents this wrapper opened and quit its own instance.
+
+        Only documents opened through :meth:`open` are closed, and the
+        Word process is quit only when this wrapper started it. An
+        instance reached through :meth:`connect` belongs to the operator
+        and may hold unsaved work, so it is left running.
+
+        A document whose ``Save()`` failed is left open and the instance
+        is left running: closing or quitting would discard exactly the
+        content the failed save was meant to keep. Calling ``quit()``
+        again retries it. Idempotent otherwise.
+        """
+        unsaved: list[str] = []
+        if self._opened:
+            # Suppressed before the saves, not after them: Save() on a
+            # read-only or never-saved document raises a modal Save-As
+            # dialog that blocks until someone clicks it.
+            self._com.DisplayAlerts = False
+        kept: list[Any] = []
+        for doc in self._opened:
+            if save_changes:
+                try:
+                    doc.Save()
+                except Exception as exc:
+                    unsaved.append(f"{_com_name(doc)}: {exc}")
+                    kept.append(doc)
+                    continue
+            try:
+                doc.Close(_WD_DO_NOT_SAVE_CHANGES)
+            except Exception:
+                continue
+        self._opened = kept
+        if self._owned and not kept:
+            self._com.DisplayAlerts = False
+            self._com.Quit()
+            # Quit() disconnects the proxy — a second call raises com_error.
+            self._owned = False
+        if unsaved:
+            raise RuntimeError("quit(save_changes=True) could not save: " + "; ".join(unsaved))
 
     def __enter__(self) -> WordApp:
         return self

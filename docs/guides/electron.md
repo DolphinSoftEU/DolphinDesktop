@@ -60,7 +60,7 @@ app.commandLine.appendSwitch("force-renderer-accessibility")
 
 ## Fallback
 
-If a control is not visible through UIA, capture a template and use image matching:
+If a control is not visible through UIA, the primary escape hatch for Electron's Chromium runtime is the CDP path — launch or connect with a debug port and drive the DOM directly (see [Embedded web](embedded-web.md)). Use image matching only when a debug port cannot be enabled: capture a template and match on pixels:
 
 ```bash
 dolphin spy --image-pick --output-dir templates

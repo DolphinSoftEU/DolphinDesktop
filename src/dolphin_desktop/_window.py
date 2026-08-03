@@ -36,6 +36,9 @@ _XPATH_ATTR_MAP = {
     "ClassName": "class_name",
 }
 
+# The only ``locator()`` criteria a JABLocator can evaluate.
+_JAB_CRITERIA = frozenset({"control_type", "title", "title_re"})
+
 
 def _parse_xpath(root: Any, xpath: str) -> Locator:
     """Parse a simplified XPath expression and return a chain of Locators."""
@@ -67,24 +70,25 @@ class Window:
         window.screenshot("snap.png")
     """
 
-    def __init__(self, spec: Any) -> None:
+    def __init__(self, spec: Any, *, application: Any = None) -> None:
         self._spec = spec
+        # Optional back-pointer to owning Application — populated by
+        # Application._make_window so that the Qt-agent helpers (qml /
+        # qt_widget / graphics_view) can access the agent without forcing
+        # the user to juggle two objects.
+        self._application = application
 
-    # ------------------------------------------------------------------
-    # Locator factories  (mirror Playwright's page.getBy* API)
-    # ------------------------------------------------------------------
+    # Locator factories  (getBy-style lookups)
 
     def locator(self, **criteria: Any) -> Any:
-        """Find elements by arbitrary pywinauto criteria (title, control_type, auto_id, …)."""
-        if self._is_java_window():
-            from ._java import JABLocator
+        """Find elements by arbitrary pywinauto criteria (title, control_type, auto_id, …).
 
-            return JABLocator(
-                self._java_hwnd(),
-                control_type=criteria.get("control_type"),
-                title=criteria.get("title"),
-                title_re=criteria.get("title_re"),
-            )
+        On a Java Swing window the search runs through the Java Access Bridge,
+        which can only express ``control_type`` / ``title`` / ``title_re`` —
+        any other criterion raises rather than being dropped.
+        """
+        if self._is_java_window():
+            return self._java_locator(criteria)
         return Locator(self, **criteria)
 
     def get_by_title(self, title: str, *, control_type: str | None = None) -> Any:
@@ -110,12 +114,83 @@ class Window:
         return Locator(self, **criteria)
 
     def get_by_automation_id(self, automation_id: str) -> Locator:
-        """Find an element by its UIA AutomationId."""
+        """Find an element by its UIA AutomationId.
+
+        Raises :class:`ValueError` on a Java Swing window — the Access Bridge
+        publishes no AutomationId, so the lookup could only ever be answered
+        by ignoring the argument.
+        """
+        self._reject_for_java("get_by_automation_id", "AutomationId")
         return Locator(self, auto_id=automation_id)
 
+    def get_by_object_name(self, object_name: str) -> Locator:
+        """Find a Qt widget by its ``objectName``.
+
+        Qt exposes ``objectName`` as a **hierarchical dotted path** in UIA
+        ``AutomationId`` (e.g.
+        ``QApplication.main_window.tabs.tab_buttons.qt_btn_ok``).  This method
+        matches on the **leaf segment** so callers only need to specify the
+        widget's own ``objectName``.
+
+        Internally this resolves by walking descendants of the current window
+        and picking the first whose ``AutomationId`` equals *object_name* or
+        ends with ``.<object_name>``.
+
+        Usage::
+
+            window.get_by_object_name("qt_btn_ok").click()
+
+        Raises :class:`ValueError` on a Java Swing window — ``objectName`` is a
+        Qt concept with no Access Bridge equivalent.
+        """
+        from ._locator import _QtObjectNameLocator
+
+        self._reject_for_java("get_by_object_name", "objectName")
+        return _QtObjectNameLocator(self, object_name)
+
     def get_by_class(self, class_name: str) -> Locator:
-        """Find an element by its Win32 class name."""
+        """Find an element by its Win32 class name.
+
+        Raises :class:`ValueError` on a Java Swing window — Swing components
+        are not HWNDs and have no Win32 class name.
+        """
+        self._reject_for_java("get_by_class", "a Win32 class name")
         return Locator(self, class_name=class_name)
+
+    # Agent-backed Qt helpers (QML / QObject / QGraphicsView)
+
+    def _require_application(self) -> Any:
+        if self._application is None:
+            raise RuntimeError(
+                "Window was constructed without an Application back-pointer — "
+                "the Qt-agent helpers (qml/qt_widget/graphics_view) need the "
+                "owning Application to reach the agent. Use Application.window(...)."
+            )
+        return self._application
+
+    def qml(self, object_name: str) -> Any:
+        """Find a QML item by ``objectName`` and return a :class:`QmlElement`.
+
+        Equivalent to ``self.application.qml(object_name)`` — exposed at the
+        Window level so test authors can stay in a single object scope.
+        """
+        return self._require_application().qml(object_name)
+
+    def qt_widget(
+        self,
+        *,
+        object_name: str | None = None,
+        class_name: str | None = None,
+        text: str | None = None,
+    ) -> Any:
+        """Find a QObject / QWidget via the Qt agent and wrap it."""
+        return self._require_application().qt_widget(
+            object_name=object_name, class_name=class_name, text=text
+        )
+
+    def graphics_view(self, *, object_name: str | None = None) -> Any:
+        """Return a :class:`GraphicsViewElement` wrapping the first matching QGraphicsView."""
+        return self._require_application().graphics_view(object_name=object_name)
 
     def get_by_text(self, text: str) -> Any:
         """Alias for get_by_title — find by exact visible text."""
@@ -125,9 +200,7 @@ class Window:
             return JABLocator(self._java_hwnd(), title=text)
         return Locator(self, title=text)
 
-    # ------------------------------------------------------------------
     # Specialized control factories (shorthand for common control types)
-    # ------------------------------------------------------------------
 
     def button(self, name: str | None = None, **kw: Any) -> Button:
         """Find a Button control.
@@ -333,9 +406,7 @@ class Window:
         """
         return _parse_xpath(self, xpath)
 
-    # ------------------------------------------------------------------
     # Window actions
-    # ------------------------------------------------------------------
 
     def close(self) -> None:
         self._spec.close()
@@ -370,9 +441,7 @@ class Window:
 
         win32gui.MoveWindow(self._spec.handle, x, y, width, height, True)
 
-    # ------------------------------------------------------------------
     # Queries
-    # ------------------------------------------------------------------
 
     def title(self) -> str:
         return self._spec.window_text()
@@ -397,20 +466,18 @@ class Window:
             "height": rect.bottom - rect.top,
         }
 
-    # ------------------------------------------------------------------
     # Screenshot
-    # ------------------------------------------------------------------
 
     def screenshot(self, path: str | Path | None = None) -> Image:
         """Capture the window as a PIL Image, optionally saving to *path*."""
         img = self._spec.capture_as_image()
         if path:
-            img.save(path)
+            output = Path(path)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            img.save(output)
         return img
 
-    # ------------------------------------------------------------------
     # Waiting
-    # ------------------------------------------------------------------
 
     def wait_for_close(self, timeout: float = 10.0) -> None:
         """Wait until the window is no longer visible."""
@@ -427,9 +494,34 @@ class Window:
             raise WaitTimeoutError(f"Window not ready after {timeout}s") from exc
         return self
 
-    # ------------------------------------------------------------------
     # Internal
-    # ------------------------------------------------------------------
+
+    def _java_locator(self, criteria: dict[str, Any]) -> Any:
+        """Build a :class:`JABLocator` from *criteria*, refusing what JAB cannot express.
+
+        The Access Bridge matches on role and accessible name only. Forwarding
+        just the expressible subset would turn ``locator(auto_id="txtName")``
+        into "the first node in the tree" — wrong, and silently so.
+        """
+        from ._java import JABLocator
+
+        unsupported = sorted(set(criteria) - _JAB_CRITERIA)
+        if unsupported:
+            raise ValueError(
+                f"Java Access Bridge cannot match on {unsupported} — Swing "
+                "components expose a role and an accessible name only; use "
+                "control_type=, title= or title_re="
+            )
+        return JABLocator(self._java_hwnd(), **criteria)
+
+    def _reject_for_java(self, method: str, concept: str) -> None:
+        """Raise when *method* is called on a Java window it cannot serve."""
+        if self._is_java_window():
+            raise ValueError(
+                f"{method}() is not available on a Java Swing window — the "
+                f"Access Bridge publishes no {concept}; use get_by_role() / "
+                "get_by_title() / locator(control_type=..., title=...)"
+            )
 
     def _is_java_window(self) -> bool:
         try:

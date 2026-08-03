@@ -18,8 +18,6 @@ Prerequisites
 
 from __future__ import annotations
 
-import time
-
 # ---------------------------------------------------------------------------
 # Test 1 — is_webview2() detection
 # ---------------------------------------------------------------------------
@@ -49,12 +47,8 @@ def test_email_input(wv2_window):
 
     email_field.click()
     email_field.set_text("user@example.com")
-    time.sleep(0.2)
-
-    val = email_field.value() or email_field.text()
-    assert "user@example.com" in (val or ""), (
-        f"Email value not reflected in UIA after set_text: {val!r}"
-    )
+    # Poll UIA for the value to propagate — no fixed sleep.
+    email_field.wait_for_text("user@example.com", timeout=3)
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +65,8 @@ def test_password_input(wv2_window):
 
     password_field.click()
     password_field.set_text("secret123")
-    time.sleep(0.2)
+    # No assertion on password read-back (privacy semantics — UIA may
+    # mask the value); this test only proves set_text does not raise.
 
 
 # ---------------------------------------------------------------------------
@@ -99,18 +94,13 @@ def test_submit_and_response(wv2_window):
     login_btn = win.locator(control_type="Button", title_re=".*(Log In|Login).*").timeout(8)
     assert login_btn.exists(), "Log In button not found in WebView2 UIA tree"
     login_btn.click()
-    time.sleep(0.5)
 
     # Assert HTML response element (core AC: must contain "Logged in as …")
     response = win.locator(control_type="Text", title_re=".*Response.*").timeout(5)
-    assert response.exists(), (
-        "Response element not found in WebView2 UIA tree after submit. "
-        "Check that aria-label='Response' is present on the #response div in login.html."
-    )
-    response_text = response.text()
-    assert "Logged in as" in response_text, (
-        f"Expected 'Logged in as …' in response element, got: {response_text!r}"
-    )
+    # Wait for the response text to appear — replaces the sleep(0.5)
+    # that used to guess how long the WebView2 JS handler would run.
+    response.wait_for_text("Logged in as", timeout=5)
+    _response_text = response.text()
 
     # Also assert native StatusBar updated via JS postMessage
     status_bar = win.locator(control_type="Text", title_re=".*Status.*").timeout(5)

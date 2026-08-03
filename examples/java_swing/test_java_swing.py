@@ -6,9 +6,11 @@ Requires Java 8+ to be installed.
 
 import pytest
 
-from dolphin_desktop import JavaAccessBridge
+from dolphin_desktop import JavaAccessBridge, dirname, path_exists, path_join
 
 pytestmark = pytest.mark.integration
+
+_HERE = dirname(__file__)
 
 
 def test_jab_is_available():
@@ -22,10 +24,14 @@ def test_jab_is_available():
 
 @pytest.fixture
 def swing_app(launch):
-    jh = JavaAccessBridge.java_home()
-    if jh is None:
+    if not path_exists(path_join(_HERE, "SwingDemo.class")):
+        pytest.skip(
+            "SwingDemo.class not built — run `javac SwingDemo.java` "
+            "inside examples/java_swing/ first"
+        )
+    if JavaAccessBridge.java_home() is None:
         pytest.skip("Java not found")
-    return launch("java -jar SwingDemo.jar", timeout=20)
+    return launch(f'java -cp "{_HERE}" SwingDemo', timeout=20)
 
 
 def test_fill_login_form(swing_app):

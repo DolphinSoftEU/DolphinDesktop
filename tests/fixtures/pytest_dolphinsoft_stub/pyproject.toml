@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+# Distribution name for the pytest-dolphinsoft cross-install stub.
+# NOT for release; test fixture only. The original plan was
+# ``pytest-dolphin``, but that PyPI slug is already taken by an
+# unrelated third-party plugin, so we brand-namespaced ours. The top-level Python package moved with it:
+# ``import dolphinsoft`` — not ``dolphin`` — to keep the distribution
+# name and the public API aligned and eliminate residual namespace
+# collision surface.
+name = "pytest-dolphinsoft"
+version = "0.0.0.dev0+crossinstallstub"
+description = "Cross-install stub — minimal pytest-dolphinsoft surrogate that owns top-level 'dolphinsoft' import + publishes pytest11 entry point + emits stdout-prefix step_start/step_finish events. NOT for release; test-fixture only."
+requires-python = ">=3.11"
+dependencies = ["pytest>=8.0"]
+
+[project.entry-points."pytest11"]
+# Contract: pytest-dolphinsoft loads canonically via pytest11 without
+# needing ``-p pytest_dolphinsoft``. Entry-point key is ``dolphinsoft``
+# — mirrors the top-level package and stays disjoint from
+# ``dolphin-desktop``'s ``dolphin-desktop`` key.
+dolphinsoft = "dolphinsoft._plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dolphinsoft"]

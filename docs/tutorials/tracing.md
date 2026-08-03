@@ -39,10 +39,14 @@ dolphin trace view --last --dir artifacts/traces
 
 ## Video Recording
 
-Video recording uses `--dolphin-video` or `DOLPHIN_VIDEO`.
+Video recording is on by default (`keepfailedonly`) and is controlled
+with `--dolphin-video` or `DOLPHIN_VIDEO`. It requires an external
+`ffmpeg` binary on `PATH` (or pointed to by `DOLPHIN_FFMPEG`); without
+ffmpeg, recording is silently skipped. The optional `[video]` extra
+installs `mss` for faster screen capture — it does not install ffmpeg.
 
 ```bash
-pip install "dolphin-desktop[video]"
+pip install "dolphin-desktop[video]"   # optional: faster capture via mss
 pytest tests/ -v --dolphin-video=keepfailedonly
 ```
 
@@ -52,7 +56,7 @@ pytest tests/ -v --dolphin-video=keepfailedonly
 | `keepfailedonly` | Default. Record tests, keep MP4 files only for failures. |
 | `keepall` | Keep MP4 files for every test. |
 
-Videos are written to `dolphin-videos/` by default. `ffmpeg` must be available for MP4 encoding.
+Videos are written to `dolphin-videos/` by default. `ffmpeg` is a separate binary install and must be available for MP4 encoding.
 
 ## Screenshots On Failure
 

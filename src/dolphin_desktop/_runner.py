@@ -27,10 +27,80 @@ import sys
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
+# ctypes' default restype is c_int (32-bit), which silently truncates
+# pointer-sized handles on x64. Every Win32 function called below has
+# to declare its argtypes / restype so that HANDLE / HWINSTA / HDESK
+# values survive the transition to Python. Without these declarations
+# a hidden-desktop handle with any bit above 32 set would be truncated
+# and passed to CloseDesktop as a garbage value — sporadically leaking
+# desktops on 64-bit CPython.
+_wt = ctypes.wintypes
+
+_user32.CreateDesktopW.argtypes = [
+    _wt.LPCWSTR,
+    _wt.LPCWSTR,
+    ctypes.c_void_p,
+    _wt.DWORD,
+    _wt.DWORD,
+    ctypes.c_void_p,
+]
+_user32.CreateDesktopW.restype = _wt.HANDLE
+
+_user32.CloseDesktop.argtypes = [_wt.HANDLE]
+_user32.CloseDesktop.restype = _wt.BOOL
+
+_user32.SetThreadDesktop.argtypes = [_wt.HANDLE]
+_user32.SetThreadDesktop.restype = _wt.BOOL
+
+_user32.GetThreadDesktop.argtypes = [_wt.DWORD]
+_user32.GetThreadDesktop.restype = _wt.HANDLE
+
+_user32.GetProcessWindowStation.argtypes = []
+_user32.GetProcessWindowStation.restype = _wt.HANDLE
+
+_user32.GetUserObjectInformationW.argtypes = [
+    _wt.HANDLE,
+    ctypes.c_int,
+    ctypes.c_void_p,
+    _wt.DWORD,
+    ctypes.POINTER(_wt.DWORD),
+]
+_user32.GetUserObjectInformationW.restype = _wt.BOOL
+
+_kernel32.GetStdHandle.argtypes = [_wt.DWORD]
+_kernel32.GetStdHandle.restype = _wt.HANDLE
+
+_kernel32.GetCurrentThreadId.argtypes = []
+_kernel32.GetCurrentThreadId.restype = _wt.DWORD
+
+_kernel32.CreateProcessW.argtypes = [
+    _wt.LPCWSTR,
+    _wt.LPWSTR,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    _wt.BOOL,
+    _wt.DWORD,
+    ctypes.c_void_p,
+    _wt.LPCWSTR,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+]
+_kernel32.CreateProcessW.restype = _wt.BOOL
+
+_kernel32.CloseHandle.argtypes = [_wt.HANDLE]
+_kernel32.CloseHandle.restype = _wt.BOOL
+
+_kernel32.WaitForSingleObject.argtypes = [_wt.HANDLE, _wt.DWORD]
+_kernel32.WaitForSingleObject.restype = _wt.DWORD
+
+_kernel32.GetExitCodeProcess.argtypes = [_wt.HANDLE, ctypes.POINTER(_wt.DWORD)]
+_kernel32.GetExitCodeProcess.restype = _wt.BOOL
+
 DESKTOP_NAME = "DolphinHidden"
 _DESKTOP_ACCESS = 0x10000000  # GENERIC_ALL
 
 _INFINITE = 0xFFFFFFFF
+_WAIT_OBJECT_0 = 0x00000000
 _STARTF_USESTDHANDLES = 0x00000100
 _UOI_FLAGS = 1
 _WSF_VISIBLE = 0x0001
@@ -76,9 +146,7 @@ class _UserObjectFlags(ctypes.Structure):
     ]
 
 
-# ---------------------------------------------------------------------------
 # Desktop management
-# ---------------------------------------------------------------------------
 
 
 def create_hidden_desktop(name: str = DESKTOP_NAME) -> int:
@@ -115,9 +183,7 @@ def switch_thread_to_desktop(handle: int) -> None:
         raise OSError(f"SetThreadDesktop failed: error {ctypes.get_last_error()}")
 
 
-# ---------------------------------------------------------------------------
 # Desktop / station introspection
-# ---------------------------------------------------------------------------
 
 
 def get_current_desktop_name() -> str:
@@ -155,9 +221,7 @@ def has_interactive_station() -> bool:
     return bool(flags.dwFlags & _WSF_VISIBLE)
 
 
-# ---------------------------------------------------------------------------
 # Process launch on a specific desktop
-# ---------------------------------------------------------------------------
 
 
 def launch_on_desktop(
@@ -243,19 +307,19 @@ def launch_cmd_on_desktop(
 
 
 def _build_cmd_string(args: list[str]) -> str:
-    """Join *args* into a Win32 command string, quoting tokens with spaces."""
-    parts = []
-    for a in args:
-        if not a or " " in a or '"' in a:
-            parts.append('"' + a.replace('"', '\\"') + '"')
-        else:
-            parts.append(a)
-    return " ".join(parts)
+    """Join *args* into a Win32 command string the child will parse back correctly.
+
+    ``CommandLineToArgvW`` — what the CRT and CPython use to split a command line —
+    requires backslashes preceding a quote to be doubled, which shell-style ``\\"``
+    escaping does not do: a trailing backslash in a quoted path would escape the
+    closing quote and swallow the rest of the line.
+    """
+    import subprocess
+
+    return subprocess.list2cmdline(args)
 
 
-# ---------------------------------------------------------------------------
 # dolphin-run entry point
-# ---------------------------------------------------------------------------
 
 
 def run_hidden(args: list[str]) -> int:
@@ -273,16 +337,31 @@ def run_hidden(args: list[str]) -> int:
         return subprocess.run(args).returncode
 
     h_desk = create_hidden_desktop()
+    previous_headless = os.environ.get("DOLPHIN_HEADLESS")
     os.environ["DOLPHIN_HEADLESS"] = "1"
     try:
         _pid, h_process = launch_on_desktop(args, DESKTOP_NAME, inherit_stdio=True)
-        _kernel32.WaitForSingleObject(h_process, _INFINITE)
-        exit_code = ctypes.wintypes.DWORD()
-        _kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code))
-        _kernel32.CloseHandle(h_process)
-        return exit_code.value
+        try:
+            # An unchecked wait is worse than no wait: on WAIT_FAILED the process is
+            # still running, GetExitCodeProcess reports STILL_ACTIVE (259), and
+            # dolphin-run exits 259 — a fabricated result for CI to act on.
+            waited = _kernel32.WaitForSingleObject(h_process, _INFINITE)
+            if waited != _WAIT_OBJECT_0:
+                raise OSError(
+                    f"WaitForSingleObject on the child process returned 0x{waited:08X}: "
+                    f"error {ctypes.get_last_error()}"
+                )
+            exit_code = ctypes.wintypes.DWORD()
+            if not _kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code)):
+                raise OSError(f"GetExitCodeProcess failed: error {ctypes.get_last_error()}")
+            return exit_code.value
+        finally:
+            _kernel32.CloseHandle(h_process)
     finally:
-        os.environ.pop("DOLPHIN_HEADLESS", None)
+        if previous_headless is None:
+            os.environ.pop("DOLPHIN_HEADLESS", None)
+        else:
+            os.environ["DOLPHIN_HEADLESS"] = previous_headless
         close_desktop(h_desk)
 
 

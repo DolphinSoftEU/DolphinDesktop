@@ -8,12 +8,43 @@ from pathlib import Path
 from typing import Any
 
 from ._exceptions import AliasNotFoundError
+from ._logging import get_logger
+
+_log = get_logger("objects")
 
 # Map YAML-friendly key names → pywinauto criteria keys
 _SELECTOR_KEY_MAP: dict[str, str] = {
     "automation_id": "auto_id",
     "role": "control_type",
     "name": "title",
+}
+
+# Criteria pywinauto's find_elements accepts, plus the YAML-friendly aliases above.
+# A key outside this set is a typo (``automationid:``) that would otherwise travel
+# all the way into pywinauto and fail there, far from the file that caused it.
+# ``parent`` is deliberately absent: ``Window.element()`` passes the window itself as
+# ``Locator``'s first positional argument, so a selector carrying it raises TypeError.
+_VALID_SELECTOR_KEYS = frozenset(_SELECTOR_KEY_MAP) | {
+    "active_only",
+    "auto_id",
+    "backend",
+    "best_match",
+    "class_name",
+    "class_name_re",
+    "control_id",
+    "control_type",
+    "ctrl_index",
+    "depth",
+    "enabled_only",
+    "found_index",
+    "framework_id",
+    "handle",
+    "predicate_func",
+    "process",
+    "title",
+    "title_re",
+    "top_level_only",
+    "visible_only",
 }
 
 _LEVELS = ("workspace", "project", "test")
@@ -33,6 +64,12 @@ class _LoadedFile:
     path: Path
     level: str
     mtime: float
+    # resolve() polls every watched file, so an unreadable one is reported once
+    # rather than on every element lookup
+    unreadable_logged: bool = False
+    # same, for a file whose stat() works but whose open() does not — a Windows
+    # sharing violation on the file that was just saved
+    unopenable_logged: bool = False
 
 
 def _map_selector(raw: dict[str, Any]) -> dict[str, Any]:
@@ -50,6 +87,15 @@ def _parse_entries(data: dict[str, Any]) -> dict[str, ObjectEntry]:
     return {alias: _parse_entry(entry) for alias, entry in data.items()}
 
 
+def _validate_selector_keys(selector: dict[str, Any], path_label: str, source: Path) -> None:
+    unknown = sorted(k for k in selector if k not in _VALID_SELECTOR_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{source}: '{path_label}' has unknown selector key(s) {unknown}. "
+            f"Valid keys: {sorted(_VALID_SELECTOR_KEYS)}"
+        )
+
+
 def _validate_entry(entry: Any, path_label: str, source: Path) -> None:
     if not isinstance(entry, dict):
         raise ValueError(f"{source}: '{path_label}' must be a mapping, got {type(entry).__name__}")
@@ -57,6 +103,7 @@ def _validate_entry(entry: Any, path_label: str, source: Path) -> None:
         raise ValueError(f"{source}: '{path_label}' missing required 'selector' key")
     if not isinstance(entry["selector"], dict):
         raise ValueError(f"{source}: '{path_label}.selector' must be a mapping")
+    _validate_selector_keys(entry["selector"], f"{path_label}.selector", source)
     fallback = entry.get("fallback")
     if fallback is not None:
         if not isinstance(fallback, list):
@@ -64,6 +111,7 @@ def _validate_entry(entry: Any, path_label: str, source: Path) -> None:
         for i, fb in enumerate(fallback):
             if not isinstance(fb, dict):
                 raise ValueError(f"{source}: '{path_label}.fallback[{i}]' must be a mapping")
+            _validate_selector_keys(fb, f"{path_label}.fallback[{i}]", source)
     children = entry.get("children")
     if children is not None:
         if not isinstance(children, dict):
@@ -99,9 +147,7 @@ class ObjectRepository:
         self._files: list[_LoadedFile] = []
         self._watch_enabled: bool = False
 
-    # ------------------------------------------------------------------
     # Loading
-    # ------------------------------------------------------------------
 
     def load(self, path: str | Path, *, level: str = "project") -> None:
         """Load aliases from a YAML file at the given *level*.
@@ -153,9 +199,7 @@ class ObjectRepository:
                 count += 1
         return count
 
-    # ------------------------------------------------------------------
     # Resolution
-    # ------------------------------------------------------------------
 
     def resolve(self, alias: str) -> ObjectEntry:
         """Return the :class:`ObjectEntry` for *alias* (highest-priority level wins).
@@ -203,23 +247,26 @@ class ObjectRepository:
             f"All registered aliases: {available_all}"
         )
 
-    # ------------------------------------------------------------------
     # Registry management
-    # ------------------------------------------------------------------
 
     def clear(self, level: str | None = None) -> None:
         """Clear the registry.
 
         Args:
             level: If given, clear only that level. Otherwise clear all levels.
+
+        Raises:
+            ValueError: if *level* is not one of the known levels.
         """
         if level is None:
             for lv in _LEVELS:
                 self._registry[lv].clear()
             self._files.clear()
-        else:
-            self._registry[level].clear()
-            self._files = [f for f in self._files if f.level != level]
+            return
+        if level not in _LEVELS:
+            raise ValueError(f"level must be one of {_LEVELS!r}, got {level!r}")
+        self._registry[level].clear()
+        self._files = [f for f in self._files if f.level != level]
 
     def available(self) -> list[str]:
         """Return a sorted list of all registered top-level alias names."""
@@ -228,42 +275,96 @@ class ObjectRepository:
             seen.update(self._registry[level])
         return sorted(seen)
 
-    # ------------------------------------------------------------------
     # Dev-mode file watching
-    # ------------------------------------------------------------------
 
     def enable_watch(self) -> None:
         """Enable reload-on-change: files are re-read when mtime changes."""
         self._watch_enabled = True
 
     def disable_watch(self) -> None:
-        """Disable reload-on-change."""
         self._watch_enabled = False
 
+    def _mtime_advanced(self, lf: _LoadedFile) -> bool:
+        try:
+            advanced = lf.path.stat().st_mtime > lf.mtime
+        except OSError as exc:
+            if not lf.unreadable_logged:
+                lf.unreadable_logged = True
+                _log.warning("object repository file %s is unreadable: %s", lf.path, exc)
+            return False
+        lf.unreadable_logged = False
+        return advanced
+
     def _reload_changed(self) -> None:
+        """Re-read watched files whose mtime advanced.
+
+        A changed file's whole level is rebuilt from its files rather than merged
+        into the existing registry: ``update()`` alone can never drop an alias the
+        user deleted from the YAML, so resolution would keep serving it. A file that
+        fails to parse or validate leaves the previous definitions in place and its
+        mtime unbumped, so the failure is re-reported until the file is fixed.
+
+        A file that cannot be opened is left out of the rebuild instead of failing it,
+        so one unreadable file cannot wedge the whole level at its current definitions.
+        Its aliases stop resolving until it can be read again — deliberately: the level
+        is rebuilt rather than merged precisely so a definition the user removed cannot
+        keep being served, and nothing here can tell a genuine deletion from a passing
+        sharing violation. The file itself stays watched and keeps its old mtime, which
+        is what lets it come back; dropping the *file* would make its aliases
+        unrecoverable for the rest of the run.
+        """
         import yaml
 
-        for lf in list(self._files):
+        changed_levels = {lf.level for lf in self._files if self._mtime_advanced(lf)}
+        for level in changed_levels:
+            level_files = [lf for lf in self._files if lf.level == level]
+            rebuilt: dict[str, ObjectEntry] = {}
+            skipped: list[int] = []
             try:
-                current_mtime = lf.path.stat().st_mtime
-                if current_mtime > lf.mtime:
-                    with lf.path.open(encoding="utf-8") as fh:
-                        data = yaml.safe_load(fh) or {}
+                for lf in level_files:
+                    try:
+                        with lf.path.open(encoding="utf-8") as fh:
+                            data = yaml.safe_load(fh) or {}
+                    except OSError as exc:
+                        if not lf.unopenable_logged:
+                            lf.unopenable_logged = True
+                            _log.warning(
+                                "object repository file %s cannot be read, leaving its "
+                                "aliases out of level=%r until it can: %s",
+                                lf.path,
+                                level,
+                                exc,
+                            )
+                        skipped.append(id(lf))
+                        continue
+                    lf.unopenable_logged = False
                     _validate(data, lf.path)
-                    entries = _parse_entries(data)
-                    self._registry[lf.level].update(entries)
-                    lf.mtime = current_mtime
-            except Exception:
-                pass
+                    rebuilt.update(_parse_entries(data))
+            except Exception as exc:
+                _log.warning(
+                    "object repository reload of level=%r failed, keeping the previous "
+                    "definitions: %s",
+                    level,
+                    exc,
+                )
+                continue
+            self._registry[level] = rebuilt
+            for lf in level_files:
+                if id(lf) in skipped:
+                    # Its mtime bump is still owed: bumping it here would make the
+                    # rebuild that could bring the file back never run.
+                    continue
+                try:
+                    lf.mtime = lf.path.stat().st_mtime
+                except OSError:
+                    pass
 
     def __repr__(self) -> str:
         counts = {lv: len(self._registry[lv]) for lv in _LEVELS}
         return f"ObjectRepository({counts})"
 
 
-# ---------------------------------------------------------------------------
 # Module-level singleton and convenience API
-# ---------------------------------------------------------------------------
 
 _repository = ObjectRepository()
 
@@ -292,7 +393,6 @@ def clear(level: str | None = None) -> None:
 
 
 def available() -> list[str]:
-    """Return all registered top-level alias names."""
     return _repository.available()
 
 

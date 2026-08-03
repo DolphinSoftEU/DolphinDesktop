@@ -4,15 +4,20 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dolphin-desktop"
-version = "0.1.0"
-description = "Windows desktop test automation with lazy evaluation, auto-waiting, and pytest integration"
+version = "0.2.0"
+description = "Windows desktop test automation for SAP, Qt, Electron, Java, Oracle Forms, and IBM mainframe — with lazy locators, auto-waiting, and pytest integration"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [
     { name = "DolphinSoft Kamil Głuszek", email = "kontakt@dolphinsoft.pl" },
 ]
-keywords = ["desktop-automation", "testing", "windows", "pytest", "uia"]
+keywords = [
+    "desktop-automation", "testing", "windows", "pytest", "uia",
+    "sap", "qt", "electron", "cdp",
+    "java-access-bridge", "oracle-forms",
+    "mainframe", "tn3270", "tn5250", "as400", "ibm-i", "hllapi",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: Pytest",
@@ -44,11 +49,15 @@ Documentation = "https://dolphinsoft.pl"
 Source = "https://github.com/DolphinSoftEU/DolphinDesktop"
 
 [project.entry-points."pytest11"]
-dolphin = "dolphin_desktop.pytest_plugin"
+# Entry-point name is 'dolphin-desktop' (not bare 'dolphin' or
+# 'dolphinsoft') so it cannot collide with the pytest11 entry
+# pytest-dolphinsoft registers under 'pytest_dolphinsoft.plugin'.
+dolphin-desktop = "dolphin_desktop.pytest_plugin"
 
 [project.entry-points."dolphin_desktop.backends"]
 uia   = "dolphin_desktop._backend:UIABackend"
 win32 = "dolphin_desktop._backend:Win32Backend"
+qt    = "dolphin_desktop._backend:QtBackend"
 image = "dolphin_desktop._backend:ImageBackend"
 macos = "dolphin_desktop._backend:MacOSAccessibilityBackend"
 linux = "dolphin_desktop._backend:LinuxATSPIBackend"
@@ -57,7 +66,40 @@ cdp   = "dolphin_desktop._backend:CDPBackend"
 [tool.hatch.build.targets.wheel]
 packages = ["src/dolphin_desktop"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/dolphin_desktop",
+    "docs",
+    "tests",
+    "/README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    "RELEASING.md",
+    "pyproject.toml",
+]
+exclude = [
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
+    "**/*.pyc",
+    "5.15.2",
+    ".venv*",
+    "aqtinstall.log",
+    "*.xml",
+    "Zrzut ekranu*",
+]
+
 [project.optional-dependencies]
+# Every stack that needs an extra dependency lives here so a random
+# user can `pip install "dolphin-desktop[stack]"` and be ready.
+sap = []            # placeholder — SAP scripting is COM-based, no wheel
+qt = []             # placeholder — Qt agent DLL is bundled, not pip-installed
+mainframe = []      # placeholder — TN5250 is pure Python; ws3270 is out-of-band
+oracle-forms = []   # placeholder — JAB is bundled with Adoptium/Oracle JDKs
 fast = [
     "mss>=9.0",
 ]
@@ -66,6 +108,7 @@ video = [
 ]
 vision = [
     "opencv-python>=4.9",
+    "numpy>=1.26",
     "pytesseract>=0.3.10",
 ]
 docs = [
@@ -79,6 +122,16 @@ telemetry = [
 pytest = [
     "pytest>=8.3",
     "allure-pytest>=2.13",
+]
+cdp = [
+    "playwright>=1.40",
+]
+all = [
+    "playwright>=1.40",
+    "mss>=9.0",
+    "opencv-python>=4.9",
+    "numpy>=1.26",
+    "pytesseract>=0.3.10",
 ]
 dev = [
     "mypy>=1.10",
@@ -110,14 +163,29 @@ src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "RUF"]
-ignore = ["N818"]
+ignore = [
+    "N818",
+    # Prose in docstrings, comments and user-facing strings uses typographic
+    # punctuation on purpose (em/en dashes, ×, →). These rules flag every one
+    # of them as a possible homoglyph typo.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["dolphin_desktop"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/dolphin_desktop/_trace.py" = ["E501"]   # long lines are embedded HTML/CSS template strings
-"src/dolphin_desktop/_video.py" = ["BLE001"]  # broad exception catch in background thread is intentional
+# Long lines are embedded HTML/CSS in the trace-report template.
+"src/dolphin_desktop/_trace.py" = ["E501"]
+# `_AA_TO_DO` mirrors the Java Access Bridge `AccessibleActionsToDo` struct.
+"src/dolphin_desktop/_java.py" = ["N801"]
+# `WM_KEYDOWN` / `WM_KEYUP` are Win32 constant names, copied verbatim.
+"src/dolphin_desktop/_oracle_forms.py" = ["N806"]
+# Test names embed EHLLAPI function names (ConnectPS, SENDKEY) so a failure
+# points straight at the call it exercises.
+"tests/mainframe/hllapi_mock/test_hllapi_unit.py" = ["N802"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -153,6 +221,10 @@ markers = [
     "integration: marks tests requiring a real app process",
     "dolphin_headless: marks tests that require headless desktop mode",
     "dolphin(timeout): overrides Dolphin runtime options for a test",
+    "qt_agent: Qt agent DLL injection tests",
+    "qt_qml: QML scene-graph introspection tests (Qt agent)",
+    "qt_graphics: QGraphicsView walker tests (Qt agent)",
+    "qt_charts: Qt Charts polymorphic introspection tests (Qt agent)",
 ]
 
 [tool.coverage.run]

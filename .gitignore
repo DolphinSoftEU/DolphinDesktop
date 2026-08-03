@@ -35,8 +35,30 @@ obj/
 # pytest
 .pytest_cache/
 
+# Local credentials — the test suites read them from the environment;
+# these patterns are a backstop so a local helper file can never be
+# committed by accident.
+.env
+.env.*
+*_env.ps1
+*.local.ps1
+secrets.*
+
 # Local scratch output
 hs_err_pid*.log
 test_out*.txt
 Nowy folder*/
 C?Users*/
+
+# Lazarus / Delphi build artifacts
+tests/delphi/sample_lcl/lib/
+tests/delphi/sample_lcl/sample_lcl.exe
+tests/delphi/sample_lcl/*.compiled
+tests/delphi/sample_lcl/*.o
+tests/delphi/sample_lcl/*.ppu
+
+# stray dumps
+tree_dump.txt
+
+# Java Swing demo build output
+examples/java_swing/*.class

@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the app / workflow that needs this, and what
+        you've already tried. Context helps us design something that
+        fits multiple users, not just one.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you solving?
+      description: The concrete testing goal, not the abstract feature.
+      placeholder: |
+        I'm testing a Delphi VCL app. dolphin's Win32 backend sees the
+        window but every custom-painted control is invisible.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: Draft signature or example call.
+      render: python
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Another tool, a manual workflow, your own image-based script…
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?

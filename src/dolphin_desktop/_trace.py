@@ -10,14 +10,17 @@ import json
 import re
 import shutil
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Schema — version-gated so Studio can detect incompatible files
-# ---------------------------------------------------------------------------
+from ._logging import get_logger
+
+_log = get_logger("trace")
+
+# Schema — version-gated so external tooling can detect incompatible files
 
 SCHEMA_VERSION = 1
 
@@ -52,9 +55,7 @@ CREATE TABLE IF NOT EXISTS steps (
 );
 """
 
-# ---------------------------------------------------------------------------
 # Module-level current session (set by pytest plugin, one per test)
-# ---------------------------------------------------------------------------
 
 _current: TraceSession | None = None
 
@@ -68,13 +69,16 @@ def set_current_session(session: TraceSession | None) -> None:
     _current = session
 
 
-# ---------------------------------------------------------------------------
 # Screenshot
-# ---------------------------------------------------------------------------
 
 
 def _capture_screenshot(path: Path) -> None:
-    """Write a full-screen JPEG to *path*. Uses mss if available, else PIL."""
+    """Write a JPEG of the whole virtual desktop to *path*. Uses mss if available, else PIL.
+
+    Both paths must span every monitor: ``mss.monitors[0]`` already is the virtual
+    desktop, and Pillow needs ``all_screens=True`` to match it — without it a window
+    on a secondary display is captured as the wrong (or a black) region.
+    """
     try:
         import mss  # type: ignore[import-untyped]
 
@@ -91,12 +95,10 @@ def _capture_screenshot(path: Path) -> None:
 
     from PIL import ImageGrab
 
-    ImageGrab.grab().convert("RGB").save(path, "JPEG", quality=75, optimize=True)
+    ImageGrab.grab(all_screens=True).convert("RGB").save(path, "JPEG", quality=75, optimize=True)
 
 
-# ---------------------------------------------------------------------------
 # UIA tree
-# ---------------------------------------------------------------------------
 
 
 def _dump_uia_tree(element: Any, max_depth: int = 4, max_children: int = 30) -> str | None:
@@ -138,9 +140,7 @@ def _collect(
             continue
 
 
-# ---------------------------------------------------------------------------
 # TraceSession
-# ---------------------------------------------------------------------------
 
 
 class TraceSession:
@@ -163,11 +163,18 @@ class TraceSession:
         self._started_at = time.time()
         self._seq = 0
         self._closed = False
+        # True once any write was lost — the stored run is incomplete, not failed
+        self.degraded = False
+        # Actions may be driven from a worker thread while the session is created on
+        # the fixture thread, so the connection is shared explicitly and serialised.
+        self._lock = threading.Lock()
 
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "screenshots").mkdir(exist_ok=True)
 
-        self._db: sqlite3.Connection = sqlite3.connect(str(run_dir / "trace.db"))
+        self._db: sqlite3.Connection = sqlite3.connect(
+            str(run_dir / "trace.db"), check_same_thread=False
+        )
         self._db.executescript(_DDL)
         if self._db.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
             self._db.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
@@ -176,8 +183,6 @@ class TraceSession:
             (self.run_id, test_nodeid, self._started_at),
         )
         self._db.commit()
-
-    # ------------------------------------------------------------------
 
     def record_step(
         self,
@@ -188,12 +193,19 @@ class TraceSession:
     ) -> None:
         """Record one action step.  In *on-failure* mode screenshots are only
         taken when the step produced an error; in *always* mode every step gets
-        a screenshot."""
-        if self.mode == "off" or self._closed:
+        a screenshot.
+
+        Never raises: tracing is observational, so a storage failure is logged and
+        dropped rather than turned into a failure of the action being traced.
+        """
+        if self.mode == "off":
             return
 
-        self._seq += 1
-        seq = self._seq
+        with self._lock:
+            if self._closed:
+                return
+            self._seq += 1
+            seq = self._seq
         ts = time.time() - self._started_at
         result = "error" if error else "ok"
 
@@ -211,15 +223,34 @@ class TraceSession:
         if bool(error) and element is not None:
             uia_tree = _dump_uia_tree(element)
 
-        self._db.execute(
-            """INSERT INTO steps
-               (run_id, seq, ts, action, selector, result, error, screenshot_file, uia_tree)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (self.run_id, seq, ts, action, selector, result, error, screenshot_file, uia_tree),
-        )
-        self._db.commit()
-
-    # ------------------------------------------------------------------
+        try:
+            with self._lock:
+                if self._closed:
+                    # The session was finished while this step was being captured.
+                    # A shutdown race is not a storage failure: marking the run
+                    # degraded would report a healthy run as incomplete.
+                    return
+                self._db.execute(
+                    """INSERT INTO steps
+                       (run_id, seq, ts, action, selector, result, error, screenshot_file,
+                        uia_tree)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        self.run_id,
+                        seq,
+                        ts,
+                        action,
+                        selector,
+                        result,
+                        error,
+                        screenshot_file,
+                        uia_tree,
+                    ),
+                )
+                self._db.commit()
+        except Exception as exc:
+            self.degraded = True
+            _log.warning("trace step %d (%s) not recorded: %s", seq, action, exc)
 
     def finish(
         self,
@@ -227,26 +258,48 @@ class TraceSession:
         error_message: str | None = None,
         error_traceback: str | None = None,
     ) -> None:
-        """Finalise the run record.  Discards the run dir on pass in on-failure mode."""
-        if self._closed:
-            return
-        self._closed = True
+        """Finalise the run record.  Discards the run dir on pass in on-failure mode.
 
-        self._db.execute(
-            """UPDATE runs
-               SET finished_at=?, status=?, error_message=?, error_traceback=?
-               WHERE id=?""",
-            (time.time(), status, error_message, error_traceback, self.run_id),
-        )
-        self._db.commit()
-        self._db.close()
+        Never raises — see :meth:`record_step`.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+
+        try:
+            with self._lock:
+                self._db.execute(
+                    """UPDATE runs
+                       SET finished_at=?, status=?, error_message=?, error_traceback=?
+                       WHERE id=?""",
+                    (time.time(), status, error_message, error_traceback, self.run_id),
+                )
+                self._db.commit()
+        except Exception as exc:
+            self.degraded = True
+            _log.warning(
+                "trace run %s stays at status='running' — final status %r not written: %s",
+                self.run_id,
+                status,
+                exc,
+            )
+        # Worker threads record steps under _lock on this same connection, so closing
+        # it outside the lock is unserialised sqlite access.
+        with self._lock:
+            try:
+                self._db.close()
+            except Exception:
+                pass
 
         if self.mode == "on-failure" and status == "passed":
             shutil.rmtree(self.run_dir, ignore_errors=True)
 
     def close_without_finish(self) -> None:
         """Close the DB connection without writing a final status (e.g. on error)."""
-        if not self._closed:
+        with self._lock:
+            if self._closed:
+                return
             self._closed = True
             try:
                 self._db.close()
@@ -254,9 +307,7 @@ class TraceSession:
                 pass
 
 
-# ---------------------------------------------------------------------------
 # HTML viewer
-# ---------------------------------------------------------------------------
 
 _SLUG_RE = re.compile(r"[^\w._-]")
 
@@ -265,12 +316,27 @@ def _safe_slug(text: str, maxlen: int = 80) -> str:
     return _SLUG_RE.sub("_", text)[:maxlen]
 
 
+_LATEST_RUN_SQL = "SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT 1"
+
+
 def generate_html(run_dir: Path) -> Path:
-    """Read trace.db in *run_dir*, write trace.html, and return its path."""
-    db = sqlite3.connect(str(run_dir / "trace.db"))
+    """Read trace.db in *run_dir*, write trace.html, and return its path.
+
+    A trace.db normally holds exactly one run; if an older writer left more than
+    one behind, the most recently started run wins.
+
+    Raises:
+        FileNotFoundError: if *run_dir* holds no ``trace.db``.
+    """
+    db_path = run_dir / "trace.db"
+    # sqlite3.connect() creates the file it cannot open, so an unchecked connect
+    # would leave an empty trace.db behind in the caller's tree.
+    if not db_path.is_file():
+        raise FileNotFoundError(f"No trace data found in {run_dir}")
+    db = sqlite3.connect(str(db_path))
     db.row_factory = sqlite3.Row
     try:
-        run_row = db.execute("SELECT * FROM runs LIMIT 1").fetchone()
+        run_row = db.execute(_LATEST_RUN_SQL).fetchone()
         if run_row is None:
             raise FileNotFoundError(f"No trace data found in {run_dir}")
         run = dict(run_row)
@@ -297,7 +363,9 @@ def _render_html(run: dict[str, Any], steps: list[dict[str, Any]]) -> str:
     nodeid = _h.escape(run.get("test_nodeid", ""))
     started = datetime.datetime.fromtimestamp(run["started_at"]).strftime("%Y-%m-%d %H:%M:%S")
     duration = f"{run['finished_at'] - run['started_at']:.2f}s" if run.get("finished_at") else "—"
-    badge_cls = "pass" if status == "passed" else "fail"
+    # A run whose finish() write was lost stays at 'running'; rendering that as FAIL
+    # would report a passing test as failed, so only a real verdict gets a verdict badge.
+    badge_cls = {"passed": "pass", "failed": "fail", "error": "fail"}.get(status, "warn")
 
     error_block = ""
     if run.get("error_message"):
@@ -320,6 +388,7 @@ h1{{font-size:14px;color:#8b949e;margin-bottom:10px}}
 .badge{{padding:2px 9px;border-radius:10px;font-size:11px;font-weight:700;text-transform:uppercase}}
 .badge.pass{{background:#1a4731;color:#3fb950}}
 .badge.fail{{background:#490202;color:#f85149}}
+.badge.warn{{background:#3d2c05;color:#d29922}}
 .meta{{color:#8b949e;font-size:12px}}
 .err-box{{background:#160b0b;border-left:3px solid #f85149;padding:8px 10px;margin-bottom:12px;border-radius:3px;overflow-x:auto}}
 .err-box pre{{white-space:pre-wrap;color:#ffa198;font-size:11px}}
@@ -432,9 +501,7 @@ def _nodes_to_text(nodes: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
 # Helpers used by the CLI to list / locate runs
-# ---------------------------------------------------------------------------
 
 
 def list_runs(trace_dir: Path) -> list[dict[str, Any]]:
@@ -449,7 +516,7 @@ def list_runs(trace_dir: Path) -> list[dict[str, Any]]:
         try:
             db = sqlite3.connect(str(db_path))
             db.row_factory = sqlite3.Row
-            row = db.execute("SELECT * FROM runs LIMIT 1").fetchone()
+            row = db.execute(_LATEST_RUN_SQL).fetchone()
             db.close()
             if row:
                 d = dict(row)
