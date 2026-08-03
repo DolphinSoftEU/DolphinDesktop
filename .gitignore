@@ -62,3 +62,6 @@ tree_dump.txt
 
 # Java Swing demo build output
 examples/java_swing/*.class
+
+# Java mock build output (compile locally: javac --release 21 OracleFormsMock.java)
+tests/oracle_forms/*.class
