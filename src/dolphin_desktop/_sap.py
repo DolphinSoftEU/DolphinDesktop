@@ -51,17 +51,13 @@ _SCRIPTING_ALLOW_TEXTS: frozenset[str] = frozenset(
 
 # The scripting-security notification is a plain Win32 dialog (class
 # "#32770") owned by the SAP GUI front end. Its caption is NOT reliable:
-# some locales keep the product name ("SAP GUI Security",
-# "SAP GUI-Sicherheit"), others caption it with the front-end's own name
-# — a Polish SAP Logon 800 raises it as plain "SAP Logon" with the body
-# "Próba dostępu skryptu do SAP GUI." Matching the caption alone left
-# those dialogs on screen, and since the dialog is modal to the scripting
-# call, the attach blocked until a human clicked it.
-#
-# The body text always names the script, so caption OR body may identify
-# the dialog — but the owning process and window class must line up
-# either way, and only a button whose text is an explicit "allow" is ever
-# pressed, so an unrelated dialog cannot be confirmed by accident.
+# some locales keep the product name ("SAP GUI Security"), others caption
+# it with the front end's own — a Polish SAP Logon 800 raises it as plain
+# "SAP Logon", naming the script only in the body. Since the dialog is
+# modal to the scripting call, missing it blocks every attach until a
+# human clicks it, so caption OR body may identify it. Owning process and
+# window class must line up either way, and only a button whose text is
+# an explicit "allow" is ever pressed.
 _SCRIPTING_DIALOG_CLASS = "#32770"
 _SCRIPTING_TITLE_MARKERS: tuple[str, ...] = ("sap gui", "sapgui", "sap-gui")
 _SCRIPTING_BODY_MARKERS: tuple[str, ...] = ("script", "skript", "skrypt", "sap gui")

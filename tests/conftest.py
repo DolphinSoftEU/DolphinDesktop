@@ -6,12 +6,10 @@ import pytest
 
 from dolphin_desktop import Desktop
 
-# Everything outside tests/framework/ drives a real application — a Qt or
-# Delphi binary, VS Code, a JVM, an SAP session, a terminal emulator — and
-# cannot pass on a bare CI runner. Marking those suites here rather than
-# file by file keeps the rule in one place and applies it to stacks added
-# later: tests/framework/ is the headless suite, everything else is
-# integration. CI runs `-m "not integration"`.
+# tests/framework/ is the headless suite; every other directory drives a
+# real application and cannot pass on a bare CI runner. Marking them here
+# rather than file by file keeps the rule in one place and covers stacks
+# added later. CI runs `-m "not integration"`.
 _HEADLESS_DIR = "framework"
 
 
