@@ -2,14 +2,14 @@
 
 Complements :mod:`test_vscode_cdp` (baseline surface) with:
 
-* Selector engine variants (CSS, XPath, ``text=``, ``id=``)
+* Selector engine variants (CSS, attribute, pseudo-class, XPath, ``text=``)
 * Error paths (`ElementNotFoundError`, `WaitTimeoutError`) — must raise
   the *dolphin* exception type, not Playwright's
 * is_visible edge cases (display:none, visibility:hidden, offscreen,
-  0×0 size, opacity:0)
+  0×0 size)
 * wait_for state machine (attached / detached / visible / hidden)
 * Locator resolution against dynamically added / removed elements
-* Unicode text, empty text, whitespace preservation
+* Unicode text, empty text, rendered whitespace collapsing
 * Concurrent locators (many resolved in one test without collisions)
 """
 

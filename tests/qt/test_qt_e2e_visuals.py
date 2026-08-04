@@ -1,7 +1,9 @@
-"""End-to-end scenarios on the Qt Charts demo.
+"""End-to-end scenarios on the Qt Charts and QGraphicsScene demos.
 
 Realistic interaction patterns with a charting widget: change theme,
-toggle animations, modify chart title from outside, change axis ranges.
+toggle animations, modify chart title from outside, toggle the background.
+A second group drives the QGraphicsScene demo — item position, z-order,
+text content and hit-testing.
 
 Headline value: every test below is achieved without the agent linking
 against Qt Charts — the entire chart model is reachable through the
@@ -230,8 +232,9 @@ def test_charts_presentation_mode_rotates_through_slides(dashboard):
 @pytest.mark.timeout(120)
 def test_charts_live_edit_during_meeting(dashboard):
     """Story: During a meeting, the presenter edits the chart title 8 times
-    as new questions come up. Verifies each edit lands within ~100ms and
-    the previous edit doesn't ghost back.
+    as new questions come up. Verifies each edit is readable immediately
+    after the write, the last one sticks, and no previous edit ghosts back —
+    the read-back history matches the input list exactly.
     """
     _, agent, chart = dashboard
 
@@ -394,7 +397,11 @@ def test_e2e_move_text_item(graphics_app):
 
 @pytest.mark.qt_graphics
 def test_e2e_hit_test_three_zones(graphics_app):
-    """Hit-test inside the rect, the circle, and the text — verify each is found."""
+    """Hit-test inside the rect and inside the circle — each resolves to an item.
+
+    The scene's third zone, the text item, is covered by the enumeration and
+    z-order scenarios below.
+    """
     view = graphics_app.graphics_view()
 
     # Rect: scene (20,20) → (120,80). Centre approx (70, 50).
@@ -448,12 +455,16 @@ def test_e2e_text_item_change_html(graphics_app):
 
 @pytest.mark.qt_graphics
 def test_e2e_bring_text_to_front(graphics_app):
-    """Raise the text item's zValue above the other two — verify ordering."""
+    """Raise the text item's zValue to 10 and read it back, then reset it to 0.
+
+    The demo leaves every item at the default zValue of 0, so 10 puts the
+    text item in front; the written value on the text item is what the test
+    asserts.
+    """
     agent = graphics_app.qt_agent
     items = agent.find(className="QGraphicsTextItem")
     assert items
     h = items[0]["handle"]
-    # Defaults are 0 — bumping to 10 should bring it to front.
     agent.set_property(h, "zValue", 10.0)
     assert agent.get_property(h, "zValue") == 10.0
     agent.set_property(h, "zValue", 0.0)

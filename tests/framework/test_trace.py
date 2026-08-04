@@ -82,8 +82,13 @@ class TestRecordStepIsNonFatal:
         session._db = _FailingConnection(sqlite3.OperationalError("database is locked"))
         session.finish("failed", error_message="boom")
 
-    def test_missing_run_dir_does_not_raise(self, tmp_path):
-        """The rmtree of a concurrent run must not turn into a test failure."""
+    def test_recording_onto_a_closed_db_does_not_raise(self, tmp_path):
+        """A dead DB handle must not turn tracing into a test failure.
+
+        The connection is closed underneath the session; both ``record_step``
+        and ``finish`` have to swallow the resulting error. The run directory
+        itself stays in place.
+        """
         session = self._session(tmp_path)
         session._db.close()
         session.record_step("click", None)

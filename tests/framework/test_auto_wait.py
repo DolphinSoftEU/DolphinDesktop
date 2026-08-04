@@ -441,4 +441,5 @@ class TestChainableTypingContract:
         win = _window(spec)
         # Both of these fail type checking when timeout() is annotated -> Locator.
         win.tab().timeout(2).select_tab("General")
-        assert isinstance(win.combo_box().timeout(2).selected_item(), object)
+        win.combo_box().timeout(2).selected_item()
+        assert spec.child_window.return_value.selected_item.called

@@ -15,9 +15,6 @@ from tests.mainframe.mock_tn3270._mock_server import (  # type: ignore[import-no
     MockTN3270Server,
     ScreenField,
 )
-
-# _mainframe_env + _mock_server are made importable by the conftest.py
-# in this directory (it invokes add_import_path for pub400/).
 from tests.mainframe.pub400._mainframe_env import WS3270  # type: ignore[import-not-found]
 
 

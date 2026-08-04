@@ -1,4 +1,5 @@
-"""QGraphicsView demo — three named items to exercise graphics_walker."""
+"""QGraphicsView demo — three named scene items driven by the
+``qt_graphics`` marked tests in ``tests/qt/test_qt_graphics.py``."""
 
 from __future__ import annotations
 

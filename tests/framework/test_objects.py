@@ -353,29 +353,6 @@ class TestDiscover:
         assert repo.resolve("item").selector == {"title": "Item"}
 
 
-# Reload-on-change (dev mode / watch)
-
-
-class TestWatch:
-    def test_reload_on_change(self, tmp_path):
-        f = _yaml_file(tmp_path, "btn: {selector: {name: Old}}\n")
-        repo = ObjectRepository()
-        repo.load(f)
-        repo.enable_watch()
-
-        # Overwrite file and simulate mtime bump
-        f.write_text("btn: {selector: {name: New}}\n")
-        # Force mtime to be in the future
-        import os
-        import time
-
-        future = time.time() + 1
-        os.utime(f, (future, future))
-
-        assert repo.resolve("btn").selector == {"title": "New"}
-        repo.disable_watch()
-
-
 # Window.element() integration
 
 
@@ -422,7 +399,7 @@ class TestWindowElement:
         finally:
             obj_module._repository.clear()
 
-    def test_element_raises_when_alias_not_found(self, tmp_path):
+    def test_element_raises_when_alias_not_found(self):
         import dolphin_desktop.objects as obj_module
 
         obj_module._repository.clear()

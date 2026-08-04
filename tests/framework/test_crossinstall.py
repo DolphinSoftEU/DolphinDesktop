@@ -120,8 +120,10 @@ def _run(cmd: list[str | Path], **kw: object) -> subprocess.CompletedProcess:
 def crossinstall_venv(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """Build both wheels, create a fresh venv, install both, and return the venv metadata.
 
-    Module-scoped: pip install is the slow step (~15s); running it
-    once for the whole file keeps the total under ~30s.
+    Module-scoped: the whole setup — two wheel builds, a fresh venv and two
+    pip invocations — runs 30-90s depending on cache warmth (hence the
+    module-level ``timeout(300)``), so it is paid once per file instead of
+    once per test.
     """
     work = tmp_path_factory.mktemp("crossinstall")
     wheels_dir = work / "wheels"

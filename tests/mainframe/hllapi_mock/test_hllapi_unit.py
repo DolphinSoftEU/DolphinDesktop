@@ -64,14 +64,12 @@ class FakeHLLAPI:
     def _callback(self, fn_ref, data_ptr, len_ref, rc_ref) -> None:
         func = fn_ref[0]
         buf_len = len_ref[0]
-        # Read both length-bounded and null-terminated views.
+        # Length-bounded view of the caller's buffer.
         raw = ctypes.string_at(data_ptr, buf_len) if buf_len > 0 else b""
-        raw_nullterm = ctypes.string_at(data_ptr) if data_ptr else b""
         self.calls.append(
             {
                 "func": func,
                 "data_in": raw,
-                "data_null": raw_nullterm,
                 "length_in": buf_len,
                 # The 4th parameter is the PS position on the way in and
                 # the return code on the way out.

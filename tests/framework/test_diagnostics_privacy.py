@@ -631,11 +631,11 @@ class TestRedactionShapesThatLeakedBefore:
 
 
 class TestRedactionAdversarialCorpus:
-    """Shapes an adversarial review generated against earlier versions.
+    """An adversarial corpus for ``_redact``, held to both directions at once.
 
-    Four iterations of this pattern each leaked a different family. The two
-    lists below are kept together on purpose: every previous regression came
-    from tuning against one direction without a corpus for the other.
+    The two lists below belong together: a pattern tuned to catch one family
+    of secrets without a corpus pulling the other way starts eating ordinary
+    prose, and a pattern loosened to spare prose starts leaking credentials.
     """
 
     @pytest.mark.parametrize(
@@ -792,10 +792,11 @@ class TestRedactionKeepsTracebacksReadable:
 
 
 class TestSelfhealJournalStaysParseable:
-    """The journal is JSONL; redacting the serialised text rewrote the document.
+    """The journal is JSONL: redaction must run on the values, not the JSON text.
 
-    ``selfheal_stats()`` swallows ``JSONDecodeError``, so one corrupt line
-    silently truncated the whole history from that point — an invisible
+    Redacting the serialised line rewrites the document itself. Since
+    ``selfheal_stats()`` swallows ``JSONDecodeError``, one corrupt line
+    silently truncates the whole history from that point — an invisible
     failure mode.
     """
 
@@ -810,6 +811,6 @@ class TestSelfhealJournalStaysParseable:
             primary='password="he said \\"hi\\""', fallback_used="token=42", test_name="t"
         )
         line = journal.read_text(encoding="utf-8").strip()
-        parsed = json.loads(line)  # would raise before the fix
+        parsed = json.loads(line)  # a rewritten line raises here
         assert "42" not in parsed["fallback"]
         assert _selfheal.selfheal_stats(file=journal)

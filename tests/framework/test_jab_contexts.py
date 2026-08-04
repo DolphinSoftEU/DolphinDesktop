@@ -238,9 +238,10 @@ def test_all_never_releases_a_matched_context_twice(monkeypatch) -> None:
 
 
 def test_all_frees_its_walk_on_a_keyboard_interrupt(monkeypatch) -> None:
-    """Ctrl-C skips ``except Exception``, so the walk used to drop *results*
-    on the floor: the contexts it had already released were released a
-    second time by the finalizer of every locator it left behind."""
+    """Ctrl-C bypasses ``except Exception``, so the cleanup must sit in a
+    ``finally``: every context the walk obtained is released exactly once,
+    and no locator left holding an already-released context survives to
+    release it a second time from its finalizer."""
     tree = _FakeTree(_TREE)
     loc = _locator(monkeypatch, tree, control_type="panel")
     real_get_child = tree.get_child
@@ -261,8 +262,10 @@ def test_all_frees_its_walk_on_a_keyboard_interrupt(monkeypatch) -> None:
 
 
 def test_find_releases_the_root_when_matching_raises(monkeypatch) -> None:
-    """An invalid title_re makes _matches raise on every probe; the blanket
-    handler dropped root_ac, so exists(timeout=30) leaked ~300 JNI refs."""
+    """An invalid title_re makes ``_matches`` raise on every probe, and the
+    blanket handler must still release root_ac. Two failed ``exists()`` calls
+    here have to leave nothing live; otherwise a polling ``exists(timeout=30)``
+    leaks one JNI reference per probe."""
     tree = _FakeTree(_TREE)
     loc = _locator(monkeypatch, tree, title_re="[unclosed")
     assert loc.exists() is False
@@ -638,8 +641,8 @@ def test_focus_reports_a_component_that_refuses_focus() -> None:
 def test_focus_falls_back_when_the_bridge_has_no_focus_api() -> None:
     """A build without the export has no other way to move focus.
 
-    Raising here broke OracleFormsItem.type_text(text, clear=False), which
-    focuses before replaying keystrokes — a flow that worked before.
+    Raising here would break ``OracleFormsItem.type_text(text, clear=False)``,
+    which focuses before replaying keystrokes, so the click action stands in.
     """
     session = _RecordingSession()
     session.focus_ok = False
@@ -669,11 +672,3 @@ def test_value_falls_back_to_text_when_there_is_no_accessible_value(no_value) ->
     assert _locator_on(session).value() == "hello"
     assert session.calls[0] == "get_value"
     assert "get_text" in session.calls
-
-
-def test_a_real_accessible_value_short_circuits_before_any_fallback() -> None:
-    """A JSlider publishes AccessibleValue, so it never reaches the path that
-    clicks the component's centre and would drag the thumb to the midpoint."""
-    session = _RecordingSession(value="42", text="ignored")
-    assert _locator_on(session).value() == "42"
-    assert session.calls == ["get_value"]

@@ -173,9 +173,9 @@ class TestDiscardStopsTheProcess:
 
 
 class TestStartSurfacesSpawnFailures:
-    """gdigrab refusals used to be discarded with stderr=DEVNULL."""
+    """A gdigrab refusal must reach the caller, not vanish into DEVNULL."""
 
-    def _spawn(self, tmp_path: Path, rec: VideoRecorder, stderr: bytes, hangs: bool):
+    def _spawn(self, stderr: bytes, hangs: bool):
         def _popen(cmd, **kwargs):
             handle = kwargs["stderr"]
             handle.write(stderr)
@@ -184,23 +184,23 @@ class TestStartSurfacesSpawnFailures:
 
         return patch("dolphin_desktop._video.subprocess.Popen", _popen)
 
-    def test_immediate_exit_raises_with_the_ffmpeg_output(self, tmp_path: Path):
+    def test_immediate_exit_raises_with_the_ffmpeg_output(self):
         rec = VideoRecorder()
         message = b"gdigrab: Could not open desktop: session 0 has no display"
         with (
             patch("dolphin_desktop._video.find_ffmpeg", return_value="ffmpeg"),
-            self._spawn(tmp_path, rec, message, hangs=False),
+            self._spawn(message, hangs=False),
         ):
             with pytest.raises(RuntimeError, match="session 0 has no display"):
                 rec.start()
 
         assert rec._tmpdir is None
 
-    def test_a_live_process_is_left_alone(self, tmp_path: Path):
+    def test_a_live_process_is_left_alone(self):
         rec = VideoRecorder()
         with (
             patch("dolphin_desktop._video.find_ffmpeg", return_value="ffmpeg"),
-            self._spawn(tmp_path, rec, b"", hangs=True),
+            self._spawn(b"", hangs=True),
         ):
             rec.start()
 

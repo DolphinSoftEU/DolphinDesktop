@@ -1,4 +1,6 @@
-"""Trace mode — every backend command hits the logger when enabled."""
+"""Trace mode — with ``trace=True`` the backend logs outbound and inbound
+s3270 lines (including the Enter action); with tracing off it logs nothing.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +10,6 @@ from dolphin_desktop import AID, Desktop, MainframeError
 from tests.mainframe.mock_tn3270._mock_server import (
     MockTN3270Server,  # type: ignore[import-not-found]
 )
-
-# _mainframe_env + _mock_server are made importable by conftest.py.
 from tests.mainframe.pub400._mainframe_env import WS3270  # type: ignore[import-not-found]
 
 

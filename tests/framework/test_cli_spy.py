@@ -43,7 +43,7 @@ def captured_inspect(monkeypatch) -> dict:
 
 
 class TestWindowArgument:
-    def test_regex_metacharacters_are_escaped(self, captured_inspect, capsys):
+    def test_regex_metacharacters_are_escaped(self, captured_inspect):
         """--window is a substring to the user; 'a(b' must not reach the regex engine raw."""
         _cli._spy_cmd(_spy_args(window="a(b"))
         import re

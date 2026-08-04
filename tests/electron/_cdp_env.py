@@ -24,7 +24,7 @@ def find_vscode() -> str | None:
     return None
 
 
-# Re-export under the old name so existing test files keep working.
+# Local name the CDP test files import for their skip predicates.
 has_playwright = is_cdp_available
 
 VSCODE = find_vscode()

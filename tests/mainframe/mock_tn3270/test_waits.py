@@ -8,8 +8,8 @@ from dolphin_desktop import MainframeError, start_thread
 
 
 def test_wait_for_cursor_matches_initial_position(mock_term) -> None:
-    """Cursor lands at the mock's cursor_field position after connect —
-    wait_for_cursor with those coordinates must return immediately."""
+    """wait_for_cursor returns immediately for the position the screen
+    currently reports as the cursor."""
     term, _ = mock_term
     row, col = term.screen().cursor
     term.wait_for_cursor(row, col, timeout=1.0)
@@ -40,7 +40,7 @@ def test_wait_for_field_finds_writable_slot(mock_term) -> None:
 
 
 def test_wait_for_field_writable_only_ignores_protected(mock_term) -> None:
-    """The title bar has a protected field at (1, 2). Waiting with
+    """For the first protected field on the screen, waiting with
     writable=True must time out; writable=False must find it."""
     term, _ = mock_term
     # Find any protected field to test the writable=False branch.
@@ -73,8 +73,7 @@ def test_wait_for_predicate_timeout(mock_term) -> None:
 
 
 def test_wait_for_text_still_works(mock_term) -> None:
-    """The pre-existing wait_for_text is refactored on top of _poll_until
-    — must keep its old behaviour."""
+    """wait_for_text returns once the awaited text is on the screen."""
     term, _ = mock_term
     term.wait_for_text("MOCK-3270", timeout=2.0)
 

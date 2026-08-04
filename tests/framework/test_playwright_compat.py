@@ -19,16 +19,9 @@ class _FakePage:
         self.name = name
         self.goto_calls: list[tuple[str, Any]] = []
         self.closed = False
-        self.handlers: list[tuple[str, Any]] = []
 
     def goto(self, url: str, timeout: Any = None) -> None:
         self.goto_calls.append((url, timeout))
-
-    def title(self) -> str:
-        return f"title of {self.name}"
-
-    def on(self, event: str, handler: Any) -> None:
-        self.handlers.append((event, handler))
 
     def close(self) -> None:
         self.closed = True
@@ -91,14 +84,6 @@ class _FakeLocator:
     def bounding_box(self, **kwargs: Any) -> dict[str, float]:
         self._record("bounding_box", kwargs)
         return {"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0}
-
-    def count(self) -> int:
-        self._record("count", {})
-        return 0
-
-    def all_text_contents(self) -> list[str]:
-        self._record("all_text_contents", {})
-        return []
 
     def is_visible(self) -> bool:
         self._record("is_visible", {})
@@ -170,12 +155,6 @@ class _FakeSession:
 
     def reload(self, *, timeout: float) -> None:
         self.timeouts.append(("reload", timeout))
-
-    def screenshot(self, path: str | None = None) -> str:
-        return f"shot:{self.page.name}"
-
-    def close(self) -> None:
-        self.timeouts.append(("close", 0.0))
 
 
 @pytest.fixture

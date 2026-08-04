@@ -1,9 +1,9 @@
 """Locator criteria aliases — automation_id / role / name.
 
-The YAML Object Repository always accepted the friendly spellings; the
-Locator itself used to forward them verbatim into pywinauto, where an
-unknown kwarg dissolved into a silent "not found". Now both layers speak
-the same dialect.
+Both layers must speak the same dialect. The YAML Object Repository accepts
+the friendly spellings, so the Locator has to normalise them too — forwarded
+verbatim into pywinauto, an unknown kwarg dissolves into a silent
+"not found".
 """
 
 from __future__ import annotations

@@ -135,8 +135,7 @@ class TestCaptureFailureScreenshot:
     def test_long_nodeid_is_truncated(self, tmp_path, monkeypatch):
         from PIL import ImageGrab
 
-        saved: list = []
-        monkeypatch.setattr(ImageGrab, "grab", lambda **_kwargs: _FakeImage(saved))
+        monkeypatch.setattr(ImageGrab, "grab", lambda **_kwargs: _FakeImage([]))
         nodeid = "tests/test_x.py::test_y[" + "p" * 400 + "]"
         item = _FakeItem(tmp_path, nodeid)
         path = plugin._capture_failure_screenshot(item)  # type: ignore[arg-type]

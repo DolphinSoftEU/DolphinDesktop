@@ -171,9 +171,6 @@ class TestImageLocatorMissingCv2:
 # Screen — screenshot and pixel_color (no cv2 required)
 
 
-pytestmark_integration = pytest.mark.integration
-
-
 @pytest.mark.integration
 def test_screenshot_returns_pil_image():
     img = Screen.screenshot()
@@ -256,25 +253,6 @@ def test_image_locator_template_path_is_path_object():
 # ImageLocator — find() with mocked cv2
 
 
-def _make_fake_cv2(match_val: float = 0.95, match_loc: tuple = (10, 10)):
-    """Return a mock cv2 module that simulates a successful template match."""
-    import numpy as np
-
-    cv2 = MagicMock()
-    cv2.TM_CCOEFF_NORMED = 5
-
-    fake_tmpl = np.zeros((20, 30, 3), dtype="uint8")  # h=20, w=30
-    fake_screen = np.zeros((200, 300, 3), dtype="uint8")
-
-    cv2.imread.return_value = fake_tmpl
-    cv2.cvtColor.return_value = fake_screen
-    cv2.matchTemplate.return_value = np.full((181, 271), match_val)
-    cv2.minMaxLoc.return_value = (0.0, match_val, (0, 0), match_loc)
-    cv2.resize.return_value = fake_tmpl
-
-    return cv2
-
-
 @pytest.fixture()
 def tmp_template(tmp_path: Path) -> Path:
     """Create a tiny real PNG template file."""
@@ -283,7 +261,14 @@ def tmp_template(tmp_path: Path) -> Path:
     return p
 
 
-def test_find_returns_centre_when_match_found(tmp_template: Path):
+def test_find_returns_none_or_an_xy_pair(tmp_template: Path):
+    """find() drives real cv2 end to end and returns None or an (x, y) pair.
+
+    A flat red template against a blank grab may or may not clear the 0.85
+    threshold, so the match outcome is not pinned — what is pinned is that
+    the call completes and its return type is one of the two documented
+    shapes.
+    """
     try:
         import cv2  # noqa: F401
     except ImportError:
@@ -294,7 +279,6 @@ def test_find_returns_centre_when_match_found(tmp_template: Path):
     with patch("dolphin_desktop._image._grab") as mock_grab:
         mock_grab.return_value = Image.new("RGB", (800, 600))
         result = loc.find()
-    # result may be None if real cv2 doesn't match a blank template — that's fine
     assert result is None or (isinstance(result, tuple) and len(result) == 2)
 
 
@@ -324,7 +308,13 @@ def test_exists_without_match_returns_false(tmp_template: Path):
 
 
 def test_find_with_region_applies_offset(tmp_template: Path):
-    """Coordinates returned by find() must be offset by the region origin."""
+    """A region-scoped find() never reports coordinates left of its origin.
+
+    The blank template need not match, so a None result is a passing run; the
+    guarantee is conditional — whenever a hit does come back, both coordinates
+    have been translated into screen space and sit at or past the region
+    origin rather than staying region-local.
+    """
     try:
         import cv2  # noqa: F401
     except ImportError:

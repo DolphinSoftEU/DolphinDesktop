@@ -72,9 +72,7 @@ def test_cdp_locator_wait_for_visible_state(vscode_cdp):
 @skip_no_playwright
 @pytest.mark.timeout(60)
 def test_cdp_locator_text_reads_activity_bar(vscode_cdp):
-    """text() must return the rendered inner text of a visible element."""
-    # Activity bar action items always have an aria-label with visible text
-    # for a11y — fall back to querying any element with textContent.
+    """evaluate() returns a non-empty ``document.title`` from the renderer."""
     text = vscode_cdp.evaluate("() => document.title")
     assert isinstance(text, str)
     assert len(text) > 0

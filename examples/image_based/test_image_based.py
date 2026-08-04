@@ -24,7 +24,7 @@ def require_vision():
         )
 
 
-def test_image_locator_click(launch):
+def test_image_locator_click():
     """Click an element located by template matching."""
     from dolphin_desktop import Desktop, ImageLocator
 
@@ -32,7 +32,6 @@ def test_image_locator_click(launch):
     app = desktop.launch("mspaint.exe", timeout=10)
     app.window(title_re=".*Paint.*")
 
-    # Wait for a known UI element to appear (template must exist)
     # Capture templates with: dolphin spy --image-pick --output-dir examples/image_based/templates/
     brush_btn = ImageLocator(
         "examples/image_based/templates/brush_tool.png",
@@ -46,7 +45,7 @@ def test_image_locator_click(launch):
     app.kill()
 
 
-def test_screen_ocr(launch):
+def test_screen_ocr():
     """Read text from the screen using OCR."""
     import os
     import tempfile
@@ -77,7 +76,7 @@ def test_screen_ocr(launch):
     os.unlink(f.name)
 
 
-def test_screen_find_text(launch):
+def test_screen_find_text():
     """Find the screen coordinates of text using OCR."""
     from dolphin_desktop import Desktop, Mouse, Screen
 

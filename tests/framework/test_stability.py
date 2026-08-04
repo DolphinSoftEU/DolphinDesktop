@@ -366,7 +366,8 @@ class TestCrashDump:
         with zipfile.ZipFile(path) as zf:
             assert "extra.txt" not in zf.namelist()
 
-    def test_filename_contains_timestamp(self, tmp_path):
+    def test_filename_uses_the_crash_prefix(self, tmp_path):
+        """Dump files are named ``crash-*`` so they sort and glob together."""
         from dolphin_desktop._crash import write_crash_dump
 
         path = write_crash_dump(output_dir=tmp_path)
@@ -494,8 +495,8 @@ class TestZombieRegistry:
         _application._live_pids.discard(99999)
         assert _application._live_pids == prev
 
-    def test_pid_removed_on_close(self):
-
+    def test_kill_removes_the_pid_from_the_live_registry(self):
+        """``kill()`` unregisters the PID from ``_live_pids``."""
         from dolphin_desktop import _application
 
         mock_app = MagicMock()
@@ -975,12 +976,11 @@ class TestAttachedPidsAreTrackedButNeverKilled:
     def test_attaching_records_the_pid(self):
         from dolphin_desktop import _application
 
-        app = self._attached(61001)
+        self._attached(61001)
         try:
             assert 61001 in _application._attached_pids
         finally:
             _application._attached_pids.discard(61001)
-            assert app is not None
 
     def test_an_attached_pid_never_enters_a_kill_list(self):
         from dolphin_desktop import _application

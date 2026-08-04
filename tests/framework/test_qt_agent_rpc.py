@@ -35,14 +35,12 @@ class _FakeClient(QtAgentClient):
     def __init__(self, chunks, *, rpc_timeout: float = 30.0) -> None:
         super().__init__(4242, 0, rpc_timeout=rpc_timeout)
         self.written: list[bytes] = []
-        self.deadlines: list[float] = []
         self._chunks = list(chunks)
 
     def _write_line(self, line: bytes) -> None:
         self.written.append(line)
 
     def _read_chunk(self, deadline: float, op: str) -> bytes:
-        self.deadlines.append(deadline)
         if not self._chunks:
             raise QtAgentRpcError(f"no canned data left for op={op!r}")
         return self._chunks.pop(0)
@@ -160,7 +158,6 @@ class _PipeSim:
         self.on_peek = None
         self.peeks = 0
         self.bytes_read = 0
-        self.closed: list[int] = []
 
     def feed(self, data: bytes) -> None:
         self.buffer.extend(data)
@@ -182,8 +179,7 @@ class _PipeSim:
         self.bytes_read += len(take)
         return 1
 
-    def close(self, handle):
-        self.closed.append(handle)
+    def close(self, _handle):
         return 1
 
 

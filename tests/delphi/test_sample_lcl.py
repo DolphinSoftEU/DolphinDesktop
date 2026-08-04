@@ -4,16 +4,16 @@ Lazarus/LCL ``sample_lcl.exe``.
 Coverage goals — reflect what a real end-user would do with any Delphi
 or Lazarus app:
 
-* Every standard VCL control class (TButton / TEdit / TMemo / TCheckBox
-  / TRadioButton / TComboBox / TListBox / TPageControl / TListView /
-  TProgressBar / TStaticText / TGroupBox) round-trips through
-  dolphin's Delphi API.
+* Interactive VCL control classes (TButton / TEdit / TMemo / TCheckBox
+  / TRadioButton / TComboBox / TListBox / TPageControl / TGroupBox /
+  TLabel) round-trip through dolphin's Delphi API; TListView and
+  TProgressBar are checked read-only (presence, item text).
 * All three LCL locator strategies exercised: ``title=`` (buttons /
   checkboxes / radios / tabs), ``near_label=`` (edits / memos /
   grids), ``index=`` (ordinal fallback), plus ``title_re=`` regex.
-* Negative paths — ``ElementNotFoundError``, ``WaitTimeoutError``,
-  ``DelphiError`` when no selector is passed, disabled controls do
-  not react to invoke.
+* Negative paths — ``ElementNotFoundError`` for a missing component or
+  form, ``DelphiError`` when no selector is passed, and ``is_enabled()``
+  reporting False for a disabled button.
 * Enumeration paths — ``form.components(cls=…)``, ``app.forms()``.
 * Escape hatches — ``.pywinauto`` on both form and component.
 * Page-object composition, module-scope fixture stability.

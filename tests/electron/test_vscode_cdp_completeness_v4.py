@@ -1,16 +1,10 @@
-"""Fourth (final) completeness pass — the "last-mile" surface.
+"""CDP coverage for the page-, input- and context-level extras.
 
 Covers: expose_function, dispatch_event, element-scoped evaluate,
 press_sequentially, select_text, blur, tap, all_text_contents,
 set_extra_http_headers, set_offline, set_geolocation,
 grant_permissions, PDF export, keyboard down/up, keyboard_type,
 mouse_wheel, mouse_move.
-
-After this pass, every Playwright capability that maps naturally onto
-Locator/Session is available through dolphin_desktop — remaining
-Playwright-only features (video/trace recording, viewport emulation for
-mobile) are reachable via the ``element_handle()`` and ``session.page``
-escape hatches when a user genuinely needs them.
 """
 
 from __future__ import annotations
@@ -395,11 +389,11 @@ def test_pdf_export_documented_electron_limitation(vscode_cdp):
 
 
 def test_tap_requires_touch_or_raises_gracefully(vscode_cdp):
-    """Chromium desktop refuses tap() unless the context has touch enabled.
+    """tap() either succeeds or raises ElementNotFoundError, nothing else.
 
-    We call it and accept either success (touch was enabled somewhere) or
-    a clean ElementNotFoundError bubbling up — proves the wrapper is
-    plumbed and behaves like Playwright's underlying error surface.
+    Chromium desktop refuses tap() unless the context has touch enabled,
+    so the call is made and both outcomes are allowed to pass; any other
+    exception type propagates and fails the test.
     """
     from dolphin_desktop import ElementNotFoundError
 

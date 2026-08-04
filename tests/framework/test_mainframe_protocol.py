@@ -186,7 +186,7 @@ def test_tn5250_sf_without_an_ffw_creates_no_input_field() -> None:
     tn5250_session_start_of_field builds a field only when the FFW was
     present (its ``input_field`` flag); with ffw_hi defaulted to 0 the
     bypass bit reads clear, so the zone came back as a writable field and
-    field_by_label() would type into a protected region — keyboard locked.
+    field_after() would type into a protected region — keyboard locked.
     """
     assert _parse(_wtd(_sf(ffw=b""))) == []
 
@@ -199,8 +199,8 @@ def test_tn5250_ffw_less_sf_still_consumes_its_attribute_and_length() -> None:
 
 
 def test_tn5250_field_length_cannot_run_past_the_end_of_the_screen() -> None:
-    """A corrupt LL of 0xFFFF makes TerminalField.clear() send 65535
-    spaces to the host."""
+    """A corrupt LL of 0xFFFF makes TerminalField.type_text(clear=True) send
+    65535 spaces to the host."""
     (bottom,) = _parse(_wtd(_sf(length=0xFFFF), row=24, col=70))
     assert bottom.length == 10  # cols 71..80
     (top,) = _parse(_wtd(_sf(length=0xFFFF), row=1, col=1))
@@ -342,18 +342,7 @@ def test_a_bare_read_command_does_not_swallow_the_next_command(cmd: int) -> None
 # The input record's byte order is what the host actually reads
 
 
-class _CapturingTn5250(_Tn5250Backend):
-    """Captures the wire bytes instead of sending them."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.sent: bytes = b""
-
-    def _send(self, wire: bytes) -> None:  # pragma: no cover - shape varies
-        self.sent = wire
-
-
-def _sent_input_record(backend: _Tn5250Backend, monkeypatch, aid: str) -> bytes:
+def _sent_input_record(backend: _Tn5250Backend, aid: str) -> bytes:
     captured: dict[str, bytes] = {}
 
     class _Sock:
@@ -365,13 +354,13 @@ def _sent_input_record(backend: _Tn5250Backend, monkeypatch, aid: str) -> bytes:
     return captured["wire"]
 
 
-def test_input_record_sends_cursor_before_the_aid(monkeypatch) -> None:
+def test_input_record_sends_cursor_before_the_aid() -> None:
     """Reference tn5250 writes row, column, AID. Emitting the AID first made
     byte 0 the AID code, which the host reads as a cursor row — 0xF1 for
     Enter is row 241, so IBM i never answered the record."""
     backend = _Tn5250Backend()
     backend.move_cursor(7, 53)
-    wire = _sent_input_record(backend, monkeypatch, "Enter")
+    wire = _sent_input_record(backend, "Enter")
     payload = wire[10:]
     assert payload[0] == 7
     assert payload[1] == 53
@@ -388,8 +377,8 @@ def test_an_unencodable_cursor_is_reported_not_a_bare_value_error(monkeypatch) -
 
 @pytest.mark.parametrize("key", ["PA1", "PA2", "PA3"])
 def test_5250_refuses_the_3270_attention_keys(key: str) -> None:
-    """These used to be substituted with "the nearest" PF, so press("PA1")
-    sent PF1 — Help on IBM i — and reported success."""
+    """Refusing beats substituting "the nearest" PF: press("PA1") would send
+    PF1 — Help on IBM i — and report success."""
     backend = _Tn5250Backend()
     with pytest.raises(MainframeError, match="3270-only"):
         backend.send_aid(key)

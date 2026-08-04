@@ -1,9 +1,6 @@
-"""Third completeness pass — network interception, downloads, popups, init
-scripts, storage-write, wait_for_response/request/url, element_handle,
-click modifiers.
-
-These close the last gap between "usable" and "you can test anything an
-Electron app throws at you".
+"""CDP coverage for network interception, downloads, popups, init scripts,
+storage-write, wait_for_response/request/url, element_handle and click
+modifiers.
 """
 
 from __future__ import annotations
@@ -135,19 +132,15 @@ def test_route_handler_sees_request_url_and_method(vscode_cdp):
 
 
 def test_expect_response_wrapper_yields_lazy_value(vscode_cdp):
-    """Smoke: the wrapper enters/exits with a ``.value`` accessor.
+    """expect_response raises out of the ``with`` block when nothing matches.
 
     Live network responses in VS Code are hard to trigger reliably
     (route-fulfilled requests skip the response event, data: URLs are
-    treated as top-level navigations by Chromium's renderer). We verify
-    the wrapper contract here; live-network response scenarios are the
-    ``expect_request`` case above (which passes) and the route-based
-    tests, which prove response interception works.
+    treated as top-level navigations by Chromium's renderer). This case
+    covers the timeout path; live-network response scenarios are the
+    ``expect_request`` test below and the route-based tests, which
+    exercise response interception.
     """
-    # The context should raise TimeoutError cleanly if nothing matches —
-    # confirming the wrapper propagates Playwright errors.
-    from dolphin_desktop import WaitTimeoutError  # noqa: F401 — kept for docs
-
     # Playwright raises its own TimeoutError here, which dolphin does not wrap
     # on this path; asserting the concrete class would couple the test to a
     # Playwright internal, so the blind catch is deliberate.
@@ -392,7 +385,6 @@ def test_expect_download_captures_generated_file(vscode_cdp):
 
 def test_expect_popup_captures_new_page_and_switches(vscode_cdp):
     """Clicking a target=_blank link opens a popup; session auto-switches."""
-    _original_url = vscode_cdp.current_url()
     vscode_cdp.evaluate(
         """
         () => {

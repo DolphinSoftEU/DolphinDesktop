@@ -11,7 +11,8 @@ Scenario:
 
 Prerequisites
 -------------
-* WebView2 Runtime installed (pre-installed on Windows 11; see docs/webview2.md).
+* WebView2 Runtime installed (pre-installed on Windows 11; see
+  docs/guides/webview2.md).
 * .NET 8 SDK for the auto-build step (the conftest builds the app on first run).
 * Run: pytest examples/webview2_sample/ -v
 """
@@ -97,10 +98,9 @@ def test_submit_and_response(wv2_window):
 
     # Assert HTML response element (core AC: must contain "Logged in as …")
     response = win.locator(control_type="Text", title_re=".*Response.*").timeout(5)
-    # Wait for the response text to appear — replaces the sleep(0.5)
-    # that used to guess how long the WebView2 JS handler would run.
+    # Poll for the response text instead of guessing how long the
+    # WebView2 JS handler takes to run.
     response.wait_for_text("Logged in as", timeout=5)
-    _response_text = response.text()
 
     # Also assert native StatusBar updated via JS postMessage
     status_bar = win.locator(control_type="Text", title_re=".*Status.*").timeout(5)
