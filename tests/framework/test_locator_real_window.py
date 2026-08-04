@@ -206,6 +206,39 @@ class TestExists:
             window.locator(auto_id="no-such-control").timeout(0.5)._resolve()
 
 
+# Attribute reads against a real element_info
+
+
+class TestGetAttribute:
+    def test_returns_the_published_value(self, window):
+        """A name the element publishes comes back as its value."""
+        assert window.locator(auto_id=str(ID_OK)).get_attribute("name") == "OK"
+
+    def test_raises_for_a_name_the_element_does_not_publish(self, window):
+        """An unpublished name raises instead of reading back as None.
+
+        The PascalCase UIA spelling is the realistic typo: pywinauto
+        publishes ``automation_id``, so ``AutomationId`` matches nothing.
+        """
+        with pytest.raises(AttributeError, match="AutomationId"):
+            window.locator(auto_id=str(ID_OK)).get_attribute("AutomationId")
+
+    def test_error_lists_the_names_that_are_published(self, window):
+        """The message names a real attribute so the typo is fixable."""
+        with pytest.raises(AttributeError, match="automation_id"):
+            window.locator(auto_id=str(ID_OK)).get_attribute("AutomationId")
+
+    def test_default_suppresses_the_raise(self, window):
+        """An explicit default opts back into the non-raising lookup."""
+        loc = window.locator(auto_id=str(ID_OK))
+        assert loc.get_attribute("AutomationId", None) is None
+        assert loc.get_attribute("no_such_field", "fallback") == "fallback"
+
+    def test_default_does_not_shadow_a_published_value(self, window):
+        """Passing a default still returns the real value when there is one."""
+        assert window.locator(auto_id=str(ID_OK)).get_attribute("name", "x") == "OK"
+
+
 # Fallback selectors
 
 

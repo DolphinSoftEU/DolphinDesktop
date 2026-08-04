@@ -78,6 +78,9 @@ class Window:
         # the user to juggle two objects.
         self._application = application
 
+        # Memoised answer of _is_java_window(); None until first probed.
+        self._is_java: bool | None = None
+
     # Locator factories  (getBy-style lookups)
 
     def locator(self, **criteria: Any) -> Any:
@@ -524,12 +527,25 @@ class Window:
             )
 
     def _is_java_window(self) -> bool:
-        try:
-            import win32gui  # type: ignore[import-untyped]
+        """True when this window is a Java Swing frame.
 
-            return win32gui.GetClassName(self._java_hwnd()) == "SunAwtFrame"
-        except Exception:
-            return False
+        Every locator factory on this class asks first, and answering costs
+        a full UIA resolve to reach the HWND — which made it the single
+        largest cost in building a locator. An HWND's class name is fixed
+        for its lifetime, so the answer is cached once obtained.
+
+        A failed probe is deliberately not cached: it usually means the
+        window has not appeared yet, and caching ``False`` there would
+        permanently mis-route a Java window to the UIA locators.
+        """
+        if self._is_java is None:
+            try:
+                import win32gui  # type: ignore[import-untyped]
+
+                self._is_java = win32gui.GetClassName(self._java_hwnd()) == "SunAwtFrame"
+            except Exception:
+                return False
+        return self._is_java
 
     def _java_hwnd(self) -> int:
         return self._spec.wrapper_object().handle

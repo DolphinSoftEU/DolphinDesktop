@@ -76,3 +76,32 @@ def test_locator_by_name_resolves_a_toolbar_button(sap_session):
     """The id-based locator surface resolves the Back button on a live screen."""
     loc = sap_session.locator(id="wnd[0]/tbar[0]/btn[3]")  # Back
     assert loc.exists()
+
+
+# get_attribute against real SAP COM properties
+
+
+def test_get_attribute_reads_a_real_component_property(sap_session):
+    """A property comes back, including through the PascalCase retry.
+
+    SAP's COM interface spells properties in PascalCase, so the lowercase
+    spelling only resolves because ``get_attribute`` retries capitalized.
+    """
+    sbar = sap_session.locator(id="wnd[0]/sbar")
+    assert sbar.get_attribute("Type").startswith("Gui")
+    assert sbar.get_attribute("type").startswith("Gui")
+    assert isinstance(sbar.get_attribute("text"), str)
+
+
+def test_get_attribute_raises_for_a_property_sap_does_not_answer(sap_session):
+    """An unanswerable name raises instead of reading back as None."""
+    sbar = sap_session.locator(id="wnd[0]/sbar")
+    with pytest.raises(AttributeError, match="no_such_property"):
+        sbar.get_attribute("no_such_property")
+
+
+def test_get_attribute_default_suppresses_the_raise(sap_session):
+    """An explicit default opts back into the non-raising lookup."""
+    sbar = sap_session.locator(id="wnd[0]/sbar")
+    assert sbar.get_attribute("no_such_property", None) is None
+    assert sbar.get_attribute("no_such_property", "fallback") == "fallback"

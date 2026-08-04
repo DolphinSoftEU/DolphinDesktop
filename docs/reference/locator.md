@@ -48,8 +48,16 @@ loc.is_checked()    # bool
 loc.exists()        # bool - True if element is found (no wait)
 loc.count()         # int - number of matching elements
 loc.bounding_box()  # dict with x, y, width, height
-loc.get_attribute("AutomationId")
+loc.get_attribute("automation_id")        # raises AttributeError if unpublished
+loc.get_attribute("automation_id", None)  # returns the default instead
 ```
+
+Attribute names are the snake_case ones pywinauto's `element_info` exposes
+(`automation_id`, `class_name`, `control_type`, `name`, `rich_text`), not the
+PascalCase UIA property names. A name the element does not publish raises
+`AttributeError` listing what it does publish — pass a second argument to get
+that value back instead. Note `automation_id` is UIA-only; on the win32
+backend it is not published.
 
 ## Waiting
 

@@ -11,9 +11,10 @@ from typing import TYPE_CHECKING, Any, Self
 
 from pywinauto.keyboard import send_keys as _send_keys
 
+from ._config import get_poll_interval as _get_poll_interval
 from ._config import get_timeout as _get_timeout
 from ._exceptions import ElementNotFoundError, UnsupportedPatternError, WaitTimeoutError
-from ._helpers import _escape_keys
+from ._helpers import _MISSING, _escape_keys
 
 
 def _wrapper_of(element: Any) -> Any:
@@ -164,6 +165,47 @@ def _toggle_via_iface(wrapper: Any) -> None:
     MenuItem / ListItem / TreeItem inherit plain ``UIAWrapper``.
     """
     wrapper.iface_toggle.Toggle()
+
+
+def _wait_until_visible(spec: Any, timeout: float) -> None:
+    """Block until *spec* resolves to a visible element, else raise.
+
+    Replaces ``spec.wait("exists visible")``, which costs **three** full UIA
+    tree scans per poll: one for the ``exists`` check, a second re-resolve to
+    call ``is_visible()`` on, and a third for the wrapper ``wait()`` returns —
+    which the caller here discards, since it goes on to use the
+    WindowSpecification. A scan is ~0.4 s against a small window, so those
+    three dominated every resolve. One scan answers both questions.
+
+    An ambiguous match propagates immediately rather than being retried: more
+    matches will not appear, so polling until timeout would only turn a
+    precise "narrow your criteria" into a misleading "not found".
+    """
+    from pywinauto.findwindows import (  # type: ignore[import-untyped]
+        ElementAmbiguousError as _PwAmbiguousError,
+    )
+    from pywinauto.timings import TimeoutError as _PwTimeoutError
+
+    deadline = time.monotonic() + timeout
+    poll = _get_poll_interval()
+    last_exc: Exception | None = None
+    while True:
+        try:
+            # Not ``_wrapper_of``: that helper answers a "not found" by
+            # returning the WindowSpecification unchanged, whose
+            # ``__getattribute__`` would then turn ``is_visible`` into a
+            # child_window lookup instead of raising.
+            if spec.wrapper_object().is_visible():
+                return
+            last_exc = None
+        except _PwAmbiguousError:
+            raise
+        except Exception as exc:
+            last_exc = exc
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll)
+    raise _PwTimeoutError(f"element did not become visible within {timeout}s") from last_exc
 
 
 def _is_foreground(spec: Any) -> bool:
@@ -323,7 +365,7 @@ class Locator:
         primary_exc: Exception | None = None
         try:
             spec = parent_spec.child_window(**self._criteria)
-            spec.wait("exists visible", timeout=self._timeout)
+            _wait_until_visible(spec, self._timeout)
             return spec
         except _PwAmbiguousError as exc:
             # More than one element matched. Falling through to fallbacks
@@ -1336,10 +1378,29 @@ class Locator:
         _mouse.scroll(coords=(cx, cy), wheel_dist=wheel_dist)
         return self
 
-    def get_attribute(self, name: str) -> Any:
-        """Return an attribute of the underlying element_info by *name*."""
+    def get_attribute(self, name: str, default: Any = _MISSING) -> Any:
+        """Return an attribute of the underlying element_info by *name*.
+
+        Raises ``AttributeError`` when the element publishes no such
+        attribute. Returning ``None`` there would make a misspelled name
+        (``"AutomationId"`` for ``automation_id``) or one the active
+        backend does not expose (``automation_id`` is UIA-only — the
+        win32 backend has no such field) indistinguishable from an
+        attribute that is genuinely empty, so an assertion written
+        against it would pass without ever reading the UI.
+
+        Pass *default* to opt back into a non-raising lookup.
+        """
         info = self._resolve_readonly().element_info
-        return getattr(info, name, None)
+        value = getattr(info, name, _MISSING)
+        if value is _MISSING:
+            if default is not _MISSING:
+                return default
+            published = ", ".join(sorted(a for a in dir(info) if not a.startswith("_")))
+            raise AttributeError(
+                f"{type(info).__name__} publishes no attribute {name!r}. Available: {published}"
+            )
+        return value
 
     def select_text(self) -> Locator:
         """Select all text in the element (focus + Ctrl+A)."""
