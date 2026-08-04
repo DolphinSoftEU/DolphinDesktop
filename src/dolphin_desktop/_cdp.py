@@ -466,8 +466,10 @@ class CDPSession:
     def _pick_stable_page(browser: Browser, *, timeout: float) -> tuple[Any, Any]:
         """Return the first live ``(context, page)`` whose URL is not about:blank.
 
-        Retries until *timeout* seconds elapse. Returns ``(None, None)`` if
-        no non-blank page ever appears. Closed pages are skipped on the same
+        Retries until *timeout* seconds elapse, then falls back to any live
+        page — even ``about:blank`` — because an app that never navigates is
+        still automatable. ``(None, None)`` means no live page at all.
+        Closed pages are skipped on the same
         terms as :meth:`pages`: Playwright keeps serving ``url`` from the last
         known frame after a target closes, so without the check this scanner
         would hand back a page ``_is_page_alive`` rejects on the next access —

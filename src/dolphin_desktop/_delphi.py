@@ -274,8 +274,10 @@ class DelphiComponent:
         1. ``window_text()`` — caption / static text (buttons, labels)
         2. ``get_value()`` — ValuePattern.Value (edits, combos)
         3. ``legacy_properties().Value`` — IAccessible.accValue
-        4. ``element_info.rich_text`` — TextPattern content
-        5. ``element_info.name`` — final fallback
+        4. ``element_info.rich_text`` then ``.value`` — pattern content
+
+        Returns ``""`` when none of them yields anything. ``element_info.name``
+        is deliberately not consulted — see ``_element_info_attrs`` below.
         """
 
         def _legacy_value() -> str:

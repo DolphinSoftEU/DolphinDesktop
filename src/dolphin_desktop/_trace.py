@@ -7,7 +7,6 @@ Schema version history:
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import sqlite3
 import threading
@@ -308,13 +307,6 @@ class TraceSession:
 
 
 # HTML viewer
-
-_SLUG_RE = re.compile(r"[^\w._-]")
-
-
-def _safe_slug(text: str, maxlen: int = 80) -> str:
-    return _SLUG_RE.sub("_", text)[:maxlen]
-
 
 _LATEST_RUN_SQL = "SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT 1"
 

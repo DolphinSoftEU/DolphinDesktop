@@ -565,9 +565,10 @@ class ImageBackend(Backend):
         Keyboard.type(text)
 
     def get_tree(self, root: Any, *, depth: int | None = None) -> dict[str, Any]:
-        # ImageBackend does not publish GET_TREE — raise clean.
+        # ImageBackend does not publish GET_TREE, so this always raises —
+        # a screen has no element tree to walk.
         self.require_capability(Capability.GET_TREE)
-        return {"name": "screen", "role": "image", "class": "", "children": []}
+        raise AssertionError("unreachable: require_capability always raises here")
 
     def screenshot(self, element: Any | None = None) -> Any:
         self.require_capability(Capability.SCREENSHOT)

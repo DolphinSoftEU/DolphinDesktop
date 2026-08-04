@@ -889,8 +889,8 @@ class JABLocator:
         """Return the AccessibleStateSet as a set of lowercased words.
 
         Java publishes states as a comma-separated string
-        (``"enabled,visible,focused"``). Word-boundary matching is the
-        safe way to check for a specific state — plain substring match
+        (``"enabled,visible,focused"``), so splitting on the comma gives
+        exact-token membership — whereas a plain substring match
         would classify ``"disabled"`` as ``"enabled"``, ``"prechecked"``
         as ``"checked"``, and so on if the JVM ever adds a new state
         containing one of our target substrings.

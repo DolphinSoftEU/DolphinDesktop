@@ -389,9 +389,10 @@ class OracleFormsWindow:
     def wait_ready(self, timeout: float = 15.0) -> None:
         """Block until the main form window responds to lookups.
 
-        Considers the window ready when JAB reports at least one
-        top-level child under the root context — i.e. the JVM has
-        published the accessibility tree.
+        Considers the window ready once JAB returns a root context for
+        it — the point at which the JVM has published its accessibility
+        tree. The context is released again immediately; this is a
+        readiness probe, not a traversal.
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
