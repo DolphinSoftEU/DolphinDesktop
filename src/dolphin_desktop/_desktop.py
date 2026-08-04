@@ -847,7 +847,7 @@ class Desktop:
     ) -> OracleFormsApp:
         """Launch an Oracle Forms Java client and return an :class:`OracleFormsApp`.
 
-        Exactly one of *jnlp* or *jar* must be supplied.
+        Exactly one of *jnlp*, *jar* or *main_class* must be supplied.
 
         Args:
             jnlp: URL or file path to a Java Web Start descriptor.
@@ -857,6 +857,9 @@ class Desktop:
             jar: Absolute path to a Forms client JAR — appropriate for
                 the Forms Standalone Launcher (FSAL) which bundles
                 everything into ``frmsal.jar``.
+            main_class: Fully qualified class to run instead of a JNLP or
+                JAR — the route a Swing stand-in for Forms takes.
+            classpath: Passed to ``java -cp`` alongside *main_class*.
             java_args: Extra flags to pass to the JVM before ``-jar``.
                 Examples: ``["-Xmx1g", "-Dfoo=bar"]``.
             title_re: Optional title regex used later by

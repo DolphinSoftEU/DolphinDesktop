@@ -1296,15 +1296,6 @@ class _Tn5250Backend(_TerminalBackend):
             _LOG.info("tn5250 → raw %s", data[:32].hex())
         self._sock.sendall(data)
 
-    def _recv_bytes(self, n: int, timeout: float) -> bytes:
-        """Read at most n bytes with respect to backlog + timeout."""
-        if self._rx_backlog:
-            out = self._rx_backlog[:n]
-            self._rx_backlog = self._rx_backlog[n:]
-            return out
-        self._sock.settimeout(timeout)
-        return self._sock.recv(n)
-
     def _read_records(self, timeout: float) -> list[bytes]:
         """Consume telnet-framed records; return list of 5250 payloads."""
         records: list[bytes] = []

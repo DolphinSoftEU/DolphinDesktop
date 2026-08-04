@@ -890,9 +890,9 @@ def _spy_sap_cmd(args: argparse.Namespace) -> None:
 def _spy_jab_cmd(args: argparse.Namespace) -> None:
     """Dump the Java Access Bridge accessibility tree for a Swing window.
 
-    Requires `dolphin spy --jab --pid <java-pid>`. Iterates the JAB
-    tree and prints each accessible context with (role, name, position,
-    length) — the same shape our JABLocator uses to match.
+    Requires `dolphin spy --jab --pid <java-pid>`. Walks the JAB tree and
+    prints each accessible context as role, name, optional description and
+    bounds. Role and name are what JABLocator matches on.
     """
     if not args.pid:
         print("Error: --jab requires --pid <java-process-id>")
@@ -952,7 +952,12 @@ def _dump_jab(session: Any, vm_id: int, ac: int, depth: int, max_depth: int) -> 
 
 
 def _spy_cdp_cmd(args: argparse.Namespace) -> None:
-    """Dump the DOM of every page at a CDP endpoint."""
+    """List every page at a CDP endpoint with its title and visible text.
+
+    Prints the URL, ``document.title`` and the first 500 characters of
+    ``body.innerText`` per page — enough to tell pages apart when picking
+    one to attach to. It is not a DOM dump.
+    """
     from dolphin_desktop import CDPSession, cdp_install_hint, is_cdp_available
 
     if not is_cdp_available():

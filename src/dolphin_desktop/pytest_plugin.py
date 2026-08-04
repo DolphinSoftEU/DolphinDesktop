@@ -786,7 +786,7 @@ def _record_teardown_failure(item: pytest.Item, report: pytest.TestReport) -> No
     Artifacts cannot be recovered at this point: the ``call`` phase finished
     the trace session, which removes the run directory under the default
     ``on-failure`` mode, and discards the video. Re-run with
-    ``--dolphin-trace=on`` to keep them for a teardown that fails.
+    ``--dolphin-trace=always`` to keep them for a teardown that fails.
     """
     # Redacted like the call-phase longrepr: this one reaches the terminal
     # report section and the JUnit XML, and a fixture finalizer fails with the
