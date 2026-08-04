@@ -535,8 +535,14 @@ class TestClosedSession:
 
     def test_close_is_idempotent(self):
         session = _session()
+        closed: list[int] = []
+        session._browser.close = lambda: closed.append(1)
         session.close()
         session.close()
+        # The second call returns on the _closed flag alone — the browser is
+        # torn down exactly once.
+        assert closed == [1]
+        assert session._closed is True
 
     @pytest.mark.parametrize(
         "call",

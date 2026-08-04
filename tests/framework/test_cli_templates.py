@@ -243,7 +243,19 @@ def _check(source: str) -> list[str]:
 
 @pytest.mark.parametrize("name", sorted(_TEMPLATES))
 def test_template_compiles(name):
-    compile(_TEMPLATES[name], f"<{name}>", "exec")
+    source = _TEMPLATES[name]
+    compile(source, f"<{name}>", "exec")
+    tree = ast.parse(source)
+    defined = [n.name for n in tree.body if isinstance(n, ast.FunctionDef | ast.ClassDef)]
+    if name == "conftest":
+        # The desktop/launch fixtures come from the plugin; the scaffold only
+        # has to leave a valid, pytest-importing module behind.
+        assert [n for n in tree.body if isinstance(n, ast.Import | ast.ImportFrom)]
+    elif name == "notepad_page":
+        assert defined == ["NotepadPage"]
+    else:
+        # Every scaffold pytest is pointed at must yield something to collect.
+        assert [n for n in defined if n.startswith("test_")]
 
 
 @pytest.mark.parametrize("name", sorted(_TEMPLATES))

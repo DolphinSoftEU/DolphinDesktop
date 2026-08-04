@@ -12,7 +12,12 @@ def test_wait_for_cursor_matches_initial_position(mock_term) -> None:
     currently reports as the cursor."""
     term, _ = mock_term
     row, col = term.screen().cursor
+    # The mock parks the cursor in the USER input slot: build_screen emits
+    # IC at (row, col + len(label) + 2) for cursor_field="user", i.e.
+    # (6, 10 + 5 + 2) — the same slot test_wait_for_field asserts on.
+    assert (row, col) == (6, 17)
     term.wait_for_cursor(row, col, timeout=1.0)
+    assert term.screen().cursor == (6, 17)
 
 
 def test_wait_for_cursor_after_move(mock_term) -> None:
@@ -21,6 +26,7 @@ def test_wait_for_cursor_after_move(mock_term) -> None:
     term, _ = mock_term
     term.move_cursor(7, 20)
     term.wait_for_cursor(7, 20, timeout=2.0)
+    assert term.screen().cursor == (7, 20)
 
 
 def test_wait_for_cursor_timeout_raises(mock_term) -> None:
@@ -76,6 +82,9 @@ def test_wait_for_text_still_works(mock_term) -> None:
     """wait_for_text returns once the awaited text is on the screen."""
     term, _ = mock_term
     term.wait_for_text("MOCK-3270", timeout=2.0)
+    # The fixture's server titles the sign-on screen "MOCK-3270 SIGN-ON"
+    # and build_screen writes it on row 1.
+    assert term.screen().contains("MOCK-3270")
 
 
 def test_wait_for_cursor_survives_async_host_write(mock_term) -> None:
@@ -93,3 +102,4 @@ def test_wait_for_cursor_survives_async_host_write(mock_term) -> None:
     t = start_thread(_mover)
     term.wait_for_cursor(15, 40, timeout=3.0)
     t.join(timeout=1.0)
+    assert term.screen().cursor == (15, 40)

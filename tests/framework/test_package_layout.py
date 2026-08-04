@@ -75,6 +75,8 @@ def test_no_entry_point_targets_dolphin_top_level(pyproject_text: str):
     # and values in two string forms — the guard must handle every combination.
     lines = pyproject_text.splitlines()
     forbidden_heads = {"dolphin", "dolphinsoft"}
+    heads: set[str] = set()
+    targets: list[str] = []
     for i, line in enumerate(lines, start=1):
         # Only look at assignment lines of form ``key = "value"``, ``"key" = 'value'``, etc.
         m = re.match(
@@ -91,6 +93,9 @@ def test_no_entry_point_targets_dolphin_top_level(pyproject_text: str):
             continue
         # Take the leftmost python-identifier segment.
         head = re.split(r"[.:]", value, maxsplit=1)[0]
+        heads.add(head)
+        if head == "dolphin_desktop":
+            targets.append(value)
         if head in forbidden_heads:
             pytest.fail(
                 f"pyproject.toml line {i}: entry-point target {value!r} "
@@ -98,6 +103,11 @@ def test_no_entry_point_targets_dolphin_top_level(pyproject_text: str):
                 f"reserved for pytest-dolphinsoft. Use "
                 f"``dolphin_desktop.…`` instead."
             )
+    assert forbidden_heads.isdisjoint(heads)
+    # A scan that matched nothing would pass whatever the file said, so pin the
+    # targets the distribution is known to register.
+    assert "dolphin_desktop._cli:main" in targets
+    assert "dolphin_desktop.pytest_plugin" in targets
 
 
 def test_pytest_plugin_entry_point_key_is_not_bare_dolphin(
@@ -115,6 +125,7 @@ def test_pytest_plugin_entry_point_key_is_not_bare_dolphin(
         "[project.entry-points.pytest11]",
     )
     forbidden_keys = {"dolphin", "dolphinsoft"}
+    registered: list[str] = []
     for i, line in enumerate(lines, start=1):
         stripped = line.strip()
         # New section header ends the previous one.
@@ -132,6 +143,7 @@ def test_pytest_plugin_entry_point_key_is_not_bare_dolphin(
         if not m:
             continue
         key = m.group(1) or m.group(2) or m.group(3)
+        registered.append(key)
         if key in forbidden_keys:
             pytest.fail(
                 f"pyproject.toml line {i}: pytest11 entry-point key "
@@ -139,6 +151,9 @@ def test_pytest_plugin_entry_point_key_is_not_bare_dolphin(
                 f"pytest-dolphinsoft entry. Use 'dolphin-desktop' "
                 f"instead."
             )
+    # The table must exist and register exactly the namespaced plugin key — a
+    # scan that never found the header would otherwise pass silently.
+    assert registered == ["dolphin-desktop"]
 
 
 def test_backend_entry_point_group_uses_dolphin_desktop_prefix(

@@ -15,6 +15,27 @@ _NOOP_HIGHLIGHT = {"update": lambda bbox: None, "clear": lambda: None}
 # Generated locator code must be valid Python
 
 
+class _CallRecorder:
+    """Stands in for the ``window``/``session`` the generated source is written for."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple, dict]] = []
+
+    def __getattr__(self, name: str):
+        def _call(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return self
+
+        return _call
+
+
+def _run(source: str) -> _CallRecorder:
+    """Compile and evaluate generated source, returning what the calls received."""
+    target = _CallRecorder()
+    eval(compile(source, "<gen>", "eval"), {"window": target, "session": target})
+    return target
+
+
 class TestSelectorCodeEscaping:
     @pytest.mark.parametrize(
         "value",
@@ -22,22 +43,26 @@ class TestSelectorCodeEscaping:
     )
     def test_uia_selector_values_survive_escaping(self, value):
         code = _spy._selector_to_code({"title": value})
-        compile(f"window.{code}", "<gen>", "eval")
+        target = _run(f"window.{code}")
+        assert target.calls == [("locator", (), {"title": value})]
 
     def test_uia_chain_survives_escaping(self):
         chain = [{"title": r"C:\Users"}, {"title": 'Say "hi"', "control_type": "Button"}]
-        compile(f"window.{_spy._chain_to_code(chain)}", "<gen>", "eval")
+        target = _run(f"window.{_spy._chain_to_code(chain)}")
+        assert [kwargs for _name, _args, kwargs in target.calls] == chain
 
     def test_integer_criteria_stay_unquoted(self):
         assert _spy._selector_to_code({"found_index": 2}) == "locator(found_index=2)"
 
     @pytest.mark.parametrize("value", [r"wnd[0]\usr", 'wnd[0]/usr/txt"X"'])
     def test_sap_selector_values_survive_escaping(self, value):
-        compile(f"session.{_spy._sap_selector_to_code({'id': value})}", "<gen>", "eval")
+        target = _run(f"session.{_spy._sap_selector_to_code({'id': value})}")
+        assert target.calls == [("find_by_id", (value,), {})]
 
     def test_sap_name_and_type_survive_escaping(self):
         code = _spy._sap_selector_to_code({"name": 'a"b', "type": r"GuiText\x"})
-        compile(f"session.{code}", "<gen>", "eval")
+        target = _run(f"session.{code}")
+        assert target.calls == [("locator", (), {"name": 'a"b', "type": r"GuiText\x"})]
 
 
 # Tree walk budget — an unbounded walk of a Chromium a11y tree never returns
