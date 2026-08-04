@@ -47,6 +47,11 @@ class TestRecordStepIsNonFatal:
         session = self._session(tmp_path)
         session._db.close()
         session.record_step("click", "{'auto_id': 'ok'}")
+        # The lost write stays contained in storage: the session is not closed by
+        # it and still accepts the steps that follow.
+        assert session._closed is False
+        session.record_step("type_text", "{'auto_id': 'edit'}")
+        assert session._seq == 2
 
     @pytest.mark.parametrize(
         "exc",
@@ -61,6 +66,10 @@ class TestRecordStepIsNonFatal:
         session = self._session(tmp_path)
         session._db = _FailingConnection(exc)
         session.record_step("type_text", "{'auto_id': 'edit'}")
+        # Every sqlite failure mode is swallowed the same way: the step is lost,
+        # the run is flagged, and the session stays open for the next action.
+        assert session.degraded is True
+        assert session._closed is False
 
     def test_error_is_logged_above_the_default_level(self, tmp_path, caplog):
         """At DEBUG the message sits below the plugin's own INFO default — invisible."""
@@ -81,18 +90,25 @@ class TestRecordStepIsNonFatal:
         session = self._session(tmp_path)
         session._db = _FailingConnection(sqlite3.OperationalError("database is locked"))
         session.finish("failed", error_message="boom")
+        # The status write and the close both failed; the session is still
+        # finished, flagged degraded, and a failed run keeps its directory.
+        assert session._closed is True
+        assert session.degraded is True
+        assert session.run_dir.is_dir()
 
     def test_recording_onto_a_closed_db_does_not_raise(self, tmp_path):
         """A dead DB handle must not turn tracing into a test failure.
 
         The connection is closed underneath the session; both ``record_step``
-        and ``finish`` have to swallow the resulting error. The run directory
-        itself stays in place.
+        and ``finish`` have to swallow the resulting error and record the loss,
+        and the pass is still cleaned up as one.
         """
         session = self._session(tmp_path)
         session._db.close()
         session.record_step("click", None)
         session.finish("passed")
+        assert session.degraded is True
+        assert not (tmp_path / "run").exists()
 
     def test_lost_finish_is_logged_and_flagged(self, tmp_path, caplog):
         session = self._session(tmp_path)
@@ -166,7 +182,12 @@ class TestConnectionCloseIsSerialised:
     def test_close_without_finish_is_idempotent(self, tmp_path):
         session = _trace.TraceSession("tests/t.py::test_x", tmp_path / "run", mode="always")
         session.close_without_finish()
+        # A connection installed after the first close must never be touched:
+        # the second call has to return on the _closed flag alone.
+        session._db = self._LockAssertingConnection(session._lock)
         session.close_without_finish()
+        assert session._db.closed_under_lock is None
+        assert session._closed is True
 
 
 # A trace screenshot must show the monitor the failure happened on

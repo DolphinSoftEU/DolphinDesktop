@@ -104,7 +104,9 @@ def test_raise_if_session_gone_raises_application_error() -> None:
 
 
 def test_raise_if_session_gone_passes_through_other_errors() -> None:
-    _raise_if_session_gone(ValueError("nope"), "is_busy")
+    # Not a dead-session COM failure, so the guard returns and leaves the
+    # original exception for the caller to handle.
+    assert _raise_if_session_gone(ValueError("nope"), "is_busy") is None
 
 
 # Session readers must not report success once the session is gone

@@ -105,7 +105,11 @@ def test_button_click_clear_resets(lcl_app):
     _, form = lcl_app
     form.component(cls="TEdit", near_label="Name:").set_text("Wipe me")
     form.component(cls="TButton", title="Clear").click()
-    form.component(cls="TEdit", near_label="Name:").wait_for_text("", contains=False, timeout=3)
+    name = form.component(cls="TEdit", near_label="Name:")
+    name.wait_for_text("", contains=False, timeout=3)
+    # BtnClearClick blanks EdtName and writes 'Cleared.' into LblStatus.
+    assert name.text() == ""
+    assert form.component(cls="TLabel", title_re=r"^Cleared\.").text() == "Cleared."
 
 
 def test_button_disabled_reports_state(lcl_app):
@@ -252,6 +256,9 @@ def test_memo_append_via_button_updates_status_count(lcl_app):
     form.component(cls="TButton", title="Append Log").click()
     status = form.component(cls="TLabel", title_re=r"Log has 2 entries")
     status.wait_for_text("Log has 2 entries", timeout=3)
+    # BtnAppendLogClick formats 'Log has %d entries.' from MemoLog.Lines.Count,
+    # which BtnClearClick reset to zero before the two appends.
+    assert status.text() == "Log has 2 entries."
 
 
 def test_memo_present_and_positioned(lcl_app):
@@ -277,7 +284,11 @@ def test_checkbox_by_title(lcl_app):
 def test_checkbox_starts_unchecked(lcl_app):
     _, form = lcl_app
     form.component(cls="TButton", title="Clear").click()
-    form.component(cls="TCheckBox", title="Active").wait_for_checked(checked=False, timeout=3)
+    chk = form.component(cls="TCheckBox", title="Active")
+    chk.wait_for_checked(checked=False, timeout=3)
+    # ChkActive has no Checked property in the .lfm and BtnClearClick
+    # sets ChkActive.Checked := False.
+    assert chk.is_checked() is False
 
 
 def test_checkbox_toggle_changes_state(lcl_app):
@@ -287,6 +298,7 @@ def test_checkbox_toggle_changes_state(lcl_app):
     chk.wait_for_checked(checked=False, timeout=3)  # deterministic start
     chk.toggle()
     chk.wait_for_checked(checked=True, timeout=3)
+    assert chk.is_checked() is True
 
 
 def test_checkbox_check_idempotent(lcl_app):
@@ -295,6 +307,7 @@ def test_checkbox_check_idempotent(lcl_app):
     chk.check()
     chk.check()
     chk.wait_for_checked(checked=True, timeout=3)
+    assert chk.is_checked() is True
 
 
 def test_checkbox_uncheck_idempotent(lcl_app):
@@ -305,6 +318,7 @@ def test_checkbox_uncheck_idempotent(lcl_app):
     chk.uncheck()
     chk.uncheck()
     chk.wait_for_checked(checked=False, timeout=3)
+    assert chk.is_checked() is False
 
 
 def test_two_checkboxes_independent(lcl_app):
@@ -334,21 +348,34 @@ def test_radio_by_title(lcl_app):
 def test_radio_starts_standard_selected(lcl_app):
     _, form = lcl_app
     form.component(cls="TButton", title="Clear").click()
-    form.component(cls="TRadioButton", title="Standard").wait_for_checked(checked=True, timeout=3)
+    standard = form.component(cls="TRadioButton", title="Standard")
+    standard.wait_for_checked(checked=True, timeout=3)
+    # RadStandard has Checked = True in the .lfm and BtnClearClick
+    # restores it with RadStandard.Checked := True.
+    assert standard.is_checked() is True
 
 
 def test_radio_select_premium(lcl_app):
     _, form = lcl_app
     form.component(cls="TRadioButton", title="Premium").click()
-    form.component(cls="TRadioButton", title="Premium").wait_for_checked(checked=True, timeout=3)
+    premium = form.component(cls="TRadioButton", title="Premium")
+    premium.wait_for_checked(checked=True, timeout=3)
+    assert premium.is_checked() is True
 
 
 def test_radio_mutual_exclusion(lcl_app):
     _, form = lcl_app
     form.component(cls="TRadioButton", title="Premium").click()
-    form.component(cls="TRadioButton", title="Standard").wait_for_checked(checked=False, timeout=3)
+    standard = form.component(cls="TRadioButton", title="Standard")
+    standard.wait_for_checked(checked=False, timeout=3)
+    # RadStandard / RadPremium share MainForm as their parent, so LCL
+    # groups them — selecting one clears the other.
+    assert standard.is_checked() is False
     form.component(cls="TRadioButton", title="Standard").click()
-    form.component(cls="TRadioButton", title="Premium").wait_for_checked(checked=False, timeout=3)
+    premium = form.component(cls="TRadioButton", title="Premium")
+    premium.wait_for_checked(checked=False, timeout=3)
+    assert premium.is_checked() is False
+    assert standard.is_checked() is True
 
 
 # =========================================================================== #
@@ -376,10 +403,19 @@ def test_combobox_select_by_string_no_raise(lcl_app):
 
 def test_combobox_select_by_index(lcl_app):
     _, form = lcl_app
+    # BtnClearClick resets CmbCountry.ItemIndex to 0 ('Poland'), so the
+    # ordinal move below is deterministic whatever earlier tests typed.
+    form.component(cls="TButton", title="Clear").click()
     cb = form.component(cls="TComboBox", index=0)
-    # No assertion — this test only verifies .select(int) does not raise.
-    # Any downstream sleep would be waiting for state we do not check.
     cb.select(1)
+    # LCL combos do not publish their value through UIA reliably, so the
+    # selection is read back through the app itself: BtnSaveClick writes
+    # 'country=<CmbCountry.Text>' into LblStatus. Items are seeded
+    # Poland/Germany/France, so index 1 is Germany.
+    form.component(cls="TButton", title="Save").click()
+    status = form.component(cls="TLabel", title_re=r"^Saved:")
+    status.wait_for_text("country=Germany", timeout=3)
+    assert "country=Germany" in status.text()
 
 
 # =========================================================================== #
@@ -442,8 +478,10 @@ def test_pagecontrol_items_are_tab_captions(lcl_app):
 def test_pagecontrol_select_advanced(lcl_app):
     _, form = lcl_app
     pc = form.component(cls="TPageControl", index=0)
-    # No downstream state assertion — verifying only that select doesn't raise.
     pc.select("Advanced")
+    # A Tab control reports exactly one selected TabItem; its name is the
+    # TTabSheet caption ('Details' / 'Advanced' in the .lfm).
+    assert [el.name for el in pc.pywinauto.get_selection()] == ["Advanced"]
 
 
 # =========================================================================== #
@@ -483,6 +521,9 @@ def test_advance_button_updates_status(lcl_app):
     form.component(cls="TButton", title="Advance").click()
     status = form.component(cls="TLabel", title_re=r"Progress: \d+%")
     status.wait_for_text("Progress:", timeout=3)
+    # BtnClearClick zeroes Progress.Position and BtnAdvanceClick adds 10
+    # before formatting 'Progress: %d%%' into LblStatus.
+    assert status.text() == "Progress: 10%"
 
 
 # =========================================================================== #

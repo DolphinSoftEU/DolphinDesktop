@@ -574,7 +574,8 @@ class TestArchitectureGuard:
         host = _qt_inject._process_machine(_qt_inject._GetCurrentProcess())
         dll = tmp_path / "dolphin_qt6_agent.dll"
         _write_fake_pe(dll, host)
-        _qt_inject._require_matching_arch(_qt_inject._GetCurrentProcess(), 4242, dll)
+        # The guard clears the way by returning: target, DLL and host all match.
+        assert _qt_inject._require_matching_arch(_qt_inject._GetCurrentProcess(), 4242, dll) is None
 
 
 def _pipe_server_pid(server_pid: int, *, ok: int = 1):
@@ -591,7 +592,9 @@ class TestPipeServerVerification:
 
     def test_matching_server_pid_is_accepted(self, monkeypatch):
         monkeypatch.setattr(_qt_inject, "_GetNamedPipeServerProcessId", _pipe_server_pid(4242))
-        _qt_inject._verify_pipe_server(5, r"\\.\pipe\dolphin_qt_4242", 4242)
+        # The pipe is served by the injected pid, so the check returns and the
+        # caller keeps the handle it opened.
+        assert _qt_inject._verify_pipe_server(5, r"\\.\pipe\dolphin_qt_4242", 4242) is None
 
     def test_squatted_pipe_is_refused(self, monkeypatch):
         monkeypatch.setattr(_qt_inject, "_GetNamedPipeServerProcessId", _pipe_server_pid(1337))

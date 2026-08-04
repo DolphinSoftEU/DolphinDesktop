@@ -401,6 +401,7 @@ def test_local_storage_set_get_and_clear(vscode_cdp):
 
 
 def test_set_default_timeout_takes_effect(vscode_cdp):
-    """set_default_timeout accepts a timeout and returns without raising."""
-    vscode_cdp.set_default_timeout(30)
-    vscode_cdp.set_default_timeout(30)
+    """set_default_timeout applies the timeout and returns the same session,
+    so it chains — and repeating it is idempotent."""
+    assert vscode_cdp.set_default_timeout(30) is vscode_cdp
+    assert vscode_cdp.set_default_timeout(30) is vscode_cdp

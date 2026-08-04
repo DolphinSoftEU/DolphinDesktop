@@ -239,8 +239,10 @@ def test_current_url_returns_workbench(vscode_cdp):
 
 
 def test_wait_for_url_matches_current_immediately(vscode_cdp):
-    """wait_for_url returns immediately when the current URL already matches."""
-    vscode_cdp.wait_for_url("**/workbench.html*", timeout=5)
+    """wait_for_url returns the session when the current URL already matches,
+    and leaves the page where it was."""
+    assert vscode_cdp.wait_for_url("**/workbench.html*", timeout=5) is vscode_cdp
+    assert "workbench.html" in vscode_cdp.current_url()
 
 
 # ---------------------------------------------------------------------------

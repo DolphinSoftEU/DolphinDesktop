@@ -590,6 +590,11 @@ def test_full_buttons_workflow(qt_app):
 def test_window_focus_does_not_raise(qt_app):
     _, win = qt_app
     win.focus()  # must not raise
+    # SetForegroundWindow can be refused by the shell, but the window it was
+    # aimed at must survive the attempt and stay usable.
+    assert win.exists()
+    assert win.is_visible()
+    assert win.title() == h.QT6_WINDOW_TITLE
 
 
 @_windows_only
@@ -1208,6 +1213,11 @@ def test_full_buttons_workflow_qt5(qt5_app):
 def test_window_focus_does_not_raise_qt5(qt5_app):
     _, win = qt5_app
     win.focus()
+    # SetForegroundWindow can be refused by the shell, but the window it was
+    # aimed at must survive the attempt and stay usable.
+    assert win.exists()
+    assert win.is_visible()
+    assert win.title() == h.QT5_WINDOW_TITLE
 
 
 @_windows_only

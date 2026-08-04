@@ -290,10 +290,17 @@ class TestTelemetry:
 
     def test_capture_exception_noop_when_disabled(self):
         """capture_exception must not raise when telemetry is off."""
-        from dolphin_desktop._telemetry import capture_exception
+        import sys
+
+        from dolphin_desktop._telemetry import capture_exception, is_enabled
 
         self._reset()
-        capture_exception(ValueError("harmless"))  # must not raise
+        fake = MagicMock()
+        with patch.dict(sys.modules, {"sentry_sdk": fake}):
+            capture_exception(ValueError("harmless"))  # must not raise
+        # Nothing left the process: the SDK is never even reached while off.
+        fake.capture_exception.assert_not_called()
+        assert is_enabled() is False
 
     def test_telemetry_exported_from_package(self):
         import dolphin_desktop

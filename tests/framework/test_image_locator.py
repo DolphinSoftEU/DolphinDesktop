@@ -44,7 +44,9 @@ class TestImageElement:
         assert el.wait("visible") is el
 
     def test_scroll_into_view_is_noop(self):
-        _ImageElement(0, 0).scroll_into_view()  # no exception
+        # A template match has no scrollable container: unlike wait(), the call
+        # returns nothing at all rather than a chainable element.
+        assert _ImageElement(0, 0).scroll_into_view() is None
 
     def test_click_input_delegates_to_mouse(self):
         el = _ImageElement(cx=300, cy=400)

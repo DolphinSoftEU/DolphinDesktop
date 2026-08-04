@@ -184,3 +184,12 @@ def test_doctor_does_not_crash_on_ascii_only_stdout(monkeypatch):
 
     # Should not raise even though status symbols are not encodable in ASCII.
     _doctor_cmd(argparse.Namespace())
+
+    ascii_stream.flush()
+    output = ascii_stream.buffer.getvalue().decode("ascii")
+    # The report ran to its last section using the ASCII markers — nothing was
+    # dropped into a "?" replacement on the way.
+    assert "[ok]  pywinauto" in output
+    assert "[ok]  accessible (0 top-level window(s) visible)" in output
+    assert "DOLPHIN_TRACE" in output
+    assert "?" not in output

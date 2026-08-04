@@ -282,6 +282,27 @@ class TestAltGrTranslation:
 # Generated code must parse
 
 
+class _CallRecorder:
+    """Stands in for the ``win`` the generated source is written for."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple, dict]] = []
+
+    def __getattr__(self, name: str):
+        def _call(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return self
+
+        return _call
+
+
+def _run(source: str) -> _CallRecorder:
+    """Compile and evaluate a generated line, returning what the calls received."""
+    win = _CallRecorder()
+    eval(compile(source, "<gen>", "eval"), {"win": win})
+    return win
+
+
 class TestGeneratedCodeIsValidPython:
     @pytest.mark.parametrize(
         "value",
@@ -289,7 +310,8 @@ class TestGeneratedCodeIsValidPython:
     )
     def test_selector_values_survive_escaping(self, value):
         call = _selector_to_call({"title": value})
-        compile(f"win.{call}", "<gen>", "eval")
+        win = _run(f"win.{call}")
+        assert win.calls == [("get_by_title", (value,), {})]
 
     @pytest.mark.parametrize("value", [r"C:\Users\foo", 'Say "hi"'])
     def test_typed_text_survives_escaping(self, value):
@@ -300,7 +322,8 @@ class TestGeneratedCodeIsValidPython:
             selector={"title": value},
             data=value,
         )
-        compile(_action_to_line(action, "win").strip(), "<gen>", "eval")
+        win = _run(_action_to_line(action, "win").strip())
+        assert win.calls == [("get_by_title", (value,), {}), ("type_text", (value,), {})]
 
     def test_full_script_with_a_backslash_title_compiles(self):
         rec = Recorder(app=r"C:\Program Files\App")
@@ -312,7 +335,22 @@ class TestGeneratedCodeIsValidPython:
                 selector={"title": 'Say "hi"', "control_type": "Button"},
             )
         )
-        compile(rec.generate_code(), "<gen>", "exec")
+        code = rec.generate_code()
+        compile(code, "<gen>", "exec")
+        calls = {
+            node.func.attr: node
+            for node in ast.walk(ast.parse(code))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        # The backslashes survive both the repr and the regex escaping: the
+        # generated patterns still match the paths they were recorded from.
+        assert re.fullmatch(
+            ast.literal_eval(calls["connect"].keywords[0].value), r"C:\Program Files\App"
+        )
+        assert re.fullmatch(ast.literal_eval(calls["window"].keywords[0].value), r"C:\Users\foo")
+        role = calls["get_by_role"]
+        assert ast.literal_eval(role.args[0]) == "Button"
+        assert ast.literal_eval(role.keywords[0].value) == 'Say "hi"'
 
     @pytest.mark.parametrize(
         "kind", ["click", "double_click", "right_click", "type_text", "press_key"]
