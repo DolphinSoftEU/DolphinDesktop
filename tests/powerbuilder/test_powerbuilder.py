@@ -103,14 +103,10 @@ skip_no_pb_pid = pytest.mark.skipif(
 
 @skip_no_pb_pid
 def test_pb_real_attach_readonly():
-    """Attach to a live PB app and verify UIA exposure — read-only.
+    """Attach to a live PB app: its main window is visible and titled.
 
     Safe to run on an operator's desktop: no clicks, no typing, no focus
-    stealing. Verified against Appeon's ModernUI demo (PowerClient): the
-    main FNWND3 window, standard Button/Edit controls resolve; DataWindow
-    (class ``pbdw``) resolves as an opaque Pane. Note that repeated classes
-    like ``pbdw`` need ``found_index`` — on a bare class_name match
-    exists() answers True and actions raise AmbiguousMatchError.
+    stealing.
     """
     app = Desktop().connect(process=int(_PB_PID), timeout=10)
     win = app.window(title_re=".+", timeout=10)

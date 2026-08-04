@@ -11,7 +11,7 @@ imperatively via ``createElement`` + ``appendChild``. Coverage:
 * checkbox / radio group semantics
 * keyboard-emitted typing (``type_text(clear=False)``)
 * append vs. clear semantics
-* focus / blur
+* focus (typing moves ``document.activeElement``)
 * multi-step wizard flow
 * long text and special characters
 """
@@ -246,7 +246,7 @@ def test_form_radio_group_exclusive_selection(vscode_cdp):
 
 
 # ---------------------------------------------------------------------------
-# Focus / blur
+# Focus
 # ---------------------------------------------------------------------------
 
 

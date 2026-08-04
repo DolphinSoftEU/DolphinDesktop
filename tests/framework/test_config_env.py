@@ -1,8 +1,8 @@
 """Environment variables must pass the same validation ``config()`` enforces.
 
-``DOLPHIN_TIMEOUT=-1`` used to reach the locator and make every lookup fail
-instantly; ``DOLPHIN_VIDEO=keepAll`` used to discard every recording because
-the mode comparison downstream is case-sensitive.
+Unvalidated, ``DOLPHIN_TIMEOUT=-1`` reaches the locator and makes every
+lookup fail instantly, and ``DOLPHIN_VIDEO=keepAll`` discards every
+recording — the mode comparison downstream is case-sensitive.
 """
 
 from __future__ import annotations

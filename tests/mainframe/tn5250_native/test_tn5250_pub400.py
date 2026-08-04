@@ -109,15 +109,11 @@ def test_no_column_drift_on_multiple_labels(tn5250_term) -> None:
 
 
 def test_labels_align_on_their_own_row(tn5250_term) -> None:
-    """After the SF-attribute-cell drift fix, ``Your user name:`` and
-    ``Password`` no longer wrap across rows — each label starts and
-    ends on the same row it was drawn on.
+    """The ``user name`` label is contiguous on the row it was drawn on.
 
-    Before the fix, "Your user name:" rendered as ``Y`` at (4,80) then
-    ``our user name:`` at (5,1..) because the SF byte between the label
-    and the input area did not consume its screen position. Now the
-    full ``Your`` (or ``ur`` prefix depending on host indentation) is
-    contiguous."""
+    The row carrying ``user name`` must also carry the ``your``/``our``
+    prefix (which one depends on host indentation) — a wrap across rows
+    would split them."""
     s = tn5250_term.screen()
     line_with_user = None
     for row in range(1, s.rows + 1):

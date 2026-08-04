@@ -45,7 +45,12 @@ def test_sequential_burst(qt6_app_concurrent):
 
 
 def test_calls_from_two_threads_serialize_safely(qt6_app_concurrent):
-    """Two threads with a shared lock around _send must both finish without errors."""
+    """Two threads issue 30 lock-guarded get_property calls each, error-free.
+
+    Each worker captures anything it raises, and the test fails on a
+    non-empty error list — the assertion is on exceptions escaping the
+    workers, not on thread completion.
+    """
     _, _, agent = qt6_app_concurrent
     buttons = agent.find(className="QPushButton")
     h = buttons[0]["handle"]

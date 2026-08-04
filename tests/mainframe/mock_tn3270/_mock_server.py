@@ -448,7 +448,6 @@ class MockTN3270Server:
         footer: str = "ENTER=submit  PF3=exit",
         cursor_field: str | None = "user",
         cols: int = 80,
-        rows: int = 24,
     ) -> None:
         self.title = title
         self.fields = fields or [
@@ -458,15 +457,12 @@ class MockTN3270Server:
         self.footer = footer
         self.cursor_field = cursor_field
         self.cols = cols
-        self.rows = rows
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._client_sock: socket.socket | None = None
-        self._client_addr: Any = None
         # Public: last Read-Modified the server observed.
         self.last_read: ReadModified | None = None
-        self.reads: list[ReadModified] = []
         # Public: whether the client sent PF3 (exit).
         self.disconnected = False
         # Hook for tests that want to override reply behaviour.
@@ -518,11 +514,10 @@ class MockTN3270Server:
         assert self._sock is not None
         while not self._stop.is_set():
             try:
-                client, addr = self._sock.accept()
+                client, _addr = self._sock.accept()
             except (TimeoutError, OSError):
                 continue
             self._client_sock = client
-            self._client_addr = addr
             try:
                 self._serve_client(client)
             except (ConnectionError, OSError, RuntimeError):
@@ -548,7 +543,6 @@ class MockTN3270Server:
                 continue
             read = parse_read_modified(frame, self.fields, self.cols)
             self.last_read = read
-            self.reads.append(read)
             reply = self.on_aid(read)
             if reply is None:
                 # PF3 (Exit) — close cleanly.
@@ -603,11 +597,7 @@ class MockTN3270Server:
                             break
                         j += 1
                     consumed = j - i
-                    # Extract subneg content — mostly TT IS "IBM-3278-2".
-                    subneg = pending[i + 3 : i + consumed - 2]
-                    if len(subneg) >= 2 and subneg[0] == OPT_TERMTYPE:
-                        # Confirmed terminal type; nothing to send back.
-                        pass
+                    # Subneg content (mostly TT IS "IBM-3278-2") needs no reply.
                 else:
                     if verb == WILL and opt == OPT_BINARY:
                         agreed["binary_them"] = True
@@ -717,47 +707,3 @@ class MockTN3270Server:
             return None
         # Anything else → echo the entered fields on a result screen.
         return build_result_screen(cols=self.cols, aid=f"0x{read.aid:02X}", **read.values)
-
-
-# --------------------------------------------------------------------------- #
-# Convenience — decode a plain screen dump for assertions                      #
-# --------------------------------------------------------------------------- #
-
-
-def dump_screen_ascii(payload: bytes, cols: int = 80, rows: int = 24) -> list[str]:
-    """Interpret a server-sent screen payload and render as an ASCII grid.
-
-    Used inside test helpers so a test can compare what would be shown
-    to the user without going through the full ws3270 pipeline.
-    """
-    grid = [[" "] * cols for _ in range(rows)]
-    if not payload:
-        return ["".join(r) for r in grid]
-    # Skip CMD + WCC.
-    i = 2
-    cur = 0
-    while i < len(payload):
-        b = payload[i]
-        if b == ORDER_SBA and i + 2 < len(payload):
-            row, col = _decode_sba(payload[i + 1], payload[i + 2], cols)
-            cur = (row - 1) * cols + (col - 1)
-            i += 3
-        elif b == ORDER_SF and i + 1 < len(payload):
-            # Field attribute occupies one cell (usually rendered blank).
-            grid[cur // cols][cur % cols] = " "
-            cur += 1
-            i += 2
-        elif b == ORDER_IC:
-            i += 1
-        elif b in (ORDER_PT, ORDER_EUA, ORDER_RA):
-            i += 3
-        else:
-            # Regular EBCDIC data byte.
-            ch = bytes([b]).decode("cp037", errors="replace")
-            r = cur // cols
-            c = cur % cols
-            if 0 <= r < rows and 0 <= c < cols:
-                grid[r][c] = ch if ch.isprintable() else " "
-            cur += 1
-            i += 1
-    return ["".join(r) for r in grid]

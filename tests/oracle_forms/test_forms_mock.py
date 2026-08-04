@@ -58,7 +58,11 @@ def _can_deliver_modifier_keys(app) -> bool:
 
 
 def test_form_window_ready(forms_app) -> None:
-    """The mock's JFrame surfaces to JAB — wait_ready must return."""
+    """title() on the launched mock returns without raising.
+
+    The value itself is unconstrained — pywinauto reports '' for Java
+    frames, so an empty title is a pass.
+    """
     assert forms_app.title() or True  # pywinauto returns '' for Java frames
 
 
@@ -117,8 +121,8 @@ def test_function_key_raw(forms_app) -> None:
     assert forms_app.wait_for_status("Enter query") == "Enter query."
 
 
-def test_status_line_ignores_junk_query(forms_app) -> None:
-    """OracleFormsKey names round-trip to human-readable status."""
+def test_function_key_accepts_oracle_forms_key_enum(forms_app) -> None:
+    """``function_key(OracleFormsKey.EXECUTE_QUERY)`` runs the query."""
     forms_app.function_key(OracleFormsKey.EXECUTE_QUERY)
     assert "Record" in forms_app.wait_for_status("Record")
 

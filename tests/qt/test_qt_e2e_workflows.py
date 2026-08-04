@@ -218,7 +218,6 @@ def test_customer_onboarding_three_screen_wizard(biz_app):
         Screen 1 — Account creation (Inputs tab):
             * Username "yann_dubois"
             * Password "9Bx!azqW2"
-            * Birth date defaults preserved
             * Notes: "Marketing manager, Paris office"
 
         Screen 2 — Preferences (Choices tab):
@@ -231,8 +230,9 @@ def test_customer_onboarding_three_screen_wizard(biz_app):
             * Tick "Send updates"
             * Pick radio Option B (mid-tier plan)
 
-    Post-condition: every choice persists; navigating back to each tab
-    confirms no field was reset.
+    Post-condition: navigating back to each tab confirms the three text
+    fields, both combo boxes and all three toggles still hold what was
+    entered.
     """
     app, win = biz_app
 
@@ -293,12 +293,14 @@ def test_invoice_creation_review_workflow(biz_app):
         5. Notes captured.
         6. Bold/italic markers toggled for branded output.
         7. Switch to Choices and set language to German (receipt language).
-        8. Switch to Containers — table data must remain unchanged (data
-           integrity assumption: switching tabs doesn't mutate models).
+        8. Switch to Containers — the People table is still enabled, i.e. the
+           tab round-trip left the view alive. Its cell contents sit behind
+           plain C++ getters, so `enabled` is the reachable observable.
         9. Switch back and read final total = count × price.
 
-    Verifications include line item count == 4, total within 0.01 cents of
-    expected, language is German, no other field was clobbered.
+    Verifications: the total rebuilt from the two spin boxes matches
+    count × price rounded to 2 decimals, and username, slider, notes, bold
+    and italic all still hold the values set in steps 2-6.
     """
     app, win = biz_app
 
@@ -691,8 +693,13 @@ def test_user_changes_language_multiple_times(journey):
 
     Steps:
         1. Open Choices tab
-        2. Cycle ComboBox through every option, observing each pick
-        3. End on "Polish" and verify status + currentText
+        2. Cycle the ComboBox through every option, checking currentText
+           after each pick
+        3. End on "Polish" and verify currentText
+
+    currentTextChanged does not fire when a write lands on the value already
+    selected, so the combo's own currentText is the observable rather than
+    the status mirror.
     """
     app, win = journey
     win.locator(control_type="TabItem", title="Choices").invoke()
@@ -748,12 +755,15 @@ def test_disabled_button_cannot_be_clicked_to_change_state(journey):
 
 @pytest.mark.timeout(90)
 def test_user_explores_tree_widget(journey):
-    """As a user, I want to expand the tree and find a specific file by name.
+    """As a user, I want the file tree to be reachable and usable.
 
     Steps:
         1. Switch to Containers tab
-        2. Verify the tree has a "Project" root with children
-        3. Verify README.md is reachable
+        2. Verify the tree is enabled
+        3. Verify its header is visible (headerHidden is False)
+
+    Item-level content sits behind plain C++ getters the meta-object system
+    does not expose, so the tree's Q_PROPERTYs are the observable here.
     """
     app, win = journey
     win.locator(control_type="TabItem", title="Containers").invoke()
@@ -855,7 +865,7 @@ def test_analyst_morning_checklist_complete_workflow(fresh_app):
     and verifies the whole configuration before starting her shift.
 
     This single test exercises:
-      * Tab navigation (5 tabs)
+      * Tab navigation (Inputs, Choices, Buttons)
       * Menus (File>New, View>Zoom>200%)
       * Toolbar (Bold)
       * Inputs: text, password, spinner, double spinner, slider, plainText
@@ -943,7 +953,7 @@ def test_analyst_morning_checklist_complete_workflow(fresh_app):
 @pytest.mark.timeout(180)
 def test_customer_completes_shopping_checkout(fresh_app):
     """Story: A customer enters a 5-item order (using Inputs as cart fields),
-    picks language for the receipt, ships to Berlin, and confirms via toolbar.
+    picks German as the receipt language, and confirms via the Edit>Copy action.
 
     Cart shape:
       * Username = recipient name
@@ -1009,8 +1019,8 @@ def test_customer_completes_shopping_checkout(fresh_app):
 @pytest.mark.timeout(180)
 def test_editor_complete_writing_session(fresh_app):
     """Story: An editor opens a document, types multiple paragraphs, formats
-    selectively with bold/italic, picks language Polish, and navigates between
-    sections via tabs without losing work.
+    them with bold/italic, zooms in, and navigates between sections via tabs
+    without losing work.
 
     Verifies the most common editor regression: switching tab/menu/zoom must
     NOT clear the editing buffer.
@@ -1352,7 +1362,7 @@ def test_e2e_fill_login_form_uia_verify_agent(widgets_app):
     edits = agent.find(className="QLineEdit")
     by_name = {agent.get_property(e["handle"], "objectName"): e["handle"] for e in edits}
 
-    # The demo names its inputs qt_edit_username / qt_edit_password.
+    # The demo names its inputs qt_input_username / qt_input_password.
     assert any("user" in name.lower() for name in by_name), by_name.keys()
     user_handle = next(h for n, h in by_name.items() if "user" in n.lower())
     assert agent.get_property(user_handle, "text") == "e2e_user"
@@ -1364,7 +1374,11 @@ def test_e2e_fill_login_form_uia_verify_agent(widgets_app):
 
 
 def test_e2e_programmatically_disable_every_button(widgets_app):
-    """Disable every QPushButton via agent; verify UIA sees them disabled too."""
+    """Disable every enabled QPushButton via the agent, then restore them.
+
+    A spot-check re-reads the first button through the agent to confirm the
+    bulk write took effect before everything is re-enabled.
+    """
     app, _win = widgets_app
     agent = app.qt_agent
 
@@ -1378,7 +1392,7 @@ def test_e2e_programmatically_disable_every_button(widgets_app):
     for h in initially_enabled:
         agent.set_property(h, "enabled", False)
 
-    # Spot-check: pick the first one, verify both APIs agree it's disabled.
+    # Spot-check: pick the first one, verify the agent reports it disabled.
     if initially_enabled:
         sample_h = initially_enabled[0]
         assert agent.get_property(sample_h, "enabled") is False
@@ -1513,9 +1527,12 @@ def test_e2e_uia_click_observed_by_agent(mixed_app):
 
 @pytest.mark.timeout(90)
 def test_e2e_agent_text_shows_in_uia(mixed_app):
-    """Set a QLineEdit's text via the agent; read it back via a UIA Locator.
+    """Set a QLineEdit's text via the agent, then read the same handle back.
 
-    Round-trip from C++ Q_PROPERTY → UIA Value Pattern via Qt's bridge.
+    The Inputs tab is opened through UIA, so the widget is on screen and
+    realised; the value round-trip itself is asserted on the agent's
+    Q_PROPERTY, which is keyed by handle and so cannot drift onto a
+    different QLineEdit.
     """
     app, win = mixed_app
 
@@ -1528,9 +1545,7 @@ def test_e2e_agent_text_shows_in_uia(mixed_app):
     app.qt_agent.set_property(target_h, "text", "via-agent-round-trip")
     sleep(0.2)
 
-    # UIA reads via Locator.text() — should see the same value.
-    _uia_view = win.edit().text() if hasattr(win, "edit") else None
-    # The first QLineEdit may or may not be the same one; cross-check by handle.
+    # Read back by handle, so the value is checked on the widget we wrote to.
     agent_view = app.qt_agent.get_property(target_h, "text")
     assert agent_view == "via-agent-round-trip"
 
@@ -1610,10 +1625,12 @@ def test_e2e_widget_identity_via_object_name_matches(mixed_app):
 
 
 def test_e2e_kill_releases_agent_and_app_dies_cleanly(mixed_app):
-    """Kill the app — agent caches clear, process actually exits.
+    """Kill the app — the cached agent handle is released.
 
-    Catches the "zombie pipe" bug where the agent client lingered after
-    the AUT was gone, blocking the next test's pipe creation.
+    A live agent answers ``ping`` and ``has_qt_agent()`` is True; after
+    ``kill()``, ``has_qt_agent()`` is False. Catches the "zombie pipe" bug
+    where the agent client lingered after the AUT was gone, blocking the
+    next test's pipe creation.
     """
     app, _ = mixed_app
     agent = app.qt_agent

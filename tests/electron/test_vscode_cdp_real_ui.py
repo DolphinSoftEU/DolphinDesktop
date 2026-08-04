@@ -7,12 +7,11 @@ may need updating — treat them as smoke, not contract.
 Covers:
 
 * document.title reads
-* workbench root visible and layout classes present
-* activity bar items present and clickable
-* status bar visible
-* sidebar toggle via keyboard shortcut
-* Command Palette opens and closes
-* title bar text
+* workbench root visible and layout regions present
+* activity bar items present and carrying aria-labels
+* status bar visible and populated
+* Command Palette opens after a dispatched Ctrl+Shift+P keydown
+* an editor, Welcome page or empty workbench is showing after startup
 """
 
 from __future__ import annotations

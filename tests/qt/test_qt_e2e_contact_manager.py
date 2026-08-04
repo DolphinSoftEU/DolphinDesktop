@@ -120,10 +120,12 @@ def test_cm_user_adds_brand_new_contact(cm_app):
     """Story: User clicks Add, fills the new blank row, saves.
 
     Steps:
-        1. Click Add — list grows to 6, new entry selected
+        1. Click Add — list grows to 6, status reports "new contact added"
         2. Fill first/last/email/phone/category/notes/favorite
-        3. Click Save — status "saved Marek Lewandowski"
-        4. List entry now reads "Marek Lewandowski <marek@example.com>"
+        3. Click Save — status reads "saved Marek Lewandowski"
+
+    The list widget's per-item text is not reachable through the agent, so
+    the status mirror and the list's row count are the observables.
     """
     app, _ = cm_app
 

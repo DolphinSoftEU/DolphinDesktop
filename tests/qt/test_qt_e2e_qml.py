@@ -261,7 +261,10 @@ def test_qml_user_completes_long_survey(qml_app_long_journeys):
       Q4 — How loud do you like things?         (Slider, 0-100)
       Q5 — Press submit                         (Button)
 
-    Status label captures each answer. Final submit must show "clicked".
+    The status label captures the name, agreement, volume and submit answers.
+    Q3 is checked on the ComboBox's own currentText instead, because
+    onCurrentTextChanged only fires on a real transition. Final submit must
+    show "clicked".
     """
     qml_app = qml_app_long_journeys
     name = qml_app.qml("qmlNameField")
@@ -285,7 +288,7 @@ def test_qml_user_completes_long_survey(qml_app_long_journeys):
     sleep(0.1)
     for idx, expected in enumerate(["Red", "Green", "Blue"]):
         color.set_property("currentIndex", idx)
-        # Verify the property changed; status mirror is best-effort.
+        # The ComboBox property is the observable here — see the docstring.
         assert color.get_property("currentText") == expected
     # End on Blue.
     assert color.get_property("currentText") == "Blue"
@@ -714,7 +717,12 @@ def test_user_can_reset_form_by_setting_defaults(persistent_app):
 @pytest.mark.qt_agent
 @pytest.mark.timeout(90)
 def test_readonly_field_resists_modification(persistent_app):
-    """qt_input_readonly is read-only — the QLineEdit's text is fixed."""
+    """qt_input_readonly carries readOnly=True and still holds its initial text.
+
+    readOnly guards keyboard and mouse input, not the meta-object system, so
+    the contract under test is the flag plus the untouched starting value —
+    setProperty would be allowed to write through it.
+    """
     app, win = persistent_app
     win.locator(control_type="TabItem", title="Inputs").invoke()
     sleep(0.3)
@@ -723,7 +731,6 @@ def test_readonly_field_resists_modification(persistent_app):
     initial = field.get_property("text")
     assert field.get_property("readOnly") is True
 
-    # Setting text via setProperty IS allowed (it bypasses the readOnly user-input
-    # guard — readOnly is about user input via keyboard/mouse, not API). So this
-    # tests the readOnly flag, not the text immutability.
+    # No write is attempted: setProperty bypasses the readOnly user-input guard,
+    # so writing would prove nothing about the flag.
     assert initial == "read-only"

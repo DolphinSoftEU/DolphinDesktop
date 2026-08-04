@@ -819,9 +819,15 @@ class TestMenuItemReadOnlyQueries:
 
 class TestFocusForInput:
     def test_an_already_active_window_is_not_refocused(self, monkeypatch):
-        """set_focus() on the root window closes the transient popups it owns,
-        so re-activating an already-foreground window dismissed the combo-box
-        dropdown or context menu the click was aimed at."""
+        """``_locator._is_foreground`` is a patchable module-level hook.
+
+        The real function is swapped for a handle-comparing stand-in and the
+        substitute's True answer is read back through the module attribute,
+        which is the seam the pointer-input path uses to skip a redundant
+        ``set_focus()``. The genuine win32gui lookup needs a live foreground
+        window and is not driven here; its unknown-state branch is covered by
+        ``test_an_unknown_foreground_state_still_focuses``.
+        """
         spec = MagicMock()
         spec.wrapper_object.return_value.handle = 4242
         monkeypatch.setattr(_locator, "_is_foreground", lambda s: s.wrapper_object().handle == 4242)

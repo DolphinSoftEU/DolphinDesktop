@@ -6,10 +6,8 @@ import pytest
 
 from dolphin_desktop import Desktop, MainframeError, add_import_path, dirname, path_join
 
-# The mock-server module lives in this directory (pytest adds it to
-# sys.path automatically). The env-probe module lives in the sibling
-# pub400/ folder — publish it via add_import_path so tests here can
-# import it as ``_mainframe_env`` without needing raw sys/pathlib.
+# Put the sibling pub400/ folder on sys.path so its modules are
+# importable directly as well as by dotted path.
 add_import_path(path_join(dirname(__file__), "..", "pub400"))
 
 from tests.mainframe.mock_tn3270._mock_server import MockTN3270Server, ScreenField  # noqa: E402

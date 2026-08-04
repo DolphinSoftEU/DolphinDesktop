@@ -2,7 +2,7 @@
 
 Every test here only reads: no document is created, posted or deleted, so
 the suite is safe against a shared sandbox. Transactions used are SE16
-(data browser, display) and SU53 / system info, all display-only.
+(data browser, display) and SESSION_MANAGER, both display-only.
 
 Run with the environment described in ``conftest.py``; without it the
 whole module skips.
@@ -73,6 +73,6 @@ def test_se16_table_browser_displays_client_table(sap_home):
 
 
 def test_locator_by_name_resolves_a_toolbar_button(sap_session):
-    """The name-based locator surface works against a live screen."""
+    """The id-based locator surface resolves the Back button on a live screen."""
     loc = sap_session.locator(id="wnd[0]/tbar[0]/btn[3]")  # Back
     assert loc.exists()

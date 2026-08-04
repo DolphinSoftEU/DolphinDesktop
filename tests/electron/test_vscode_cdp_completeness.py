@@ -1,5 +1,5 @@
-"""One focused test per method added when we lifted CDPLocator to parity
-with :class:`dolphin_desktop.Locator`. Includes:
+"""One focused test per ``CDPLocator`` method that mirrors
+:class:`dolphin_desktop.Locator`. Covers:
 
 * Mouse: ``double_click``, ``right_click``, ``hover``, ``drag_to``
 * Keyboard: ``focus``, ``press_key`` (element + page-level),

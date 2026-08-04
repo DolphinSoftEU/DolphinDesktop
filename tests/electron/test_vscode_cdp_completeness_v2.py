@@ -1,12 +1,12 @@
-"""Second completeness pass — everything the first round did not cover.
+"""CDP coverage for input, framing, finder and session-state APIs.
 
 * File uploads (``set_input_files``)
 * Dialog interception (``accept_dialogs`` / ``dismiss_dialogs``)
 * Iframes (``frame_locator``)
 * Locator narrowing: ``locator(chain)``, ``filter(has_text=…)``
 * Playwright a11y selectors (``get_by_role`` / ``label`` / ``text`` /
-  ``placeholder`` / ``title`` / ``alt_text`` / ``test_id``) — session +
-  nested locator variants
+  ``placeholder`` / ``title`` / ``test_id``) — session + nested locator
+  variants
 * Raw HTML read (``inner_html``)
 * Console capture (``console_messages`` / ``clear_console_messages``)
 * localStorage helpers
@@ -401,7 +401,6 @@ def test_local_storage_set_get_and_clear(vscode_cdp):
 
 
 def test_set_default_timeout_takes_effect(vscode_cdp):
-    """set_default_timeout tightens Playwright's implicit action timeouts."""
+    """set_default_timeout accepts a timeout and returns without raising."""
     vscode_cdp.set_default_timeout(30)
-    # Restore for the next test.
     vscode_cdp.set_default_timeout(30)

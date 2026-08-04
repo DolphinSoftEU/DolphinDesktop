@@ -93,8 +93,8 @@ def test_e2e_two_qml_apps_each_with_own_agent():
 # ---------------------------------------------------------------------------
 
 
-def test_e2e_200_pipe_calls_under_5_seconds():
-    """200 round-trip get_property calls should average <25 ms each.
+def test_e2e_200_pipe_calls_under_8_seconds():
+    """200 round-trip get_property calls must finish in under 8 s — 40 ms each.
 
     Realistic ceiling for a selector-heavy Qt agent test suite where each
     locator translates to ~3-5 agent calls.

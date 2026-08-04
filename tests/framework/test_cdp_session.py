@@ -790,7 +790,7 @@ class TestBindFailureDoesNotOrphanListeners:
 
 
 class TestPopupSurfacesArmingFailures:
-    """``expect_popup`` used to swallow every exception from ``_select_page``.
+    """``expect_popup`` must not swallow exceptions from ``_select_page``.
 
     A route that cannot be re-armed on the popup's context means requests the
     test believes are mocked now reach the real network, while ``_routes``

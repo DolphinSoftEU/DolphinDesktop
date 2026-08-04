@@ -111,7 +111,6 @@ def test_find_counter_strike_in_library(steam_cdp) -> None:
             "Library tab in Steam and re-run — the library grid must be "
             "rendered for its DOM text to be reachable."
         )
-    assert found
     assert any("steamloopback.host" in u or "steam" in u.lower() for u in hits), (
         f"Match came from an unexpected origin: {hits!r}"
     )
@@ -119,7 +118,6 @@ def test_find_counter_strike_in_library(steam_cdp) -> None:
 
 def test_find_cs2_exact_title(steam_cdp) -> None:
     """Prefer the modern title ``Counter-Strike 2`` when the account owns it."""
-    found, hits = _search_all_pages_for(steam_cdp, "Counter-Strike 2")
+    found, _hits = _search_all_pages_for(steam_cdp, "Counter-Strike 2")
     if not found:
         pytest.skip("CS2 title not visible — account may only own CS:GO/CS 1.6")
-    assert found, hits

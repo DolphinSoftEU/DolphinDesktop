@@ -146,7 +146,7 @@ def test_state_filter_dropdown_alaska_empties_grid(modernui):
 
 @skip_no_modernui
 def test_state_filter_restored_to_alberta_repopulates_grid(modernui):
-    """Back on Alberta the demo rows (Calgary/Edmonton) are visible again."""
+    """Back on Alberta the filter row reads Alberta and Calgary is visible."""
     _app, _win, region = modernui
     assert "Alberta" in _filter_row_text(region)
     grid_text = Screen.text(region=region)

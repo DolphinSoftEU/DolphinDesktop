@@ -355,7 +355,6 @@ class DemoMainWindow(QMainWindow):
             for c, val in enumerate(row):
                 model.setItem(r, c, QStandardItem(val))
         table.setModel(model)
-        self.people_model = model
         layout.addWidget(QLabel("People:", page))
         layout.addWidget(table)
 

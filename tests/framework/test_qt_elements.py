@@ -51,9 +51,6 @@ class _FakeAgent:
     def graphics_item_at(self, handle, x, y):
         return self._reply("graphics_item_at", handle, x, y)
 
-    def graphics_items(self, handle):
-        return self._reply("graphics_items", handle)
-
 
 def _widget(agent) -> WidgetElement:
     return WidgetElement(agent, "0xdead", {"class": "QPushButton", "objectName": "ok"})

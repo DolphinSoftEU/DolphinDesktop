@@ -114,8 +114,8 @@ def test_typed_char_is_echoed(pub400_term: MainframeTerminal) -> None:
 
     This test verifies the write path reaches the host and the read
     path sees the response — enough to prove connect+write+read work
-    end to end. A dedicated ``test_form_submission`` test lives in
-    ``test_pub400_xfail.py`` and is marked xfail until we ship TN5250.
+    end to end. Field-level submission against pub400 is covered by the
+    native TN5250 tests in ``tests/mainframe/tn5250_native/``.
     """
     before = pub400_term.screen()
     before_cursor = before.cursor

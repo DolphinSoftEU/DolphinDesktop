@@ -4,7 +4,8 @@ All test files in this directory share:
 
 * :func:`vscode_cdp` — module-scoped ``CDPSession`` connected to a fresh
   VS Code launched via :meth:`Desktop.launch_electron_cdp`.
-* :data:`VSCODE`, :func:`_has_playwright` — reused skip predicates.
+* :data:`VSCODE`, :func:`has_playwright` (from :mod:`tests.electron._cdp_env`)
+  — reused skip predicates.
 
 Module scope keeps VS Code alive across every test in a file (one launch
 per file) while isolating each module — one file's DOM edits do not leak
@@ -74,8 +75,8 @@ def _cleanup_synthetic_dom(vscode_cdp):
     of earlier ones — same coordinates end up stacked, and Playwright's
     click-actionability check refuses to click a covered element.
 
-    We tag every synthetic element by injecting it into the ``<body>`` and
-    ripping out everything except the top-level VS Code renderer roots
+    Synthetic elements are appended to ``<body>``, so we rip out every
+    direct child of ``<body>`` except the top-level VS Code renderer roots
     (``.monaco-workbench``, ``.monaco-shell``, ``#workbench.parts``...).
     """
     # Best-effort: if the session is dead we just yield and let the test
@@ -84,9 +85,6 @@ def _cleanup_synthetic_dom(vscode_cdp):
         vscode_cdp.evaluate(
             """
             () => {
-              const keep = new Set([
-                '#workbench.parts.titlebar', 'MONACO-WORKBENCH',
-              ]);
               // Remove every direct child of <body> that is NOT one of the
               // VS Code renderer roots. VS Code renders through a single
               // top-level container ('.monaco-workbench'); everything else

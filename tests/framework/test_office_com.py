@@ -20,7 +20,6 @@ class _FakeDoc:
     """Workbook / document stand-in recording what was done to it."""
 
     def __init__(self, name: str, app: _FakeApp | None = None) -> None:
-        self.name = name
         self.Name = name
         self._app = app
         self.close_arg: object = "not closed"

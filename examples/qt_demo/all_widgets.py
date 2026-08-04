@@ -12,7 +12,7 @@ locate it both ways. The status bar mirrors the last action as
 CLI flags:
 
     --no-show          Build the UI but don't show it (sanity test).
-    --quit-after N     Auto-quit N seconds after show (used by smoke tests).
+    --quit-after N     Auto-quit N seconds after show.
 """
 
 from __future__ import annotations
@@ -366,8 +366,6 @@ class DemoMainWindow(QMainWindow):
             for c, val in enumerate(row):
                 model.setItem(r, c, QStandardItem(val))
         table.setModel(model)
-        # store model for tests
-        self.people_model = model
         layout.addWidget(QLabel("People:", page))
         layout.addWidget(table)
 

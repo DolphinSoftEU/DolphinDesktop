@@ -4,9 +4,10 @@ Validates that dolphin_desktop's Qt support works against real Qt
 applications when they are present on the machine — not just our
 PyQt5/PySide6 demos.
 
-Each test is skipped automatically if the target executable isn't installed.
+Each test locates its target by image name among the running processes and
+is skipped when that process isn't running.
 
-Targets covered (auto-detected from default install paths):
+Targets covered:
 
 * **AMD Radeon Software** (Qt 6) — GPU control panel.
 * **AMD Ryzen Master** (Qt 6) — CPU monitoring/overclocking.
@@ -16,7 +17,9 @@ For each target we verify:
 
 1. ``Application.is_qt()`` returns ``True``.
 2. ``Application.qt_version()`` matches expected ("5" or "6").
-3. At least one widget is reachable via UIA (the top window).
+
+Detection is all these tests touch — no window or locator is exercised, so
+they stay safe to run against a live process the user is actually using.
 
 We deliberately don't launch + kill these apps because they're long-running
 services in the user's environment — instead we **connect** to a running
@@ -106,13 +109,11 @@ def test_lghub_agent_detected_as_qt5():
 
 
 def test_at_least_one_qt_app_is_running_on_dev_machine():
-    """Sanity check that this machine has *some* Qt app running for real-app coverage.
+    """Report whether this machine has *some* Qt app running for real-app coverage.
 
-    If none of the known Qt targets are running, all the smoke tests above
-    are skipped — this test fails loudly so the dev knows to launch one.
-
-    Marked xfail-friendly: in CI environments without these apps the test
-    is skipped, not failed.
+    When at least one known target is running the test passes; when none is,
+    it skips with a message naming the apps to launch — the same outcome the
+    smoke tests above reach, and what CI machines without these apps get.
     """
     candidates = ("RadeonSoftware.exe", "AMD Ryzen Master.exe", "lghub.exe", "lghub_agent.exe")
     running = [c for c in candidates if find_pid_by_image_name(c) is not None]

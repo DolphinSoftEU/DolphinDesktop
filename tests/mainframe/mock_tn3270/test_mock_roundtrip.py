@@ -123,9 +123,9 @@ def test_field_after_locates_input_position(mock_term) -> None:
 
     The label-scan heuristic without attribute-byte inspection cannot
     know the exact column where the writable field begins — it lands
-    a few columns past the label. Task C wires up ReadBuffer-based
-    auto-detection to fix this properly; for now we verify only that
-    the returned position is inside the field's range.
+    a few columns past the label, so this test only checks that the
+    returned position is inside the field's range. Exact ReadBuffer-based
+    detection is covered by ``test_field_autodetect.py``.
     """
     term, _ = mock_term
     f = term.field_after("USER", length=1)

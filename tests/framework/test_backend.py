@@ -254,7 +254,13 @@ STUB_CLASSES = [MacOSAccessibilityBackend, LinuxATSPIBackend, CDPBackend]
 
 class TestStubBackends:
     @pytest.mark.parametrize("cls", STUB_CLASSES)
-    def test_stub_is_not_available(self, cls):
+    def test_stub_is_available_answers_a_bool(self, cls):
+        """``is_available()`` returns a bool rather than raising.
+
+        Says nothing about which bool: ``macos``/``linux`` report False
+        while ``cdp`` reports True (see
+        ``test_reserved_platform_stubs_not_available``).
+        """
         result = cls().is_available()
         assert isinstance(result, bool)
 
@@ -314,7 +320,14 @@ class TestStubBackends:
         stub_ids = {MacOSAccessibilityBackend.id, LinuxATSPIBackend.id, CDPBackend.id}
         assert mvp_ids.isdisjoint(stub_ids)
 
-    def test_stub_not_included_in_mvp_builtin_list(self):
+    def test_stub_classes_are_distinct_from_mvp_classes(self):
+        """The stub classes and the MVP backend classes are six distinct types.
+
+        Guards against a stub being aliased onto a concrete backend (which
+        would make the shared ``STUB_CLASSES`` suite silently exercise the
+        real implementation). Both classes are in ``_BUILT_IN``; membership
+        is covered by ``TestRegistry``.
+        """
         mvp = {UIABackend, Win32Backend, ImageBackend}
         stubs = {MacOSAccessibilityBackend, LinuxATSPIBackend, CDPBackend}
         assert mvp.isdisjoint(stubs)

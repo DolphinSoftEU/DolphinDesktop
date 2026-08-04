@@ -129,7 +129,7 @@ def _click_field(rec: Recorder) -> None:
 
 class TestPasswordRedaction:
     def test_tab_between_fields_keeps_the_password_out_of_the_script(self, keyboard):
-        """click user → type → Tab → type password → Enter, the flow redaction exists for."""
+        """type user → Tab → type password → Enter, the flow redaction exists for."""
         rec, focus = keyboard
         _type(rec, "alice")
         _press(rec, _VK_TAB)
@@ -242,7 +242,12 @@ class TestPasswordRedaction:
 
 class TestAltGrTranslation:
     def _layout(self, monkeypatch, altgr: str) -> None:
-        """Stub a layout whose third level maps VK_A to *altgr*."""
+        """Stub a layout whose third level yields *altgr* for any key.
+
+        ``_to_unicode`` is replaced by a stand-in that ignores the vk and
+        returns *altgr* whenever both Ctrl and Alt are set, and ``"a"``
+        otherwise — so callers pick whichever vk suits the case they describe.
+        """
         monkeypatch.setattr(
             _recorder,
             "_to_unicode",
@@ -496,8 +501,8 @@ class TestSpecialKeysAreNeverTypedAsText:
     """``{BACKSPACE}`` in a ``type_text`` run replays as eleven characters.
 
     ``type_text`` escapes braces before handing the string to send_keys, so a
-    braced token folded into a text run comes out literal. Only Tab and Enter
-    used to end a run, which left every other special key inside one.
+    braced token folded into a text run comes out literal. Every key with a
+    braced spelling — not just Tab and Enter — must therefore end the run.
     """
 
     @pytest.mark.parametrize(

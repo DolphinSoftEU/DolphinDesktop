@@ -6,7 +6,7 @@ preserve the autonomous-library contract.
 
 from __future__ import annotations
 
-from dolphin_desktop import dirname, path_exists, path_join, which
+from dolphin_desktop import dirname, path_exists, path_join
 
 _SAMPLE_DIR = path_join(dirname(__file__), "sample_lcl")
 
@@ -20,10 +20,4 @@ def find_sample_exe() -> str | None:
     return None
 
 
-def find_lazbuild() -> str | None:
-    """Return the path to lazbuild, or None if Lazarus is not installed."""
-    return which("lazbuild")
-
-
 SAMPLE_EXE = find_sample_exe()
-LAZBUILD = find_lazbuild()
