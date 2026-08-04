@@ -200,8 +200,11 @@ class ExcelApp:
 
         A workbook whose ``Save()`` failed is left open and the instance
         is left running: closing or quitting would discard exactly the
-        content the failed save was meant to keep. Calling ``quit()``
-        again retries it. Idempotent otherwise.
+        content the failed save was meant to keep, and this call raises
+        :class:`RuntimeError` naming it. Retry with
+        ``quit(save_changes=True)`` — a bare ``quit()`` defaults to
+        ``save_changes=False`` and closes the workbook **without** saving,
+        as does leaving the ``with`` block. Idempotent otherwise.
         """
         unsaved: list[str] = []
         if self._opened:
@@ -349,8 +352,11 @@ class WordApp:
 
         A document whose ``Save()`` failed is left open and the instance
         is left running: closing or quitting would discard exactly the
-        content the failed save was meant to keep. Calling ``quit()``
-        again retries it. Idempotent otherwise.
+        content the failed save was meant to keep, and this call raises
+        :class:`RuntimeError` naming it. Retry with
+        ``quit(save_changes=True)`` — a bare ``quit()`` defaults to
+        ``save_changes=False`` and closes the document **without** saving,
+        as does leaving the ``with`` block. Idempotent otherwise.
         """
         unsaved: list[str] = []
         if self._opened:
