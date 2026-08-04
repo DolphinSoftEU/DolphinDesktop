@@ -88,6 +88,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 These change the behavior of existing calls; read them before upgrading.
 
+* **`get_attribute()` raises `AttributeError` for a name the element does
+  not publish**, instead of returning `None`. This affects the UIA
+  `Locator`, `SapLocator` and `JABLocator`. A misspelled name — including
+  the PascalCase UIA spelling `"AutomationId"` where pywinauto publishes
+  `automation_id` — used to be indistinguishable from an attribute that
+  was genuinely empty, so an assertion against it passed without ever
+  reading the UI. The message lists the names that *are* available. Pass a
+  second argument to opt back into the old behavior:
+  `get_attribute("AutomationId", None)`.
+
 * **`spy.pick()` and `spy.sap_pick()` return a versioned dict** instead of
   a bare `list[dict]` / selector dict, and no longer print the locator's
   verification status (the interactive banner still goes to stdout).
@@ -232,6 +242,14 @@ These change the behavior of existing calls; read them before upgrading.
 * `wait_change` on the mainframe API tolerates disconnect during wait
   — a host closing the socket after an AID key (PF3=Exit) no longer
   raises MainframeError.
+* **Element resolution is roughly 4× faster** (measured 3.0 s → 0.75 s per
+  `Locator` resolve against a small window). Resolution used to cost seven
+  full UIA tree scans: `Window.locator()` spent one deciding whether the
+  window was a Java Swing frame — an answer fixed for the lifetime of an
+  HWND, now cached — and pywinauto's `wait("exists visible")` spent three
+  more per poll, one for `exists`, one to re-resolve for `is_visible()`,
+  and one for a wrapper the caller discarded. A single scan answers both
+  questions, leaving two per resolve.
 
 ### Deprecated
 

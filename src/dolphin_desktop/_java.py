@@ -10,6 +10,20 @@ import threading
 import time
 from typing import Any
 
+from ._helpers import _MISSING
+
+# The fields AccessibleContextInfo carries that are meaningful to read back
+# as attributes. Bounds are reachable via ``bounding_box()`` and the child
+# count via ``all()``, so neither is duplicated here.
+_JAB_ATTRIBUTES: tuple[str, ...] = (
+    "name",
+    "description",
+    "role",
+    "role_en_US",
+    "states",
+    "states_en_US",
+)
+
 
 class JavaAccessBridge:
     """Utilities for enabling and checking the Java Access Bridge."""
@@ -995,20 +1009,31 @@ class JABLocator:
         self._release(vm_id, ac)
         return info.description or ""
 
-    def get_attribute(self, name: str) -> str | None:
+    def get_attribute(self, name: str, default: Any = _MISSING) -> Any:
+        """Return one field of the JAB AccessibleContextInfo by *name*.
+
+        Raises ``AttributeError`` for a name JAB does not publish — the
+        set is fixed (see :data:`_JAB_ATTRIBUTES`), so anything outside it
+        is a typo that would otherwise read back as ``None`` and let an
+        assertion pass against a field never fetched.
+
+        Still returns ``None`` when the element itself is not found, which
+        is how every reader on this locator reports an absent element.
+        Pass *default* to opt back into a non-raising lookup.
+        """
+        if name not in _JAB_ATTRIBUTES:
+            if default is not _MISSING:
+                return default
+            raise AttributeError(
+                f"Java Access Bridge publishes no attribute {name!r}. "
+                f"Available: {', '.join(_JAB_ATTRIBUTES)}"
+            )
         result = self._find()
         if result is None:
             return None
         vm_id, ac, info = result
         self._release(vm_id, ac)
-        return {
-            "name": info.name,
-            "description": info.description,
-            "role": info.role,
-            "role_en_US": info.role_en_US,
-            "states": info.states,
-            "states_en_US": info.states_en_US,
-        }.get(name)
+        return getattr(info, name)
 
     # Action methods
 

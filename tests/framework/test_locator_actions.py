@@ -83,10 +83,19 @@ class _FakeSpec:
 
 
 class _FakeWrapper:
-    """A pywinauto wrapper: only the attributes it was built with exist."""
+    """A pywinauto wrapper: only the attributes it was built with exist.
+
+    ``is_visible`` is the exception, and is defined unconditionally because
+    every real ``BaseWrapper`` defines it — the resolve path probes
+    visibility through it before handing the element to an action. A test
+    that needs it to answer False can still pass ``is_visible=...``.
+    """
 
     def __init__(self, **attrs: object) -> None:
         self.__dict__.update(attrs)
+
+    def is_visible(self) -> bool:
+        return True
 
 
 # Literal text must not be interpreted as pywinauto key syntax
@@ -169,7 +178,7 @@ class TestTreeWalkFallbackCriteria:
 
     def test_stale_auto_id_raises_instead_of_matching_first_button(self):
         child = MagicMock()
-        child.wait.side_effect = Exception("element not visible")
+        child.wrapper_object.side_effect = Exception("element not visible")
         spec = _spec_with(child)
         loc = _window(spec).button(auto_id="btnDelete").timeout(0.05)
         with pytest.raises(ElementNotFoundError):
@@ -188,7 +197,7 @@ class TestRadioButtonSelection:
         child.click_input.assert_not_called()
 
     def test_select_falls_back_to_check_without_selection_item(self):
-        child = MagicMock(spec=["wait", "toggle", "click_input", "get_check_state"])
+        child = MagicMock(spec=["wrapper_object", "toggle", "click_input", "get_check_state"])
         child.get_check_state.return_value = 0
         _window(_spec_with(child)).radio_button(name="Standard").select()
         child.toggle.assert_called_once_with()
@@ -209,7 +218,7 @@ class TestRadioButtonSelection:
         assert _window(_spec_with(child)).radio_button(name="Option A").is_checked() is False
 
     def test_is_checked_falls_back_to_check_state(self):
-        child = MagicMock(spec=["wait", "get_check_state"])
+        child = MagicMock(spec=["wrapper_object", "get_check_state"])
         child.get_check_state.return_value = 1
         assert _window(_spec_with(child)).radio_button(name="Standard").is_checked() is True
 
@@ -506,12 +515,21 @@ class TestTimeoutMsDoesNotLeak:
         loc = self._loc(child)
         assert getattr(loc, action)(timeout_ms=500) is loc
 
-    def test_next_action_keeps_the_locator_timeout(self):
-        child = MagicMock()
-        loc = self._loc(child)
+    def test_next_action_keeps_the_locator_timeout(self, monkeypatch):
+        """A per-action timeout_ms applies to that action only.
+
+        Recorded off the resolve-time wait, which is where the locator's
+        timeout is actually spent.
+        """
+        from dolphin_desktop import _locator
+
+        seen: list[float] = []
+        monkeypatch.setattr(
+            _locator, "_wait_until_visible", lambda spec, timeout: seen.append(timeout)
+        )
+        loc = self._loc(MagicMock())
         loc.click(timeout_ms=500).type_text("x")
-        waits = [call.kwargs["timeout"] for call in child.wait.call_args_list]
-        assert waits == [pytest.approx(0.5), pytest.approx(4.0)]
+        assert seen == [pytest.approx(0.5), pytest.approx(4.0)]
 
 
 # select_item must not discard the error that made it fall through
@@ -856,7 +874,7 @@ class TestPredicatesSeeWhatClickSees:
 
     def _failing_window(self):
         child = MagicMock()
-        child.wait.side_effect = Exception("never visible")
+        child.wrapper_object.side_effect = Exception("never visible")
         return _window(_spec_with(child))
 
     def _record_tree_walk(self, monkeypatch, result=None):

@@ -21,6 +21,12 @@ from itertools import count as _count
 from pathlib import Path as _Path
 from typing import Any as _Any
 
+# Distinguishes "caller passed no default" from "caller passed None as the
+# default" — what every ``get_attribute`` needs to decide between raising and
+# returning. Lives here so the UIA, SAP and JAB locators can share one
+# sentinel without importing each other.
+_MISSING: _Any = object()
+
 
 def sleep(seconds: float) -> None:
     """Block the current thread for *seconds* seconds.

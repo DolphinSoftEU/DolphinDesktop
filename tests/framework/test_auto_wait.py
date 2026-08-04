@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,19 +21,24 @@ def _window(spec: MagicMock | None = None) -> Window:
 
 
 def _failing_spec() -> MagicMock:
-    """Return a mock spec whose child_window().wait() always raises."""
+    """Return a mock spec whose element never resolves.
+
+    ``wrapper_object`` is what raises, which is how pywinauto reports an
+    absent element — the resolve path probes visibility through it.
+    """
     spec = MagicMock()
     child = MagicMock()
-    child.wait.side_effect = Exception("element not visible")
+    child.wrapper_object.side_effect = Exception("element not visible")
     spec.child_window.return_value = child
     spec.children.return_value = []
     return spec
 
 
 def _succeeding_spec() -> MagicMock:
-    """Return a mock spec whose child_window().wait() always succeeds."""
+    """Return a mock spec whose element resolves and reports itself visible."""
     spec = MagicMock()
     child = MagicMock()
+    child.wrapper_object.return_value.is_visible.return_value = True
     spec.child_window.return_value = child
     spec.children.return_value = []
     return spec
@@ -252,11 +258,15 @@ class TestAutoWaitRetry:
         spec = MagicMock()
         child = MagicMock()
 
-        def delayed_wait(state, timeout):
-            if not ready.wait(timeout=timeout):
-                raise RuntimeError("element did not appear in time")
+        visible = MagicMock()
+        visible.is_visible.return_value = True
 
-        child.wait.side_effect = delayed_wait
+        def appears_once_ready():
+            if not ready.is_set():
+                raise RuntimeError("element is not there yet")
+            return visible
+
+        child.wrapper_object.side_effect = appears_once_ready
         spec.child_window.return_value = child
         spec.children.return_value = []
 
@@ -267,14 +277,23 @@ class TestAutoWaitRetry:
 
         child.click_input.assert_called_once()
 
-    def test_wait_passes_timeout_to_pywinauto(self):
-        """Locator calls pywinauto's wait() with its own _timeout value."""
-        spec = _succeeding_spec()
-        loc = _window(spec).get_by_role("Button").timeout(4.2)
-        loc.click()
-        spec.child_window.return_value.wait.assert_called_once_with(
-            "exists visible", timeout=pytest.approx(4.2)
-        )
+    def test_locator_timeout_bounds_the_visibility_wait(self):
+        """The locator's own timeout governs how long _resolve waits.
+
+        Asserted against the clock rather than a recorded call argument:
+        the wait is our own poll loop now, so honouring the timeout is the
+        only externally visible part of the contract.
+        """
+        loc = _window(_failing_spec()).get_by_role("Button").timeout(0.3)
+
+        start = time.monotonic()
+        with pytest.raises(ElementNotFoundError):
+            loc.click()
+        elapsed = time.monotonic() - start
+
+        # Lower bound: it really waited. Upper bound: it used 0.3, not the
+        # 4.0 s default that would apply if the timeout were dropped.
+        assert 0.3 <= elapsed < 2.0
 
     def test_chained_actions_without_explicit_wait(self):
         """Chain of actions uses auto-wait on every step."""
@@ -393,7 +412,7 @@ class TestZeroTimeoutTriesOnce:
 class TestWaitForUsesFallbacks:
     def _spec_where_only_the_fallback_resolves(self) -> MagicMock:
         primary = MagicMock()
-        primary.wait.side_effect = Exception("primary never becomes visible")
+        primary.wrapper_object.side_effect = Exception("primary never becomes visible")
         fallback = MagicMock()
         spec = MagicMock()
         spec.children.return_value = []
@@ -416,10 +435,9 @@ class TestWaitForUsesFallbacks:
         from dolphin_desktop import WaitTimeoutError
 
         spec = _succeeding_spec()
-        spec.child_window.return_value.wait.side_effect = [
-            None,  # "exists visible" during _resolve
-            Exception("never enabled"),
-        ]
+        # _resolve no longer goes through wait(), so the only wait() left to
+        # fail is the explicit state wait wait_for(state=...) performs.
+        spec.child_window.return_value.wait.side_effect = Exception("never enabled")
         loc = _window(spec).get_by_role("Button").timeout(0.05)
         with pytest.raises(WaitTimeoutError):
             loc.wait_for(state="enabled")

@@ -10,6 +10,7 @@ from typing import Any
 
 from ._config import get_poll_interval, get_timeout
 from ._exceptions import ApplicationError, ElementNotFoundError, WaitTimeoutError
+from ._helpers import _MISSING
 from ._logging import get_logger
 
 _LOG = get_logger("sap")
@@ -2069,20 +2070,34 @@ class SapLocator:
             return False
         return True
 
-    def get_attribute(self, name: str) -> Any:
+    def get_attribute(self, name: str, default: Any = _MISSING) -> Any:
         """Return an attribute from the underlying SAP component.
 
-        Tries the given name plus capitalized and lowercased variants. Returns
-        ``None`` when no variant exists, so a ``None`` result does not
-        distinguish a missing attribute from one whose value is ``None``.
+        SAP's COM interface spells properties in PascalCase (``Text``,
+        ``Changeable``), so the given name is tried first, then a
+        capitalized and a lowercased variant.
+
+        Raises ``AttributeError`` when no variant resolves, chaining the
+        error COM raised for the last one. Returning ``None`` there would
+        hide both a misspelled property and a component that failed to
+        answer, leaving an assertion to pass against a value never read.
+
+        Pass *default* to opt back into a non-raising lookup.
         """
         component = self._resolve()
+        last_exc: Exception | None = None
         for candidate in (name, name[:1].upper() + name[1:], name.lower()):
             try:
                 return getattr(component, candidate)
-            except Exception:
+            except Exception as exc:
+                last_exc = exc
                 continue
-        return None
+        if default is not _MISSING:
+            return default
+        raise AttributeError(
+            f"SAP component {self._id or self._name or self._type!r} answered "
+            f"no attribute {name!r} (also tried PascalCase and lowercase)"
+        ) from last_exc
 
     def wait_for(self, *, state: str = "visible", timeout: float | None = None) -> SapLocator:
         """Wait for state ``exists``, ``visible``, ``enabled``, or ``hidden``."""

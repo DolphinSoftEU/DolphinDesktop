@@ -47,6 +47,20 @@ def sap_config() -> dict[str, str]:
     }
 
 
+def _connection_without_sessions(sap_gui) -> bool:
+    """True when SAP GUI has a connection open that exposes no session.
+
+    That is what ``sapgui/user_scripting = FALSE`` looks like from the
+    client side: the scripting engine answers, the connection is listed,
+    and its session count is zero.
+    """
+    try:
+        app = getattr(sap_gui, "raw", sap_gui)
+        return any(app.Children(i).Children.Count == 0 for i in range(app.Children.Count))
+    except Exception:
+        return False
+
+
 def _on_logon_screen(session) -> bool:
     """True when the session shows the SAP logon screen."""
     try:
@@ -110,6 +124,17 @@ def sap_session(sap_gui):
     try:
         session = sap_gui.session(connection=0, session=0)
     except Exception:
+        # A connection that is open but publishes no session means the
+        # *server* refuses scripting; opening another one would fail the
+        # same way, and reporting "no open connection" sends the operator
+        # to SAP Logon instead of to RZ11.
+        if _connection_without_sessions(sap_gui):
+            pytest.skip(
+                "SAP GUI shows an open connection but it publishes no "
+                "scripting session — enable server-side scripting: RZ11, "
+                "sapgui/user_scripting = TRUE (set it in the instance "
+                "profile too, or it reverts on the next restart)"
+            )
         if not cfg["connection"]:
             pytest.skip(
                 "no open SAP connection and DOLPHIN_SAP_CONNECTION is not set "
