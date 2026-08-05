@@ -66,7 +66,23 @@ Prints:
 dolphin spy [--window TITLE] [--exact TITLE] [--class CLASS] [--pid PID]
             [--depth N] [--json] [--pick] [--image-pick] [--output-dir DIR]
             [--backend {uia,win32}]
+            [--sap] [--connection N] [--session N]
+            [--jab] [--cdp URL] [--delphi]
+            [--mainframe HOST:PORT] [--session-type {3270,5250}]
 ```
+
+Stack-specific flags:
+
+| Option | Description |
+| --- | --- |
+| `--sap` | Inspect SAP GUI via SAP GUI Scripting (emits `find_by_id` locators) |
+| `--connection N` | SAP connection index for `--sap` (default: `0`) |
+| `--session N` | SAP session index for `--sap` (default: `0`) |
+| `--jab` | Inspect a Java Swing / Oracle Forms window via the Java Access Bridge |
+| `--cdp URL` | Inspect an Electron / CEF app's DOM through the given CDP endpoint (`http://host:port`) |
+| `--delphi` | Enumerate a Delphi / VCL (Lazarus) app's forms and TComponent tree via UIA |
+| `--mainframe HOST:PORT` | Inspect a mainframe screen (host:port); use with `--session-type` |
+| `--session-type {3270,5250}` | Mainframe session type for `--mainframe` (default: `3270`) |
 
 Examples:
 

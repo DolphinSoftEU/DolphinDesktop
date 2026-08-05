@@ -29,7 +29,7 @@ if app.is_cef():
 
 ## CEF Fallback
 
-If the embedded content is custom-rendered or not exposed through UIA, use image matching:
+If the embedded content is custom-rendered or not exposed through UIA, the primary escape hatch for CEF's Chromium runtime is the CDP path — enable a remote debugging port and drive the DOM directly (see [Embedded web](embedded-web.md)). Use image matching only when a debug port cannot be enabled:
 
 ```python
 from dolphin_desktop import ImageLocator

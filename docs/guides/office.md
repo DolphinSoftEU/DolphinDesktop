@@ -33,6 +33,14 @@ with ExcelApp.connect() as xl:
     print(xl.active_sheet.name)
 ```
 
+!!! note "`open()` and `connect()` own different things"
+
+    `open()` starts a **private** Excel instance, so leaving the `with` block
+    closes the workbooks it opened and quits that instance. `connect()`
+    attaches to the operator's running Excel — leaving the block closes
+    nothing and quits nothing, because those workbooks are not yours. The
+    same rule applies to `WordApp`.
+
 ## Word
 
 ```python
@@ -50,6 +58,9 @@ Connect to an already running Word instance:
 with WordApp.connect() as wd:
     print(wd.active_document.name)
 ```
+
+A connected instance is left running when the block exits — see the note
+above.
 
 ## Combining UI And Office Checks
 

@@ -49,8 +49,6 @@ HTML element                    UIA control_type  ValuePattern
 
 from __future__ import annotations
 
-import time
-
 # ---------------------------------------------------------------------------
 # Test 1 — is_legacy_ie() detection
 # ---------------------------------------------------------------------------
@@ -114,13 +112,9 @@ def test_html_input_accessible(ie_window):
 
     name_input.click()
     name_input.type_text("DolphinTest")
-    time.sleep(0.2)
-
-    # ValuePattern is available via MSAA bridge — value() should reflect typed text
-    val = name_input.value() or name_input.text()
-    assert "DolphinTest" in (val or ""), (
-        f"Typed text not reflected in UIA value after type_text(): {val!r}"
-    )
+    # ValuePattern via MSAA bridge should reflect the typed text — poll
+    # rather than sleep-then-assert.
+    name_input.wait_for_text("DolphinTest", timeout=3)
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +148,9 @@ def test_html_button_click(ie_window):
         "Submit button not found inside MSHTML document. "
         "Verify the HTML form loaded correctly (check StatusBar text)."
     )
+    # Test verifies only that submit_btn.click() does not raise. Any
+    # downstream assertion belongs in the next test.
     submit_btn.click()
-    time.sleep(0.3)
 
 
 # ---------------------------------------------------------------------------
@@ -189,14 +184,15 @@ def test_result_text_after_submit(ie_window):
     submit_btn = doc.locator(control_type="Button", found_index=0).timeout(5)
     if submit_btn.exists():
         submit_btn.click()
-        time.sleep(0.3)
 
-    # MSHTML updates UIA synchronously after JS DOM mutation
+    # MSHTML updates UIA synchronously after JS DOM mutation — but the
+    # UIA tree still needs one pump cycle. Poll rather than sleep.
     result_elem = doc.locator(control_type="Text", title_re=r".*Submitted.*").timeout(3)
     if result_elem.exists():
+        result_elem.wait_for_text("Submitted", timeout=3)
         result_text = result_elem.text()
-        assert "Submitted" in (result_text or "") and "Alice" in (result_text or ""), (
-            f"Result paragraph not updated after Submit: {result_text!r}"
+        assert "Alice" in (result_text or ""), (
+            f"Result paragraph name missing after Submit: {result_text!r}"
         )
     else:
         # Fallback: check the whole document text via window_text

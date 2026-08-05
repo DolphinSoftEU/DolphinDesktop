@@ -38,11 +38,17 @@ Extras are defined in `pyproject.toml`.
 
 | Extra | Installs | Use when |
 | --- | --- | --- |
-| `vision` | `opencv-python`, `pytesseract` | You need image matching or OCR |
+| `cdp` | `playwright` | You automate Electron, CEF, or WebView2 apps over the Chrome DevTools Protocol |
+| `vision` | `opencv-python`, `numpy`, `pytesseract` | You need image matching or OCR |
 | `fast` | `mss` | You want faster screen capture |
-| `video` | `mss` | You want test video capture |
+| `video` | `mss` | You want faster screen capture for the built-in video recording (on by default for failed tests). The ffmpeg binary needed for MP4 encoding is a separate, external install. |
 | `pytest` | `pytest`, `allure-pytest` | You want pytest plus Allure integration |
 | `telemetry` | `sentry-sdk` | You explicitly enable telemetry |
+| `sap` | nothing (placeholder) | SAP GUI Scripting is COM-based; no extra wheel needed |
+| `qt` | nothing (placeholder) | The Qt agent DLLs are bundled with the base package |
+| `mainframe` | nothing (placeholder) | TN5250 is pure Python; ws3270 is installed out-of-band |
+| `oracle-forms` | nothing (placeholder) | Java Access Bridge ships with Adoptium/Oracle JDKs |
+| `all` | `playwright`, `mss`, `opencv-python`, `numpy`, `pytesseract` | You want every runtime extra in one install |
 | `docs` | `mkdocs-material`, `mkdocstrings[python]`, `mike` | You build this documentation site |
 | `dev` | test, lint, type-check, and pre-commit tools | You work on Dolphin itself |
 

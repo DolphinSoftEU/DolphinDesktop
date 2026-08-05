@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 # Optional dependency sentinels
 try:
@@ -25,6 +22,10 @@ try:
 except ImportError as _e:
     _pytesseract = None  # type: ignore[assignment]
     _TESS_ERROR = _e
+
+
+# Upper bound on the local maxima ``find_all`` runs suppression over.
+_MAX_CANDIDATES = 10_000
 
 
 def _require_cv2():  # type: ignore[return]
@@ -50,10 +51,42 @@ def _require_tesseract():  # type: ignore[return]
 
 
 def _grab(region: tuple[int, int, int, int] | None = None):
-    """Grab a PIL screenshot of *region* (or full screen if None)."""
+    """Grab a PIL screenshot of *region* (or the whole virtual desktop if None).
+
+    ``all_screens=True`` is mandatory for a multi-monitor setup: without it
+    Pillow captures the primary monitor only, so a template on a secondary
+    display is never found and *region* is cropped against the wrong
+    framebuffer instead of against absolute screen coordinates.
+    """
     from PIL import ImageGrab
 
-    return ImageGrab.grab(bbox=region)
+    return ImageGrab.grab(bbox=region, all_screens=True)
+
+
+def _virtual_origin() -> tuple[int, int]:
+    """Return the screen coordinate of the virtual desktop's top-left pixel."""
+    try:
+        import win32api  # type: ignore[import-untyped]
+        import win32con  # type: ignore[import-untyped]
+
+        return (
+            win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN),
+            win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN),
+        )
+    except Exception:
+        return (0, 0)
+
+
+def _grab_origin(region: tuple[int, int, int, int] | None) -> tuple[int, int]:
+    """Return the screen coordinate that pixel (0, 0) of ``_grab(region)`` has.
+
+    Pillow's win32 grab crops an explicit *bbox* against the virtual-screen
+    origin, so a region capture is already in absolute coordinates.  With
+    ``bbox=None`` it hands back the whole virtual desktop instead, whose first
+    pixel is ``(SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN)`` — non-zero as soon as a
+    monitor sits left of or above the primary one.
+    """
+    return (region[0], region[1]) if region else _virtual_origin()
 
 
 def _pil_to_cv(pil_img):  # type: ignore[return]
@@ -77,9 +110,7 @@ def _is_low_variance_image(img: Any) -> bool:
     return bool(np.std(img) < 1e-6)
 
 
-# ---------------------------------------------------------------------------
 # _ImageRect / _ImageElement — pywinauto-compatible proxy for image matches
-# ---------------------------------------------------------------------------
 
 
 class _ImageRect:
@@ -105,6 +136,7 @@ class _ImageElement:
         self._cy = cy
         self._tw = max(1, tw)
         self._th = max(1, th)
+        self._focused = False
 
     # --- mouse ---
 
@@ -130,12 +162,25 @@ class _ImageElement:
 
     # --- keyboard ---
 
-    def type_keys(self, text: str, **_kw: Any) -> None:
-        import pywinauto.mouse as _m  # type: ignore[import-untyped]
+    def type_keys(self, text: str, **kwargs: Any) -> None:
+        """Type a pywinauto key sequence at the matched coordinate.
+
+        Mirrors ``HwndWrapper.type_keys``: *text* is a key sequence, not
+        literal text, and callers escape literal text themselves. The
+        ``with_spaces`` / ``pause`` kwargs ``Locator.type_text`` passes must
+        reach ``send_keys`` — dropping ``with_spaces`` swallows every space.
+
+        The focusing click is skipped once :meth:`set_focus` has run: the
+        select-all that ``Locator.set_text`` sends between the two would be
+        collapsed by a second click, inserting the new text instead of
+        replacing it.
+        """
         from pywinauto.keyboard import send_keys  # type: ignore[import-untyped]
 
-        _m.click(coords=(self._cx, self._cy))
-        send_keys(text)
+        accepted = ("pause", "with_spaces", "with_tabs", "with_newlines", "vk_packet")
+        if not self._focused:
+            self.set_focus()
+        send_keys(text, **{k: v for k, v in kwargs.items() if k in accepted})
 
     def set_edit_text(self, text: str) -> None:
         raise NotImplementedError("Image-matched elements do not support set_edit_text")
@@ -154,6 +199,7 @@ class _ImageElement:
         import pywinauto.mouse as _m  # type: ignore[import-untyped]
 
         _m.click(coords=(self._cx, self._cy))
+        self._focused = True
 
     def is_visible(self) -> bool:
         return True
@@ -182,9 +228,7 @@ class _ImageElement:
         return self
 
 
-# ---------------------------------------------------------------------------
 # ImageLocator
-# ---------------------------------------------------------------------------
 
 
 class ImageLocator:
@@ -219,11 +263,24 @@ class ImageLocator:
         self._region = region
 
     def _load_template(self):  # type: ignore[return]
-        """Load the template image as a cv2 array."""
+        """Load the template image as a cv2 array.
+
+        Decoded from bytes rather than via ``cv2.imread``, whose ANSI ``fopen``
+        cannot open a path containing non-ASCII characters on Windows and
+        returns ``None`` as if the file were missing.
+        """
+        # cv2 first: numpy also arrives with the ``vision`` extra, so on a
+        # base install importing it ahead of the guard replaces the message
+        # naming the extra with a bare ModuleNotFoundError.
         cv2 = _require_cv2()
-        tmpl = cv2.imread(str(self._template_path))
-        if tmpl is None:
+
+        import numpy as np  # type: ignore[import-untyped]
+
+        if not self._template_path.is_file():
             raise FileNotFoundError(f"Template image not found: {self._template_path}")
+        tmpl = cv2.imdecode(np.fromfile(str(self._template_path), np.uint8), cv2.IMREAD_COLOR)
+        if tmpl is None:
+            raise ValueError(f"Template image could not be decoded: {self._template_path}")
         return tmpl
 
     def _match(
@@ -271,7 +328,7 @@ class ImageLocator:
         """Return ``(cx, cy, tw, th)`` of the best match or None."""
         tmpl = self._load_template()
         screen = _pil_to_cv(_grab(effective_region))
-        rx, ry = (effective_region[0], effective_region[1]) if effective_region else (0, 0)
+        rx, ry = _grab_origin(effective_region)
 
         best_val = -1.0
         best: tuple[int, int, int, int] | None = None
@@ -311,14 +368,18 @@ class ImageLocator:
         self,
         region: tuple[int, int, int, int] | None = None,
     ) -> list[tuple[int, int]]:
-        """Return all match centres above threshold."""
+        """Return the centre of each distinct match above threshold.
+
+        Overlapping matches are suppressed, so one on-screen occurrence yields
+        exactly one centre and ``len(find_all())`` counts occurrences.
+        """
         cv2 = _require_cv2()
         import numpy as np  # type: ignore[import-untyped]
 
         effective = region if region is not None else self._region
         tmpl = self._load_template()
         screen = _pil_to_cv(_grab(effective))
-        rx, ry = (effective[0], effective[1]) if effective else (0, 0)
+        rx, ry = _grab_origin(effective)
 
         points: list[tuple[int, int]] = []
 
@@ -334,15 +395,39 @@ class ImageLocator:
             return points
 
         if _is_low_variance_image(screen) or _is_low_variance_image(tmpl):
-            result = cv2.matchTemplate(screen, tmpl, cv2.TM_SQDIFF_NORMED)
-            locations = np.where((1.0 - result) >= self._threshold)
+            scores = 1.0 - cv2.matchTemplate(screen, tmpl, cv2.TM_SQDIFF_NORMED)
         else:
-            result = cv2.matchTemplate(screen, tmpl, cv2.TM_CCOEFF_NORMED)
-            locations = np.where(result >= self._threshold)
-        for pt in zip(locations[1], locations[0], strict=False):
-            cx = pt[0] + tw // 2 + rx
-            cy = pt[1] + th // 2 + ry
-            points.append((cx, cy))
+            scores = cv2.matchTemplate(screen, tmpl, cv2.TM_CCOEFF_NORMED)
+
+        # Keep only template-sized local maxima, then drop any survivor whose
+        # box still overlaps a stronger one — every pixel offset around a
+        # single on-screen occurrence otherwise clears the threshold and would
+        # be reported as its own match.
+        peaks = cv2.dilate(scores, np.ones((th, tw), np.uint8))
+        ys, xs = np.where((scores >= self._threshold) & (scores >= peaks))
+        vals = scores[ys, xs]
+
+        # A score surface that plateaus (a flat background under a low-variance
+        # template) makes every pixel a local maximum, so the suppression below
+        # would run over millions of candidates. Only the strongest can survive
+        # it anyway.
+        if vals.size > _MAX_CANDIDATES:
+            top = np.argpartition(-vals, _MAX_CANDIDATES)[:_MAX_CANDIDATES]
+            xs, ys, vals = xs[top], ys[top], vals[top]
+
+        order = np.argsort(-vals)
+        xs, ys = xs[order], ys[order]
+
+        kept_x = np.empty(xs.size, dtype=np.int64)
+        kept_y = np.empty(ys.size, dtype=np.int64)
+        n = 0
+        for x, y in zip(xs.tolist(), ys.tolist(), strict=False):
+            if n and bool(np.any((np.abs(kept_x[:n] - x) < tw) & (np.abs(kept_y[:n] - y) < th))):
+                continue
+            kept_x[n] = x
+            kept_y[n] = y
+            n += 1
+            points.append((x + tw // 2 + rx, y + th // 2 + ry))
         return points
 
     def click(self, region: tuple[int, int, int, int] | None = None) -> None:
@@ -372,14 +457,34 @@ class ImageLocator:
         timeout: float = 10.0,
         region: tuple[int, int, int, int] | None = None,
     ) -> tuple[int, int]:
-        """Poll every 0.5 s until the template appears; raise on timeout."""
+        """Poll every 0.5 s until the template appears; raise on timeout.
+
+        The template is always searched for at least once, so ``timeout=0``
+        means "look now" rather than "never look".
+
+        Raises :class:`~dolphin_desktop.WaitTimeoutError` — same base
+        exception every other ``wait_for_*`` in dolphin uses, so tests
+        can catch it uniformly regardless of the backend that produced
+        the timeout.
+        """
+        from ._exceptions import WaitTimeoutError as _WaitTimeoutError
+
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while True:
             pt = self.find(region)
             if pt is not None:
                 return pt
+            if time.monotonic() >= deadline:
+                break
             time.sleep(0.5)
-        raise RuntimeError(f"Template {self._template_path} not found within {timeout}s")
+        raise _WaitTimeoutError(
+            f"Template {self._template_path} not found within {timeout}s",
+            hint=(
+                "verify the template file exists, the threshold is not too "
+                "high (default 0.85), and DPI scaling matches the reference "
+                "screenshot"
+            ),
+        )
 
     def exists(
         self,
@@ -387,12 +492,14 @@ class ImageLocator:
         region: tuple[int, int, int, int] | None = None,
     ) -> bool:
         """Return True if the template is found within *timeout* seconds."""
+        from ._exceptions import WaitTimeoutError as _WaitTimeoutError
+
         if timeout <= 0:
             return self.find(region) is not None
         try:
             self.wait_for(timeout=timeout, region=region)
             return True
-        except RuntimeError:
+        except _WaitTimeoutError:
             return False
 
     def as_element(
@@ -441,22 +548,34 @@ class Screen:
     def find_text(
         text: str,
         region: tuple[int, int, int, int] | None = None,
+        *,
+        scales: tuple[int, ...] = (1, 2, 3),
     ) -> tuple[int, int] | None:
-        """Return the centre (x, y) of the first bounding box containing *text*, or None."""
+        """Return the centre (x, y) of the first bounding box containing *text*, or None.
+
+        Small UI fonts (combo-list rows, grid cells) sit below Tesseract's
+        reliable glyph size at 96 DPI, so on a miss the capture is retried
+        upscaled — each entry in *scales* in order, coordinates mapped back
+        to screen space. Pass ``scales=(1,)`` to disable the retries.
+        """
         tess = _require_tesseract()
         img = _grab(region)
-        data = tess.image_to_data(img, output_type=tess.Output.DICT)
+        ox, oy = _grab_origin(region)
 
-        for i, word in enumerate(data["text"]):
-            if text.lower() in str(word).lower():
-                x = data["left"][i]
-                y = data["top"][i]
-                w = data["width"][i]
-                h = data["height"][i]
-                cx = x + w // 2
-                cy = y + h // 2
-                if region:
-                    cx += region[0]
-                    cy += region[1]
-                return cx, cy
+        for scale in scales:
+            if scale == 1:
+                scaled = img
+            else:
+                from PIL.Image import Resampling
+
+                scaled = img.resize(
+                    (img.width * scale, img.height * scale),
+                    Resampling.LANCZOS,
+                )
+            data = tess.image_to_data(scaled, output_type=tess.Output.DICT)
+            for i, word in enumerate(data["text"]):
+                if text.lower() in str(word).lower():
+                    cx = (data["left"][i] + data["width"][i] // 2) // scale
+                    cy = (data["top"][i] + data["height"][i] // 2) // scale
+                    return cx + ox, cy + oy
         return None

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import uuid
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -13,6 +14,8 @@ from typing import Any
 import pytest
 
 from ._desktop import Desktop
+from ._logging import _redact
+from ._logging import get_logger as _get_logger
 
 _TRACE_SESSION_KEY: pytest.StashKey[Any] = pytest.StashKey()
 _VIDEO_RECORDER_KEY: pytest.StashKey[Any] = pytest.StashKey()
@@ -34,9 +37,7 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
     if not pids:
         return
 
-    import logging
-
-    log = logging.getLogger("dolphin_desktop.plugin")
+    log = _get_logger("plugin")
     for pid in pids:
         try:
             import win32api  # type: ignore[import]
@@ -109,9 +110,7 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
     if max_retries <= 0:
         return None  # let pytest handle normally
 
-    import logging
-
-    log = logging.getLogger("dolphin_desktop.plugin")
+    log = _get_logger("plugin")
 
     from _pytest.runner import runtestprotocol  # type: ignore[import]
 
@@ -227,7 +226,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         ),
     )
     group.addoption(
-        "--dolphin-log-level",
+        "--dolphin-desktop-log-level",
         default=None,
         choices=["DEBUG", "INFO", "ERROR"],
         metavar="{DEBUG,INFO,ERROR}",
@@ -249,9 +248,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Session-scoped fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="session")
@@ -274,9 +271,8 @@ def dolphin_timeout(request: pytest.FixtureRequest) -> float:
 @pytest.fixture(scope="session", autouse=True)
 def _dolphin_apply_session_config(dolphin_timeout: float, request: pytest.FixtureRequest) -> None:
     """Push CLI/env settings into dolphin global config and set up logging/telemetry."""
-    import logging as _stdlib_logging
-
     from . import _config as _cfg
+    from ._logging import apply_log_level, install_redaction
     from ._telemetry import init as _init_telemetry
 
     _cfg._defaults["timeout"] = dolphin_timeout
@@ -289,7 +285,9 @@ def _dolphin_apply_session_config(dolphin_timeout: float, request: pytest.Fixtur
     if cli_video is not None:
         _cfg._defaults["video_mode"] = cli_video
 
-    cli_log_level: str | None = request.config.getoption("--dolphin-log-level", default=None)
+    cli_log_level: str | None = request.config.getoption(
+        "--dolphin-desktop-log-level", default=None
+    )
     if cli_log_level is not None:
         _cfg._defaults["log_level"] = cli_log_level
 
@@ -297,11 +295,12 @@ def _dolphin_apply_session_config(dolphin_timeout: float, request: pytest.Fixtur
     if cli_retry is not None:
         _cfg._defaults["retry_count"] = cli_retry
 
-    # Under pytest, the logging plugin manages output — just set the level so that
-    # child loggers (dolphin_desktop.selfheal, dolphin_desktop.plugin, …) are filtered correctly.
+    # Under pytest the logging plugin owns the handlers, so dolphin installs none —
+    # it sets the level and attaches the redacting filter to the loggers themselves,
+    # which is the only placement that survives propagation to caplog / the terminal.
     # Do NOT set propagate=False here: caplog fixtures in tests rely on propagation.
-    level_int = getattr(_stdlib_logging, _cfg.get_log_level(), _stdlib_logging.INFO)
-    _stdlib_logging.getLogger("dolphin").setLevel(level_int)
+    apply_log_level()
+    install_redaction()
 
     _init_telemetry()
 
@@ -321,9 +320,7 @@ def desktop(dolphin_backend: str, dolphin_headless: bool) -> Desktop:
     return Desktop(backend=dolphin_backend, hidden=True if dolphin_headless else None)
 
 
-# ---------------------------------------------------------------------------
 # Per-test fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -372,6 +369,30 @@ def _dolphin_marker_config(request: pytest.FixtureRequest) -> Iterator[None]:
             _cfg._defaults["video_mode"] = old_video_mode
 
 
+def _trace_run_dir_name(nodeid: str) -> str:
+    """Build a collision-free trace run directory name for *nodeid*.
+
+    The timestamp only has 1-second resolution, which is not enough to separate
+    retry attempts of one test (they are 0.5s apart) or two xdist workers running
+    parametrisations whose truncated nodeids are identical — two TraceSessions
+    sharing one trace.db corrupt each other's run selection and rmtree.
+    """
+    safe = re.sub(r"[^\w._-]", "_", nodeid)[:60]
+    return f"{safe}_{int(time.time())}_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+
+
+def _artifact_file_stem(nodeid: str) -> str:
+    """Build a collision-free artifact file name (no extension) for *nodeid*.
+
+    Truncating the sanitised nodeid alone is not unique: two parametrisations
+    sharing their first 60 characters, a retry attempt, or two xdist workers all
+    produce the same stem, so one overwrites the other's ``.png`` / ``.mp4`` and
+    both report rows end up pointing at the survivor.
+    """
+    safe = re.sub(r"[^\w._-]", "_", nodeid)[:60]
+    return f"{safe}_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+
+
 @pytest.fixture(autouse=True)
 def _dolphin_trace(request: pytest.FixtureRequest) -> Iterator[None]:
     """Per-test trace session lifecycle."""
@@ -386,20 +407,39 @@ def _dolphin_trace(request: pytest.FixtureRequest) -> Iterator[None]:
     trace_root = Path(str(request.config.rootpath)) / request.config.getoption(
         "--dolphin-trace-dir", default="dolphin-traces"
     )
-    safe = re.sub(r"[^\w._-]", "_", request.node.nodeid)[:80]
-    run_dir = trace_root / f"{safe}_{int(time.time())}"
+    run_dir = trace_root / _trace_run_dir_name(request.node.nodeid)
 
-    session = _trace.TraceSession(
-        test_nodeid=request.node.nodeid,
-        run_dir=run_dir,
-        mode=mode,
-    )
+    try:
+        session = _trace.TraceSession(
+            test_nodeid=request.node.nodeid,
+            run_dir=run_dir,
+            mode=mode,
+        )
+    except Exception as exc:
+        # Tracing is observational — record_step() and finish() go out of their
+        # way never to raise, and construction must hold the same contract. It
+        # creates directories and opens a sqlite file, so a read-only workspace,
+        # an AV lock on trace.db or a run_dir that crosses MAX_PATH would
+        # otherwise turn every single test into a setup ERROR with nothing in
+        # the message pointing at tracing as the cause.
+        _get_logger("plugin").warning(
+            "tracing disabled for this test — could not open the trace store at %s: %s",
+            run_dir,
+            exc,
+        )
+        yield
+        return
     _trace.set_current_session(session)
     request.node.stash[_TRACE_SESSION_KEY] = session
 
-    yield
-
-    _trace.set_current_session(None)
+    try:
+        yield
+    finally:
+        _trace.set_current_session(None)
+        # Safety net for paths where pytest_runtest_makereport never finalised the
+        # session (interrupted run) — an open sqlite handle would otherwise survive
+        # the whole session and block cleanup of the trace dir on Windows.
+        session.close_without_finish()
 
 
 @pytest.fixture(autouse=True)
@@ -416,8 +456,17 @@ def _dolphin_video(request: pytest.FixtureRequest) -> Iterator[None]:
     recorder = _video.VideoRecorder(fps=_cfg.get_video_fps())
     try:
         recorder.start()
-    except RuntimeError:
-        # ffmpeg not installed — skip recording silently
+    except (RuntimeError, OSError) as exc:
+        # A missing ffmpeg is a configuration, not a fault; a refusal to capture
+        # (session 0, locked workstation, dropped RDP) is the diagnostic the
+        # recorder went to the trouble of collecting, so it must not be dropped.
+        # OSError covers a DOLPHIN_FFMPEG that points at something unspawnable —
+        # video is an accessory, and must never turn a whole run into setup errors.
+        log = _get_logger("plugin")
+        if _video.find_ffmpeg() is None:
+            log.debug("video recording unavailable: %s", exc)
+        else:
+            log.warning("video recording unavailable: %s", exc)
         yield
         return
 
@@ -454,13 +503,17 @@ def launch(desktop: Desktop):
 
     yield _launch
 
+    # Try to kill every launched app — an exception on one must not
+    # skip the others, otherwise a single failing teardown leaks every
+    # subsequently-launched process in the same test.
     for app in launched:
-        app.kill()
+        try:
+            app.kill()
+        except Exception:
+            pass
 
 
-# ---------------------------------------------------------------------------
 # Allure helpers
-# ---------------------------------------------------------------------------
 
 
 def _is_allure_available() -> bool:
@@ -537,13 +590,14 @@ def _attach_allure_video(path: Path) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
 # Video helper
-# ---------------------------------------------------------------------------
 
 
-def _handle_video(item: pytest.Item, report: pytest.TestReport) -> Path | None:
+def _handle_video(item: pytest.Item, report: pytest.TestReport, phase: str) -> Path | None:
     """Stop the recorder, encode or discard based on outcome and mode.
+
+    *phase* is the report phase the artifact is attached to — ``"setup"`` for a
+    test whose outcome was decided by a fixture error, otherwise ``"call"``.
 
     Returns the saved video path or ``None``.
     """
@@ -554,12 +608,14 @@ def _handle_video(item: pytest.Item, report: pytest.TestReport) -> Path | None:
     if recorder is None:
         return None
 
+    # The stash entry is what tells the fixture teardown it still has to clean up, so
+    # it is only dropped once stop() has actually succeeded — clearing it first would
+    # leak the temp frames and a live ffmpeg process whenever stop() raises.
+    recorder.stop()
     try:
         del item.stash[_VIDEO_RECORDER_KEY]
     except KeyError:
         pass
-
-    recorder.stop()
 
     mode = _cfg.get_video_mode()
     should_keep = report.failed or mode == "keepall"
@@ -571,49 +627,58 @@ def _handle_video(item: pytest.Item, report: pytest.TestReport) -> Path | None:
     video_dir = Path(str(item.config.rootpath)) / item.config.getoption(
         "--dolphin-video-dir", default="dolphin-videos"
     )
-    safe = re.sub(r"[^\w._-]", "_", item.nodeid)[:80]
-    output_path = video_dir / f"{safe}.mp4"
+    output_path = video_dir / f"{_artifact_file_stem(item.nodeid)}.mp4"
 
     try:
         recorder.encode(output_path)
-        item.add_report_section("call", "dolphin video", str(output_path))
+        item.add_report_section(phase, "dolphin video", str(output_path))
         _attach_allure_video(output_path)
         return output_path
     except RuntimeError as exc:
-        item.add_report_section("call", "dolphin video (skipped)", str(exc))
+        item.add_report_section(phase, "dolphin video (skipped)", str(exc))
+        _get_logger("plugin").warning("video for %s was not saved: %s", item.nodeid, exc)
         return None
     finally:
         recorder.discard()
 
 
-# ---------------------------------------------------------------------------
 # Screenshot helper
-# ---------------------------------------------------------------------------
 
 
-def _capture_failure_screenshot(item: pytest.Item) -> Path | None:
-    """Save a full-screen PNG; attach to Allure if available. Returns the path or None."""
+def _capture_failure_screenshot(item: pytest.Item, phase: str = "call") -> Path | None:
+    """Save a full-screen PNG; attach to Allure if available. Returns the path or None.
+
+    ``ImageGrab.grab()`` raises on a hidden desktop or a locked session, and the
+    node id is truncated because an untruncated parametrised id overflows MAX_PATH.
+    Both are capture problems, never test problems, so nothing escapes here.
+
+    ``all_screens=True`` is mandatory: without it Pillow captures the primary monitor
+    only, so a failure on a secondary display is photographed as the wrong desktop.
+    """
     try:
         from PIL import ImageGrab
     except ImportError:
         return None
 
-    screenshot_dir = item.config.rootpath / "dolphin-screenshots"
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        screenshot_dir = item.config.rootpath / "dolphin-screenshots"
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_name = item.nodeid.replace("/", "_").replace("::", "__")
-    path = screenshot_dir / f"{safe_name}.png"
+        path = screenshot_dir / f"{_artifact_file_stem(item.nodeid)}.png"
 
-    img = ImageGrab.grab()
-    img.save(path)
-    item.add_report_section("call", "dolphin screenshot", str(path))
-    _attach_allure_screenshot(path)
-    return path
+        img = ImageGrab.grab(all_screens=True)
+        img.save(path)
+        item.add_report_section(phase, "dolphin screenshot", str(path))
+        _attach_allure_screenshot(path)
+        return path
+    except Exception as exc:
+        _get_logger("plugin").warning(
+            "Failure screenshot not captured for %s: %s", item.nodeid, exc
+        )
+        return None
 
 
-# ---------------------------------------------------------------------------
 # Main report hook
-# ---------------------------------------------------------------------------
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -622,7 +687,17 @@ def pytest_runtest_makereport(  # type: ignore[misc]
 ) -> None:
     outcome = yield
     report = outcome.get_result()
+    try:
+        _collect_artifacts(item, call, report)
+    except Exception as exc:
+        # An exception raised after the yield of a hookwrapper reaches pytest as an
+        # INTERNALERROR and masks the very failure this hook is reporting on.
+        _get_logger("plugin").warning(
+            "dolphin artifact collection failed for %s: %s", item.nodeid, exc
+        )
 
+
+def _collect_artifacts(item: pytest.Item, call: pytest.CallInfo, report: pytest.TestReport) -> None:
     if call.when == "call" and _attempt_will_retry(item, report):
         # This attempt's reports will never be published (a retry follows), so emit
         # nothing: skip screenshot, trace finalization, video keep, and accumulation.
@@ -633,16 +708,20 @@ def pytest_runtest_makereport(  # type: ignore[misc]
         # fixture's teardown, which runs after this hook for the same attempt.
         return
 
-    screenshot_path: Path | None = None
-    if (
-        report.failed
-        and call.when == "call"
-        and item.config.getoption("--dolphin-screenshot-on-fail", default=False)
-    ):
-        screenshot_path = _capture_failure_screenshot(item)
-
-    if call.when != "call":
+    # A setup that does not pass decides the test's outcome on its own — ``call``
+    # never happens — so its artifacts have to be finalised here too, otherwise the
+    # trace session stays open and unfinished for the rest of the run.
+    decides_outcome = call.when == "call" or (call.when == "setup" and report.outcome != "passed")
+    if not decides_outcome:
+        if call.when == "teardown" and report.failed:
+            _record_teardown_failure(item, report)
         return
+
+    phase = call.when
+
+    screenshot_path: Path | None = None
+    if report.failed and item.config.getoption("--dolphin-screenshot-on-fail", default=False):
+        screenshot_path = _capture_failure_screenshot(item, phase)
 
     from . import _trace
 
@@ -650,16 +729,21 @@ def pytest_runtest_makereport(  # type: ignore[misc]
     trace_dir: Path | None = None
 
     if session is not None:
-        if report.failed or report.outcome == "error":
-            error_msg = str(report.longrepr) if report.longrepr else None
+        if report.failed:
+            # Redacted like every other sink. longrepr is persisted to
+            # trace.db, rendered into trace.html and zipped into the Allure
+            # attachment, and under `pytest -l` it carries the failing frame's
+            # locals — so an unredacted password in scope was published even
+            # though logging the same string would have masked it.
+            error_msg = _redact(str(report.longrepr)) if report.longrepr else None
             session.finish("failed", error_message=error_msg)
             trace_dir = session.run_dir
-            item.add_report_section("call", "dolphin trace", str(trace_dir))
+            item.add_report_section(phase, "dolphin trace", str(trace_dir))
             _attach_allure_trace(trace_dir)
         else:
             session.finish("passed")
 
-    video_path = _handle_video(item, report)
+    video_path = _handle_video(item, report, phase)
 
     # attach captured stdout/stderr to Allure on failure
     if report.failed:
@@ -691,12 +775,87 @@ def pytest_runtest_makereport(  # type: ignore[misc]
     )
 
 
-# ---------------------------------------------------------------------------
+def _record_teardown_failure(item: pytest.Item, report: pytest.TestReport) -> None:
+    """Correct the report row for a test whose teardown failed.
+
+    pytest exits non-zero and prints ``1 error`` for a finalizer that raises,
+    but the ``call`` phase had already committed an outcome of ``passed`` —
+    so ``dolphin-report.html`` showed the test green while the run was red.
+    The row is amended here instead.
+
+    Artifacts cannot be recovered at this point: the ``call`` phase finished
+    the trace session, which removes the run directory under the default
+    ``on-failure`` mode, and discards the video. Re-run with
+    ``--dolphin-trace=always`` to keep them for a teardown that fails.
+    """
+    # Redacted like the call-phase longrepr: this one reaches the terminal
+    # report section and the JUnit XML, and a fixture finalizer fails with the
+    # same locals in scope that made the call-phase text sensitive.
+    error_msg = _redact(str(report.longrepr)) if report.longrepr else "teardown failed"
+    item.add_report_section("teardown", "dolphin", error_msg)
+    for entry in reversed(_session_reports):
+        if entry.get("nodeid") == item.nodeid:
+            entry["outcome"] = "error"
+            entry["teardown_error"] = error_msg
+            return
+    _session_reports.append(
+        {
+            "nodeid": item.nodeid,
+            "outcome": "error",
+            "duration": getattr(report, "duration", 0.0),
+            "screenshot": None,
+            "trace": None,
+            "video": None,
+            "teardown_error": error_msg,
+        }
+    )
+
+
 # Session finish — HTML fallback report
-# ---------------------------------------------------------------------------
+
+
+def _xdist_worker_id(config: pytest.Config) -> str | None:
+    """Return the pytest-xdist worker id, or ``None`` outside a worker process.
+
+    ``workerinput`` is injected by xdist into the worker's config only; the
+    controller and a plain single-process run never have it.
+    """
+    workerinput = getattr(config, "workerinput", None)
+    if workerinput is None:
+        return None
+    return str(workerinput.get("workerid", "worker"))
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Final safety-net cleanup + HTML fallback report."""
+    # ---- 1. Kill any session-tracked PIDs that escaped per-test teardown ----
+    #
+    # When a fixture calls ``app.detach()`` (to survive module-scope teardown)
+    # and pytest later hard-kills the test (timeout, KeyboardInterrupt, etc.)
+    # before the fixture's ``finally: app.kill()`` runs, the AUT leaks.
+    # ``Application.__init__`` records every PID in ``_session_pids`` and only
+    # ``close()``/``kill()`` clear it — so anything remaining here is an orphan.
+    from . import _application
+
+    orphans = list(_application._session_pids)
+    if orphans:
+        log = _get_logger("plugin")
+        for pid in orphans:
+            try:
+                import win32api  # type: ignore[import]
+                import win32con  # type: ignore[import]
+
+                handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
+                win32api.TerminateProcess(handle, 1)
+                win32api.CloseHandle(handle)
+                log.info("Killed orphan AUT PID=%d at session end", pid)
+            except Exception:
+                pass
+            finally:
+                _application._session_pids.discard(pid)
+                _application._live_pids.discard(pid)
+
+    # ---- 2. HTML fallback report (unchanged) ----
     if not _session_reports:
         return
     explicit: str | None = session.config.getoption("--dolphin-html", default=None)
@@ -705,13 +864,25 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     report_path = (
         Path(explicit) if explicit else Path(str(session.config.rootpath)) / "dolphin-report.html"
     )
+    worker_id = _xdist_worker_id(session.config)
+    if worker_id is not None:
+        # ``_session_reports`` is per-process, so a worker only ever holds its own
+        # slice of the run. Writing that to the shared filename would race the other
+        # workers and leave a partial report indistinguishable from a complete one.
+        report_path = report_path.with_name(f"{report_path.stem}-{worker_id}{report_path.suffix}")
     _generate_html_report(report_path)
 
 
 def _generate_html_report(output: Path) -> None:
+    import html as _h
+
     passed = [r for r in _session_reports if r["outcome"] == "passed"]
     failed = [r for r in _session_reports if r["outcome"] == "failed"]
     skipped = [r for r in _session_reports if r["outcome"] == "skipped"]
+    # Counted and shown separately. A teardown failure is recorded as "error",
+    # and leaving it out of the headline reproduced the very bug the teardown
+    # handling fixes: the run is red while the summary says nothing failed.
+    errors = [r for r in _session_reports if r["outcome"] == "error"]
 
     rows: list[str] = []
     for r in _session_reports:
@@ -719,18 +890,26 @@ def _generate_html_report(output: Path) -> None:
             "passed": "#4caf50",
             "failed": "#f44336",
             "skipped": "#ff9800",
+            "error": "#f44336",
         }.get(r["outcome"], "#9e9e9e")
+        # Nodeids carry parametrisation values and paths carry whatever the user named
+        # a file, so both reach here as arbitrary text and must be escaped.
+        screenshot = _h.escape(r["screenshot"] or "", quote=True)
         ss_html = (
-            f'<a href="{r["screenshot"]}"><img src="{r["screenshot"]}" style="max-width:160px"></a>'
+            f'<a href="{screenshot}"><img src="{screenshot}" style="max-width:160px"></a>'
             if r["screenshot"]
             else ""
         )
-        trace_html = f'<a href="{r["trace"]}">trace</a>' if r["trace"] else ""
-        video_html = f'<a href="{r["video"]}">video</a>' if r["video"] else ""
+        trace_html = (
+            f'<a href="{_h.escape(r["trace"] or "", quote=True)}">trace</a>' if r["trace"] else ""
+        )
+        video_html = (
+            f'<a href="{_h.escape(r["video"] or "", quote=True)}">video</a>' if r["video"] else ""
+        )
         rows.append(
             "<tr>"
-            f'<td style="color:{color};font-weight:bold">{r["outcome"].upper()}</td>'
-            f"<td><code>{r['nodeid']}</code></td>"
+            f'<td style="color:{color};font-weight:bold">{_h.escape(r["outcome"].upper())}</td>'
+            f"<td><code>{_h.escape(r['nodeid'])}</code></td>"
             f"<td>{r.get('duration', 0.0):.2f}s</td>"
             f"<td>{ss_html}</td>"
             f"<td>{trace_html}</td>"
@@ -758,6 +937,7 @@ def _generate_html_report(output: Path) -> None:
         "  <h1>Dolphin Test Report</h1>\n"
         f"  <p><b>Passed:</b> {len(passed)} &nbsp;"
         f" <b>Failed:</b> {len(failed)} &nbsp;"
+        f" <b>Errors:</b> {len(errors)} &nbsp;"
         f" <b>Skipped:</b> {len(skipped)}</p>\n"
         "  <table>\n"
         "    <tr>"

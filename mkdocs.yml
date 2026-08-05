@@ -82,28 +82,44 @@ extra:
 nav:
   - Home: index.md
   - Installation: installation.md
+  - Getting Started: getting-started.md
   - Quickstart: quickstart.md
   - "Tutorial: First Test": tutorials/first-test.md
   - Core Concepts: core-concepts.md
+  - Support Matrix: support-matrix.md
   - Guides:
       - Overview: guides/index.md
       - Native Windows Apps: guides/native.md
+      - Qt: guides/qt.md
+      - Delphi / VCL and Lazarus: guides/delphi.md
+      - PowerBuilder: guides/powerbuilder.md
       - Electron: guides/electron.md
+      - Embedded Web: guides/embedded-web.md
       - CEF and Legacy IE: guides/cef-legacy.md
       - WebView2: guides/webview2.md
       - Java Swing / AWT: guides/java.md
+      - Oracle Forms: guides/oracle-forms.md
+      - IBM Mainframe (3270 / 5250 / HLLAPI): guides/mainframe.md
       - Office: guides/office.md
+      - SAP GUI for Windows: guides/sap.md
       - Image-Based Fallback: guides/image-based.md
       - Headless Mode: tutorials/headless-mode.md
       - Page Objects: tutorials/page-objects.md
+      - Object Repository: tutorials/object-repository.md
       - Fallback Selectors: tutorials/fallback-selectors.md
       - Tracing and Debugging: tutorials/tracing.md
+      - Migration Guide: migration.md
+      - All Tutorials: tutorials/index.md
       - CI Setup:
           - Overview: ci/index.md
           - GitHub Actions: ci/github-actions.md
           - Jenkins: ci/jenkins.md
           - TeamCity: ci/teamcity.md
+          - Full Workflow Example: ci-example.md
+  - Architecture:
       - Backend Architecture: architecture.md
+      - Backend Capabilities: backend-capabilities.md
+      - Qt Agent: architecture/qt-agent.md
   - API Reference:
       - Overview: reference/index.md
       - Desktop: reference/desktop.md
@@ -116,7 +132,13 @@ nav:
       - Dialogs: reference/dialogs.md
       - ImageLocator / Screen: reference/image.md
       - JavaAccessBridge: reference/java.md
+      - Delphi: reference/delphi.md
+      - Oracle Forms: reference/oracle-forms.md
+      - Mainframe: reference/mainframe.md
+      - CDP / Electron: reference/cdp.md
+      - Playwright Compatibility: reference/playwright-compat.md
       - Excel / Word: reference/office.md
+      - SAP GUI for Windows: reference/sap.md
       - Exceptions: reference/exceptions.md
       - pytest Plugin: reference/pytest-plugin.md
   - CLI Reference: reference/cli.md

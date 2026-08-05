@@ -41,6 +41,52 @@ button = win.get_by_title("Save").timeout(5)
 
 The package also exposes placeholder backend classes for future or plugin use. The documented runtime path is Windows.
 
+## How Dolphin Locates Your Application
+
+Dolphin does not know where **your** application is installed — you
+tell it. No path in `dolphin_desktop`'s source refers to a
+user-specific location (`C:\Users\...`, `D:\Program Files\...`).
+Three patterns cover every supported stack:
+
+| Pattern | You provide | Library uses | Stacks |
+| --- | --- | --- | --- |
+| **Launch** | Path to `.exe` or command line | Starts the process | Delphi (`launch_delphi`), Qt (`launch_qt`), Electron / CEF (`launch_electron_cdp` / `launch_cef_cdp`), Java (`launch_java`), PowerBuilder (`launch_powerbuilder`), generic (`launch`) |
+| **Connect via COM** | Nothing — app must already be running | System COM registry (`SAPGUI`, `Excel.Application`, `Word.Application`) | SAP GUI (`SapGui.connect()`), Excel (`ExcelApp.connect()`), Word (`WordApp.connect()`) |
+| **Attach via window criteria** | `title_re=`, `class_name=`, or `process=` — app must be running | pywinauto `connect(...)` | Oracle Forms (`attach_oracle_forms`), generic (`Desktop().connect(...)`) |
+
+### Auto-detected paths (well-known install dirs)
+
+One stack today ships default install locations:
+
+- **Mainframe TN3270** — `ws3270.exe` is discovered by
+  (1) `PATH`, (2) `%LOCALAPPDATA%\wc3270\`,
+  (3) `C:\Program Files\wc3270\`,
+  (4) `C:\Program Files (x86)\wc3270\`.
+  These are wc3270's installer's default locations. Override by
+  passing `ws3270_path=` explicitly.
+
+Every other stack: if a path is needed, you supply it.
+
+### Parametrising paths for CI
+
+Hardcoding paths inside test files works locally but breaks in CI
+where the app lives elsewhere. Recommended pattern in `conftest.py`:
+
+```python
+import os
+import pytest
+
+QT_APP = os.environ.get("QT_APP_PATH", r"C:\devbuild\my_app.exe")
+VCL_APP = os.environ.get("VCL_APP_PATH", r"C:\devbuild\my_vcl.exe")
+
+@pytest.fixture
+def qt_app(desktop):
+    with desktop.launch_qt(QT_APP) as app:
+        yield app
+```
+
+Then in CI: `QT_APP_PATH=D:/agent/artifacts/app.exe pytest tests/ -v`.
+
 ## pytest Fixtures
 
 The pytest plugin is loaded automatically when the package is installed.

@@ -1,0 +1,90 @@
+name: Bug report
+description: Report something that doesn't work as documented.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please include as much of the
+        info below as you can — it dramatically speeds up the fix.
+  - type: input
+    id: dolphin-version
+    attributes:
+      label: dolphin-desktop version
+      description: Output of `python -c "import dolphin_desktop; print(dolphin_desktop.__version__)"`.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+      placeholder: "Python 3.12.1"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Windows version
+      description: Output of `winver` (edition + build).
+      placeholder: "Windows 11 Pro 23H2 (build 22631)"
+    validations:
+      required: true
+  - type: dropdown
+    id: stack
+    attributes:
+      label: Which stack is affected?
+      options:
+        - "UIA / Win32 (Notepad, WPF, WinForms, UWP)"
+        - "SAP GUI"
+        - "Qt 5 / Qt 6"
+        - "Electron / CEF (CDP)"
+        - "Java Swing / Oracle Forms (JAB)"
+        - "Mainframe 3270 (s3270)"
+        - "Mainframe 5250 (native TN5250)"
+        - "HLLAPI (PCOMM / Attachmate / Rocket)"
+        - "Image-based / OCR"
+        - "CLI / pytest plugin / other"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproducer
+      description: A short pytest file that hits the bug.
+      render: python
+      placeholder: |
+        from dolphin_desktop import Desktop
+
+        def test_bug():
+            app = Desktop().launch("your_app.exe")
+            ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the full traceback if applicable.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: dolphin doctor output
+      description: Paste the output of `dolphin doctor`.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, spy output, trace files, related links…
