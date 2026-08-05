@@ -1,0 +1,3540 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Windows desktop test automation for pytest">
+      
+      
+      
+        <link rel="canonical" href="https://dolphinsoft.pl/latest/guides/qt/">
+      
+      
+        <link rel="prev" href="../native/">
+      
+      
+        <link rel="next" href="../delphi/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Qt - Dolphin Desktop</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#qt-5-qt-6" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Dolphin Desktop" class="md-header__button md-logo" aria-label="Dolphin Desktop" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Dolphin Desktop
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Qt
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="cyan"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="cyan"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/DolphinSoftEU/DolphinDesktop" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DolphinSoftEU/DolphinDesktop
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../installation/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Installation
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../getting-started/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../quickstart/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Quickstart
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../tutorials/first-test/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Tutorial: First Test
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../core-concepts/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Core Concepts
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../support-matrix/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Support Matrix
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../reference/cli/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  CLI Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../faq/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  FAQ
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Dolphin Desktop" class="md-nav__button md-logo" aria-label="Dolphin Desktop" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Dolphin Desktop
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/DolphinSoftEU/DolphinDesktop" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    DolphinSoftEU/DolphinDesktop
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/first-test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorial: First Test
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core-concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../support-matrix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Support Matrix
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native Windows Apps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#at-a-glance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        At a glance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Launch
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Launch">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#qt-5-vs-qt-6-when-is-the-flag-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qt 5 vs Qt 6 — when is the flag needed?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#selectors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selectors
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Selectors">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#qt-class-uia-control-type-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qt class → UIA control type mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-interaction-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended interaction patterns
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Recommended interaction patterns">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#clicking-prefer-invoke-over-click" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Clicking — prefer invoke() over click()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#selecting-from-qcombobox-qlistwidget-use-keyboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selecting from QComboBox / QListWidget — use keyboard
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reading-text-works-directly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading text — works directly
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#menus-submenus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Menus &amp; submenus
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#uia-limitations-when-to-use-the-qt-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UIA limitations — when to use the Qt agent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-world-qt-apps-validated" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-world Qt apps validated
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#qt-agent-injection-for-qml-qgraphicsview-custom-widgets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qt agent — injection for QML / QGraphicsView / custom widgets
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Qt agent — injection for QML / QGraphicsView / custom widgets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#recommended-high-level-element-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended: high-level Element API
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#raw-agent-api-advanced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Raw agent API (advanced)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent-limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent limitations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../delphi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Delphi / VCL and Lazarus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../powerbuilder/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PowerBuilder
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../electron/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Electron
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../embedded-web/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Embedded Web
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cef-legacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CEF and Legacy IE
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../webview2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebView2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java Swing / AWT
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../oracle-forms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oracle Forms
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mainframe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    IBM Mainframe (3270 / 5250 / HLLAPI)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../office/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Office
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SAP GUI for Windows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../image-based/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Image-Based Fallback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/headless-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Headless Mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/page-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Page Objects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/object-repository/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object Repository
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/fallback-selectors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fallback Selectors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/tracing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tracing and Debugging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migration Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    All Tutorials
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8_23" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_23" id="__nav_8_23_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CI Setup
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_23_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_23">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CI Setup
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ci/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ci/github-actions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GitHub Actions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ci/jenkins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Jenkins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ci/teamcity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TeamCity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ci-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Full Workflow Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backend Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../backend-capabilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backend Capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/qt-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/desktop/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Desktop
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/application/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Application
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/window/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Window
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/locator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Locator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/keyboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Keyboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/mouse/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mouse
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/clipboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Clipboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/dialogs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dialogs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/image/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ImageLocator / Screen
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/java/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    JavaAccessBridge
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/delphi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Delphi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/oracle-forms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oracle Forms
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/mainframe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mainframe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cdp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CDP / Electron
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/playwright-compat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playwright Compatibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/office/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Excel / Word
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/sap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SAP GUI for Windows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/exceptions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Exceptions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/pytest-plugin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pytest Plugin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#at-a-glance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        At a glance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#launch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Launch
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Launch">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#qt-5-vs-qt-6-when-is-the-flag-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qt 5 vs Qt 6 — when is the flag needed?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#selectors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selectors
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Selectors">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#qt-class-uia-control-type-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qt class → UIA control type mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-interaction-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended interaction patterns
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Recommended interaction patterns">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#clicking-prefer-invoke-over-click" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Clicking — prefer invoke() over click()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#selecting-from-qcombobox-qlistwidget-use-keyboard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Selecting from QComboBox / QListWidget — use keyboard
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reading-text-works-directly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading text — works directly
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#menus-submenus" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Menus &amp; submenus
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#uia-limitations-when-to-use-the-qt-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UIA limitations — when to use the Qt agent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-world-qt-apps-validated" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-world Qt apps validated
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#qt-agent-injection-for-qml-qgraphicsview-custom-widgets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Qt agent — injection for QML / QGraphicsView / custom widgets
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Qt agent — injection for QML / QGraphicsView / custom widgets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#recommended-high-level-element-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended: high-level Element API
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#raw-agent-api-advanced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Raw agent API (advanced)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent-limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent limitations
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="qt-5-qt-6">Qt 5 / Qt 6<a class="headerlink" href="#qt-5-qt-6" title="Permanent link">&para;</a></h1>
+<p>dolphin supports automating Qt 5 (PyQt5, PySide2) and Qt 6 (PySide6, PyQt6)
+desktop applications through Microsoft UI Automation (UIA).</p>
+<h2 id="at-a-glance">At a glance<a class="headerlink" href="#at-a-glance" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Qt 5</th>
+<th>Qt 6</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Detection (<code>Application.is_qt</code>, <code>qt_version</code>)</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>QPushButton</code>, <code>QCheckBox</code>, <code>QRadioButton</code></td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>QLineEdit</code>, <code>QPlainTextEdit</code>, <code>QSpinBox</code>, <code>QSlider</code>, <code>QDateEdit</code></td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>QComboBox</code>, <code>QListWidget</code>, <code>QTreeWidget</code>, <code>QTableView</code></td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>QTabWidget</code>, <code>QToolBar</code>, top-level <code>QMenuBar</code></td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td><code>QDialog</code>, <code>QMessageBox</code>, <code>QInputDialog</code>, <code>QDockWidget</code></td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>Submenu popups (<code>File → Open</code>)</td>
+<td>✓ via desktop-scope fallback</td>
+<td>✓ via desktop-scope fallback</td>
+</tr>
+<tr>
+<td>Combo / list signal-firing selection</td>
+<td>via <code>select_item_keyboard</code></td>
+<td>via <code>select_item_keyboard</code></td>
+</tr>
+<tr>
+<td>Qt Quick / QML scene graphs</td>
+<td>✓ via Qt agent (<code>app.qt_agent.qml_*</code>)</td>
+<td>✓ via Qt agent (<code>app.qt_agent.qml_*</code>)</td>
+</tr>
+<tr>
+<td><code>QGraphicsView</code> custom paint</td>
+<td>✓ via Qt agent (<code>agent.graphics_*</code>)</td>
+<td>✓ via Qt agent (<code>agent.graphics_*</code>)</td>
+</tr>
+<tr>
+<td>Qt Charts, Qt 3D, Qt Multimedia widgets</td>
+<td>✓ (polymorphic QObject introspection)</td>
+<td>✓ (polymorphic QObject introspection)</td>
+</tr>
+<tr>
+<td><code>Q_PROPERTY</code> get/set on any <code>QObject</code></td>
+<td>✓ via agent</td>
+<td>✓ via agent</td>
+</tr>
+<tr>
+<td><code>QMetaObject::invokeMethod</code> with typed args</td>
+<td>✓ via agent</td>
+<td>✓ via agent</td>
+</tr>
+</tbody>
+</table>
+<h2 id="launch">Launch<a class="headerlink" href="#launch" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">desktop</span> <span class="o">=</span> <span class="n">Desktop</span><span class="p">()</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;C:\Program Files\MyApp\my_qt_app.exe&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">&quot;My Qt App&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p><code>Desktop.launch_qt()</code> sets <code>QT_ACCESSIBILITY=1</code> in the child process only —
+the parent's environment is restored after spawn so it does not leak into
+subsequent non-Qt launches.</p>
+<p>Optional environment overrides:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="s2">&quot;trading_app.exe&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">qt_env</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;QT_LOGGING_RULES&quot;</span><span class="p">:</span> <span class="s2">&quot;qt.accessibility=true&quot;</span><span class="p">},</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="p">)</span>
+</code></pre></div>
+<h3 id="qt-5-vs-qt-6-when-is-the-flag-needed">Qt 5 vs Qt 6 — when is the flag needed?<a class="headerlink" href="#qt-5-vs-qt-6-when-is-the-flag-needed" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Runtime</th>
+<th><code>QT_ACCESSIBILITY=1</code> required?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qt 5 (5.9 – 5.15)</td>
+<td><strong>Yes</strong> — UIA tree is empty without it.</td>
+</tr>
+<tr>
+<td>Qt 6 (≥ 6.0)</td>
+<td>No (auto-enabled) — but <code>launch_qt</code> sets it anyway for safety.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="detection">Detection<a class="headerlink" href="#detection" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="s2">&quot;myapp.exe&quot;</span><span class="p">)</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">if</span> <span class="n">app</span><span class="o">.</span><span class="n">is_qt</span><span class="p">():</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">version</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">qt_version</span><span class="p">()</span>  <span class="c1"># &quot;5&quot; or &quot;6&quot;</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Running Qt </span><span class="si">{</span><span class="n">version</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="k">if</span> <span class="n">app</span><span class="o">.</span><span class="n">uses_qt_quick</span><span class="p">():</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="c1"># QML controls are invisible to UIA — use the Qt agent API instead:</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">win</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;loginButton&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+</code></pre></div>
+<p>Detection scans the process module list for <code>Qt5/6Core.dll</code>,
+<code>Qt5/6Widgets.dll</code>, and (for Quick) <code>Qt5/6Quick.dll</code> / <code>Qt5/6Qml.dll</code>. The
+result is cached per <code>Application</code> instance.</p>
+<h2 id="selectors">Selectors<a class="headerlink" href="#selectors" title="Permanent link">&para;</a></h2>
+<p>Qt's UIA bridge exposes accessibility information through two main channels:</p>
+<ul>
+<li><strong><code>accessibleName</code></strong> → UIA <code>Name</code> property → pywinauto's <code>title=</code> criterion
+  → dolphin's <code>name=</code> parameter on <code>button()</code>, <code>edit()</code>, etc.</li>
+<li><strong><code>objectName</code></strong> → UIA <code>AutomationId</code> as a <strong>hierarchical dotted path</strong>
+  (<code>QApplication.win.tabs.tab1.qt_btn_ok</code>) → matched by <code>Window.get_by_object_name()</code>
+  which compares against the <strong>leaf segment</strong> only.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># By accessible name (most readable; matches the user&#39;s label):</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">win</span><span class="o">.</span><span class="n">button</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;OK&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">win</span><span class="o">.</span><span class="n">edit</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;Username&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">set_text</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">win</span><span class="o">.</span><span class="n">check_box</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;Remember me&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">invoke</span><span class="p">()</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1"># By objectName leaf (most stable; survives localisation):</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">win</span><span class="o">.</span><span class="n">get_by_object_name</span><span class="p">(</span><span class="s2">&quot;qt_btn_ok&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">invoke</span><span class="p">()</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">win</span><span class="o">.</span><span class="n">get_by_object_name</span><span class="p">(</span><span class="s2">&quot;qt_input_username&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">set_text</span><span class="p">(</span><span class="s2">&quot;alice&quot;</span><span class="p">)</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># By Qt class name (combine with title for fast resolution):</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="n">win</span><span class="o">.</span><span class="n">locator</span><span class="p">(</span><span class="n">class_name</span><span class="o">=</span><span class="s2">&quot;QPushButton&quot;</span><span class="p">,</span> <span class="n">title</span><span class="o">=</span><span class="s2">&quot;OK&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+</code></pre></div>
+<h3 id="qt-class-uia-control-type-mapping">Qt class → UIA control type mapping<a class="headerlink" href="#qt-class-uia-control-type-mapping" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Qt widget</th>
+<th>UIA <code>control_type</code></th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>QPushButton</code> (regular)</td>
+<td><code>Button</code></td>
+<td><code>button(name=...)</code></td>
+</tr>
+<tr>
+<td><code>QPushButton</code> (<code>setCheckable(True)</code>)</td>
+<td><code>CheckBox</code></td>
+<td><code>check_box(name=...)</code></td>
+</tr>
+<tr>
+<td><code>QToolButton</code> (regular)</td>
+<td><code>Button</code></td>
+<td>inside a <code>QToolBar</code></td>
+</tr>
+<tr>
+<td><code>QToolButton</code> (checkable action)</td>
+<td><code>CheckBox</code></td>
+<td>use <code>invoke()</code></td>
+</tr>
+<tr>
+<td><code>QCheckBox</code></td>
+<td><code>CheckBox</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>QRadioButton</code></td>
+<td><code>RadioButton</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>QLineEdit</code></td>
+<td><code>Edit</code></td>
+<td><code>edit(name=...)</code></td>
+</tr>
+<tr>
+<td><code>QPlainTextEdit</code> / <code>QTextEdit</code></td>
+<td><code>Edit</code></td>
+<td>multi-line</td>
+</tr>
+<tr>
+<td><code>QSpinBox</code> / <code>QDoubleSpinBox</code></td>
+<td><code>Spinner</code></td>
+<td><code>locator(control_type="Spinner")</code></td>
+</tr>
+<tr>
+<td><code>QSlider</code></td>
+<td><code>Slider</code></td>
+<td><code>locator(control_type="Slider")</code></td>
+</tr>
+<tr>
+<td><code>QDateEdit</code> / <code>QTimeEdit</code></td>
+<td><code>Edit</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>QComboBox</code></td>
+<td><code>ComboBox</code></td>
+<td><code>combo_box(name=...)</code></td>
+</tr>
+<tr>
+<td><code>QListWidget</code></td>
+<td><code>List</code></td>
+<td><code>list_box(name=...)</code></td>
+</tr>
+<tr>
+<td><code>QTreeWidget</code> / <code>QTreeView</code></td>
+<td><code>Tree</code></td>
+<td><code>tree(name=...)</code></td>
+</tr>
+<tr>
+<td><code>QTableWidget</code> / <code>QTableView</code></td>
+<td><code>Table</code></td>
+<td><code>locator(control_type="Table")</code></td>
+</tr>
+<tr>
+<td><code>QTabWidget</code></td>
+<td><code>Group</code> (outer) + <code>Tab</code> (tab bar)</td>
+<td><code>tab().select_tab(name)</code></td>
+</tr>
+<tr>
+<td><code>QMenuBar</code></td>
+<td><code>MenuBar</code></td>
+<td><code>menu(name=...)</code></td>
+</tr>
+<tr>
+<td><code>QMenu</code> (popup)</td>
+<td>top-level window</td>
+<td>reached via desktop-scope fallback</td>
+</tr>
+<tr>
+<td><code>QToolBar</code></td>
+<td><code>ToolBar</code></td>
+<td><code>toolbar(name=...)</code></td>
+</tr>
+<tr>
+<td><code>QStatusBar</code></td>
+<td><code>StatusBar</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>QDockWidget</code></td>
+<td><code>Pane</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>QGroupBox</code></td>
+<td><code>Group</code></td>
+<td><code>locator(title=...)</code></td>
+</tr>
+<tr>
+<td><code>QDialog</code> / <code>QMessageBox</code></td>
+<td><code>Window</code> (top-level)</td>
+<td><code>app.window(title=...)</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="recommended-interaction-patterns">Recommended interaction patterns<a class="headerlink" href="#recommended-interaction-patterns" title="Permanent link">&para;</a></h2>
+<h3 id="clicking-prefer-invoke-over-click">Clicking — prefer <code>invoke()</code> over <code>click()</code><a class="headerlink" href="#clicking-prefer-invoke-over-click" title="Permanent link">&para;</a></h3>
+<p><code>Locator.click()</code> uses physical mouse (<code>SetCursorPos</code>) which fails with
+<code>ERROR_FILE_NOT_FOUND</code> when the target window is obscured. <code>Locator.invoke()</code>
+uses the UIA Invoke / Toggle / SelectionItem pattern — no mouse, no focus
+race.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">win</span><span class="o">.</span><span class="n">button</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;OK&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">invoke</span><span class="p">()</span>       <span class="c1"># works even if window isn&#39;t foreground</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">win</span><span class="o">.</span><span class="n">check_box</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;Remember me&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">invoke</span><span class="p">()</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">win</span><span class="o">.</span><span class="n">radio_button</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;Option B&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">invoke</span><span class="p">()</span>
+</code></pre></div>
+<h3 id="selecting-from-qcombobox-qlistwidget-use-keyboard">Selecting from <code>QComboBox</code> / <code>QListWidget</code> — use keyboard<a class="headerlink" href="#selecting-from-qcombobox-qlistwidget-use-keyboard" title="Permanent link">&para;</a></h3>
+<p>Qt's UIA Select pattern only flips <code>IsSelected</code> on the target item without
+driving the model — your <code>currentTextChanged</code> slot never fires.
+<code>select_item_keyboard()</code> opens the dropdown and uses Qt's typeahead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">win</span><span class="o">.</span><span class="n">combo_box</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;Language&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">select_item_keyboard</span><span class="p">(</span><span class="s2">&quot;Polish&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">win</span><span class="o">.</span><span class="n">list_box</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;Fruits&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">select_item_keyboard</span><span class="p">(</span><span class="s2">&quot;Banana&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1"># Use 0-based index when the first letters are ambiguous:</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">win</span><span class="o">.</span><span class="n">combo_box</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;City&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">select_item_keyboard</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+</code></pre></div>
+<p>For non-Qt apps (WinForms, WPF), the standard <code>select_item()</code> is faster
+and supports more matching strategies.</p>
+<h3 id="reading-text-works-directly">Reading text — works directly<a class="headerlink" href="#reading-text-works-directly" title="Permanent link">&para;</a></h3>
+<p><code>Locator.text()</code> returns the current content for Qt edit widgets via
+<code>IValueProvider.Value</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">assert</span> <span class="n">win</span><span class="o">.</span><span class="n">edit</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;Username&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">text</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;alice&quot;</span>
+</code></pre></div>
+<p><code>Locator.text()</code> on Qt no longer falls through to a clipboard read, so it
+never hangs on empty values (a previous bug fixed during Qt 6 support work).</p>
+<h2 id="menus-submenus">Menus &amp; submenus<a class="headerlink" href="#menus-submenus" title="Permanent link">&para;</a></h2>
+<p>Top-level menubar items are found like any other element:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;File&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>   <span class="c1"># opens the File popup</span>
+</code></pre></div>
+<p>When the popup opens, Qt creates a <strong>top-level <code>QMenu</code> window</strong> detached
+from the main window. Dolphin's menu resolver handles this by searching:</p>
+<ol>
+<li>The parent element's children (in-tree menus, Win32).</li>
+<li>The main window scope.</li>
+<li><strong>Every visible top-level window of the same process</strong> (Qt popups).</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;File&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;Open...&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;View&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;Zoom&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;100%&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>    <span class="c1"># nested submenu</span>
+</code></pre></div>
+<p>If the submenu still isn't reachable (some Qt apps render menus on a
+separate-process out-of-tree), fall back to keyboard accelerators:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">win</span><span class="o">.</span><span class="n">focus</span><span class="p">()</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">Keyboard</span><span class="o">.</span><span class="n">press</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%f</span><span class="s2">o&quot;</span><span class="p">)</span>   <span class="c1"># Alt+F, O for File → Open</span>
+</code></pre></div>
+<h2 id="uia-limitations-when-to-use-the-qt-agent">UIA limitations — when to use the Qt agent<a class="headerlink" href="#uia-limitations-when-to-use-the-qt-agent" title="Permanent link">&para;</a></h2>
+<p>The following are opaque to UIA. They are handled by the Qt agent DLL,
+which ships with the library and is injected automatically on first use
+(see <code>docs/architecture/qt-agent.md</code>):</p>
+<ul>
+<li><strong>Qt Quick / QML scene graphs</strong> are exposed as a single <code>Pane</code> in UIA with
+  no descendants — use <code>win.qml(...)</code> / <code>app.qt_agent</code> instead.</li>
+<li><strong><code>QGraphicsView</code> with custom paint</strong> is similarly opaque — common in
+  trading apps and graph editors. Use <code>win.graphics_view(...)</code>.</li>
+<li><strong>Custom <code>QStyleItemDelegate</code>-rendered cells</strong> in <code>QTableView</code>/<code>QListView</code>
+  are addressable as the parent cell under UIA; use the agent's meta-object
+  introspection for their internal sub-elements.</li>
+</ul>
+<p>Use <code>Application.uses_qt_quick()</code> to detect QML targets at launch time and
+route those screens through the agent API instead of UIA selectors:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="s2">&quot;trading_app.exe&quot;</span><span class="p">)</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">if</span> <span class="n">app</span><span class="o">.</span><span class="n">uses_qt_quick</span><span class="p">():</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">&quot;Trading&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;loginButton&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+</code></pre></div>
+<h2 id="real-world-qt-apps-validated">Real-world Qt apps validated<a class="headerlink" href="#real-world-qt-apps-validated" title="Permanent link">&para;</a></h2>
+<p>The library is exercised against these production Qt apps in
+<code>tests/qt/test_qt_real_apps.py</code>:</p>
+<ul>
+<li><strong>AMD Radeon Software</strong> (Qt 6) — GPU control panel.</li>
+<li><strong>AMD Ryzen Master</strong> (Qt 6) — CPU monitoring.</li>
+<li><strong>Logitech G HUB</strong> (Qt 5) — gaming peripheral software.</li>
+</ul>
+<p>Tests are skipped automatically when the target app isn't running.</p>
+<h2 id="examples">Examples<a class="headerlink" href="#examples" title="Permanent link">&para;</a></h2>
+<p>Working demos under <code>examples/qt_demo/</code>:</p>
+<ul>
+<li><code>all_widgets.py</code> — PySide6 (Qt 6) widget gallery with every supported control.</li>
+<li><code>all_widgets_qt5.py</code> — PyQt5 (Qt 5) twin of the above.</li>
+<li><code>qml_widgets.py</code> + <code>qml_widgets.qml</code> — QML controls; covered by the Qt agent.</li>
+<li><code>charts_demo.py</code> — Qt Charts (<code>QChart</code>, <code>QLineSeries</code>); polymorphic agent introspection.</li>
+<li><code>graphics_demo.py</code> — <code>QGraphicsView</code> with named items; Qt agent graphics walker.</li>
+<li><code>contact_manager.py</code> — a small CRUD app (table, dialogs, status bar) used by the end-to-end scenario suite.</li>
+</ul>
+<p>Run with <code>python examples/qt_demo/all_widgets.py</code> and inspect the layout
+with <code>dolphin spy --pid &lt;pid&gt;</code> to see the UIA tree.</p>
+<h2 id="qt-agent-injection-for-qml-qgraphicsview-custom-widgets">Qt agent — injection for QML / QGraphicsView / custom widgets<a class="headerlink" href="#qt-agent-injection-for-qml-qgraphicsview-custom-widgets" title="Permanent link">&para;</a></h2>
+<p>For UI elements that UIA cannot see (Qt Quick, custom paint, Qt Charts,
+Qt 3D, anything that rolls its own QPainter scene), dolphin ships a
+small native DLL that gets injected into the AUT and exposes the live
+<code>QObject</code> meta-object tree over a named-pipe JSON protocol. The agent
+DLLs are bundled with the library — no separate install or build step.</p>
+<h3 id="recommended-high-level-element-api">Recommended: high-level Element API<a class="headerlink" href="#recommended-high-level-element-api" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="sa">r</span><span class="s1">&#39;&quot;python&quot; &quot;trading_app.py&quot;&#39;</span><span class="p">)</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">&quot;Trading&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="c1"># QML — found by objectName, returned as QmlElement</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="n">btn</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;loginButton&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="n">btn</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>                      <span class="c1"># synthetic Qt MouseEvent (no real cursor)</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="n">btn</span><span class="o">.</span><span class="n">set_property</span><span class="p">(</span><span class="s2">&quot;enabled&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="c1"># QML reactive — wait until binding propagates</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="n">field</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;usernameField&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="n">field</span><span class="o">.</span><span class="n">set_text</span><span class="p">(</span><span class="s2">&quot;Alice&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a><span class="n">field</span><span class="o">.</span><span class="n">wait_for_property</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;Alice&quot;</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>
+<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="c1"># QGraphicsView — walk its scene</span>
+<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a><span class="n">view</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">graphics_view</span><span class="p">(</span><span class="n">object_name</span><span class="o">=</span><span class="s2">&quot;priceChart&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a><span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">view</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">item</span><span class="p">[</span><span class="s2">&quot;type&quot;</span><span class="p">],</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;x&quot;</span><span class="p">],</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;y&quot;</span><span class="p">])</span>
+<a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a><span class="n">top_hit</span> <span class="o">=</span> <span class="n">view</span><span class="o">.</span><span class="n">item_at</span><span class="p">(</span><span class="mi">120</span><span class="p">,</span> <span class="mi">80</span><span class="p">)</span>
+<a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a>
+<a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a><span class="c1"># Plain QObject / QWidget — via meta-object (more granular than UIA)</span>
+<a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a><span class="n">label</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">qt_widget</span><span class="p">(</span><span class="n">object_name</span><span class="o">=</span><span class="s2">&quot;connectionStatus&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a><span class="k">assert</span> <span class="n">label</span><span class="o">.</span><span class="n">get_property</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;Connected&quot;</span>
+</code></pre></div>
+<h3 id="raw-agent-api-advanced">Raw agent API (advanced)<a class="headerlink" href="#raw-agent-api-advanced" title="Permanent link">&para;</a></h3>
+<p>The <code>Application.qt_agent</code> property returns a <code>QtAgentClient</code> for full
+JSON-RPC access — needed when you want to bypass the Element wrappers:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">qt_agent</span>  <span class="c1"># lazy injection on first access</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="c1"># Find by objectName in the QML scene graph</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="n">btn</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlClickButton&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="n">agent</span><span class="o">.</span><span class="n">qml_click</span><span class="p">(</span><span class="n">btn</span><span class="p">[</span><span class="s2">&quot;handle&quot;</span><span class="p">])</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="c1"># Read/write any Q_PROPERTY</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="n">field</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlNameField&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="n">agent</span><span class="o">.</span><span class="n">set_property</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;Alice&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="c1"># Invoke any Q_INVOKABLE / slot with typed args</span>
+<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a><span class="n">spin</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">className</span><span class="o">=</span><span class="s2">&quot;QSpinBox&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
+<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="n">agent</span><span class="o">.</span><span class="n">invoke</span><span class="p">(</span><span class="n">spin</span><span class="p">,</span> <span class="s2">&quot;setValue&quot;</span><span class="p">,</span> <span class="mi">42</span><span class="p">)</span>
+</code></pre></div>
+<p>See <a href="../../architecture/qt-agent/"><code>docs/architecture/qt-agent.md</code></a> for
+the full agent API, IPC protocol, and security model.</p>
+<h3 id="agent-limitations">Agent limitations<a class="headerlink" href="#agent-limitations" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Anti-cheat / DRM apps</strong> detect <code>CreateRemoteThread</code> and may close.
+  There is no workaround.</li>
+<li><strong>First call latency</strong> — agent injection takes ~50-100 ms for the
+  first access. Subsequent calls on the same <code>Application</code> are cached.</li>
+<li><strong>Sandboxed apps</strong> (UWP / packaged) cannot be injected without
+  elevated AppContainer-aware tooling.</li>
+<li><strong>ABI lock</strong> — <code>dolphin_qt5_agent.dll</code> only loads into Qt 5.x AUTs;
+  <code>dolphin_qt6_agent.dll</code> only into Qt 6.x. Detection is automatic via
+  <code>app.qt_version()</code>.</li>
+</ul>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Widgets invisible to <code>window.child_window(...)</code></td>
+<td><code>QT_ACCESSIBILITY=1</code> env var not set on the child process</td>
+<td>Use <code>Desktop.launch_qt("your_app.exe")</code> — it sets the flag automatically. If attaching to a running Qt app, relaunch it with <code>QT_ACCESSIBILITY=1</code></td>
+</tr>
+<tr>
+<td>QML items not found</td>
+<td>Qt agent not injected</td>
+<td>Call <code>app.qml("objectName")</code> to trigger injection, or <code>app.has_qt_agent()</code> to verify it attached without injecting (accessing the <code>app.qt_agent</code> property itself triggers injection)</td>
+</tr>
+<tr>
+<td><code>QtAgentInjectError: sandboxed process</code></td>
+<td>UWP / packaged app</td>
+<td>Not currently supported. Use <code>ImageLocator</code> fallback for the affected screens</td>
+</tr>
+<tr>
+<td>Buttons return <code>role="pane"</code> instead of <code>Button</code></td>
+<td><code>QPushButton</code> marked <code>checkable=True</code> — Qt maps to <code>CheckBox</code> role</td>
+<td>Use <code>window.check_box(name=...)</code> instead of <code>.button(...)</code>, or <code>Locator(control_type="CheckBox")</code></td>
+</tr>
+<tr>
+<td>Menu items disappear before click</td>
+<td>Qt opens submenus as top-level windows; menu closes on focus loss</td>
+<td>Chain <code>menu.open() → item.click()</code> in the same call, don't <code>menu.text()</code> in between</td>
+</tr>
+<tr>
+<td><code>SetCursorPos: No error message is available</code> on click</td>
+<td>RDP session or background process</td>
+<td>Use <code>Locator.invoke()</code> (UIA Invoke pattern; raises <code>UnsupportedPatternError</code> if the control doesn't support it) instead of <code>.click()</code></td>
+</tr>
+<tr>
+<td><code>objectName</code> matches wrong widget</td>
+<td>Qt inheritance: parent widget shares <code>objectName</code> with a child</td>
+<td>Use the dotted-path form: <code>win.get_by_automation_id("MainForm.SubmitButton")</code> — matches the full hierarchical AutomationId</td>
+</tr>
+<tr>
+<td><code>graphics.item_at(x, y)</code> / <code>items()</code> returns nothing</td>
+<td><code>QGraphicsView</code> scene items don't inherit <code>QObject</code></td>
+<td>Only items derived from <code>QGraphicsObject</code> (not <code>QGraphicsItem</code>) publish an <code>objectName</code>. Set <code>.setObjectName("...")</code> in the item constructor</td>
+</tr>
+<tr>
+<td>Qt 5 app but agent tries to load Qt 6 DLL</td>
+<td><code>Application.qt_version()</code> autodetect confused by mixed installs</td>
+<td>Check what was detected with <code>app.qt_version()</code>, then bypass the property and attach explicitly: <code>QtAgentClient.attach(pid, "5")</code></td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; 2026 DolphinSoft Kamil Gluszek
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://dolphinsoft.pl" target="_blank" rel="noopener" title="DolphinSoft" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M351.9 280H161c2.9 64.5 17.2 123.9 37.5 167.4 11.4 24.5 23.7 41.8 35.1 52.4 11.2 10.5 18.9 12.2 22.9 12.2s11.7-1.7 22.9-12.2c11.4-10.6 23.7-28 35.1-52.4 20.3-43.5 34.6-102.9 37.5-167.4zm-191-48h190.9c-2.8-64.5-17.1-123.9-37.4-167.4-11.4-24.4-23.7-41.8-35.1-52.4C268.1 1.7 260.4 0 256.4 0s-11.7 1.7-22.9 12.2c-11.4 10.6-23.7 28-35.1 52.4-20.3 43.5-34.6 102.9-37.5 167.4m-48 0c3.5-85.6 25.6-165.1 57.9-217.3C78.7 47.3 10.9 131.2 1.5 232zM1.5 280c9.4 100.8 77.2 184.7 169.3 217.3-32.3-52.2-54.4-131.7-57.9-217.3zm398.4 0c-3.5 85.6-25.6 165.1-57.9 217.3 92.1-32.7 159.9-116.5 169.3-217.3zm111.4-48C501.9 131.2 434.1 47.3 342 14.7c32.3 52.2 54.4 131.7 57.9 217.3z"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/DolphinSoftEU/DolphinDesktop" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.top", "search.highlight", "search.share", "content.code.annotate", "content.code.copy", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -2,162 +2,238 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://dolphinsoft.pl/latest/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/architecture/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/backend-capabilities/</loc>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/ci-example/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/core-concepts/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/faq/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
-         <loc>https://dolphinsoft.pl/latest/image-based/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <loc>https://dolphinsoft.pl/latest/getting-started/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/installation/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/migration/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/quickstart/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/support-matrix/</loc>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/architecture/qt-agent/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/ci/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/ci/github-actions/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/ci/jenkins/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/ci/teamcity/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/guides/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/guides/cef-legacy/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/guides/delphi/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/guides/electron/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/guides/embedded-web/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/guides/image-based/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/guides/java/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/guides/mainframe/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/guides/native/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/guides/office/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/guides/oracle-forms/</loc>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/guides/powerbuilder/</loc>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/guides/qt/</loc>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/guides/sap/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/guides/webview2/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/application/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/reference/cdp/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/cli/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/clipboard/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/reference/delphi/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/desktop/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/dialogs/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/exceptions/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/image/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/java/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/keyboard/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/locator/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/reference/mainframe/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/mouse/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/office/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/reference/oracle-forms/</loc>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/reference/playwright-compat/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/pytest-plugin/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/reference/sap/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/reference/window/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/tutorials/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/tutorials/fallback-selectors/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/tutorials/first-test/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/tutorials/headless-mode/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
+    </url>
+    <url>
+         <loc>https://dolphinsoft.pl/latest/tutorials/object-repository/</loc>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/tutorials/page-objects/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
     <url>
          <loc>https://dolphinsoft.pl/latest/tutorials/tracing/</loc>
-         <lastmod>2026-05-29</lastmod>
+         <lastmod>2026-08-05</lastmod>
     </url>
 </urlset>
