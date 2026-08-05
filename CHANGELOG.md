@@ -261,6 +261,11 @@ None.
 
 ### Fixed
 
+* **`_trace.list_runs()` leaked a sqlite connection** for every trace
+  directory whose `trace.db` failed to open or query. The `except` that
+  keeps the scan going past a corrupt or locked database skipped the
+  `close()` on the line below it, so the connection survived until
+  garbage collection.
 * **DelphiComponent.is_checked**: LCL exposes MSAA `State` as an
   **integer bitfield** (STATE_SYSTEM_CHECKED = 0x10), not a
   comma-separated word list. Now reads the bit directly; the
