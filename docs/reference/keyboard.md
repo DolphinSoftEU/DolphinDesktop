@@ -12,8 +12,18 @@ from dolphin_desktop import Keyboard
 Keyboard.press("^s")          # Ctrl+S
 Keyboard.press("{ENTER}")     # Enter
 Keyboard.type("Hello World")  # plain text
+Keyboard.type("100% (net)")   # metacharacters typed literally
+Keyboard.type("%F", escape=False)  # opt out: send Alt+F as a key sequence
 Keyboard.hotkey("ctrl", "c")  # Ctrl+C
+Keyboard.hotkey("win", "e")   # Win+E
 ```
+
+`Keyboard.type()` types literal text — `+ ^ % ~ ( ) { }` are escaped for you.
+Pass `escape=False` when the argument is a pywinauto key sequence rather than
+text to type.
+
+`Keyboard.hotkey()` accepts the modifiers `ctrl`, `shift`, `alt` and `win`,
+followed by a single character or a key name (`enter`, `f4`, `delete`).
 
 ## Key Notation
 

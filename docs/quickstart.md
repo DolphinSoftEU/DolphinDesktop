@@ -78,7 +78,7 @@ The Page Object created by the scaffold is:
 ```python title="objects/notepad_page.py"
 from __future__ import annotations
 
-from dolphin_desktop._window import Window
+from dolphin_desktop import Window
 
 
 class NotepadPage:

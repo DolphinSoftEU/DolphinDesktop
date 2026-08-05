@@ -6,7 +6,7 @@ Headless API::
     tree = spy.inspect(title="Notepad")          # returns dict
     tree = spy.inspect(title="Notepad", depth=3)
     print(spy.format_tree(tree["root"]))
-    chain = spy.pick()                           # returns parent->leaf selectors
+    picked = spy.pick()                          # {"status": ..., "chain": [...]}
 
 CLI (see _cli.py)::
 
@@ -19,7 +19,9 @@ JSON schema is versioned via ``schema_version`` key (currently 1).
 
 from __future__ import annotations
 
+import re
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,6 +29,21 @@ from typing import Any
 SCHEMA_VERSION = 1
 
 _PICK_POLL = 0.05  # seconds between mouse-position checks in pick mode
+
+# Default tree-walk budget.  An unbounded walk of a Chromium / Electron accessibility
+# tree is minutes of COM calls followed by a RecursionError, so the default is capped
+# and callers that really want the whole tree opt in with ``depth=None``.
+_DEFAULT_DEPTH = 12
+_DEFAULT_MAX_CHILDREN = 200
+
+# Seconds between full re-scans of the SAP component rectangles in sap_pick()
+_SAP_INDEX_REFRESH = 1.5
+
+# SAP GUI Scripting component IDs are fully qualified, e.g.
+# ``/app/con[0]/ses[0]/wnd[0]/usr/txtRSYST-BNAME``.  Dolphin's
+# ``session.find_by_id`` works relative to a session, so the
+# ``/app/con[N]/ses[M]/`` prefix is stripped from generated locators.
+_SAP_SESSION_PREFIX = re.compile(r"^/app/con\[\d+\]/ses\[\d+\]/")
 
 # ANSI colours (Windows Terminal + modern consoles)
 _C_RESET = "\033[0m"
@@ -38,9 +55,7 @@ _C_GREEN = "\033[32m"
 _C_MAGENTA = "\033[35m"
 
 
-# ---------------------------------------------------------------------------
 # Internal node model
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -56,9 +71,7 @@ class _NodeInfo:
     children: list[_NodeInfo] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
 # Selector heuristics
-# ---------------------------------------------------------------------------
 
 
 def _suggest_selector(
@@ -85,9 +98,7 @@ def _suggest_selector(
     return {}
 
 
-# ---------------------------------------------------------------------------
 # Element info helpers
-# ---------------------------------------------------------------------------
 
 
 def _bbox_from_rect(rect: Any) -> dict[str, int]:
@@ -102,7 +113,12 @@ def _bbox_from_rect(rect: Any) -> dict[str, int]:
         return {"x": 0, "y": 0, "width": 0, "height": 0}
 
 
-def _node_from_element_info(info: Any, depth: int | None, _level: int = 0) -> _NodeInfo:
+def _node_from_element_info(
+    info: Any,
+    depth: int | None,
+    max_children: int | None = _DEFAULT_MAX_CHILDREN,
+    _level: int = 0,
+) -> _NodeInfo:
     """Recursively build :class:`_NodeInfo` from a ``UIAElementInfo``."""
     try:
         name: str = info.name or ""
@@ -146,10 +162,15 @@ def _node_from_element_info(info: Any, depth: int | None, _level: int = 0) -> _N
 
     if depth is None or _level < depth:
         try:
-            for child_info in info.children():
-                node.children.append(_node_from_element_info(child_info, depth, _level + 1))
+            children = list(info.children())
         except Exception:
-            pass
+            children = []
+        if max_children is not None:
+            children = children[:max_children]
+        for child_info in children:
+            node.children.append(
+                _node_from_element_info(child_info, depth, max_children, _level + 1)
+            )
 
     return node
 
@@ -168,9 +189,7 @@ def _node_to_dict(node: _NodeInfo) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
 # Element-from-point (for pick mode)
-# ---------------------------------------------------------------------------
 
 
 def _element_info_from_point(x: int, y: int) -> Any | None:
@@ -180,7 +199,9 @@ def _element_info_from_point(x: int, y: int) -> Any | None:
         from pywinauto.uia_element_info import UIAElementInfo
 
         return UIAElementInfo.from_point(x, y)
-    except (AttributeError, Exception):
+    except Exception:
+        # Older pywinauto has no from_point classmethod (AttributeError); newer
+        # versions can still fail the underlying COM call.  Both fall through.
         pass
 
     # Fallback: raw IUIAutomation COM call
@@ -199,39 +220,108 @@ def _element_info_from_point(x: int, y: int) -> Any | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Screen-DC highlight (XOR trick: drawing twice restores original pixels)
-# ---------------------------------------------------------------------------
+# Screen highlight — four click-through overlay windows forming a border.
+#
+# Overlay windows rather than drawing on the screen DC: a screen-DC scribble
+# lands outside DWM's composition, belongs to no window surface, and so is
+# never restored — any repaint underneath smears it and fragments stay on
+# screen. Hiding an overlay *is* the erase. WS_EX_TRANSPARENT keeps the
+# strips out of hit-testing so element_from_point under the cursor never
+# lands on the border; WS_EX_NOACTIVATE leaves focus with the inspected app.
 
 _HIGHLIGHT_COLOR = 0x0000FF00  # BGR → green
 _HIGHLIGHT_PEN_WIDTH = 3
+_HIGHLIGHT_WND_CLASS = "DolphinSpyHighlight"
 
 
 class _Highlighter:
-    """Draws a 3px green XOR border on the screen DC; erases by redrawing."""
+    """Green click-through border built from four overlay strips."""
 
     def __init__(self) -> None:
         self._last: tuple[int, int, int, int] | None = None
+        self._strips: list[int] = []
+        self._ready = threading.Event()
+        self._thread: threading.Thread | None = None
 
-    def _draw(self, left: int, top: int, right: int, bottom: int) -> None:
+    # The strips live on their own thread running a message loop: a window
+    # is only painted once its owning thread services WM_PAINT, and the
+    # picker loop never pumps a queue of its own.
+    def _strip_thread(self) -> None:
         try:
+            import win32api
             import win32con
             import win32gui
 
-            hdc = win32gui.GetDC(0)
-            old_rop = win32gui.SetROP2(hdc, win32con.R2_XORPEN)
-            pen = win32gui.CreatePen(win32con.PS_SOLID, _HIGHLIGHT_PEN_WIDTH, _HIGHLIGHT_COLOR)
-            null_brush = win32gui.GetStockObject(win32con.NULL_BRUSH)
-            old_pen = win32gui.SelectObject(hdc, pen)
-            old_brush = win32gui.SelectObject(hdc, null_brush)
-            win32gui.Rectangle(hdc, left, top, right, bottom)
-            win32gui.SelectObject(hdc, old_pen)
-            win32gui.SelectObject(hdc, old_brush)
-            win32gui.DeleteObject(pen)
-            win32gui.SetROP2(hdc, old_rop)
-            win32gui.ReleaseDC(0, hdc)
+            brush = win32gui.CreateSolidBrush(_HIGHLIGHT_COLOR)
+
+            def _on_paint(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
+                # Painting explicitly rather than relying on the class
+                # background brush: with the brush alone the strips stayed
+                # blank on Windows 11.
+                hdc, paint_struct = win32gui.BeginPaint(hwnd)
+                win32gui.FillRect(hdc, win32gui.GetClientRect(hwnd), brush)
+                win32gui.EndPaint(hwnd, paint_struct)
+                return 0
+
+            wc = win32gui.WNDCLASS()
+            wc.lpszClassName = _HIGHLIGHT_WND_CLASS
+            wc.hInstance = win32api.GetModuleHandle(None)
+            wc.hbrBackground = brush
+            wc.lpfnWndProc = {
+                win32con.WM_PAINT: _on_paint,
+                win32con.WM_DESTROY: lambda *args: 0,
+            }
+            try:
+                win32gui.RegisterClass(wc)
+            except win32gui.error:
+                pass  # already registered by an earlier picker run
+
+            ex_style = (
+                win32con.WS_EX_TRANSPARENT
+                | win32con.WS_EX_TOPMOST
+                | win32con.WS_EX_TOOLWINDOW
+                | win32con.WS_EX_NOACTIVATE
+            )
+            for _ in range(4):
+                hwnd = win32gui.CreateWindowEx(
+                    ex_style,
+                    _HIGHLIGHT_WND_CLASS,
+                    None,
+                    win32con.WS_POPUP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    wc.hInstance,
+                    None,
+                )
+                self._strips.append(hwnd)
+        except Exception:
+            self._strips = []
+        finally:
+            self._ready.set()
+
+        if not self._strips:
+            return
+        try:
+            import win32gui
+
+            win32gui.PumpMessages()
         except Exception:
             pass
+
+    def _ensure_strips(self) -> bool:
+        if self._strips:
+            return True
+        if self._thread is None:
+            self._thread = threading.Thread(
+                target=self._strip_thread, name="dolphin-spy-highlight", daemon=True
+            )
+            self._thread.start()
+            self._ready.wait(timeout=3.0)
+        return bool(self._strips)
 
     def update(self, bbox: dict[str, int]) -> None:
         left = bbox["x"]
@@ -242,23 +332,43 @@ class _Highlighter:
         new = (left, top, right, bottom)
         if new == self._last:
             return
+        if not self._ensure_strips():
+            return
 
-        # Erase previous by XOR-drawing same rect again
-        if self._last is not None:
-            self._draw(*self._last)
+        try:
+            import win32con
+            import win32gui
 
-        self._draw(*new)
-        self._last = new
+            width = _HIGHLIGHT_PEN_WIDTH
+            strips = (
+                (left, top, right - left, width),  # top edge
+                (left, max(bottom - width, top), right - left, width),  # bottom edge
+                (left, top, width, bottom - top),  # left edge
+                (max(right - width, left), top, width, bottom - top),  # right edge
+            )
+            flags = win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW
+            for hwnd, (x, y, cx, cy) in zip(self._strips, strips, strict=True):
+                win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, x, y, cx, cy, flags)
+                win32gui.InvalidateRect(hwnd, None, True)
+            self._last = new
+        except Exception:
+            pass
 
     def clear(self) -> None:
-        if self._last is not None:
-            self._draw(*self._last)
-            self._last = None
+        if self._last is None:
+            return
+        try:
+            import win32con
+            import win32gui
+
+            for hwnd in self._strips:
+                win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+        except Exception:
+            pass
+        self._last = None
 
 
-# ---------------------------------------------------------------------------
 # Public API: inspect()
-# ---------------------------------------------------------------------------
 
 
 def _resolve_element_info(
@@ -320,7 +430,8 @@ def inspect(
     title_re: str | None = None,
     class_name: str | None = None,
     pid: int | None = None,
-    depth: int | None = None,
+    depth: int | None = _DEFAULT_DEPTH,
+    max_children: int | None = _DEFAULT_MAX_CHILDREN,
     backend: str = "uia",
 ) -> dict[str, Any]:
     """Return a versioned, JSON-serialisable UIA tree for a window.
@@ -340,14 +451,19 @@ def inspect(
     pid:
         Process ID.
     depth:
-        Maximum tree depth (``None`` = unlimited).
+        Maximum tree depth (default 12; ``None`` = unlimited).
+    max_children:
+        Maximum children walked per node (default 200; ``None`` = unlimited).
     backend:
         pywinauto backend — ``"uia"`` (default) or ``"win32"``.
 
     Returns
     -------
     dict
-        ``{"schema_version": 1, "root": {...}}``
+        ``{"schema_version": 1, "limits": {...}, "root": {...}}``
+
+        ``limits`` reports the walk budget actually applied, so a caller can tell a
+        complete tree from one the caps cut short.
 
         Each node has keys:
         ``name``, ``control_type``, ``automation_id``, ``class_name``,
@@ -363,13 +479,15 @@ def inspect(
         pid=pid,
         backend=backend,
     )
-    root = _node_from_element_info(info, depth=depth)
-    return {"schema_version": SCHEMA_VERSION, "root": _node_to_dict(root)}
+    root = _node_from_element_info(info, depth=depth, max_children=max_children)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "limits": {"depth": depth, "max_children": max_children},
+        "root": _node_to_dict(root),
+    }
 
 
-# ---------------------------------------------------------------------------
 # Public API: format_tree() — coloured terminal output
-# ---------------------------------------------------------------------------
 
 
 def _use_color(force: bool | None) -> bool:
@@ -419,7 +537,7 @@ def format_tree(
         if cls:
             parts.append(f"{_C_DIM}[{cls}]{_C_RESET}")
         if w or h:
-            parts.append(f"{_C_MAGENTA}({w}×{h}){_C_RESET}")  # noqa: RUF001
+            parts.append(f"{_C_MAGENTA}({w}×{h}){_C_RESET}")
     else:
         parts = [f"{prefix}{ct}"]
         if name:
@@ -429,7 +547,7 @@ def format_tree(
         if cls:
             parts.append(f"[{cls}]")
         if w or h:
-            parts.append(f"({w}×{h})")  # noqa: RUF001
+            parts.append(f"({w}×{h})")
 
     lines.append(" ".join(parts))
 
@@ -439,13 +557,16 @@ def format_tree(
     return "\n".join(lines) if _lines is None else ""
 
 
-# ---------------------------------------------------------------------------
 # Public API: pick() — interactive element picker
-# ---------------------------------------------------------------------------
 
 
 def _selector_to_code(sel: dict[str, Any]) -> str:
-    """Format suggested_selector dict as a dolphin Locator call."""
+    """Format suggested_selector dict as a dolphin Locator call.
+
+    Values go through ``repr`` — element names routinely contain backslashes
+    (``C:\\Users\\...``) and quotes, which hand-quoting turns into source that
+    does not parse.
+    """
     if not sel:
         return "locator()  # no selector found"
     parts: list[str] = []
@@ -453,7 +574,7 @@ def _selector_to_code(sel: dict[str, Any]) -> str:
         if isinstance(v, int) and not isinstance(v, bool):
             parts.append(f"{k}={v}")
         else:
-            parts.append(f'{k}="{v}"')
+            parts.append(f"{k}={v!r}")
     return f"locator({', '.join(parts)})"
 
 
@@ -726,7 +847,36 @@ def _validate_and_repair(
     return chain, "unreachable"
 
 
-def pick(backend: str = "uia") -> list[dict[str, Any]]:
+# Human-readable note per pick status.  Kept out of pick() itself so the result stays
+# machine-readable for a front-end that never sees this process's stdout.
+_PICK_STATUS_NOTES: dict[str, str] = {
+    "ok": "",
+    "cancelled": "",
+    "repaired": (
+        "note: leaf rewritten to found_index — original title/name did not match via pywinauto"
+    ),
+    "repaired_flat": (
+        "note: ancestor chain simplified — direct search from window root succeeded "
+        "(intermediate class_name steps were unreliable)"
+    ),
+    "unverified": "note: chain not verified (no window root or pywinauto unavailable)",
+    "unreachable": (
+        "warning: chain does NOT resolve to the picked element. Consider ImageLocator "
+        "or a keyboard shortcut for this control."
+    ),
+}
+
+
+def _pick_result(status: str, chain: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": status,
+        "chain": chain,
+        "message": _PICK_STATUS_NOTES.get(status, ""),
+    }
+
+
+def pick(backend: str = "uia") -> dict[str, Any]:
     """Interactive element picker.
 
     Move the cursor over the target element, then press **Ctrl+Click** to
@@ -740,10 +890,15 @@ def pick(backend: str = "uia") -> list[dict[str, Any]]:
 
     Returns
     -------
-    list[dict]
-        Chain of ``suggested_selector`` dicts ordered from outermost ancestor
-        down to the picked element, suitable for chained ``locator()`` calls.
-        Returns ``[]`` if cancelled.
+    dict
+        ``{"schema_version": 1, "status": ..., "chain": [...], "message": ...}``
+
+        ``chain`` is the list of ``suggested_selector`` dicts ordered from
+        outermost ancestor down to the picked element, suitable for chained
+        ``locator()`` calls; it is empty when nothing was picked.  ``status`` is
+        one of ``"ok"``, ``"repaired"``, ``"repaired_flat"``, ``"unverified"``,
+        ``"unreachable"`` or ``"cancelled"`` — anything but ``"ok"`` means the
+        chain was not verified to resolve back to the element that was picked.
     """
     try:
         import win32api
@@ -768,9 +923,8 @@ def pick(backend: str = "uia") -> list[dict[str, Any]]:
 
             if win32api.GetAsyncKeyState(win32con.VK_ESCAPE) & 0x8001:
                 print("Cancelled.")
-                return []
+                return _pick_result("cancelled", [])
 
-            # Update highlight
             try:
                 info = _element_info_from_point(x, y)
                 if info is not None:
@@ -798,33 +952,14 @@ def pick(backend: str = "uia") -> list[dict[str, Any]]:
         highlighter.clear()
 
     if current_info is None:
-        return []
+        return _pick_result("cancelled", [])
 
     window_info, chain = _build_parent_chain(current_info)
     chain, status = _validate_and_repair(window_info, chain, current_info, backend)
-    if status == "repaired":
-        print(
-            "  note: leaf rewritten to found_index — original title/name "
-            "did not match via pywinauto"
-        )
-    elif status == "repaired_flat":
-        print(
-            "  note: ancestor chain simplified — direct search from window root "
-            "succeeded (intermediate class_name steps were unreliable)"
-        )
-    elif status == "unreachable":
-        print(
-            "  warning: chain does NOT resolve to the picked element. "
-            "Consider ImageLocator or a keyboard shortcut for this control."
-        )
-    elif status == "unverified":
-        print("  note: chain not verified (no window root or pywinauto unavailable)")
-    return chain
+    return _pick_result(status, chain)
 
 
-# ---------------------------------------------------------------------------
 # Public API: image_pick() — interactive template PNG capture
-# ---------------------------------------------------------------------------
 
 
 def image_pick(
@@ -912,7 +1047,9 @@ def image_pick(
         current_bbox["x"] + current_bbox["width"],
         current_bbox["y"] + current_bbox["height"],
     )
-    img = ImageGrab.grab(bbox=region)
+    # all_screens: without it the grab is clipped to the primary monitor, so an
+    # element picked on a secondary display captures the wrong pixels.
+    img = ImageGrab.grab(bbox=region, all_screens=True)
 
     out = _Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -924,7 +1061,9 @@ def image_pick(
     except Exception:
         elem_name = "element"
 
-    suffix = hashlib.md5(str(current_bbox).encode()).hexdigest()[:6]
+    # usedforsecurity=False: this is a filename suffix, and md5 is unavailable on a
+    # FIPS-mode host without it.
+    suffix = hashlib.md5(str(current_bbox).encode(), usedforsecurity=False).hexdigest()[:6]
     filename = f"template_{elem_name}_{suffix}.png"
     full_path = out / filename
     img.save(str(full_path))
@@ -933,3 +1072,411 @@ def image_pick(
     print(f"\nTemplate saved: {abs_path}")
     print(f'\nUse it with:   window.image("{abs_path}").click()')
     return abs_path
+
+
+# ---------------------------------------------------------------------------
+# SAP GUI Scripting support
+#
+# SAP GUI for Windows is not addressable through the UIA/Win32 tree the rest of
+# the spy walks — the generated ``auto_id``/``title`` selectors do not map to
+# anything Dolphin's SAP API can resolve.  SAP GUI Scripting instead exposes
+# stable component IDs (``wnd[0]/usr/...``) plus per-control screen rectangles
+# over COM, so the SAP spy drives that engine directly and emits
+# ``session.find_by_id(...)`` locators.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _SapNodeInfo:
+    id: str  # session-relative id, e.g. wnd[0]/usr/txtFOO
+    full_id: str  # absolute id, e.g. /app/con[0]/ses[0]/wnd[0]/usr/txtFOO
+    name: str
+    type: str
+    text: str
+    bounding_box: dict[str, int]  # {x, y, width, height}
+    changeable: bool
+    suggested_selector: dict[str, str]
+    children: list[_SapNodeInfo] = field(default_factory=list)
+
+
+def _sap_relative_id(full_id: str) -> str:
+    """Strip the ``/app/con[N]/ses[M]/`` prefix from a SAP component ID."""
+    return _SAP_SESSION_PREFIX.sub("", full_id or "")
+
+
+def _sap_str(component: Any, names: tuple[str, ...]) -> str:
+    from ._sap import _get_first
+
+    value = _get_first(component, names)
+    return "" if value is None else str(value)
+
+
+def _sap_bbox(component: Any) -> dict[str, int]:
+    """Return the screen rectangle of a SAP component, or a zero box."""
+    from ._sap import _get_first
+
+    left = _get_first(component, ("ScreenLeft", "screenLeft"))
+    top = _get_first(component, ("ScreenTop", "screenTop"))
+    width = _get_first(component, ("Width", "width"))
+    height = _get_first(component, ("Height", "height"))
+    try:
+        return {
+            "x": int(left),
+            "y": int(top),
+            "width": int(width),
+            "height": int(height),
+        }
+    except (TypeError, ValueError):
+        return {"x": 0, "y": 0, "width": 0, "height": 0}
+
+
+def _sap_suggest_selector(rel_id: str, name: str, sap_type: str) -> dict[str, str]:
+    """Return the best SAP locator criteria in preference order.
+
+    The session-relative component ID is by far the most stable selector, so it
+    wins whenever present.  Name + type is the fallback for the rare component
+    that exposes no usable ID.
+    """
+    if rel_id:
+        return {"id": rel_id}
+    sel: dict[str, str] = {}
+    if name:
+        sel["name"] = name
+    if sap_type:
+        sel["type"] = sap_type
+    return sel
+
+
+def _sap_selector_to_code(sel: dict[str, Any]) -> str:
+    """Format a SAP suggested_selector dict as a Dolphin session call."""
+    if not sel:
+        return "find_by_id()  # no SAP id found"
+    if "id" in sel:
+        return f"find_by_id({sel['id']!r})"
+    parts: list[str] = []
+    if "name" in sel:
+        parts.append(f"name={sel['name']!r}")
+    if "type" in sel:
+        parts.append(f"type={sel['type']!r}")
+    return f"locator({', '.join(parts)})"
+
+
+def _sap_node_from_component(
+    component: Any,
+    depth: int | None,
+    max_children: int | None = _DEFAULT_MAX_CHILDREN,
+    _level: int = 0,
+) -> _SapNodeInfo:
+    """Recursively build a :class:`_SapNodeInfo` from a SAP GUI component."""
+    from ._sap import _bool_attr, _iter_children
+
+    full_id = _sap_str(component, ("Id", "id"))
+    rel_id = _sap_relative_id(full_id)
+    name = _sap_str(component, ("Name", "name"))
+    sap_type = _sap_str(component, ("Type", "type"))
+    text = _sap_str(component, ("Text", "text"))
+
+    node = _SapNodeInfo(
+        id=rel_id,
+        full_id=full_id,
+        name=name,
+        type=sap_type,
+        text=text,
+        bounding_box=_sap_bbox(component),
+        changeable=_bool_attr(component, ("Changeable", "changeable"), True),
+        suggested_selector=_sap_suggest_selector(rel_id, name, sap_type),
+    )
+
+    if depth is None or _level < depth:
+        for index, child in enumerate(_iter_children(component)):
+            if max_children is not None and index >= max_children:
+                break
+            node.children.append(_sap_node_from_component(child, depth, max_children, _level + 1))
+
+    return node
+
+
+def _sap_node_to_dict(node: _SapNodeInfo) -> dict[str, Any]:
+    return {
+        "id": node.id,
+        "full_id": node.full_id,
+        "name": node.name,
+        "type": node.type,
+        "text": node.text,
+        "bounding_box": node.bounding_box,
+        "changeable": node.changeable,
+        "suggested_selector": node.suggested_selector,
+        "children": [_sap_node_to_dict(c) for c in node.children],
+    }
+
+
+def sap_inspect(
+    *,
+    connection: int = 0,
+    session: int = 0,
+    depth: int | None = _DEFAULT_DEPTH,
+    max_children: int | None = _DEFAULT_MAX_CHILDREN,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Return a versioned, JSON-serialisable SAP component tree.
+
+    Connects to the running SAP GUI Scripting engine and walks the component
+    tree of the selected session.  Each node carries the session-relative
+    component ``id`` (the locator Dolphin uses), the absolute ``full_id``,
+    ``name``, ``type``, ``text``, screen ``bounding_box``, ``changeable`` flag,
+    and a ``suggested_selector`` ready for :func:`_sap_selector_to_code`.
+
+    Parameters
+    ----------
+    connection:
+        Zero-based SAP connection index.
+    session:
+        Zero-based session index within the connection.
+    depth:
+        Maximum tree depth (default 12; ``None`` = unlimited).
+    max_children:
+        Maximum children walked per node (default 200; ``None`` = unlimited).
+    timeout:
+        Seconds to wait for the SAP GUI Scripting engine (``None`` = config default).
+
+    Returns
+    -------
+    dict
+        ``{"schema_version": 1, "limits": {...}, "root": {...}}``
+    """
+    from ._sap import SapGui
+
+    sap = SapGui.connect(timeout=timeout)
+    sess = sap.session(connection=connection, session=session)
+    root = _sap_node_from_component(sess.raw, depth=depth, max_children=max_children)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "limits": {"depth": depth, "max_children": max_children},
+        "root": _sap_node_to_dict(root),
+    }
+
+
+def format_sap_tree(
+    node: dict[str, Any],
+    *,
+    indent: int = 0,
+    color: bool | None = None,
+    _lines: list[str] | None = None,
+) -> str:
+    """Render a SAP node dict (from :func:`sap_inspect`) as a tree string."""
+    lines: list[str] = [] if _lines is None else _lines
+    use_col = _use_color(color)
+
+    prefix = "  " * indent
+    sap_type = node.get("type") or "?"
+    rid = node.get("id") or ""
+    name = node.get("name") or ""
+    text = node.get("text") or ""
+    bbox = node.get("bounding_box") or {}
+    w = bbox.get("width", 0)
+    h = bbox.get("height", 0)
+
+    if use_col:
+        parts = [f"{prefix}{_C_CYAN}{_C_BOLD}{sap_type}{_C_RESET}"]
+        if rid:
+            parts.append(f"{_C_GREEN}{rid}{_C_RESET}")
+        if text:
+            parts.append(f'{_C_YELLOW}"{text}"{_C_RESET}')
+        if name and name != rid:
+            parts.append(f"{_C_DIM}[{name}]{_C_RESET}")
+        if w or h:
+            parts.append(f"{_C_MAGENTA}({w}×{h}){_C_RESET}")
+    else:
+        parts = [f"{prefix}{sap_type}"]
+        if rid:
+            parts.append(rid)
+        if text:
+            parts.append(f'"{text}"')
+        if name and name != rid:
+            parts.append(f"[{name}]")
+        if w or h:
+            parts.append(f"({w}×{h})")
+
+    lines.append(" ".join(parts))
+
+    for child in node.get("children", []):
+        format_sap_tree(child, indent=indent + 1, color=color, _lines=lines)
+
+    return "\n".join(lines) if _lines is None else ""
+
+
+def _bbox_contains(bbox: dict[str, int], x: int, y: int) -> bool:
+    return (
+        bbox["x"] <= x < bbox["x"] + bbox["width"] and bbox["y"] <= y < bbox["y"] + bbox["height"]
+    )
+
+
+def _sap_sessions(engine: Any) -> list[Any]:
+    """Return every live SAP session COM object across all connections."""
+    from ._sap import _iter_children
+
+    sessions: list[Any] = []
+    for connection in _iter_children(engine):
+        sessions.extend(_iter_children(connection))
+    return sessions
+
+
+def _sap_iter_components(root: Any) -> Any:
+    """Yield every descendant component of *root* (depth-first)."""
+    from ._sap import _iter_children
+
+    stack = list(_iter_children(root))
+    while stack:
+        component = stack.pop()
+        yield component
+        stack.extend(_iter_children(component))
+
+
+class _SapRectIndex:
+    """Screen rectangles of every SAP component, rebuilt on a slow timer.
+
+    One full walk costs four cross-process COM property reads per component, so
+    rebuilding it on every pick poll tick is tens of thousands of COM calls per
+    second and visibly stalls SAP GUI itself.  Between rebuilds a hit test is
+    pure Python over the cached rectangles.
+    """
+
+    def __init__(self, sessions: list[Any], refresh: float = _SAP_INDEX_REFRESH) -> None:
+        self._sessions = sessions
+        self._refresh = refresh
+        # (bbox, component), sorted by area so the first containing hit is the
+        # smallest — the most specific control, as UIA element-from-point does.
+        self._entries: list[tuple[dict[str, int], Any]] = []
+        self._built_at: float | None = None
+
+    def refresh(self) -> None:
+        entries: list[tuple[int, dict[str, int], Any]] = []
+        for session in self._sessions:
+            for component in _sap_iter_components(session):
+                bbox = _sap_bbox(component)
+                if bbox["width"] <= 0 or bbox["height"] <= 0:
+                    continue
+                entries.append((bbox["width"] * bbox["height"], bbox, component))
+        entries.sort(key=lambda entry: entry[0])
+        self._entries = [(bbox, component) for _area, bbox, component in entries]
+        self._built_at = time.monotonic()
+
+    def component_at(self, x: int, y: int) -> Any | None:
+        """Return the smallest component whose *current* rect contains (x, y).
+
+        An indexed hit is confirmed against the component's live rectangle: the index
+        is up to *refresh* seconds old, and a control that scrolled or moved since the
+        walk would otherwise be reported — and highlighted — away from the cursor.
+        """
+        if self._built_at is None or time.monotonic() - self._built_at >= self._refresh:
+            self.refresh()
+        for bbox, component in self._entries:
+            if not _bbox_contains(bbox, x, y):
+                continue
+            if _bbox_contains(_sap_bbox(component), x, y):
+                return component
+        return None
+
+
+def _sap_pick_result(status: str, selector: dict[str, str]) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": status,
+        "selector": selector,
+        "message": _SAP_PICK_STATUS_NOTES.get(status, ""),
+    }
+
+
+_SAP_PICK_STATUS_NOTES: dict[str, str] = {
+    "ok": "",
+    "cancelled": "",
+    "no_session": ("No SAP sessions found. Ensure SAP GUI is running with a session open."),
+}
+
+
+def sap_pick(*, timeout: float | None = None) -> dict[str, Any]:
+    """Interactive SAP element picker.
+
+    Move the cursor over a SAP control, then press **Ctrl+Click** to capture
+    it.  The control is highlighted with a green border while hovering.  Press
+    **Esc** to cancel.
+
+    Returns
+    -------
+    dict
+        ``{"schema_version": 1, "status": ..., "selector": {...}, "message": ...}``
+
+        ``status`` is ``"ok"``, ``"cancelled"`` or ``"no_session"``.  ``selector``
+        is a ``suggested_selector`` dict (``{"id": "wnd[0]/usr/..."}`` for the
+        common case), suitable for :func:`_sap_selector_to_code`; it is empty
+        for any status other than ``"ok"``.
+    """
+    try:
+        import win32api
+        import win32con
+    except ImportError as exc:
+        raise RuntimeError(
+            "sap_pick() requires pywin32 (win32api). Install: pip install pywin32"
+        ) from exc
+
+    from ._sap import SapGui
+
+    engine = SapGui.connect(timeout=timeout).raw
+    sessions = _sap_sessions(engine)
+    if not sessions:
+        print(_SAP_PICK_STATUS_NOTES["no_session"])
+        return _sap_pick_result("no_session", {})
+
+    print("SAP pick mode — move cursor over a SAP control.")
+    print("  Ctrl+Click  → select")
+    print("  Esc         → cancel")
+    print()
+
+    highlighter = _Highlighter()
+    index = _SapRectIndex(sessions)
+    current: Any = None
+    prev_lbutton = False
+
+    try:
+        while True:
+            x, y = win32api.GetCursorPos()
+
+            if win32api.GetAsyncKeyState(win32con.VK_ESCAPE) & 0x8001:
+                print("Cancelled.")
+                return _sap_pick_result("cancelled", {})
+
+            try:
+                component = index.component_at(x, y)
+            except Exception:
+                component = None
+            # Reset on a miss: keeping the previous hit would make Ctrl+Click over
+            # empty space capture whatever was hovered last.
+            if component is None:
+                highlighter.clear()
+            else:
+                bbox = _sap_bbox(component)
+                if bbox["width"] > 0 and bbox["height"] > 0:
+                    highlighter.update(bbox)
+            current = component
+
+            lbutton_down = bool(win32api.GetAsyncKeyState(win32con.VK_LBUTTON) & 0x8000)
+            ctrl_down = bool(win32api.GetAsyncKeyState(win32con.VK_CONTROL) & 0x8000)
+
+            if lbutton_down and not prev_lbutton and ctrl_down and current is not None:
+                break
+
+            prev_lbutton = lbutton_down
+            time.sleep(_PICK_POLL)
+    finally:
+        highlighter.clear()
+
+    if current is None:
+        return _sap_pick_result("cancelled", {})
+
+    full_id = _sap_str(current, ("Id", "id"))
+    selector = _sap_suggest_selector(
+        _sap_relative_id(full_id),
+        _sap_str(current, ("Name", "name")),
+        _sap_str(current, ("Type", "type")),
+    )
+    return _sap_pick_result("ok", selector)

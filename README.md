@@ -1,8 +1,9 @@
 # Dolphin Desktop
 
-Windows desktop test automation with lazy locators, auto-waiting, and pytest integration.
-
-Dolphin Desktop helps Python tests launch, find, and interact with Windows desktop applications through Microsoft UI Automation, Win32 automation, image matching, and selected integrations such as Java Access Bridge and Office COM.
+Python-native test automation for every UI stack a Windows enterprise
+hits — SAP GUI, Qt 5/6, Electron/CEF, WPF/WinForms/UWP, Java Swing,
+Oracle Forms, Delphi/VCL, PowerBuilder, mainframe 3270/5250, and
+Office COM — under one API. Lazy locators, auto-waiting, pytest-first.
 
 ```bash
 pip install dolphin-desktop
@@ -11,7 +12,7 @@ pip install dolphin-desktop
 ```python
 from dolphin_desktop import Desktop
 
-desktop = Desktop(backend="uia")
+desktop = Desktop()
 app = desktop.launch("notepad.exe")
 win = app.window(class_name="Notepad")
 
@@ -26,12 +27,60 @@ app.kill()
 
 ## What It Provides
 
+| Stack                                       | Under the hood                                          | Extra needed                |
+|---------------------------------------------|--------------------------------------------------------|-----------------------------|
+| Windows GUI (WPF, WinForms, UWP, MFC)       | UIA + Win32 via pywinauto                              | *(base)*                    |
+| **SAP GUI Scripting**                       | COM Scripting binding                                  | *(base)*                    |
+| **Qt 5 / Qt 6** (widgets, QML, QGraphicsView)| UIA + injected agent DLL                              | *(base)*                    |
+| **Electron / CEF** (VS Code, Steam, Spotify)| Chrome DevTools Protocol via Playwright                | `[cdp]`                     |
+| **WebView2** (Edge Chromium embedded)       | Same CDP surface                                       | `[cdp]`                     |
+| **Java Swing / Oracle Forms**               | Direct JAB API                                         | *(base + JDK 8)*            |
+| **Mainframe 3270** (z/OS TSO, CICS)         | ws3270 subprocess wrap                                 | *(base + wc3270)*           |
+| **Mainframe 5250** (IBM i, AS/400)          | Pure-Python native TN5250 client                       | *(base)*                    |
+| **HLLAPI** (PCOMM, Attachmate, Rocket)      | ctypes binding to `EHLAPI32.DLL`                       | *(base + emulator)*         |
+| **Delphi / VCL** (RAD Studio, Lazarus)      | UIA + Delphi-aware locator with 5 strategies           | *(base)*                    |
+| **PowerBuilder** (2019+ Appeon)             | UIA + OCR fallback for DataWindow                      | *(base; `[vision]` for OCR)* |
+| Office (Excel / Word)                       | COM Automation via pywin32                             | *(base + Office)*           |
+| Image-based fallback                        | OpenCV template match + Tesseract OCR                  | `[vision]`                  |
+
+Every backend shares the same design: **lazy locators, auto-waiting,
+readable assertions.**
+
 - Lazy locators that resolve only when an action or query runs.
-- Auto-waiting for element actions and assertions.
-- A pytest plugin with `desktop` and `launch` fixtures.
-- UIA and Win32 backends for Windows desktop applications.
-- Image-based fallback selectors with the `vision` extra.
-- Trace, screenshot, video, recorder, spy, and project scaffold commands.
+- Auto-waiting on every action with per-call `timeout=`.
+- pytest plugin with `desktop` and `launch` fixtures.
+- Trace / screenshot / video / recorder / spy / project scaffold CLI.
+- **Autonomous library contract** — user tests import only from `dolphin_desktop`.
+
+## Verification status
+
+Honest per-stack coverage. "Verified" means an automated suite in this
+repository exercises the stack against a real application or a faithful
+mock; run `pytest tests/` to reproduce.
+
+| Stack                            | Status        | How it is exercised                    |
+|----------------------------------|---------------|----------------------------------------|
+| Native Windows (UIA / Win32)     | Verified      | headless suite + real apps             |
+| Qt 5 / Qt 6 widgets              | Verified      | real Qt apps built by the suite        |
+| Delphi / Lazarus LCL             | Verified      | real Lazarus sample app                |
+| Electron / CEF (VS Code, Steam)  | Verified      | real applications over CDP             |
+| Oracle Forms                     | Verified      | Java Swing mock over JAB               |
+| Mainframe TN3270 / TN5250        | Verified      | protocol mocks + pub400 integration    |
+| HLLAPI                           | Verified      | fake `EHLAPI32.DLL`                    |
+| PowerBuilder (Appeon runtime)    | Verified      | live PB 2025 demo: UIA + OCR fallback  |
+| SAP GUI                          | Verified      | live ABAP system over GUI Scripting    |
+| Delphi VCL (real RAD Studio)     | **Projected** | pending install                        |
+| Oracle Forms 12c (real)          | **Projected** | pending install                        |
+| HLLAPI real emulator             | **Projected** | pending trial                          |
+
+The SAP suite in `tests/sap/` runs against a real ABAP system and is
+**credential-free**: it reads user, password and client from environment
+variables and skips cleanly when they are absent, so it ships safely and
+is a no-op on a machine without SAP. It needs SAP GUI Scripting enabled
+on both the client and the server (`sapgui/user_scripting = TRUE`).
+dolphin stores no SAP credentials of its own: you attach to a session you
+have already logged into, or drive the logon screen with credentials your
+test supplies. See [docs/guides/sap.md](docs/guides/sap.md).
 
 ## Quickstart
 
@@ -47,27 +96,53 @@ The default scaffold creates a Notepad test and a small Page Object under `objec
 
 ## Documentation
 
-The documentation site is built with MkDocs from the `docs/` directory:
+Full docs live under `docs/` and are rendered as an MkDocs site
+(`uv run mkdocs serve` to preview locally, or browse the sources
+directly on GitHub).
 
-```bash
-uv run mkdocs serve
-```
+Entry points:
 
-Key pages:
+- **[Getting started](docs/getting-started.md)** — the shortest path
+  from a clean venv to a passing test per stack (SAP / Qt / Electron /
+  Java / Mainframe / Delphi / etc.).
+- **[Installation](docs/installation.md)** — base install + per-stack
+  extras (`[sap]`, `[qt]`, `[cdp]`, `[vision]`).
+- **[Quickstart](docs/quickstart.md)** — generate a Notepad project
+  from the CLI in under a minute.
+- **[Core concepts](docs/core-concepts.md)** — lazy locators,
+  auto-waiting, backends, pytest fixtures, headless mode, how dolphin
+  locates your app.
 
-- `docs/installation.md`
-- `docs/quickstart.md`
-- `docs/tutorials/first-test.md`
-- `docs/reference/index.md`
-- `docs/reference/cli.md`
+Per-stack guides:
+[Native Windows](docs/guides/native.md) ·
+[SAP](docs/guides/sap.md) ·
+[Qt](docs/guides/qt.md) ·
+[Java Swing / AWT](docs/guides/java.md) ·
+[Delphi / VCL](docs/guides/delphi.md) ·
+[Mainframe (3270 / 5250 / HLLAPI)](docs/guides/mainframe.md) ·
+[Oracle Forms](docs/guides/oracle-forms.md) ·
+[PowerBuilder](docs/guides/powerbuilder.md) ·
+[WebView2](docs/guides/webview2.md) ·
+[Office](docs/guides/office.md) ·
+[Image-based](docs/guides/image-based.md) ·
+[Embedded web (Electron / CEF)](docs/guides/embedded-web.md).
+
+Reference:
+[API index](docs/reference/index.md) ·
+[Support matrix](docs/support-matrix.md) — stack × backend × mode ·
+[Backend capabilities](docs/backend-capabilities.md) — the
+`Capability` vocabulary ·
+[CLI](docs/reference/cli.md) ·
+[Migration guide](docs/migration.md).
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and
+[RELEASING.md](RELEASING.md) for the publish checklist.
 
 ## Contact
 
-Maintained by DolphinSoft Kamil Gluszek.
+Maintained by DolphinSoft Kamil Głuszek.
 
 - Website: <https://dolphinsoft.pl>
 - Email: <kontakt@dolphinsoft.pl>

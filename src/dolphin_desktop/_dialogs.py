@@ -7,10 +7,21 @@ import time
 
 from pywinauto import Desktop as _PWDesktop  # type: ignore[import-untyped]
 
+from ._helpers import _escape_keys
+
+# Anchored: a caption merely *containing* one of these verbs ("Select your
+# plan" in a browser tab) is not a file dialog.
 _DIALOG_TITLE_RE = re.compile(
-    r"(Open|Save|Browse|Otwórz|Otwieranie|Zapisz|Zapis|Choose|Select|Pick)",
+    r"^(Open|Save|Browse|Otwórz|Otwieranie|Zapisz|Zapis|Choose|Select|Pick)\b",
     re.IGNORECASE,
 )
+
+_DIALOG_CLASS = "#32770"
+
+# Seconds a single control lookup inside an already-located dialog may take.
+# pywinauto's global window_find_timeout is 5 s, so every miss in the candidate
+# loops below would otherwise cost five seconds.
+_CONTROL_TIMEOUT = 0.5
 
 
 def _enum_visible_windows() -> list[tuple[int, str, str]]:
@@ -75,23 +86,52 @@ def _find_dialog_window(timeout: float):
     """Find any open/save dialog (#32770 or IFileDialog).
 
     Prefers the foreground window among the matches so a freshly opened dialog
-    wins over a stale one left behind by an earlier interaction.
+    wins over a stale one left behind by an earlier interaction.  A title-only
+    match is a last resort: an ordinary application window whose caption starts
+    with one of the dialog verbs must never outrank a real ``#32770``.
     """
     import win32gui  # type: ignore[import-untyped]
 
     deadline = time.monotonic() + timeout
     while True:
-        matches = [
-            hwnd
-            for hwnd, cls, title in _enum_visible_windows()
-            if cls == "#32770" or (title and _DIALOG_TITLE_RE.search(title))
-        ]
+        by_class: list[int] = []
+        by_title: list[int] = []
+        for hwnd, cls, title in _enum_visible_windows():
+            if cls == _DIALOG_CLASS:
+                by_class.append(hwnd)
+            elif title and _DIALOG_TITLE_RE.match(title):
+                by_title.append(hwnd)
+        # A caption is weak evidence and #32770 is strong, so the class match
+        # wins outright. Known limitation: a Win11 XAML picker is not a
+        # #32770, so if any unrelated #32770 happens to be open at the same
+        # time it is preferred over the picker. Narrowing this needs a class
+        # allowlist for the XAML pickers, which is not established here —
+        # ranking a browser tab above a real dialog is the worse trade.
+        matches = by_class or by_title
         if matches:
             fg = win32gui.GetForegroundWindow()
             return _hwnd_to_spec(fg if fg in matches else matches[0])
         if time.monotonic() >= deadline:
             raise TimeoutError(f"Could not find file dialog within {timeout}s")
         time.sleep(0.2)
+
+
+def _click_child(window, **criteria) -> bool:
+    """Click the dialog control matching *criteria*; False when it is absent.
+
+    ``WindowSpecification.click_input()`` resolves the specification with
+    pywinauto's global ``window_find_timeout``, so probing with a short
+    ``exists()`` first is what keeps a list of candidate labels from costing
+    five seconds per miss.
+    """
+    try:
+        spec = window.child_window(**criteria)
+        if not spec.exists(timeout=_CONTROL_TIMEOUT):
+            return False
+        spec.click_input()
+        return True
+    except Exception:
+        return False
 
 
 class FileDialog:
@@ -136,7 +176,7 @@ class FileDialog:
         self._win.set_focus()
         send_keys("^l")
         time.sleep(0.1)
-        send_keys(path, with_spaces=True)
+        send_keys(_escape_keys(path), with_spaces=True)
         send_keys("{ENTER}")
         return self
 
@@ -160,13 +200,10 @@ class FileDialog:
         auto_id "1"/"2"), so we pin it to the control type of the actual button —
         a SplitButton (Open with its dropdown) or a plain Button (Save/Cancel).
         """
-        for control_type in ("SplitButton", "Button"):
-            try:
-                self._win.child_window(auto_id=auto_id, control_type=control_type).click_input()
-                return True
-            except Exception:
-                continue
-        return False
+        return any(
+            _click_child(self._win, auto_id=auto_id, control_type=control_type)
+            for control_type in ("SplitButton", "Button")
+        )
 
     def confirm(self) -> None:
         """Click the Open / Save button."""
@@ -175,12 +212,8 @@ class FileDialog:
             return
         confirm_titles = ("Open", "Save", "Otwórz", "Zapisz", "OK")
         for title in confirm_titles:
-            try:
-                btn = self._win.child_window(title=title, control_type="Button")
-                btn.click_input()
+            if _click_child(self._win, title=title, control_type="Button"):
                 return
-            except Exception:
-                continue
         # If the dialog already closed (e.g. submitted via Enter in the address
         # bar fallback), there is nothing left to confirm — treat as success.
         if self._dialog_gone():
@@ -188,17 +221,12 @@ class FileDialog:
         raise RuntimeError("Could not find a confirm button in the file dialog")
 
     def cancel(self) -> None:
-        """Click the Cancel button."""
         # IDCANCEL == "2".
         if self._click_by_auto_id("2"):
             return
         for title in ("Cancel", "Anuluj"):
-            try:
-                btn = self._win.child_window(title=title, control_type="Button")
-                btn.click_input()
+            if _click_child(self._win, title=title, control_type="Button"):
                 return
-            except Exception:
-                continue
         if self._dialog_gone():
             return
         raise RuntimeError("Could not find a Cancel button in the file dialog")
@@ -228,19 +256,15 @@ class MessageBox:
         return ""
 
     def click_ok(self) -> None:
-        """Click the OK button."""
         self.click("OK")
 
     def click_cancel(self) -> None:
-        """Click the Cancel button."""
         self.click("Cancel", "Anuluj")
 
     def click_yes(self) -> None:
-        """Click the Yes button."""
         self.click("Yes", "Tak")
 
     def click_no(self) -> None:
-        """Click the No button."""
         self.click("No", "Nie")
 
     def click(self, *button_texts: str) -> None:
@@ -251,11 +275,7 @@ class MessageBox:
         (e.g. ``"Yes"`` / ``"Tak"``).
         """
         for title in button_texts:
-            try:
-                btn = self._win.child_window(title=title, control_type="Button")
-                btn.click_input()
+            if _click_child(self._win, title=title, control_type="Button"):
                 return
-            except Exception:
-                continue
         labels = ", ".join(repr(t) for t in button_texts)
         raise RuntimeError(f"No button matching {labels} found in MessageBox")

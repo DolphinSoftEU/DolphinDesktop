@@ -3,7 +3,7 @@
 Shows how to define UI element aliases in YAML and use them in tests
 instead of embedding raw selectors directly in test code.
 
-Run this example (requires a running "Login - MyApp" window):
+Run this example:
 
     python examples/object_repository.py
 
@@ -13,7 +13,7 @@ refers to elements by alias, so UI changes require only a single YAML edit.
 
 from pathlib import Path
 
-from dolphin_desktop import Desktop, objects
+from dolphin_desktop import objects
 
 # ---------------------------------------------------------------------------
 # 1.  Load the Object Repository
@@ -38,9 +38,8 @@ print("Registered aliases:", objects.available())
 #
 # The selector lives in the YAML — not scattered across 50 test files.
 
-desktop = Desktop()
-
 # app.window("login_window") resolves the alias → {title: "Login - MyApp"}
+# desktop = Desktop()
 # app = desktop.launch("myapp.exe")
 # win = app.window("login_window")          # alias → criteria from YAML
 # win.element("email_input").type_text("user@example.com")

@@ -1,0 +1,251 @@
+object MainForm: TMainForm
+  Left = 300
+  Height = 600
+  Top = 120
+  Width = 780
+  Caption = 'Dolphin Delphi VCL Sample'
+  ClientHeight = 580
+  ClientWidth = 780
+  LCLVersion = '4.0.0.0'
+  Menu = MainMenu
+  OnCreate = FormCreate
+  object LblName: TStaticText
+    Left = 16
+    Height = 22
+    Top = 20
+    Width = 80
+    Caption = 'Name:'
+    TabOrder = 21
+  end
+  object EdtName: TEdit
+    Left = 110
+    Height = 24
+    Top = 16
+    Width = 220
+    TabOrder = 0
+  end
+  object LblAge: TStaticText
+    Left = 16
+    Height = 22
+    Top = 56
+    Width = 80
+    Caption = 'Age:'
+    TabOrder = 22
+  end
+  object EdtAge: TEdit
+    Left = 110
+    Height = 24
+    Top = 52
+    Width = 100
+    TabOrder = 1
+  end
+  object LblPassword: TStaticText
+    Left = 16
+    Height = 22
+    Top = 92
+    Width = 80
+    Caption = 'Password:'
+    TabOrder = 23
+  end
+  object EdtPassword: TEdit
+    Left = 110
+    Height = 24
+    Top = 88
+    Width = 220
+    TabOrder = 2
+  end
+  object LblReadOnly: TStaticText
+    Left = 16
+    Height = 22
+    Top = 128
+    Width = 80
+    Caption = 'ReadOnly:'
+    TabOrder = 24
+  end
+  object EdtReadOnly: TEdit
+    Left = 110
+    Height = 24
+    Top = 124
+    Width = 220
+    TabOrder = 3
+  end
+  object ChkActive: TCheckBox
+    Left = 16
+    Height = 22
+    Top = 164
+    Width = 100
+    Caption = 'Active'
+    TabOrder = 4
+  end
+  object ChkNews: TCheckBox
+    Left = 120
+    Height = 22
+    Top = 164
+    Width = 140
+    Caption = 'Newsletter'
+    TabOrder = 5
+  end
+  object RadStandard: TRadioButton
+    Left = 16
+    Height = 22
+    Top = 196
+    Width = 100
+    Caption = 'Standard'
+    Checked = True
+    TabOrder = 6
+  end
+  object RadPremium: TRadioButton
+    Left = 130
+    Height = 22
+    Top = 196
+    Width = 100
+    Caption = 'Premium'
+    TabOrder = 7
+  end
+  object CmbCountry: TComboBox
+    Left = 16
+    Height = 24
+    Top = 232
+    Width = 200
+    Style = csDropDown
+    TabOrder = 8
+  end
+  object LstHobbies: TListBox
+    Left = 16
+    Height = 100
+    Top = 264
+    Width = 200
+    TabOrder = 9
+  end
+  object LblMemo: TStaticText
+    Left = 350
+    Height = 22
+    Top = 16
+    Width = 80
+    Caption = 'Log:'
+    TabOrder = 25
+  end
+  object MemoLog: TMemo
+    Left = 350
+    Height = 130
+    Top = 40
+    Width = 400
+    TabOrder = 10
+    ScrollBars = ssVertical
+  end
+  object LblGrid: TStaticText
+    Left = 350
+    Height = 22
+    Top = 180
+    Width = 80
+    Caption = 'Rows:'
+    TabOrder = 26
+  end
+  object Grid: TListView
+    Left = 350
+    Height = 130
+    Top = 204
+    Width = 400
+    TabOrder = 11
+  end
+  object PageControl: TPageControl
+    Left = 16
+    Height = 100
+    Top = 380
+    Width = 750
+    ActivePage = TabDetails
+    TabIndex = 0
+    TabOrder = 12
+    object TabDetails: TTabSheet
+      Caption = 'Details'
+    end
+    object TabAdvanced: TTabSheet
+      Caption = 'Advanced'
+    end
+  end
+  object GrpBilling: TGroupBox
+    Left = 240
+    Height = 90
+    Top = 232
+    Width = 100
+    Caption = 'Billing'
+    TabOrder = 13
+  end
+  object Progress: TProgressBar
+    Left = 16
+    Height = 20
+    Top = 490
+    Width = 750
+    TabOrder = 14
+  end
+  object BtnSave: TButton
+    Left = 570
+    Height = 30
+    Top = 520
+    Width = 80
+    Caption = 'Save'
+    TabOrder = 15
+    OnClick = BtnSaveClick
+  end
+  object BtnClear: TButton
+    Left = 660
+    Height = 30
+    Top = 520
+    Width = 80
+    Caption = 'Clear'
+    TabOrder = 16
+    OnClick = BtnClearClick
+  end
+  object BtnAppendLog: TButton
+    Left = 350
+    Height = 30
+    Top = 176
+    Width = 130
+    Caption = 'Append Log'
+    TabOrder = 17
+    OnClick = BtnAppendLogClick
+  end
+  object BtnAdvance: TButton
+    Left = 16
+    Height = 30
+    Top = 520
+    Width = 120
+    Caption = 'Advance'
+    TabOrder = 18
+    OnClick = BtnAdvanceClick
+  end
+  object BtnDisabled: TButton
+    Left = 150
+    Height = 30
+    Top = 520
+    Width = 120
+    Caption = 'Disabled'
+    Enabled = False
+    TabOrder = 19
+  end
+  object LblStatus: TStaticText
+    Left = 16
+    Height = 22
+    Top = 555
+    Width = 500
+    Caption = 'Ready.'
+    TabOrder = 20
+  end
+  object MainMenu: TMainMenu
+    Left = 720
+    Top = 8
+    object MnuFile: TMenuItem
+      Caption = 'File'
+      object MnuFileExit: TMenuItem
+        Caption = 'Exit'
+        OnClick = MnuFileExitClick
+      end
+    end
+    object MnuEdit: TMenuItem
+      Caption = 'Edit'
+      object MnuEditCopy: TMenuItem
+        Caption = 'Copy'
+      end
+    end
+  end
+end
