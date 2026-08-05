@@ -12,6 +12,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -506,10 +507,13 @@ def list_runs(trace_dir: Path) -> list[dict[str, Any]]:
         if not db_path.is_file():
             continue
         try:
-            db = sqlite3.connect(str(db_path))
-            db.row_factory = sqlite3.Row
-            row = db.execute(_LATEST_RUN_SQL).fetchone()
-            db.close()
+            # ``closing`` rather than a bare close() after the query: the
+            # except below swallows a corrupt or locked trace.db to keep
+            # scanning the other runs, and on that path the close() never
+            # ran — leaking the connection for the rest of the process.
+            with closing(sqlite3.connect(str(db_path))) as db:
+                db.row_factory = sqlite3.Row
+                row = db.execute(_LATEST_RUN_SQL).fetchone()
             if row:
                 d = dict(row)
                 d["run_dir"] = str(run_dir)

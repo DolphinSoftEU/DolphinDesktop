@@ -26,6 +26,18 @@ class _FailingConnection:
         raise self._exc
 
 
+def _install_failing_db(session, exc: Exception) -> None:
+    """Swap a session's live connection for one whose every call fails.
+
+    The real connection is closed first. Dropping the last reference to an
+    open ``sqlite3.Connection`` leaks it until the garbage collector runs,
+    which surfaces as a ``ResourceWarning`` charged to whatever unrelated
+    test happens to be running when that collection happens.
+    """
+    session._db.close()
+    session._db = _FailingConnection(exc)
+
+
 # Storage failures must never reach the traced action
 
 
@@ -64,7 +76,7 @@ class TestRecordStepIsNonFatal:
     )
     def test_storage_error_does_not_raise(self, tmp_path, exc):
         session = self._session(tmp_path)
-        session._db = _FailingConnection(exc)
+        _install_failing_db(session, exc)
         session.record_step("type_text", "{'auto_id': 'edit'}")
         # Every sqlite failure mode is swallowed the same way: the step is lost,
         # the run is flagged, and the session stays open for the next action.
@@ -88,7 +100,7 @@ class TestRecordStepIsNonFatal:
 
     def test_finish_error_does_not_raise(self, tmp_path):
         session = self._session(tmp_path)
-        session._db = _FailingConnection(sqlite3.OperationalError("database is locked"))
+        _install_failing_db(session, sqlite3.OperationalError("database is locked"))
         session.finish("failed", error_message="boom")
         # The status write and the close both failed; the session is still
         # finished, flagged degraded, and a failed run keeps its directory.
@@ -112,7 +124,7 @@ class TestRecordStepIsNonFatal:
 
     def test_lost_finish_is_logged_and_flagged(self, tmp_path, caplog):
         session = self._session(tmp_path)
-        session._db = _FailingConnection(sqlite3.OperationalError("database is locked"))
+        _install_failing_db(session, sqlite3.OperationalError("database is locked"))
         with caplog.at_level("INFO", logger="dolphin_desktop.trace"):
             session.finish("passed")
         assert session.degraded is True
@@ -337,6 +349,6 @@ class TestCloseRace:
 
     def test_a_real_storage_failure_still_degrades_the_run(self, tmp_path):
         session = self._session(tmp_path)
-        session._db = _FailingConnection(sqlite3.OperationalError("disk I/O error"))
+        _install_failing_db(session, sqlite3.OperationalError("disk I/O error"))
         session.record_step("click", "{'auto_id': 'ok'}")
         assert session.degraded is True
