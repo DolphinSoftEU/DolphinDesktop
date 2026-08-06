@@ -84,9 +84,16 @@ nav:
   - Installation: installation.md
   - Getting Started: getting-started.md
   - Quickstart: quickstart.md
-  - "Tutorial: First Test": tutorials/first-test.md
   - Core Concepts: core-concepts.md
   - Support Matrix: support-matrix.md
+  - Tutorials:
+      - Overview: tutorials/index.md
+      - First Test: tutorials/first-test.md
+      - Headless Mode: tutorials/headless-mode.md
+      - Page Objects: tutorials/page-objects.md
+      - Object Repository: tutorials/object-repository.md
+      - Fallback Selectors: tutorials/fallback-selectors.md
+      - Tracing and Debugging: tutorials/tracing.md
   - Guides:
       - Overview: guides/index.md
       - Native Windows Apps: guides/native.md
@@ -103,19 +110,13 @@ nav:
       - Office: guides/office.md
       - SAP GUI for Windows: guides/sap.md
       - Image-Based Fallback: guides/image-based.md
-      - Headless Mode: tutorials/headless-mode.md
-      - Page Objects: tutorials/page-objects.md
-      - Object Repository: tutorials/object-repository.md
-      - Fallback Selectors: tutorials/fallback-selectors.md
-      - Tracing and Debugging: tutorials/tracing.md
-      - Migration Guide: migration.md
-      - All Tutorials: tutorials/index.md
-      - CI Setup:
-          - Overview: ci/index.md
-          - GitHub Actions: ci/github-actions.md
-          - Jenkins: ci/jenkins.md
-          - TeamCity: ci/teamcity.md
-          - Full Workflow Example: ci-example.md
+  - CI Setup:
+      - Overview: ci/index.md
+      - GitHub Actions: ci/github-actions.md
+      - Jenkins: ci/jenkins.md
+      - TeamCity: ci/teamcity.md
+      - Full Workflow Example: ci-example.md
+  - Migration Guide: migration.md
   - Architecture:
       - Backend Architecture: architecture.md
       - Backend Capabilities: backend-capabilities.md
