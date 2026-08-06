@@ -70,7 +70,7 @@ Session-scoped flag set by `--dolphin-headless` or `DOLPHIN_HEADLESS=1`.
 | `--dolphin-headless` | off | Create `Desktop(hidden=True)` through the fixture |
 | `--dolphin-trace {off,on-failure,always}` | `on-failure` | Trace capture mode |
 | `--dolphin-trace-dir PATH` | `dolphin-traces` | Trace output directory |
-| `--dolphin-video {off,keepfailedonly,keepall}` | `keepfailedonly` | Video capture mode. The default records automatically and keeps MP4s only for failed tests. Requires an external `ffmpeg` binary on `PATH` (or `DOLPHIN_FFMPEG`); without it, recording is silently skipped. The `[video]` extra installs `mss` for faster capture — it does not install ffmpeg. |
+| `--dolphin-video {off,keepfailedonly,keepall}` | `keepfailedonly` | Video capture mode. The default records automatically and keeps MP4s only for failed tests. Requires an external `ffmpeg` binary on `PATH` (or `DOLPHIN_FFMPEG`); without it, recording is silently skipped. No extra enables it: the `fast` extra installs `mss`, which speeds up trace screenshots, not video encoding. |
 | `--dolphin-video-dir PATH` | `dolphin-videos` | Video output directory |
 | `--dolphin-html PATH` | automatic | Fallback HTML report path |
 | `--dolphin-desktop-log-level {DEBUG,INFO,ERROR}` | `INFO` | Dolphin log verbosity |

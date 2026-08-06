@@ -19,7 +19,7 @@ keywords = [
     "mainframe", "tn3270", "tn5250", "as400", "ibm-i", "hllapi",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Framework :: Pytest",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
@@ -32,10 +32,19 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    # The UIA / Win32 element tree and every physical-input verb.
     "pywinauto>=0.6.8",
+    # Screenshots on every backend, and clipboard image round-trips.
     "Pillow>=10.4",
+    # Never imported by name. pywinauto's COM layer raises comtypes' COMError,
+    # and _locator reads its ``hresult`` to tell "the pattern refused the call"
+    # apart from "the pattern is missing". Declared so that behavioural
+    # dependency survives pywinauto loosening its own requirement.
     "comtypes>=1.4",
+    # win32gui / api / con / com / process / clipboard — dialogs, focus,
+    # the spy overlay, and the SAP GUI Scripting COM bridge.
     "pywin32>=306",
+    # Object Repository YAML aliases (objects.py).
     "pyyaml>=6.0",
 ]
 
@@ -47,6 +56,8 @@ dolphin-run = "dolphin_desktop._runner:main"
 Homepage = "https://dolphinsoft.pl"
 Documentation = "https://dolphinsoft.pl"
 Source = "https://github.com/DolphinSoftEU/DolphinDesktop"
+Changelog = "https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CHANGELOG.md"
+Issues = "https://github.com/DolphinSoftEU/DolphinDesktop/issues"
 
 [project.entry-points."pytest11"]
 # Entry-point name is 'dolphin-desktop' (not bare 'dolphin' or
@@ -67,43 +78,30 @@ cdp   = "dolphin_desktop._backend:CDPBackend"
 packages = ["src/dolphin_desktop"]
 
 [tool.hatch.build.targets.sdist]
-include = [
-    "src/dolphin_desktop",
-    "docs",
-    "tests",
-    "/README.md",
-    "LICENSE",
-    "CHANGELOG.md",
-    "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md",
-    "SECURITY.md",
-    "RELEASING.md",
-    "pyproject.toml",
-]
-exclude = [
-    "**/__pycache__",
-    "**/.pytest_cache",
-    "**/.mypy_cache",
-    "**/.ruff_cache",
-    "**/*.pyc",
-    "5.15.2",
-    ".venv*",
-    "aqtinstall.log",
-    "*.xml",
-    "Zrzut ekranu*",
-]
+# Deliberately no include/exclude. Hatchling then ships every file tracked by
+# git, minus whatever .gitignore already rejects, which keeps the sdist
+# complete by construction: docs arrive with mkdocs.yml, CONTRIBUTING.md with
+# the pre-commit config it tells you to run, and a new top-level file needs no
+# edit here to be packaged. The whitelist this replaces had silently dropped
+# all four of those. Everything that must stay out belongs in .gitignore,
+# where it also keeps the working tree clean.
+#
+# The wheel above stays narrow: only src/dolphin_desktop reaches site-packages.
 
 [project.optional-dependencies]
-sap = []            # placeholder — SAP scripting is COM-based, no wheel
-qt = []             # placeholder — Qt agent DLL is bundled, not pip-installed
-mainframe = []      # placeholder — TN5250 is pure Python; ws3270 is out-of-band
-oracle-forms = []   # placeholder — JAB is bundled with Adoptium/Oracle JDKs
-fast = [
-    "mss>=9.0",
-]
-video = [
-    "mss>=9.0",
-]
+# Stacks that need no wheel at all. They exist so the install command printed
+# in each stack's guide resolves, instead of failing on an unknown extra.
+sap = []            # SAP GUI Scripting is COM, published by SAP GUI itself
+qt = []             # the Qt agent DLL ships inside this package
+mainframe = []      # TN5250 is pure Python; ws3270 is an external binary
+oracle-forms = []   # JAB ships with the Adoptium / Oracle JDK
+
+# mss replaces PIL.ImageGrab for whole-virtual-desktop screenshots, which is
+# markedly faster per trace step. It has nothing to do with MP4 encoding:
+# that is an external ffmpeg binary driven through gdigrab, which pip cannot
+# install — so there is deliberately no `video` extra to imply otherwise.
+# See docs/tutorials/tracing.md.
+fast = ["mss>=9.0"]
 vision = [
     "opencv-python>=4.9",
     "numpy>=1.26",
@@ -124,22 +122,17 @@ pytest = [
 cdp = [
     "playwright>=1.40",
 ]
-all = [
-    "playwright>=1.40",
-    "mss>=9.0",
-    "opencv-python>=4.9",
-    "numpy>=1.26",
-    "pytesseract>=0.3.10",
-]
-dev = [
-    "mypy>=1.10",
-    "pre-commit>=3.7",
-    "pytest>=8.3",
-    "pytest-cov>=5.0",
-    "pytest-timeout>=2.3",
-    "pytest-xdist>=3.5",
-    "ruff>=0.8",
-]
+# Composed from the other extras rather than restating their pins, so a
+# version bump in one place cannot leave 'all' quietly behind.
+# 'telemetry' is deliberately absent: it ships an SDK that reports off the
+# machine, which is a decision to opt into by name, not to inherit from a
+# convenience extra.
+all = ["dolphin-desktop[cdp,fast,pytest,vision]"]
+
+# No `dev` extra: the development toolchain lives in [dependency-groups] below,
+# which is what CONTRIBUTING.md and CI both use (`uv sync --group dev`). A
+# second copy here was referenced by nothing and had already fallen behind by
+# two packages.
 
 [dependency-groups]
 dev = [
@@ -187,29 +180,22 @@ known-first-party = ["dolphin_desktop"]
 
 [tool.mypy]
 python_version = "3.11"
-strict = true
 ignore_missing_imports = true
 exclude = ["^examples/"]
 
-[[tool.mypy.overrides]]
-module = ["dolphin_desktop.*"]
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-disallow_any_generics = false
-warn_return_any = false
-disallow_untyped_calls = false
-disallow_untyped_decorators = false
-warn_unused_ignores = false
-
-[[tool.mypy.overrides]]
-module = ["tests.*"]
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-disallow_any_generics = false
-warn_return_any = false
-disallow_untyped_calls = false
-disallow_untyped_decorators = false
-warn_unused_ignores = false
+# These are the checks ``strict = true`` would switch on that this codebase
+# actually satisfies, listed one by one instead. The previous config set
+# ``strict`` and then disabled the other six through per-module overrides, so
+# it read as far more rigorous than it was. Turning the full set on today
+# reports 220 errors across 27 files — worth doing, but as its own piece of
+# work, not folded into a release.
+check_untyped_defs = true
+disallow_subclassing_any = true
+extra_checks = true
+no_implicit_reexport = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_configs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -40,15 +40,14 @@ Extras are defined in `pyproject.toml`.
 | --- | --- | --- |
 | `cdp` | `playwright` | You automate Electron, CEF, or WebView2 apps over the Chrome DevTools Protocol |
 | `vision` | `opencv-python`, `numpy`, `pytesseract` | You need image matching or OCR |
-| `fast` | `mss` | You want faster screen capture |
-| `video` | `mss` | You want faster screen capture for the built-in video recording (on by default for failed tests). The ffmpeg binary needed for MP4 encoding is a separate, external install. |
+| `fast` | `mss` | You want faster full-desktop screenshots for trace steps. Note this does **not** enable video: MP4 recording needs an external `ffmpeg` binary, which no extra can install. |
 | `pytest` | `pytest`, `allure-pytest` | You want pytest plus Allure integration |
 | `telemetry` | `sentry-sdk` | You explicitly enable telemetry |
 | `sap` | nothing (placeholder) | SAP GUI Scripting is COM-based; no extra wheel needed |
 | `qt` | nothing (placeholder) | The Qt agent DLLs are bundled with the base package |
 | `mainframe` | nothing (placeholder) | TN5250 is pure Python; ws3270 is installed out-of-band |
 | `oracle-forms` | nothing (placeholder) | Java Access Bridge ships with Adoptium/Oracle JDKs |
-| `all` | `playwright`, `mss`, `opencv-python`, `numpy`, `pytesseract` | You want every runtime extra in one install |
+| `all` | everything in `cdp`, `fast`, `pytest` and `vision` | You want every runtime extra in one install. Excludes `telemetry`, which reports off the machine and is opted into by name. |
 | `docs` | `mkdocs-material`, `mkdocstrings[python]`, `mike` | You build this documentation site |
 | `dev` | test, lint, type-check, and pre-commit tools | You work on Dolphin itself |
 
@@ -56,7 +55,7 @@ Examples:
 
 ```bash
 pip install "dolphin-desktop[vision]"
-pip install "dolphin-desktop[video,pytest]"
+pip install "dolphin-desktop[fast,pytest]"
 pip install "dolphin-desktop[docs]"
 ```
 
