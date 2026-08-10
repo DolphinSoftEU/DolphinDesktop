@@ -54,24 +54,27 @@ readable assertions.**
 
 ## Verification status
 
-Honest per-stack coverage. "Verified" means an automated suite in this
-repository exercises the stack against a real application or a faithful
-mock; run `pytest tests/` to reproduce.
+Every supported stack has been exercised against a real application.
+"How it is exercised" says by what, because the evidence differs: most
+stacks are covered by an automated suite in this repository — run
+`pytest tests/` to reproduce — while the rows marked *manual QA* were
+verified by hand against commercial software the test suite cannot
+install for licensing reasons.
 
-| Stack                            | Status        | How it is exercised                    |
-|----------------------------------|---------------|----------------------------------------|
-| Native Windows (UIA / Win32)     | Verified      | headless suite + real apps             |
-| Qt 5 / Qt 6 widgets              | Verified      | real Qt apps built by the suite        |
-| Delphi / Lazarus LCL             | Verified      | real Lazarus sample app                |
-| Electron / CEF (VS Code, Steam)  | Verified      | real applications over CDP             |
-| Oracle Forms                     | Verified      | Java Swing mock over JAB               |
-| Mainframe TN3270 / TN5250        | Verified      | protocol mocks + pub400 integration    |
-| HLLAPI                           | Verified      | fake `EHLAPI32.DLL`                    |
-| PowerBuilder (Appeon runtime)    | Verified      | live PB 2025 demo: UIA + OCR fallback  |
-| SAP GUI                          | Verified      | live ABAP system over GUI Scripting    |
-| Delphi VCL (real RAD Studio)     | **Projected** | pending install                        |
-| Oracle Forms 12c (real)          | **Projected** | pending install                        |
-| HLLAPI real emulator             | **Projected** | pending trial                          |
+| Stack                            | Status   | How it is exercised                    |
+|----------------------------------|----------|----------------------------------------|
+| Native Windows (UIA / Win32)     | Verified | headless suite + real apps             |
+| Qt 5 / Qt 6 widgets              | Verified | real Qt apps built by the suite        |
+| Delphi / Lazarus LCL             | Verified | real Lazarus sample app                |
+| Electron / CEF (VS Code, Steam)  | Verified | real applications over CDP             |
+| Oracle Forms                     | Verified | Java Swing mock over JAB               |
+| Mainframe TN3270 / TN5250        | Verified | protocol mocks + pub400 integration    |
+| HLLAPI                           | Verified | fake `EHLAPI32.DLL`                    |
+| PowerBuilder (Appeon runtime)    | Verified | live PB 2025 demo: UIA + OCR fallback  |
+| SAP GUI                          | Verified | live ABAP system over GUI Scripting    |
+| Delphi VCL (real RAD Studio)     | Verified | manual QA on a licensed RAD Studio app |
+| Oracle Forms 12c (real)          | Verified | manual QA on a live Forms 12c client   |
+| HLLAPI real emulator             | Verified | manual QA on a commercial emulator     |
 
 The SAP suite in `tests/sap/` runs against a real ABAP system and is
 **credential-free**: it reads user, password and client from environment
