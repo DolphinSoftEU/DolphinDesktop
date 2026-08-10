@@ -4,13 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dolphin-desktop"
-version = "0.2.0.dev1"
+version = "0.2.0.dev2"
 description = "Windows desktop test automation for SAP, Qt, Electron, Java, Oracle Forms, and IBM mainframe — with lazy locators, auto-waiting, and pytest integration"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "DolphinSoft Kamil Głuszek", email = "kontakt@dolphinsoft.pl" },
+    { name = "DolphinSoft Łukasz Dębski", email = "kontakt@dolphinsoft.pl" },
 ]
 keywords = [
     "desktop-automation", "testing", "windows", "pytest", "uia",
@@ -22,7 +24,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Framework :: Pytest",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -49,6 +50,7 @@ Documentation = "https://dolphinsoft.pl"
 Source = "https://github.com/DolphinSoftEU/DolphinDesktop"
 Changelog = "https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CHANGELOG.md"
 Issues = "https://github.com/DolphinSoftEU/DolphinDesktop/issues"
+Security = "https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/SECURITY.md"
 
 [project.entry-points."pytest11"]
 dolphin-desktop = "dolphin_desktop.pytest_plugin"

@@ -1,13 +1,49 @@
-# Dolphin Desktop
+# DolphinDesktop
+
+[![PyPI](https://img.shields.io/pypi/v/dolphin-desktop.svg)](https://pypi.org/project/dolphin-desktop/)
+[![Python](https://img.shields.io/pypi/pyversions/dolphin-desktop.svg)](https://pypi.org/project/dolphin-desktop/)
+[![Platform](https://img.shields.io/badge/platform-Windows-informational.svg)](https://github.com/DolphinSoftEU/DolphinDesktop)
+[![Tests](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml/badge.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/LICENSE)
 
 Python-native test automation for every UI stack a Windows enterprise
 hits — SAP GUI, Qt 5/6, Electron/CEF, WPF/WinForms/UWP, Java Swing,
 Oracle Forms, Delphi/VCL, PowerBuilder, mainframe 3270/5250, and
 Office COM — under one API. Lazy locators, auto-waiting, pytest-first.
 
+## Requirements
+
+- **Windows 10 or Windows 11** — the library drives Windows accessibility
+  APIs and is not portable to Linux or macOS
+- **Python 3.11, 3.12 or 3.13** — every release is tested on all three
+- 64-bit Python recommended
+
+Individual stacks add their own prerequisites, which are not Python
+packages and cannot be installed with `pip`: SAP GUI for Windows with
+scripting enabled, a JDK carrying the Java Access Bridge for Swing and
+Oracle Forms, `ws3270.exe` or a terminal emulator for the mainframe
+backends, and an `ffmpeg` binary for video recording. Each stack guide
+states what it needs.
+
 ```bash
 pip install dolphin-desktop
 ```
+
+## Why DolphinDesktop?
+
+One Python API across every desktop UI technology listed below, so a
+suite spanning SAP, a Qt client and an Electron app is written, run and
+reported as one thing rather than three.
+
+- Lazy locators that resolve at the moment of use, not at declaration
+- Auto-waiting built into every action, with a per-call `timeout=`
+- Backend selection behind a common abstraction — the same
+  `get_by_role(...).click()` drives UIA, JAB, CDP and SAP Scripting
+- Programmatic actions that raise `UnsupportedPatternError` instead of
+  silently degrading to a blind mouse click
+- pytest-native: fixtures, markers, traces, screenshots and video come
+  from the plugin, not from glue code you maintain
+- Legacy stacks treated as first-class, not as an afterthought
 
 ```python
 from dolphin_desktop import Desktop
@@ -54,7 +90,11 @@ readable assertions.**
 
 ## Verification status
 
-Every supported stack has been exercised against a real application.
+**Verified** means the stack was exercised against a real application or
+a faithful protocol-level mock, not merely implemented. A row would read
+*Projected* if the integration existed in code but had never been run
+against anything — there are none left in that state.
+
 "How it is exercised" says by what, because the evidence differs: most
 stacks are covered by an automated suite in this repository — run
 `pytest tests/` to reproduce — while the rows marked *manual QA* were
@@ -109,7 +149,9 @@ Entry points:
   from a clean venv to a passing test per stack (SAP / Qt / Electron /
   Java / Mainframe / Delphi / etc.).
 - **[Installation](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/installation.md)** — base install + per-stack
-  extras (`[sap]`, `[qt]`, `[cdp]`, `[vision]`).
+  extras. SAP, Qt, Delphi, mainframe and Oracle Forms need none — they
+  are in the base install; `[cdp]`, `[vision]`, `[fast]`, `[pytest]`,
+  `[telemetry]` and `[all]` are the ones that exist.
 - **[Quickstart](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/quickstart.md)** — generate a Notepad project
   from the CLI in under a minute.
 - **[Core concepts](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/core-concepts.md)** — lazy locators,
