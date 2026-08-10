@@ -2903,7 +2903,7 @@
 <tr>
 <td><code>--dolphin-video {off,keepfailedonly,keepall}</code></td>
 <td><code>keepfailedonly</code></td>
-<td>Video capture mode. The default records automatically and keeps MP4s only for failed tests. Requires an external <code>ffmpeg</code> binary on <code>PATH</code> (or <code>DOLPHIN_FFMPEG</code>); without it, recording is silently skipped. The <code>[video]</code> extra installs <code>mss</code> for faster capture — it does not install ffmpeg.</td>
+<td>Video capture mode. The default records automatically and keeps MP4s only for failed tests. Requires an external <code>ffmpeg</code> binary on <code>PATH</code> (or <code>DOLPHIN_FFMPEG</code>); without it, recording is silently skipped. No extra enables it: the <code>fast</code> extra installs <code>mss</code>, which speeds up trace screenshots, not video encoding.</td>
 </tr>
 <tr>
 <td><code>--dolphin-video-dir PATH</code></td>

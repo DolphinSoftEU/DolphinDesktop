@@ -675,6 +675,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#stacks-that-need-no-extra" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stacks that need no extra
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#verify-the-environment" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2669,6 +2680,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#stacks-that-need-no-extra" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stacks that need no extra
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#verify-the-environment" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2791,12 +2813,7 @@
 <tr>
 <td><code>fast</code></td>
 <td><code>mss</code></td>
-<td>You want faster screen capture</td>
-</tr>
-<tr>
-<td><code>video</code></td>
-<td><code>mss</code></td>
-<td>You want faster screen capture for the built-in video recording (on by default for failed tests). The ffmpeg binary needed for MP4 encoding is a separate, external install.</td>
+<td>You want faster full-desktop screenshots for trace steps. Note this does <strong>not</strong> enable video: MP4 recording needs an external <code>ffmpeg</code> binary, which no extra can install.</td>
 </tr>
 <tr>
 <td><code>pytest</code></td>
@@ -2809,45 +2826,38 @@
 <td>You explicitly enable telemetry</td>
 </tr>
 <tr>
-<td><code>sap</code></td>
-<td>nothing (placeholder)</td>
-<td>SAP GUI Scripting is COM-based; no extra wheel needed</td>
-</tr>
-<tr>
-<td><code>qt</code></td>
-<td>nothing (placeholder)</td>
-<td>The Qt agent DLLs are bundled with the base package</td>
-</tr>
-<tr>
-<td><code>mainframe</code></td>
-<td>nothing (placeholder)</td>
-<td>TN5250 is pure Python; ws3270 is installed out-of-band</td>
-</tr>
-<tr>
-<td><code>oracle-forms</code></td>
-<td>nothing (placeholder)</td>
-<td>Java Access Bridge ships with Adoptium/Oracle JDKs</td>
-</tr>
-<tr>
 <td><code>all</code></td>
-<td><code>playwright</code>, <code>mss</code>, <code>opencv-python</code>, <code>numpy</code>, <code>pytesseract</code></td>
-<td>You want every runtime extra in one install</td>
+<td>everything in <code>cdp</code>, <code>fast</code>, <code>pytest</code> and <code>vision</code></td>
+<td>You want every runtime extra in one install. Excludes <code>telemetry</code>, which reports off the machine and is opted into by name.</td>
 </tr>
 <tr>
 <td><code>docs</code></td>
 <td><code>mkdocs-material</code>, <code>mkdocstrings[python]</code>, <code>mike</code></td>
 <td>You build this documentation site</td>
 </tr>
-<tr>
-<td><code>dev</code></td>
-<td>test, lint, type-check, and pre-commit tools</td>
-<td>You work on Dolphin itself</td>
-</tr>
 </tbody>
 </table>
+<p>Working on Dolphin itself needs the development toolchain, which is a
+dependency group rather than an extra: <code>uv sync --group dev</code>.</p>
+<h2 id="stacks-that-need-no-extra">Stacks that need no extra<a class="headerlink" href="#stacks-that-need-no-extra" title="Permanent link">&para;</a></h2>
+<p>SAP, Qt, IBM mainframe and Oracle Forms are supported by the base package —
+there is nothing to add with <code>pip</code>, because what they need is not a Python
+wheel:</p>
+<ul>
+<li><strong>SAP GUI</strong> — automation goes through the SAP GUI Scripting COM interface,
+  published by SAP GUI itself. It must also be enabled server-side
+  (<code>sapgui/user_scripting = TRUE</code>, transaction <code>RZ11</code>); see the
+  <a href="../guides/sap/">SAP guide</a>.</li>
+<li><strong>Qt</strong> — the Qt agent DLLs ship inside the package.</li>
+<li><strong>IBM mainframe</strong> — the TN5250 client is pure Python. The <code>s3270</code> backend
+  drives <code>ws3270.exe</code>, and HLLAPI binds to the emulator's own DLL; both are
+  installed outside <code>pip</code>.</li>
+<li><strong>Oracle Forms / Java Swing</strong> — the Java Access Bridge ships with the
+  Adoptium or Oracle JDK and is enabled with <code>jabswitch /enable</code>.</li>
+</ul>
 <p>Examples:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[vision]&quot;</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[video,pytest]&quot;</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[fast,pytest]&quot;</span>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[docs]&quot;</span>
 </code></pre></div>
 <p><code>pytesseract</code> is a Python wrapper. OCR also requires the Tesseract executable to be installed separately and available to your test process.</p>

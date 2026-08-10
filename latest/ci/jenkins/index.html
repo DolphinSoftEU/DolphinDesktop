@@ -2672,7 +2672,7 @@
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="n">stages</span><span class="w"> </span><span class="o">{</span>
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">        </span><span class="n">stage</span><span class="o">(</span><span class="s1">&#39;Install&#39;</span><span class="o">)</span><span class="w"> </span><span class="o">{</span>
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">            </span><span class="n">steps</span><span class="w"> </span><span class="o">{</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">                </span><span class="n">bat</span><span class="w"> </span><span class="s1">&#39;pip install &quot;dolphin-desktop[video]&quot; pytest&#39;</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">                </span><span class="n">bat</span><span class="w"> </span><span class="s1">&#39;pip install &quot;dolphin-desktop[fast]&quot; pytest&#39;</span>
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">            </span><span class="o">}</span>
 <a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">        </span><span class="o">}</span>
 <a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
@@ -2697,6 +2697,10 @@
 <a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a><span class="w">    </span><span class="o">}</span>
 <a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a><span class="o">}</span>
 </code></pre></div>
+<p><code>DOLPHIN_VIDEO</code> only produces MP4s when an <code>ffmpeg</code> binary is on the agent's
+<code>PATH</code> (or pointed at by <code>DOLPHIN_FFMPEG</code>); without it recording is skipped
+silently and <code>dolphin-videos/**</code> archives nothing. The <code>fast</code> extra installs
+<code>mss</code> for quicker trace screenshots — it does not encode video.</p>
 <h2 id="agent-checklist">Agent Checklist<a class="headerlink" href="#agent-checklist" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Windows Server 2019/2022 or Windows 10/11.</li>

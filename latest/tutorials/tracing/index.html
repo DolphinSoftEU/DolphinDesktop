@@ -2769,10 +2769,10 @@
 <p>Video recording is on by default (<code>keepfailedonly</code>) and is controlled
 with <code>--dolphin-video</code> or <code>DOLPHIN_VIDEO</code>. It requires an external
 <code>ffmpeg</code> binary on <code>PATH</code> (or pointed to by <code>DOLPHIN_FFMPEG</code>); without
-ffmpeg, recording is silently skipped. The optional <code>[video]</code> extra
-installs <code>mss</code> for faster screen capture — it does not install ffmpeg.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[video]&quot;</span><span class="w">   </span><span class="c1"># optional: faster capture via mss</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>pytest<span class="w"> </span>tests/<span class="w"> </span>-v<span class="w"> </span>--dolphin-video<span class="o">=</span>keepfailedonly
+ffmpeg, recording is silently skipped. No extra can change that — ffmpeg is
+a binary, not a wheel. (The <code>fast</code> extra installs <code>mss</code>, which speeds up the
+per-step trace screenshots below, not video encoding.)</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pytest<span class="w"> </span>tests/<span class="w"> </span>-v<span class="w"> </span>--dolphin-video<span class="o">=</span>keepfailedonly
 </code></pre></div>
 <table>
 <thead>
