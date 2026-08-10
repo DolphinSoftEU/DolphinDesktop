@@ -80,7 +80,7 @@ is a no-op on a machine without SAP. It needs SAP GUI Scripting enabled
 on both the client and the server (`sapgui/user_scripting = TRUE`).
 dolphin stores no SAP credentials of its own: you attach to a session you
 have already logged into, or drive the logon screen with credentials your
-test supplies. See [docs/guides/sap.md](docs/guides/sap.md).
+test supplies. See [docs/guides/sap.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/sap.md).
 
 ## Quickstart
 
@@ -102,43 +102,43 @@ directly on GitHub).
 
 Entry points:
 
-- **[Getting started](docs/getting-started.md)** — the shortest path
+- **[Getting started](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/getting-started.md)** — the shortest path
   from a clean venv to a passing test per stack (SAP / Qt / Electron /
   Java / Mainframe / Delphi / etc.).
-- **[Installation](docs/installation.md)** — base install + per-stack
+- **[Installation](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/installation.md)** — base install + per-stack
   extras (`[sap]`, `[qt]`, `[cdp]`, `[vision]`).
-- **[Quickstart](docs/quickstart.md)** — generate a Notepad project
+- **[Quickstart](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/quickstart.md)** — generate a Notepad project
   from the CLI in under a minute.
-- **[Core concepts](docs/core-concepts.md)** — lazy locators,
+- **[Core concepts](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/core-concepts.md)** — lazy locators,
   auto-waiting, backends, pytest fixtures, headless mode, how dolphin
   locates your app.
 
 Per-stack guides:
-[Native Windows](docs/guides/native.md) ·
-[SAP](docs/guides/sap.md) ·
-[Qt](docs/guides/qt.md) ·
-[Java Swing / AWT](docs/guides/java.md) ·
-[Delphi / VCL](docs/guides/delphi.md) ·
-[Mainframe (3270 / 5250 / HLLAPI)](docs/guides/mainframe.md) ·
-[Oracle Forms](docs/guides/oracle-forms.md) ·
-[PowerBuilder](docs/guides/powerbuilder.md) ·
-[WebView2](docs/guides/webview2.md) ·
-[Office](docs/guides/office.md) ·
-[Image-based](docs/guides/image-based.md) ·
-[Embedded web (Electron / CEF)](docs/guides/embedded-web.md).
+[Native Windows](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/native.md) ·
+[SAP](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/sap.md) ·
+[Qt](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/qt.md) ·
+[Java Swing / AWT](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/java.md) ·
+[Delphi / VCL](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/delphi.md) ·
+[Mainframe (3270 / 5250 / HLLAPI)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/mainframe.md) ·
+[Oracle Forms](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/oracle-forms.md) ·
+[PowerBuilder](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/powerbuilder.md) ·
+[WebView2](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/webview2.md) ·
+[Office](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/office.md) ·
+[Image-based](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/image-based.md) ·
+[Embedded web (Electron / CEF)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/embedded-web.md).
 
 Reference:
-[API index](docs/reference/index.md) ·
-[Support matrix](docs/support-matrix.md) — stack × backend × mode ·
-[Backend capabilities](docs/backend-capabilities.md) — the
+[API index](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/reference/index.md) ·
+[Support matrix](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/support-matrix.md) — stack × backend × mode ·
+[Backend capabilities](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/backend-capabilities.md) — the
 `Capability` vocabulary ·
-[CLI](docs/reference/cli.md) ·
-[Migration guide](docs/migration.md).
+[CLI](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/reference/cli.md) ·
+[Migration guide](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/migration.md).
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and
-[RELEASING.md](RELEASING.md) for the publish checklist.
+See [CONTRIBUTING.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CONTRIBUTING.md) for setup and
+[RELEASING.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/RELEASING.md) for the publish checklist.
 
 ## Contact
 
@@ -149,4 +149,4 @@ Maintained by DolphinSoft Kamil Głuszek.
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[Apache License 2.0](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/LICENSE)
