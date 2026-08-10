@@ -43,13 +43,28 @@ Extras are defined in `pyproject.toml`.
 | `fast` | `mss` | You want faster full-desktop screenshots for trace steps. Note this does **not** enable video: MP4 recording needs an external `ffmpeg` binary, which no extra can install. |
 | `pytest` | `pytest`, `allure-pytest` | You want pytest plus Allure integration |
 | `telemetry` | `sentry-sdk` | You explicitly enable telemetry |
-| `sap` | nothing (placeholder) | SAP GUI Scripting is COM-based; no extra wheel needed |
-| `qt` | nothing (placeholder) | The Qt agent DLLs are bundled with the base package |
-| `mainframe` | nothing (placeholder) | TN5250 is pure Python; ws3270 is installed out-of-band |
-| `oracle-forms` | nothing (placeholder) | Java Access Bridge ships with Adoptium/Oracle JDKs |
 | `all` | everything in `cdp`, `fast`, `pytest` and `vision` | You want every runtime extra in one install. Excludes `telemetry`, which reports off the machine and is opted into by name. |
 | `docs` | `mkdocs-material`, `mkdocstrings[python]`, `mike` | You build this documentation site |
-| `dev` | test, lint, type-check, and pre-commit tools | You work on Dolphin itself |
+
+Working on Dolphin itself needs the development toolchain, which is a
+dependency group rather than an extra: `uv sync --group dev`.
+
+## Stacks that need no extra
+
+SAP, Qt, IBM mainframe and Oracle Forms are supported by the base package —
+there is nothing to add with `pip`, because what they need is not a Python
+wheel:
+
+* **SAP GUI** — automation goes through the SAP GUI Scripting COM interface,
+  published by SAP GUI itself. It must also be enabled server-side
+  (`sapgui/user_scripting = TRUE`, transaction `RZ11`); see the
+  [SAP guide](guides/sap.md).
+* **Qt** — the Qt agent DLLs ship inside the package.
+* **IBM mainframe** — the TN5250 client is pure Python. The `s3270` backend
+  drives `ws3270.exe`, and HLLAPI binds to the emulator's own DLL; both are
+  installed outside `pip`.
+* **Oracle Forms / Java Swing** — the Java Access Bridge ships with the
+  Adoptium or Oracle JDK and is enabled with `jabswitch /enable`.
 
 Examples:
 
