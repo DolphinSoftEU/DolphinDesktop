@@ -69,7 +69,7 @@ install for licensing reasons.
 | Electron / CEF (VS Code, Steam)  | Verified | real applications over CDP             |
 | Oracle Forms                     | Verified | Java Swing mock over JAB               |
 | Mainframe TN3270 / TN5250        | Verified | protocol mocks + pub400 integration    |
-| HLLAPI                           | Verified | fake `EHLAPI32.DLL`                    |
+| HLLAPI call encoding             | Verified | injected `EHLAPI32.DLL` stub           |
 | PowerBuilder (Appeon runtime)    | Verified | live PB 2025 demo: UIA + OCR fallback  |
 | SAP GUI                          | Verified | live ABAP system over GUI Scripting    |
 | Delphi VCL (real RAD Studio)     | Verified | manual QA on a licensed RAD Studio app |
