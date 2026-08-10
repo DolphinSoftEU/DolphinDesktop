@@ -95,11 +95,9 @@ a faithful protocol-level mock, not merely implemented. A row would read
 *Projected* if the integration existed in code but had never been run
 against anything — there are none left in that state.
 
-"How it is exercised" says by what, because the evidence differs: most
+"How it is exercised" says by what, because the evidence differs: the
 stacks are covered by an automated suite in this repository — run
-`pytest tests/` to reproduce — while the rows marked *manual QA* were
-verified by hand against commercial software the test suite cannot
-install for licensing reasons.
+`pytest tests/` to reproduce.
 
 | Stack                            | Status   | How it is exercised                    |
 |----------------------------------|----------|----------------------------------------|
