@@ -32,19 +32,14 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # The UIA / Win32 element tree and every physical-input verb.
     "pywinauto>=0.6.8",
-    # Screenshots on every backend, and clipboard image round-trips.
     "Pillow>=10.4",
     # Never imported by name. pywinauto's COM layer raises comtypes' COMError,
     # and _locator reads its ``hresult`` to tell "the pattern refused the call"
     # apart from "the pattern is missing". Declared so that behavioural
     # dependency survives pywinauto loosening its own requirement.
     "comtypes>=1.4",
-    # win32gui / api / con / com / process / clipboard — dialogs, focus,
-    # the spy overlay, and the SAP GUI Scripting COM bridge.
     "pywin32>=306",
-    # Object Repository YAML aliases (objects.py).
     "pyyaml>=6.0",
 ]
 
