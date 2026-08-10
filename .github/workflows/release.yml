@@ -157,6 +157,15 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ needs.build.outputs.version }}"
+          # Printed because a Requires-Python mismatch and a missing upload
+          # fail identically -- pip just says "no matching distribution". The
+          # interpreter and the index listing tell the two apart at a glance.
+          python --version
+          python -m pip --version
+          Write-Host "--- what the index offers ---"
+          python -m pip index versions dolphin-desktop --pre `
+            --index-url https://test.pypi.org/simple/ `
+            --extra-index-url https://pypi.org/simple/
           for ($i = 1; $i -le 6; $i++) {
             python -m pip install --pre `
               --index-url https://test.pypi.org/simple/ `
