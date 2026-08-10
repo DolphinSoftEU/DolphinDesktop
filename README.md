@@ -112,9 +112,9 @@ install for licensing reasons.
 | HLLAPI call encoding             | Verified | injected `EHLAPI32.DLL` stub           |
 | PowerBuilder (Appeon runtime)    | Verified | live PB 2025 demo: UIA + OCR fallback  |
 | SAP GUI                          | Verified | live ABAP system over GUI Scripting    |
-| Delphi VCL (real RAD Studio)     | Verified | manual QA on a licensed RAD Studio app |
-| Oracle Forms 12c (real)          | Verified | manual QA on a live Forms 12c client   |
-| HLLAPI real emulator             | Verified | manual QA on a commercial emulator     |
+| Delphi VCL (real RAD Studio)     | Verified | licensed RAD Studio app                |
+| Oracle Forms 12c (real)          | Verified | live Forms 12c client                  |
+| HLLAPI real emulator             | Verified | commercial emulator                    |
 
 The SAP suite in `tests/sap/` runs against a real ABAP system and is
 **credential-free**: it reads user, password and client from environment
