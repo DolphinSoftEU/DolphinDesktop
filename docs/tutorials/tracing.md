@@ -42,11 +42,11 @@ dolphin trace view --last --dir artifacts/traces
 Video recording is on by default (`keepfailedonly`) and is controlled
 with `--dolphin-video` or `DOLPHIN_VIDEO`. It requires an external
 `ffmpeg` binary on `PATH` (or pointed to by `DOLPHIN_FFMPEG`); without
-ffmpeg, recording is silently skipped. The optional `[video]` extra
-installs `mss` for faster screen capture — it does not install ffmpeg.
+ffmpeg, recording is silently skipped. No extra can change that — ffmpeg is
+a binary, not a wheel. (The `fast` extra installs `mss`, which speeds up the
+per-step trace screenshots below, not video encoding.)
 
 ```bash
-pip install "dolphin-desktop[video]"   # optional: faster capture via mss
 pytest tests/ -v --dolphin-video=keepfailedonly
 ```
 

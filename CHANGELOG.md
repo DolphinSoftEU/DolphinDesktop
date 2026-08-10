@@ -257,7 +257,17 @@ None.
 
 ### Removed
 
-None.
+* **The `video` extra.** It installed `mss`, which speeds up the per-step
+  trace screenshots and has nothing to do with MP4 recording — that is done
+  by an external `ffmpeg` binary no wheel can provide. The name promised
+  something it never delivered. `mss` is still available under `fast`.
+  Upgrading with `dolphin-desktop[video]` pinned does not fail: pip warns
+  that the extra is unknown and installs the base package, after which
+  screenshots fall back to `PIL.ImageGrab` — correct, just slower.
+* **The `dev` extra.** The development toolchain lives in
+  `[dependency-groups]`, which is what CI and `CONTRIBUTING.md` use
+  (`uv sync --group dev`). The extra was a second copy that nothing
+  referenced and that had already fallen two packages behind.
 
 ### Fixed
 

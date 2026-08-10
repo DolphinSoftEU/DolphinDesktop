@@ -669,7 +669,7 @@ def _doctor_cmd(_args: argparse.Namespace) -> None:
     for label, module in [
         ("opencv-python  [vision]", "cv2"),
         ("pytesseract    [vision]", "pytesseract"),
-        ("mss            [fast/video]", "mss"),
+        ("mss            [fast]", "mss"),
         ("sentry-sdk     [telemetry]", "sentry_sdk"),
     ]:
         try:

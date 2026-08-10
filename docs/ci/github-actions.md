@@ -37,7 +37,7 @@ jobs:
 
 ```yaml
       - name: Install
-        run: pip install "dolphin-desktop[video]" pytest
+        run: pip install "dolphin-desktop[fast]" pytest
 
       - name: Run tests
         env:
@@ -69,6 +69,12 @@ jobs:
           path: dolphin-screenshots/
           if-no-files-found: ignore
 ```
+
+`DOLPHIN_VIDEO` above only produces MP4s if an `ffmpeg` binary is on the
+runner's `PATH` (or pointed at by `DOLPHIN_FFMPEG`). Without it, recording is
+skipped silently and the upload step finds nothing, so confirm ffmpeg is
+present on your runner image before relying on the videos. The `fast` extra
+installs `mss` for quicker trace screenshots; it does not encode video.
 
 ## Headless Smoke Job
 

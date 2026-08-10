@@ -13,7 +13,7 @@ pytest tests/ -v --dolphin-backend=uia --tb=short
 ## With Artifacts
 
 ```batch
-pip install "dolphin-desktop[video]" pytest
+pip install "dolphin-desktop[fast]" pytest
 set DOLPHIN_TRACE=on-failure
 set DOLPHIN_VIDEO=keepfailedonly
 pytest tests/ -v --dolphin-screenshot-on-fail --junitxml=test-results.xml
@@ -28,6 +28,11 @@ dolphin-screenshots/** => dolphin-screenshots.zip
 dolphin-report.html
 test-results.xml
 ```
+
+`DOLPHIN_VIDEO` only produces MP4s when an `ffmpeg` binary is on the agent's
+`PATH` (or pointed at by `DOLPHIN_FFMPEG`); without it recording is skipped
+silently and `dolphin-videos/**` collects nothing. The `fast` extra installs
+`mss` for quicker trace screenshots — it does not encode video.
 
 ## Kotlin DSL Sketch
 

@@ -65,3 +65,7 @@ examples/java_swing/*.class
 
 # Java mock build output (compile locally: javac --release 21 OracleFormsMock.java)
 tests/oracle_forms/*.class
+
+# Qt installed locally for the Qt5 suite (python -m aqt install-qt ...)
+/5.15.2/
+aqtinstall.log

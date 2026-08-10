@@ -19,7 +19,7 @@ keywords = [
     "mainframe", "tn3270", "tn5250", "as400", "ibm-i", "hllapi",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Framework :: Pytest",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
@@ -47,11 +47,10 @@ dolphin-run = "dolphin_desktop._runner:main"
 Homepage = "https://dolphinsoft.pl"
 Documentation = "https://dolphinsoft.pl"
 Source = "https://github.com/DolphinSoftEU/DolphinDesktop"
+Changelog = "https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CHANGELOG.md"
+Issues = "https://github.com/DolphinSoftEU/DolphinDesktop/issues"
 
 [project.entry-points."pytest11"]
-# Entry-point name is 'dolphin-desktop' (not bare 'dolphin' or
-# 'dolphinsoft') so it cannot collide with the pytest11 entry
-# pytest-dolphinsoft registers under 'pytest_dolphinsoft.plugin'.
 dolphin-desktop = "dolphin_desktop.pytest_plugin"
 
 [project.entry-points."dolphin_desktop.backends"]
@@ -66,44 +65,8 @@ cdp   = "dolphin_desktop._backend:CDPBackend"
 [tool.hatch.build.targets.wheel]
 packages = ["src/dolphin_desktop"]
 
-[tool.hatch.build.targets.sdist]
-include = [
-    "src/dolphin_desktop",
-    "docs",
-    "tests",
-    "/README.md",
-    "LICENSE",
-    "CHANGELOG.md",
-    "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md",
-    "SECURITY.md",
-    "RELEASING.md",
-    "pyproject.toml",
-]
-exclude = [
-    "**/__pycache__",
-    "**/.pytest_cache",
-    "**/.mypy_cache",
-    "**/.ruff_cache",
-    "**/*.pyc",
-    "5.15.2",
-    ".venv*",
-    "aqtinstall.log",
-    "*.xml",
-    "Zrzut ekranu*",
-]
-
 [project.optional-dependencies]
-sap = []            # placeholder — SAP scripting is COM-based, no wheel
-qt = []             # placeholder — Qt agent DLL is bundled, not pip-installed
-mainframe = []      # placeholder — TN5250 is pure Python; ws3270 is out-of-band
-oracle-forms = []   # placeholder — JAB is bundled with Adoptium/Oracle JDKs
-fast = [
-    "mss>=9.0",
-]
-video = [
-    "mss>=9.0",
-]
+fast = ["mss>=9.0"]
 vision = [
     "opencv-python>=4.9",
     "numpy>=1.26",
@@ -124,22 +87,7 @@ pytest = [
 cdp = [
     "playwright>=1.40",
 ]
-all = [
-    "playwright>=1.40",
-    "mss>=9.0",
-    "opencv-python>=4.9",
-    "numpy>=1.26",
-    "pytesseract>=0.3.10",
-]
-dev = [
-    "mypy>=1.10",
-    "pre-commit>=3.7",
-    "pytest>=8.3",
-    "pytest-cov>=5.0",
-    "pytest-timeout>=2.3",
-    "pytest-xdist>=3.5",
-    "ruff>=0.8",
-]
+all = ["dolphin-desktop[cdp,fast,pytest,vision]"]
 
 [dependency-groups]
 dev = [
@@ -163,9 +111,6 @@ src = ["src"]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "RUF"]
 ignore = [
     "N818",
-    # Prose in docstrings, comments and user-facing strings uses typographic
-    # punctuation on purpose (em/en dashes, ×, →). These rules flag every one
-    # of them as a possible homoglyph typo.
     "RUF001",
     "RUF002",
     "RUF003",
@@ -175,41 +120,23 @@ ignore = [
 known-first-party = ["dolphin_desktop"]
 
 [tool.ruff.lint.per-file-ignores]
-# Long lines are embedded HTML/CSS in the trace-report template.
 "src/dolphin_desktop/_trace.py" = ["E501"]
-# `_AA_TO_DO` mirrors the Java Access Bridge `AccessibleActionsToDo` struct.
 "src/dolphin_desktop/_java.py" = ["N801"]
-# `WM_KEYDOWN` / `WM_KEYUP` are Win32 constant names, copied verbatim.
 "src/dolphin_desktop/_oracle_forms.py" = ["N806"]
-# Test names embed EHLLAPI function names (ConnectPS, SENDKEY) so a failure
-# points straight at the call it exercises.
 "tests/mainframe/hllapi_mock/test_hllapi_unit.py" = ["N802"]
 
 [tool.mypy]
 python_version = "3.11"
-strict = true
 ignore_missing_imports = true
 exclude = ["^examples/"]
 
-[[tool.mypy.overrides]]
-module = ["dolphin_desktop.*"]
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-disallow_any_generics = false
-warn_return_any = false
-disallow_untyped_calls = false
-disallow_untyped_decorators = false
-warn_unused_ignores = false
-
-[[tool.mypy.overrides]]
-module = ["tests.*"]
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-disallow_any_generics = false
-warn_return_any = false
-disallow_untyped_calls = false
-disallow_untyped_decorators = false
-warn_unused_ignores = false
+check_untyped_defs = true
+disallow_subclassing_any = true
+extra_checks = true
+no_implicit_reexport = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_configs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -16,7 +16,7 @@ pipeline {
     stages {
         stage('Install') {
             steps {
-                bat 'pip install "dolphin-desktop[video]" pytest'
+                bat 'pip install "dolphin-desktop[fast]" pytest'
             }
         }
 
@@ -41,6 +41,11 @@ pipeline {
     }
 }
 ```
+
+`DOLPHIN_VIDEO` only produces MP4s when an `ffmpeg` binary is on the agent's
+`PATH` (or pointed at by `DOLPHIN_FFMPEG`); without it recording is skipped
+silently and `dolphin-videos/**` archives nothing. The `fast` extra installs
+`mss` for quicker trace screenshots — it does not encode video.
 
 ## Agent Checklist
 
