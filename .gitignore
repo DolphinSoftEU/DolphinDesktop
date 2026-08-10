@@ -27,6 +27,7 @@ bin/
 obj/
 
 # IDE / tools
+.claude/
 .idea/
 .vscode/
 *.iml
