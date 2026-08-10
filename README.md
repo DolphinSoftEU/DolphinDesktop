@@ -90,29 +90,33 @@ readable assertions.**
 
 ## Verification status
 
-**Verified** means the stack was exercised against a real application or
-a faithful protocol-level mock, not merely implemented. A row would read
-*Projected* if the integration existed in code but had never been run
-against anything — there are none left in that state.
+Three statuses, so "implemented" can never be read as "proven":
 
-"How it is exercised" says by what, because the evidence differs: the
-stacks are covered by an automated suite in this repository — run
-`pytest tests/` to reproduce.
+- **Verified — real** — exercised against the actual software, either by
+  the suite in this repository or by hand where a licence prevents the
+  suite from installing it.
+- **Verified — simulated** — exercised against a mock that reproduces the
+  protocol or API faithfully, but not against the vendor's own product.
+- **Projected** — implemented, never run against anything. No row is in
+  this state today; it exists so a future one can say so honestly.
 
-| Stack                            | Status   | How it is exercised                    |
-|----------------------------------|----------|----------------------------------------|
-| Native Windows (UIA / Win32)     | Verified | headless suite + real apps             |
-| Qt 5 / Qt 6 widgets              | Verified | real Qt apps built by the suite        |
-| Delphi / Lazarus LCL             | Verified | real Lazarus sample app                |
-| Electron / CEF (VS Code, Steam)  | Verified | real applications over CDP             |
-| Oracle Forms                     | Verified | Java Swing mock over JAB               |
-| Mainframe TN3270 / TN5250        | Verified | protocol mocks + pub400 integration    |
-| HLLAPI call encoding             | Verified | injected `EHLAPI32.DLL` stub           |
-| PowerBuilder (Appeon runtime)    | Verified | live PB 2025 demo: UIA + OCR fallback  |
-| SAP GUI                          | Verified | live ABAP system over GUI Scripting    |
-| Delphi VCL (real RAD Studio)     | Verified | licensed RAD Studio app                |
-| Oracle Forms 12c (real)          | Verified | live Forms 12c client                  |
-| HLLAPI real emulator             | Verified | commercial emulator                    |
+Everything reproducible runs from `pytest tests/`.
+
+| Stack                            | Status               | How it is exercised                   |
+|----------------------------------|----------------------|---------------------------------------|
+| Native Windows (UIA / Win32)     | Verified — real      | headless suite + real apps            |
+| Qt 5 / Qt 6 widgets              | Verified — real      | real Qt apps built by the suite       |
+| Delphi / Lazarus LCL             | Verified — real      | real Lazarus sample app               |
+| Electron / CEF (VS Code, Steam)  | Verified — real      | real applications over CDP            |
+| PowerBuilder (Appeon runtime)    | Verified — real      | live PB 2025 demo: UIA + OCR fallback |
+| SAP GUI                          | Verified — real      | live ABAP system over GUI Scripting   |
+| Mainframe TN5250 (IBM i)         | Verified — real      | pub400, a public IBM i host           |
+| Delphi VCL (RAD Studio)          | Verified — real      | licensed RAD Studio app               |
+| Oracle Forms 12c                 | Verified — real      | live Forms 12c client                 |
+| HLLAPI (emulator)                | Verified — real      | commercial emulator                   |
+| Mainframe TN3270                 | Verified — simulated | in-repo 3270 protocol server          |
+| Oracle Forms / Swing over JAB    | Verified — simulated | Java Swing mock exercising the JAB API|
+| HLLAPI call encoding             | Verified — simulated | injected `EHLAPI32.DLL` stub          |
 
 The SAP suite in `tests/sap/` runs against a real ABAP system and is
 **credential-free**: it reads user, password and client from environment

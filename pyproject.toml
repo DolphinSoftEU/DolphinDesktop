@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dolphin-desktop"
-version = "0.2.0"
+version = "0.2.0.dev3"
 description = "Windows desktop test automation for SAP, Qt, Electron, Java, Oracle Forms, and IBM mainframe — with lazy locators, auto-waiting, and pytest integration"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
