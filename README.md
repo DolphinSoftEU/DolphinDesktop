@@ -125,7 +125,7 @@ is a no-op on a machine without SAP. It needs SAP GUI Scripting enabled
 on both the client and the server (`sapgui/user_scripting = TRUE`).
 dolphin stores no SAP credentials of its own: you attach to a session you
 have already logged into, or drive the logon screen with credentials your
-test supplies. See [docs/guides/sap.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/sap.md).
+test supplies. See [docs/guides/sap.md](https://dolphinsoft.pl/latest/guides/sap/).
 
 ## Quickstart
 
@@ -147,40 +147,40 @@ directly on GitHub).
 
 Entry points:
 
-- **[Getting started](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/getting-started.md)** — the shortest path
+- **[Getting started](https://dolphinsoft.pl/latest/getting-started/)** — the shortest path
   from a clean venv to a passing test per stack (SAP / Qt / Electron /
   Java / Mainframe / Delphi / etc.).
-- **[Installation](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/installation.md)** — base install + per-stack
+- **[Installation](https://dolphinsoft.pl/latest/installation/)** — base install + per-stack
   extras. SAP, Qt, Delphi, mainframe and Oracle Forms need none — they
   are in the base install; `[cdp]`, `[vision]`, `[fast]`, `[pytest]`,
   `[telemetry]` and `[all]` are the ones that exist.
-- **[Quickstart](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/quickstart.md)** — generate a Notepad project
+- **[Quickstart](https://dolphinsoft.pl/latest/quickstart/)** — generate a Notepad project
   from the CLI in under a minute.
-- **[Core concepts](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/core-concepts.md)** — lazy locators,
+- **[Core concepts](https://dolphinsoft.pl/latest/core-concepts/)** — lazy locators,
   auto-waiting, backends, pytest fixtures, headless mode, how dolphin
   locates your app.
 
 Per-stack guides:
-[Native Windows](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/native.md) ·
-[SAP](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/sap.md) ·
-[Qt](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/qt.md) ·
-[Java Swing / AWT](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/java.md) ·
-[Delphi / VCL](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/delphi.md) ·
-[Mainframe (3270 / 5250 / HLLAPI)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/mainframe.md) ·
-[Oracle Forms](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/oracle-forms.md) ·
-[PowerBuilder](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/powerbuilder.md) ·
-[WebView2](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/webview2.md) ·
-[Office](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/office.md) ·
-[Image-based](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/image-based.md) ·
-[Embedded web (Electron / CEF)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/guides/embedded-web.md).
+[Native Windows](https://dolphinsoft.pl/latest/guides/native/) ·
+[SAP](https://dolphinsoft.pl/latest/guides/sap/) ·
+[Qt](https://dolphinsoft.pl/latest/guides/qt/) ·
+[Java Swing / AWT](https://dolphinsoft.pl/latest/guides/java/) ·
+[Delphi / VCL](https://dolphinsoft.pl/latest/guides/delphi/) ·
+[Mainframe (3270 / 5250 / HLLAPI)](https://dolphinsoft.pl/latest/guides/mainframe/) ·
+[Oracle Forms](https://dolphinsoft.pl/latest/guides/oracle-forms/) ·
+[PowerBuilder](https://dolphinsoft.pl/latest/guides/powerbuilder/) ·
+[WebView2](https://dolphinsoft.pl/latest/guides/webview2/) ·
+[Office](https://dolphinsoft.pl/latest/guides/office/) ·
+[Image-based](https://dolphinsoft.pl/latest/guides/image-based/) ·
+[Embedded web (Electron / CEF)](https://dolphinsoft.pl/latest/guides/embedded-web/).
 
 Reference:
-[API index](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/reference/index.md) ·
-[Support matrix](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/support-matrix.md) — stack × backend × mode ·
-[Backend capabilities](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/backend-capabilities.md) — the
+[API index](https://dolphinsoft.pl/latest/reference/) ·
+[Support matrix](https://dolphinsoft.pl/latest/support-matrix/) — stack × backend × mode ·
+[Backend capabilities](https://dolphinsoft.pl/latest/backend-capabilities/) — the
 `Capability` vocabulary ·
-[CLI](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/reference/cli.md) ·
-[Migration guide](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/docs/migration.md).
+[CLI](https://dolphinsoft.pl/latest/reference/cli/) ·
+[Migration guide](https://dolphinsoft.pl/latest/migration/).
 
 ## Development
 
