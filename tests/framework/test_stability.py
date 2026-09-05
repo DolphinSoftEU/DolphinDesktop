@@ -542,6 +542,7 @@ class TestZombieRegistry:
         assert app._owns_process is False
         assert 66666 not in _application._live_pids
         assert 66666 not in _application._session_pids
+        _application._attached_pids.discard(66666)
 
 
 class TestDesktopWideWindowFallback:
@@ -755,6 +756,7 @@ class TestProcessOwnership:
 
         _application._live_pids.discard(pid)
         _application._session_pids.discard(pid)
+        _application._attached_pids.discard(pid)
 
     def test_close_leaves_an_attached_process_running(self):
         app = self._app(55555, owns=False)
@@ -771,8 +773,11 @@ class TestProcessOwnership:
 
     def test_kill_leaves_an_attached_process_running(self):
         app = self._app(55557, owns=False)
-        app.kill()
-        app._app.kill.assert_not_called()
+        try:
+            app.kill()
+            app._app.kill.assert_not_called()
+        finally:
+            self._discard(55557)
 
     def test_kill_terminates_a_launched_process(self):
         app = self._app(55558, owns=True)
@@ -789,6 +794,7 @@ class TestProcessOwnership:
             parent._launched_apps.append(("child.exe", child))
             parent.kill()
         finally:
+            self._discard(55559)
             self._discard(55560)
         child._app.kill.assert_called_once_with(soft=False)
         parent._app.kill.assert_not_called()
@@ -885,6 +891,8 @@ class TestImagePathIsReadableAtSpawn:
     spawned process — which is exactly the window in which a single-instance
     launcher hands off and exits.
     """
+
+    pytestmark = pytest.mark.integration
 
     def test_path_is_known_immediately_after_create_process(self):
         import subprocess

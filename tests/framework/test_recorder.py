@@ -1,13 +1,19 @@
 """Tests for the action recorder's event interpretation."""
 
+
 from __future__ import annotations
 
 import ast
+import ctypes
+import queue
 import re
 import sys
 import threading
 import time
 import types
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -734,3 +740,559 @@ class TestSelectorSurvivesNonFocusChangingKeys:
 
         typed = [a for a in rec.actions() if a.kind == "type_text"]
         assert [a.selector for a in typed] == [{"auto_id": "user"}, {"auto_id": "password"}]
+
+
+def _action(
+    kind: str = "click",
+    *,
+    title: str = "Window",
+    window_class: str = "WindowClass",
+    selector: dict[str, str] | None = None,
+    data: str = "",
+    x: int = 10,
+    y: int = 20,
+    timestamp: float = 1.0,
+) -> RecordedAction:
+    return RecordedAction(
+        kind=kind,
+        window_title=title,
+        window_class=window_class,
+        selector={} if selector is None else selector,
+        data=data,
+        x=x,
+        y=y,
+        timestamp=timestamp,
+    )
+
+def _install_win32gui(monkeypatch, *, title: str = "Target", cls: str = "TargetClass"):
+    gui = SimpleNamespace(
+        WindowFromPoint=lambda point: 11,
+        GetForegroundWindow=lambda: 11,
+        GetWindowText=lambda hwnd: title,
+        GetClassName=lambda hwnd: cls,
+    )
+    monkeypatch.setitem(sys.modules, "win32gui", gui)
+    monkeypatch.setattr(_recorder, "_get_root_hwnd", lambda hwnd: hwnd)
+    return gui
+
+def test_double_click_interval_falls_back_when_user32_fails(monkeypatch) -> None:
+    monkeypatch.setattr(_recorder._user32, "GetDoubleClickTime", Mock(side_effect=OSError()))
+    assert _recorder._double_click_interval() == 0.5
+
+def test_to_unicode_populates_modifier_state_and_returns_one_character(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    def translate(vk, scan, state, buffer, length, flags):
+        observed.update(
+            vk=vk,
+            scan=scan,
+            shift=state[_recorder._VK_SHIFT],
+            ctrl=state[_recorder._VK_CONTROL],
+            alt=state[_recorder._VK_MENU],
+            length=length,
+            flags=flags,
+        )
+        buffer.value = "�"
+        return 1
+
+    monkeypatch.setattr(_recorder._user32, "ToUnicode", translate)
+    assert _recorder._to_unicode(0x41, 30, True, ctrl=True, alt=True) == "�"
+    assert observed == {
+        "vk": 0x41,
+        "scan": 30,
+        "shift": 0x80,
+        "ctrl": 0x80,
+        "alt": 0x80,
+        "length": 8,
+        "flags": 0,
+    }
+
+@pytest.mark.parametrize("result", [0, 2])
+def test_to_unicode_returns_empty_for_non_single_character_result(monkeypatch, result) -> None:
+    monkeypatch.setattr(_recorder._user32, "ToUnicode", Mock(return_value=result))
+    assert _recorder._to_unicode(0x41, 30, False) == ""
+
+def test_to_unicode_returns_empty_when_user32_raises(monkeypatch) -> None:
+    monkeypatch.setattr(_recorder._user32, "ToUnicode", Mock(side_effect=RuntimeError("layout")))
+    assert _recorder._to_unicode(0x41, 30, False) == ""
+
+def test_vk_translation_ignores_modifiers_and_unknown_non_printable_keys(monkeypatch) -> None:
+    monkeypatch.setattr(_recorder, "_to_unicode", lambda *args, **kwargs: "")
+    assert _recorder._vk_to_sendkeys(_recorder._VK_SHIFT, 0, False, False, False) is None
+    assert _recorder._vk_to_sendkeys(0xFF, 0, False, False, False) is None
+    assert _recorder._vk_to_sendkeys(0xFF, 0, False, True, False) is None
+
+def test_selector_and_action_rendering_cover_special_and_fallback_forms() -> None:
+    assert _recorder._selector_to_call({"auto_id": "save"}) == "get_by_automation_id('save')"
+    assert (
+        _recorder._selector_to_call({"class_name": "Edit"})
+        == "get_by_class('Edit')"
+    )
+    assert _recorder._selector_to_call({"title": "A", "class_name": "B"}) == (
+        "locator(title='A', class_name='B')"
+    )
+
+    unknown = _recorder._action_to_line(_action("drag", selector={"auto_id": "x"}), "win")
+    assert unknown == "    # drag: ''"
+
+def test_root_window_and_element_helpers_cover_success_none_and_failure(monkeypatch) -> None:
+    gui = SimpleNamespace(
+        GetAncestor=lambda hwnd, flag: 99,
+        GetWindowText=lambda hwnd: None,
+        GetClassName=lambda hwnd: "Dialog",
+    )
+    monkeypatch.setitem(sys.modules, "win32gui", gui)
+    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(GA_ROOT=3))
+    assert _recorder._get_root_hwnd(7) == 99
+    assert _recorder._get_window_info(7) == ("", "Dialog")
+
+    monkeypatch.setattr(gui, "GetAncestor", lambda hwnd, flag: 0)
+    assert _recorder._get_root_hwnd(7) == 7
+
+    info = SimpleNamespace(automation_id=None, name="Save", class_name="Button", control_type=None)
+    spy = SimpleNamespace(
+        _element_info_from_point=Mock(return_value=info),
+        _suggest_selector=Mock(return_value={"title": "Save"}),
+    )
+    monkeypatch.setitem(sys.modules, "dolphin_desktop._spy", spy)
+    assert _recorder._element_at_point(1, 2) == {"title": "Save"}
+    spy._suggest_selector.assert_called_once_with("", "Save", "Button", "")
+
+    spy._element_info_from_point.return_value = None
+    assert _recorder._element_at_point(1, 2) == {}
+    spy._element_info_from_point.side_effect = RuntimeError("uia")
+    assert _recorder._element_at_point(1, 2) == {}
+
+    monkeypatch.setitem(sys.modules, "win32gui", None)
+    monkeypatch.setitem(sys.modules, "win32con", None)
+    assert _recorder._get_root_hwnd(7) == 7
+    assert _recorder._get_window_info(7) == ("", "")
+
+def test_focus_helpers_cover_uia_success_empty_and_failures(monkeypatch) -> None:
+    element = SimpleNamespace(CurrentIsPassword=1)
+    uia = SimpleNamespace(GetFocusedElement=Mock(return_value=element))
+    uia_defines = SimpleNamespace(IUIA=lambda: SimpleNamespace(iuia=uia))
+    monkeypatch.setitem(sys.modules, "pywinauto.uia_defines", uia_defines)
+    assert _recorder._focused_password_flag() is True
+
+    uia.GetFocusedElement.return_value = None
+    assert _recorder._focused_password_flag() is None
+    uia.GetFocusedElement.side_effect = RuntimeError("COM")
+    assert _recorder._focused_password_flag() is None
+
+    focused = SimpleNamespace(
+        AutomationId="saveId", Name="Save", ClassName="Button", ControlType="Button"
+    )
+    uia.GetFocusedElement.side_effect = None
+    uia.GetFocusedElement.return_value = focused
+    element_info = SimpleNamespace(
+        automation_id="saveId", name="Save", class_name="Button", control_type="Button"
+    )
+    element_info_class = Mock(return_value=element_info)
+    selector = Mock(return_value={"auto_id": "saveId"})
+    monkeypatch.setitem(
+        sys.modules,
+        "pywinauto.uia_element_info",
+        SimpleNamespace(UIAElementInfo=element_info_class),
+    )
+    monkeypatch.setitem(
+        sys.modules, "dolphin_desktop._spy", SimpleNamespace(_suggest_selector=selector)
+    )
+    assert _recorder._focused_element_selector() == {"auto_id": "saveId"}
+    element_info_class.assert_called_once_with(focused)
+    selector.assert_called_once_with("saveId", "Save", "Button", "Button")
+
+    uia.GetFocusedElement.return_value = None
+    assert _recorder._focused_element_selector() == {}
+    uia.GetFocusedElement.side_effect = RuntimeError("COM")
+    assert _recorder._focused_element_selector() == {}
+
+@pytest.mark.parametrize(
+    ("app", "expected"),
+    [(None, "EVERY"), ("Notepad", "title contains 'Notepad'")],
+)
+def test_start_logs_scope_and_starts_both_daemon_threads(monkeypatch, app, expected) -> None:
+    made = []
+
+    class FakeThread:
+        def __init__(self, *, target, daemon, name):
+            made.append((target, daemon, name))
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(threading, "Thread", FakeThread)
+    warning = Mock()
+    monkeypatch.setattr(_recorder._log, "warning", warning)
+    rec = Recorder(app=app)
+    rec._stopped.set()
+    rec.start()
+
+    assert expected in warning.call_args.args[1]
+    assert [(daemon, name) for _, daemon, name in made] == [
+        (True, "dolphin-rec-hook"),
+        (True, "dolphin-rec-proc"),
+    ]
+    assert made[0][0] == rec._hook_loop
+    assert made[1][0] == rec._process_loop
+    assert not rec._stopped.is_set()
+
+def test_stop_posts_quit_only_for_a_hook_thread_and_is_idempotent(monkeypatch) -> None:
+    rec = Recorder()
+    rec._hook_thread_id = 42
+    post = Mock()
+    monkeypatch.setattr(_recorder._user32, "PostThreadMessageW", post)
+
+    rec.stop()
+    rec.stop()
+
+    post.assert_called_once_with(42, _recorder._WM_QUIT, 0, 0)
+    assert rec._evt_queue.get_nowait() is None
+
+def test_wait_timeout_and_join_from_processor_thread_are_noops() -> None:
+    rec = Recorder()
+    assert rec.wait(0) is False
+
+    rec._stopped.set()
+    rec._proc_thread = threading.current_thread()
+    rec._join_processor()
+    assert rec._proc_thread is threading.current_thread()
+
+def test_join_grants_one_extra_pass_when_an_event_arrives_during_idle_wait(caplog) -> None:
+    class AliveThread:
+        def join(self, timeout):
+            return None
+
+        def is_alive(self):
+            return True
+
+    rec = Recorder()
+    rec._proc_thread = AliveThread()  # type: ignore[assignment]
+    rec._proc_idle.set()
+    rec._evt_queue.put(("key", 0x41, 0, False, False, False, False, 0.0))
+    rec._stopped.set()
+
+    with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
+        rec._join_processor(timeout=0)
+
+    assert "recording is incomplete" in caplog.text
+
+def test_generate_code_writes_requested_output_file(tmp_path: Path) -> None:
+    rec = Recorder(app="Demo", backend="win32")
+    output = tmp_path / "recorded.py"
+    code = rec.generate_code(output, func_name="test_demo")
+    assert output.read_text(encoding="utf-8") == code
+    assert "def test_demo()" in code
+
+def test_process_loop_handles_mouse_key_unknown_and_empty_queue(monkeypatch) -> None:
+    rec = Recorder()
+    flush = Mock()
+    mouse = Mock()
+    key = Mock()
+    monkeypatch.setattr(rec, "_flush_text", flush)
+    monkeypatch.setattr(rec, "_handle_mouse", mouse)
+    monkeypatch.setattr(rec, "_handle_key", key)
+    rec._evt_queue.put(("mouse", "click", 1, 2, 3.0))
+    rec._evt_queue.put(("key", 65, 30, True, False, False, True, 4.0))
+    rec._evt_queue.put(("other", "ignored"))
+    rec._evt_queue.put(None)
+
+    rec._process_loop()
+
+    flush.assert_called_once_with()
+    mouse.assert_called_once_with("click", 1, 2, 3.0)
+    key.assert_called_once_with(65, 30, True, False, False, 4.0, ralt=True)
+    assert rec._processed == 3
+
+def test_process_loop_retries_after_an_empty_queue(monkeypatch) -> None:
+    class EmptyThenStopQueue:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, timeout):
+            self.calls += 1
+            if self.calls == 1:
+                raise queue.Empty
+            return None
+
+    event_queue = EmptyThenStopQueue()
+    rec = Recorder()
+    rec._evt_queue = event_queue  # type: ignore[assignment]
+    rec._process_loop()
+    assert event_queue.calls == 2
+
+def test_handle_mouse_covers_window_lookup_failure_and_app_filter(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "win32gui", None)
+    monkeypatch.setattr(_recorder, "_element_at_point", Mock(return_value={}))
+    rec = Recorder()
+    rec._handle_mouse("right_click", 1, 2, 3.0)
+    assert [(a.kind, a.window_title, a.window_class) for a in rec.actions()] == [
+        ("right_click", "", "")
+    ]
+
+    _install_win32gui(monkeypatch, title="Other")
+    element = Mock(return_value={"auto_id": "x"})
+    monkeypatch.setattr(_recorder, "_element_at_point", element)
+    filtered = Recorder(app="Target")
+    filtered._handle_mouse("click", 1, 2, 3.0)
+    assert filtered.actions() == []
+    element.assert_not_called()
+
+def test_handle_mouse_upgrades_second_left_press_to_double_click(monkeypatch) -> None:
+    _install_win32gui(monkeypatch, title="Target", cls="Dialog")
+    selectors = iter([{"auto_id": "first"}, {}])
+    monkeypatch.setattr(_recorder, "_element_at_point", lambda x, y: next(selectors))
+    rec = Recorder()
+    rec._dbl_click_interval = 0.5
+
+    rec._handle_mouse("click", 10, 20, 1.0)
+    rec._handle_mouse("click", 13, 17, 1.2)
+
+    actions = rec.actions()
+    assert len(actions) == 1
+    assert actions[0].kind == "double_click"
+    assert actions[0].selector == {"auto_id": "first"}
+    assert (actions[0].x, actions[0].y, actions[0].timestamp) == (13, 17, 1.2)
+    assert rec._pending_selector == {"auto_id": "first"}
+
+def test_handle_key_covers_window_lookup_failure_filter_and_modifier_only(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "win32gui", None)
+    monkeypatch.setattr(_recorder, "_focused_is_password", lambda: False)
+    monkeypatch.setattr(_recorder, "_focused_element_selector", lambda: {"auto_id": "edit"})
+    monkeypatch.setattr(_recorder, "_vk_to_sendkeys", lambda *args, **kwargs: "a")
+    rec = Recorder()
+    rec._handle_key(0x41, 30, False, False, False, 1.0)
+    assert rec.actions()[0].data == "a"
+
+    _install_win32gui(monkeypatch, title="Other")
+    filtered = Recorder(app="Target")
+    filtered._pending_text = ["before"]
+    filtered._pending_selector = {"auto_id": "old"}
+    filtered._pending_win_title = "Other"
+    filtered._pending_win_class = "OtherClass"
+    filtered._handle_key(0x41, 30, False, False, False, 2.0)
+    assert [action.data for action in filtered.actions()] == ["before"]
+
+    _install_win32gui(monkeypatch, title="Target")
+    monkeypatch.setattr(_recorder, "_vk_to_sendkeys", lambda *args, **kwargs: None)
+    ignored = Recorder()
+    ignored._handle_key(_recorder._VK_SHIFT, 0, False, False, False, 3.0)
+    assert ignored.actions() == []
+
+@pytest.mark.parametrize(
+    ("actions", "expected_connection", "expected_window"),
+    [
+        ([_action(window_class="Class")], "class_name='Class'", "class_name='Class'"),
+        ([_action(title="Window", window_class="")], "title_re", "title_re"),
+        ([_action(title="", window_class="")], 'title_re=".*"', "top_window()"),
+    ],
+)
+def test_build_code_covers_unfiltered_connection_variants(
+    actions, expected_connection: str, expected_window: str
+) -> None:
+    rec = Recorder()
+    code = "\n".join(rec._build_code(actions, "test_recorded"))
+    assert expected_connection in code
+    assert expected_window in code
+    ast.parse(code)
+
+def test_build_code_declares_multiple_windows_and_passes_when_empty() -> None:
+    rec = Recorder()
+    actions = [
+        _action(title="First", window_class="FirstClass"),
+        _action(title="Second", window_class=""),
+        _action(title="", window_class=""),
+        _action(title="First", window_class="FirstClass"),
+    ]
+    code = "\n".join(rec._build_code(actions, "test_multi"))
+    assert "win = app.window(class_name='FirstClass')" in code
+    assert "win2 = app.window(title_re='.*Second.*')" in code
+    assert "win3 = app.top_window()" in code
+    assert "win3.locator().click()" in code
+
+    empty = "\n".join(rec._build_code([], "test_empty"))
+    assert 'app = desktop.connect(title_re=".*")  # TODO: specify app' in empty
+    assert "pass  # no actions recorded" in empty
+
+class _HookAPI:
+    def __init__(self, callbacks, handles=(101, 202), dispatch=None, message_returns=(1,)):
+        self.callbacks = callbacks
+        self.handles = iter(handles)
+        self.message_returns = iter(message_returns)
+        self.dispatch = dispatch
+        self.message_calls = 0
+        self.translated = 0
+        self.dispatched = 0
+        self.unhooked = []
+        self.quit_calls = []
+
+    def GetCurrentThreadId(self):  # noqa: N802
+        return 77
+
+    def SetWindowsHookExW(self, hook_kind, callback, module, thread_id):  # noqa: N802
+        self.callbacks[hook_kind] = callback
+        return next(self.handles)
+
+    def GetMessageW(self, message, hwnd, minimum, maximum):  # noqa: N802
+        self.message_calls += 1
+        return next(self.message_returns)
+
+    def TranslateMessage(self, message):  # noqa: N802
+        self.translated += 1
+
+    def DispatchMessageW(self, message):  # noqa: N802
+        self.dispatched += 1
+        if self.dispatch:
+            self.dispatch()
+
+    def UnhookWindowsHookEx(self, handle):  # noqa: N802
+        self.unhooked.append(handle)
+
+    def CallNextHookEx(self, hook, n_code, w_param, l_param):  # noqa: N802
+        return 123
+
+    def GetAsyncKeyState(self, vk):  # noqa: N802
+        return 0x8000 if vk in {_recorder._VK_SHIFT, _recorder._VK_CONTROL} else 0
+
+    def PostQuitMessage(self, code):  # noqa: N802
+        self.quit_calls.append(code)
+
+    def PostThreadMessageW(self, *args):  # noqa: N802
+        return 1
+
+def test_hook_loop_queues_mouse_and_keyboard_events_and_stops_on_ctrl_stop_key(monkeypatch) -> None:
+    callbacks: dict[int, object] = {}
+    structs: list[ctypes.Structure] = []
+    api = _HookAPI(callbacks)
+    rec = Recorder(stop_key=0x7B)
+
+    def dispatch():
+        mouse = _recorder._MSLLHOOKSTRUCT()
+        mouse.pt.x, mouse.pt.y = 12, 34
+        structs.append(mouse)
+        assert (
+            rec._mouse_cb(  # type: ignore[operator]
+                _recorder._HC_ACTION, _recorder._WM_LBUTTONDOWN, ctypes.addressof(mouse)
+            )
+            == 123
+        )
+        assert rec._mouse_cb(1, _recorder._WM_LBUTTONDOWN, 0) == 123
+        assert rec._mouse_cb(_recorder._HC_ACTION, 0x9999, 0) == 123
+
+        key = _recorder._KBDLLHOOKSTRUCT()
+        key.vkCode, key.scanCode = 0x41, 30
+        structs.append(key)
+        assert (
+            rec._kbd_cb(  # type: ignore[operator]
+                _recorder._HC_ACTION, _recorder._WM_KEYDOWN, ctypes.addressof(key)
+            )
+            == 123
+        )
+        assert rec._kbd_cb(1, _recorder._WM_KEYDOWN, 0) == 123
+        assert rec._kbd_cb(_recorder._HC_ACTION, 0x9999, 0) == 123
+
+        stop = _recorder._KBDLLHOOKSTRUCT()
+        stop.vkCode = 0x7B
+        structs.append(stop)
+        assert (
+            rec._kbd_cb(  # type: ignore[operator]
+                _recorder._HC_ACTION, _recorder._WM_SYSKEYDOWN, ctypes.addressof(stop)
+            )
+            == 123
+        )
+
+    api.dispatch = dispatch
+    monkeypatch.setattr(_recorder, "_HOOKPROC", lambda function: function)
+    monkeypatch.setattr(
+        ctypes.windll, "kernel32", SimpleNamespace(GetCurrentThreadId=lambda: 77)
+    )
+    monkeypatch.setattr(_recorder, "_user32", api)
+
+    rec._hook_loop()
+
+    assert rec._hook_thread_id == 77
+    assert api.translated == 1
+    assert api.dispatched == 1
+    assert api.unhooked == [101, 202]
+    assert api.quit_calls == [0]
+    events = []
+    while True:
+        event = rec._evt_queue.get_nowait()
+        if event is None:
+            break
+        events.append(event)
+    assert events[0][:4] == ("mouse", "click", 12, 34)
+    assert events[1][:2] == ("key", 0x41)
+
+def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None:
+    class FullQueue:
+        def __init__(self):
+            self.events = []
+
+        def put_nowait(self, event):
+            raise queue.Full
+
+        def put(self, event):
+            self.events.append(event)
+
+    callbacks: dict[int, object] = {}
+    api = _HookAPI(callbacks, handles=(0, None), message_returns=(1, 0))
+    rec = Recorder()
+    full_queue = FullQueue()
+    rec._evt_queue = full_queue  # type: ignore[assignment]
+
+    structs: list[ctypes.Structure] = []
+
+    def dispatch():
+        mouse = _recorder._MSLLHOOKSTRUCT()
+        mouse.pt.x, mouse.pt.y = 1, 2
+        structs.append(mouse)
+        rec._mouse_cb(  # type: ignore[operator]
+            _recorder._HC_ACTION, _recorder._WM_LBUTTONDOWN, ctypes.addressof(mouse)
+        )
+        key = _recorder._KBDLLHOOKSTRUCT()
+        key.vkCode, key.scanCode = 0x41, 30
+        structs.append(key)
+        rec._kbd_cb(  # type: ignore[operator]
+            _recorder._HC_ACTION, _recorder._WM_KEYDOWN, ctypes.addressof(key)
+        )
+
+    api.dispatch = dispatch
+
+    monkeypatch.setattr(_recorder, "_HOOKPROC", lambda function: function)
+    monkeypatch.setattr(
+        ctypes.windll, "kernel32", SimpleNamespace(GetCurrentThreadId=lambda: 88)
+    )
+    monkeypatch.setattr(_recorder, "_user32", api)
+
+    rec._hook_loop()
+
+    assert rec._hook_thread_id == 88
+    assert api.message_calls == 2
+    assert api.translated == 1
+    assert api.dispatched == 1
+    assert api.unhooked == []
+    assert full_queue.events == [None]
+
+
+def test_recorder_detects_double_clicks_and_escapes_window_titles() -> None:
+    from dolphin_desktop._recorder import RecordedAction, _is_double_click, _title_re_literal
+
+    previous = RecordedAction("click", "Demo", "Window", {}, x=10, y=10, timestamp=1.0)
+    assert _is_double_click(previous, "click", 13, 12, 1.2, 0.5) is True
+    assert _is_double_click(previous, "click", 20, 10, 1.2, 0.5) is False
+    assert _title_re_literal("A.B") == repr(".*A\\.B.*")
+
+
+def test_recorder_renders_selector_and_action_code() -> None:
+    from dolphin_desktop._recorder import RecordedAction, _action_to_line, _selector_to_call
+
+    assert _selector_to_call({"title": "Save"}) == "get_by_title('Save')"
+    action = RecordedAction(
+        kind="click",
+        selector={"title": "Save"},
+        timestamp=0.0,
+        window_title="Demo",
+        window_class="Window",
+    )
+    assert ".click()" in _action_to_line(action, "window")

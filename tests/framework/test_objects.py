@@ -1,5 +1,9 @@
 """Tests for the YAML-backed object repository."""
 
+
+# Helpers
+
+
 from __future__ import annotations
 
 import textwrap
@@ -12,12 +16,7 @@ import dolphin_desktop as dolphin
 from dolphin_desktop import AliasNotFoundError
 from dolphin_desktop._exceptions import DolphinError
 from dolphin_desktop._window import Window
-from dolphin_desktop.objects import (
-    ObjectRepository,
-    _map_selector,
-)
-
-# Helpers
+from dolphin_desktop.objects import ObjectRepository, _map_selector
 
 
 def _yaml_file(tmp_path: Path, content: str, name: str = "repo.yaml") -> Path:
@@ -463,3 +462,22 @@ class TestPublicModuleAPI:
         assert hasattr(dolphin.objects, "discover")
         assert hasattr(dolphin.objects, "clear")
         assert hasattr(dolphin.objects, "available")
+
+
+def test_object_repository_resolves_the_highest_priority_level() -> None:
+    from dolphin_desktop.objects import ObjectEntry, ObjectRepository
+
+    repository = ObjectRepository()
+    repository._registry["workspace"]["save"] = ObjectEntry({"title": "Workspace"})
+    repository._registry["test"]["save"] = ObjectEntry({"title": "Test"})
+    assert repository.resolve("save").selector == {"title": "Test"}
+    with pytest.raises(Exception, match="missing"):
+        repository.resolve("missing")
+
+
+def test_objects_parse_repository_entry_aliases() -> None:
+    from dolphin_desktop.objects import _parse_entry
+
+    entry = _parse_entry({"selector": {"name": "Save"}, "fallback": [{"role": "Button"}]})
+    assert entry.selector == {"title": "Save"}
+    assert entry.fallback == [{"control_type": "Button"}]
