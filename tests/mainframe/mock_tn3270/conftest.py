@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from dolphin_desktop import Desktop, MainframeError, add_import_path, dirname, path_join
@@ -14,6 +16,16 @@ from tests.mainframe.mock_tn3270._mock_server import MockTN3270Server, ScreenFie
 from tests.mainframe.pub400._mainframe_env import (  # noqa: E402
     WS3270,  # type: ignore[import-not-found]
 )
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    if os.environ.get("DOLPHIN_COMPONENT_PREFLIGHT") != "1":
+        return
+    if WS3270 is None:
+        raise pytest.UsageError(
+            "mainframe component job requires wc3270/ws3270.exe; "
+            "configure the Windows runner before starting pytest"
+        )
 
 
 @pytest.fixture

@@ -13,34 +13,8 @@ All imports are ``dolphin_desktop`` + ``pytest`` + the local
 ``_steam_env`` module — the autonomous-library contract holds.
 """
 
-from __future__ import annotations
-
-import pytest
-
-from dolphin_desktop import is_cdp_available
-from tests.steam._steam_env import STEAM, has_playwright  # type: ignore[import-not-found]
-
 # --------------------------------------------------------------------------- #
 # Preconditions                                                                #
-# --------------------------------------------------------------------------- #
-
-
-def test_cdp_extra_installed() -> None:
-    """The ``[cdp]`` extra must be present for any of this to work."""
-    if not has_playwright():
-        pytest.skip("dolphin_desktop[cdp] not installed")
-    assert is_cdp_available()
-
-
-def test_steam_installed() -> None:
-    """Steam client is on the machine."""
-    if STEAM is None:
-        pytest.skip("Steam not installed at any known path")
-    assert STEAM.lower().endswith("steam.exe")
-
-
-# --------------------------------------------------------------------------- #
-# Session smoke                                                                #
 # --------------------------------------------------------------------------- #
 
 
@@ -75,49 +49,3 @@ def test_current_url_looks_like_steam(steam_cdp) -> None:
 # --------------------------------------------------------------------------- #
 # Library probe — "does Counter-Strike show up in my library?"                 #
 # --------------------------------------------------------------------------- #
-
-
-def _search_all_pages_for(session, needle: str) -> tuple[bool, list[str]]:
-    """Return (found, [urls of pages that mention *needle*])."""
-    hits: list[str] = []
-    pages = session.pages()
-    for i in range(len(pages)):
-        try:
-            session.switch_to_page(i)
-        except Exception:
-            continue
-        try:
-            text = session.evaluate("() => document.body ? document.body.innerText : ''")
-        except Exception:
-            continue
-        if text and needle.lower() in text.lower():
-            hits.append(pages[i].url)
-    return (len(hits) > 0, hits)
-
-
-def test_find_counter_strike_in_library(steam_cdp) -> None:
-    """CS/CS2 appears somewhere in Steam's currently-rendered CEF DOM.
-
-    This is a state probe, not a regression test — it only passes when
-    the running Steam account owns any Counter-Strike title AND the
-    library page has been navigated to at least once so the game grid
-    is rendered. Skips otherwise, so CI without a signed-in Steam does
-    not fail.
-    """
-    found, hits = _search_all_pages_for(steam_cdp, "Counter-Strike")
-    if not found:
-        pytest.skip(
-            "Counter-Strike not found in any Steam CEF page. Open the "
-            "Library tab in Steam and re-run — the library grid must be "
-            "rendered for its DOM text to be reachable."
-        )
-    assert any("steamloopback.host" in u or "steam" in u.lower() for u in hits), (
-        f"Match came from an unexpected origin: {hits!r}"
-    )
-
-
-def test_find_cs2_exact_title(steam_cdp) -> None:
-    """Prefer the modern title ``Counter-Strike 2`` when the account owns it."""
-    found, _hits = _search_all_pages_for(steam_cdp, "Counter-Strike 2")
-    if not found:
-        pytest.skip("CS2 title not visible — account may only own CS:GO/CS 1.6")

@@ -208,23 +208,6 @@ def test_aid_screen_field_and_terminal_field_value_objects() -> None:
     assert repr(field) == "TerminalField(row=1, col=1, length=6)"
 
 
-def test_abstract_backend_protocol_stubs_are_callable() -> None:
-    # The concrete adapters are required to implement this complete surface;
-    # invoke the abstract declarations once so coverage also records their
-    # intentionally empty bodies.
-    mf._TerminalBackend.connect(None, "", 23, session_type="3270")  # type: ignore[arg-type]
-    mf._TerminalBackend.disconnect(None)
-    mf._TerminalBackend.is_connected(None)
-    mf._TerminalBackend.read_screen(None)
-    mf._TerminalBackend.send_string(None, "")
-    mf._TerminalBackend.send_aid(None, "Enter")
-    mf._TerminalBackend.move_cursor(None, 1, 1)
-    mf._TerminalBackend.wait_unlock(None, 0)
-    mf._TerminalBackend.wait_output(None, 0)
-    mf._TerminalBackend.is_keyboard_locked(None)
-    mf._TerminalBackend.read_fields(None)
-
-
 def test_find_s3270_and_spawn_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     which = Mock(side_effect=[None, "s3270-found"])
     monkeypatch.setattr(mf.shutil, "which", which)

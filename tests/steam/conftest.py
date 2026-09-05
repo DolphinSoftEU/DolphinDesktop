@@ -17,6 +17,8 @@ explanation of how to enable it.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from dolphin_desktop import CDPSession, Desktop, env_var
@@ -30,6 +32,22 @@ from tests.steam._steam_env import (  # type: ignore[import-not-found]
 
 def _allow_launch() -> bool:
     return (env_var("DOLPHIN_STEAM_ALLOW_LAUNCH") or "").strip() == "1"
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    if os.environ.get("DOLPHIN_EXTERNAL_PREFLIGHT") != "1":
+        return
+    missing = []
+    if not has_playwright():
+        missing.append("dolphin-desktop[cdp]")
+    if STEAM is None:
+        missing.append("Steam")
+    if not steam_cdp_up() and not _allow_launch():
+        missing.append("Steam CEF debug endpoint (8080) or DOLPHIN_STEAM_ALLOW_LAUNCH=1")
+    if missing:
+        raise pytest.UsageError(
+            "external Steam job preflight failed; missing: " + ", ".join(missing)
+        )
 
 
 @pytest.fixture(scope="session")

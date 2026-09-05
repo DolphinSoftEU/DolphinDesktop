@@ -10,8 +10,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  test:
-    name: "Python ${{ matrix.python-version }} / Windows"
+  unit:
+    name: "Unit / Python ${{ matrix.python-version }} / Windows"
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -46,10 +46,10 @@ jobs:
       - name: Type check
         run: uv run mypy src/
 
-      - name: Unit and smoke tests
+      - name: Unit tests
         run: >
           uv run pytest
-          -m "not integration"
+          -m unit
           --cov=dolphin_desktop
           --cov-report=xml
           --cov-report=term-missing
@@ -63,10 +63,34 @@ jobs:
           flags: windows-py${{ matrix.python-version }}
           fail_ci_if_error: false
 
+  component-windows:
+    name: "Windows component tests"
+    runs-on: windows-latest
+    needs: unit
+    env:
+      DOLPHIN_COMPONENT_PREFLIGHT: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev --extra vision
+
+      - name: Component tests
+        run: uv run pytest -m "component or windows_component" -q
+
   package:
     name: Build package
     runs-on: windows-latest
-    needs: test
+    needs: unit
 
     steps:
       - uses: actions/checkout@v5

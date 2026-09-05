@@ -29,14 +29,35 @@ suite non-destructive.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from dolphin_desktop import Desktop, find_pid_by_image_name, is_windows
 
-pytestmark = pytest.mark.skipif(
-    not is_windows(),
-    reason="Qt UIA backend tests are Windows-only",
-)
+pytestmark = [
+    pytest.mark.external,
+    pytest.mark.skipif(
+        not is_windows(),
+        reason="Qt UIA backend tests are Windows-only",
+    ),
+]
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    if os.environ.get("DOLPHIN_QT_ENVIRONMENT_JOB") != "1":
+        return
+    candidates = (
+        "RadeonSoftware.exe",
+        "AMD Ryzen Master.exe",
+        "lghub.exe",
+        "lghub_agent.exe",
+    )
+    if not is_windows() or not any(find_pid_by_image_name(name) for name in candidates):
+        raise pytest.UsageError(
+            "Qt real-app job requires at least one configured target process "
+            "(RadeonSoftware, AMD Ryzen Master, or Logitech G HUB)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -106,20 +127,3 @@ def test_lghub_agent_detected_as_qt5():
 # ---------------------------------------------------------------------------
 # Cross-cutting: at least one Qt app present?
 # ---------------------------------------------------------------------------
-
-
-def test_at_least_one_qt_app_is_running_on_dev_machine():
-    """Report whether this machine has *some* Qt app running for real-app coverage.
-
-    When at least one known target is running the test passes; when none is,
-    it skips with a message naming the apps to launch — the same outcome the
-    smoke tests above reach, and what CI machines without these apps get.
-    """
-    candidates = ("RadeonSoftware.exe", "AMD Ryzen Master.exe", "lghub.exe", "lghub_agent.exe")
-    running = [c for c in candidates if find_pid_by_image_name(c) is not None]
-    if not running:
-        pytest.skip(
-            "no Qt real-world target is running on this machine — "
-            "start AMD Radeon / Ryzen Master / LGHUB to exercise these tests"
-        )
-    assert running, "expected at least one Qt app in candidates list"

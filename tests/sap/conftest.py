@@ -27,7 +27,7 @@ import pytest
 
 from dolphin_desktop import ApplicationError, SapGui, env_var
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.external
 
 # Logon-screen field ids — identical across releases.
 _F_CLIENT = "wnd[0]/usr/txtRSYST-MANDT"
