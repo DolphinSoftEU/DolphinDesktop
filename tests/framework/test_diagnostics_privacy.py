@@ -814,3 +814,14 @@ class TestSelfhealJournalStaysParseable:
         parsed = json.loads(line)  # a rewritten line raises here
         assert "42" not in parsed["fallback"]
         assert _selfheal.selfheal_stats(file=journal)
+
+
+def test_logging_filter_redacts_message_arguments() -> None:
+    from dolphin_desktop._logging import _RedactingFilter
+
+    record = logging.LogRecord(
+        "dolphin_desktop.unit", logging.INFO, "", 0, "token=%s", ("secret",), None
+    )
+    assert _RedactingFilter().filter(record) is True
+    assert record.args == ()
+    assert "secret" not in record.msg

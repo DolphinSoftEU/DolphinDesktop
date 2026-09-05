@@ -1,5 +1,8 @@
 """Tests for keyboard key-sequence construction and clipboard DIB decoding."""
 
+
+# Hotkey mnemonic construction
+
 from __future__ import annotations
 
 import sys
@@ -10,8 +13,6 @@ import pytest
 from dolphin_desktop import Keyboard, WaitTimeoutError
 from dolphin_desktop._clipboard import _dib_pixel_offset, _opened
 from dolphin_desktop._keyboard import _hotkey_sequence
-
-# Hotkey mnemonic construction
 
 
 def _is_packet(action) -> bool:
@@ -535,3 +536,27 @@ class TestDibPixelOffset:
 
     def test_zero_bit_count_has_no_palette(self):
         assert _dib_pixel_offset(_bih(bit_count=0, compression=4)) == 40
+
+
+def test_clipboard_dib_offsets_cover_core_and_bitfield_headers() -> None:
+    from dolphin_desktop._clipboard import _dib_pixel_offset
+
+    core = (12).to_bytes(4, "little") + b"\0" * 6 + (8).to_bytes(2, "little")
+    bitfields = (
+        (40).to_bytes(4, "little")
+        + b"\0" * 10
+        + (32).to_bytes(2, "little")
+        + (3).to_bytes(4, "little")
+        + b"\0" * 16
+    )
+    assert _dib_pixel_offset(core) == 780
+    assert _dib_pixel_offset(bitfields) == 52
+
+
+def test_keyboard_hotkey_sequences_validate_and_escape() -> None:
+    from dolphin_desktop._keyboard import _hotkey_sequence
+
+    assert _hotkey_sequence(("ctrl", "c")) == ("^c", False)
+    assert _hotkey_sequence(("win", "enter")) == ("{ENTER}", True)
+    with pytest.raises(ValueError, match="at most one"):
+        _hotkey_sequence(("ctrl", "a", "b"))

@@ -1,20 +1,17 @@
 """Tests for standard-dialog discovery and control lookup budgets."""
 
+
+# Dialog discovery — class beats caption
+
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
-from dolphin_desktop._dialogs import (
-    _CONTROL_TIMEOUT,
-    FileDialog,
-    MessageBox,
-    _find_dialog_window,
-)
-
-# Dialog discovery — class beats caption
+from dolphin_desktop._dialogs import _CONTROL_TIMEOUT, FileDialog, MessageBox, _find_dialog_window
 
 
 def _windows(*entries: tuple[int, str, str]) -> list[tuple[int, str, str]]:
@@ -197,3 +194,81 @@ class TestKnownDialogRankingLimitation:
             (200, "#32770", "Save As"),
         )
         assert self._find(windows, foreground=400) == 200
+
+
+def test_file_dialog_confirm_uses_auto_id_before_localized_titles(monkeypatch) -> None:
+    from dolphin_desktop._dialogs import FileDialog
+
+    window = SimpleNamespace()
+    dialog = FileDialog(window)
+    auto_id = Mock(return_value=True)
+    monkeypatch.setattr(dialog, "_click_by_auto_id", auto_id)
+    dialog.confirm()
+    auto_id.assert_called_once_with("1")
+
+
+def test_dialog_file_path_and_message_box_fallbacks(monkeypatch) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    edit = Mock()
+    edit.class_name.return_value = "Edit"
+    window = Mock()
+    window.children.return_value = [edit]
+    assert dialogs.FileDialog(window).set_path("C:\\reports\\April report.txt")._win is window
+    edit.set_focus.assert_called_once_with()
+    edit.set_edit_text.assert_called_once_with("C:\\reports\\April report.txt")
+
+    fallback_window = Mock()
+    broken = Mock()
+    broken.class_name.side_effect = RuntimeError("gone")
+    fallback_window.children.return_value = [broken]
+    send_keys = Mock()
+    monkeypatch.setattr("pywinauto.keyboard.send_keys", send_keys)
+    monkeypatch.setattr(dialogs.time, "sleep", Mock())
+    dialogs.FileDialog(fallback_window).set_path("C:\\a b{c}")
+    fallback_window.set_focus.assert_called_once_with()
+    assert send_keys.call_args_list[0].args == ("^l",)
+    assert send_keys.call_args_list[-1].args == ("{ENTER}",)
+
+    gone = Mock()
+    gone.exists.return_value = False
+    gone.is_visible.return_value = False
+    dialogs.FileDialog(gone).confirm()
+    dialogs.FileDialog(gone).cancel()
+
+    static_empty = Mock()
+    static_empty.class_name.return_value = "Static"
+    static_empty.window_text.return_value = ""
+    static_text = Mock()
+    static_text.class_name.return_value = "Static"
+    static_text.window_text.return_value = "Operation failed"
+    box_window = Mock()
+    box_window.children.return_value = [static_empty, static_text]
+    box = dialogs.MessageBox(box_window)
+    assert box.text() == "Operation failed"
+    box.click_ok()
+    box.click_cancel()
+    box.click_yes()
+    box.click_no()
+    assert box_window.child_window.call_count == 4
+
+
+def test_dialog_discovery_filters_class_title_and_foreground(monkeypatch) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    windows = [(10, "Other", "Open browser"), (20, "#32770", "Open")]
+    monkeypatch.setattr(dialogs, "_enum_visible_windows", lambda: windows)
+    monkeypatch.setattr("win32gui.GetForegroundWindow", lambda: 20)
+    monkeypatch.setattr(dialogs, "_hwnd_to_spec", lambda hwnd: ("spec", hwnd))
+    assert dialogs._find_window("#32770", r"open", 0) == ("spec", 20)
+    assert dialogs.MessageBox.wait_for(0)._win == ("spec", 20)
+
+
+def test_dialog_message_box_tries_buttons_in_order() -> None:
+    from dolphin_desktop._dialogs import MessageBox
+
+    window = Mock()
+    button = Mock()
+    window.child_window.side_effect = [Mock(click_input=Mock(side_effect=RuntimeError())), button]
+    MessageBox(window).click("No", "Cancel")
+    button.click_input.assert_called_once()

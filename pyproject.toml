@@ -101,7 +101,7 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
     "ruff>=0.8",
-    "twine>=6.2.0",
+    "twine>=7.0.0",
 ]
 
 [tool.ruff]
@@ -141,6 +141,7 @@ warn_redundant_casts = true
 warn_unused_configs = true
 
 [tool.pytest.ini_options]
+addopts = ["-p", "no:dolphin-desktop"]
 testpaths = ["tests"]
 timeout = 30
 markers = [

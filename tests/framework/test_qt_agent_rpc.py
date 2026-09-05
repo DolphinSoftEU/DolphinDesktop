@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -858,3 +859,25 @@ class TestExportTableParsing:
         dll.write_bytes(_pe_with_exports([b"other"], terminate=False))
         with pytest.raises(QtAgentInjectError, match="unterminated export name"):
             _qt_inject._resolve_export_rva(dll, b"dolphin_qt_agent_start")
+
+
+def test_qt_pe_header_parser_accepts_valid_and_rejects_invalid_files(tmp_path: Path) -> None:
+    from dolphin_desktop._qt_inject import IMAGE_FILE_MACHINE_AMD64, QtAgentInjectError, _pe_machine
+
+    valid = tmp_path / "agent.dll"
+    dos = bytearray(0x40)
+    dos[0:2] = b"MZ"
+    dos[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    valid.write_bytes(bytes(dos) + b"PE\0\0" + IMAGE_FILE_MACHINE_AMD64.to_bytes(2, "little"))
+    assert _pe_machine(valid) == IMAGE_FILE_MACHINE_AMD64
+    invalid = tmp_path / "invalid.dll"
+    invalid.write_bytes(b"not-a-pe")
+    with pytest.raises(QtAgentInjectError, match="not a PE file"):
+        _pe_machine(invalid)
+
+
+def test_qt_inject_machine_names_cover_known_and_unknown_values() -> None:
+    from dolphin_desktop._qt_inject import _machine_name
+
+    assert _machine_name(0x8664) == "x64 (64-bit)"
+    assert _machine_name(123) == "IMAGE_FILE_MACHINE_0x7b"

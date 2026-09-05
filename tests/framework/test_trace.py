@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -208,11 +212,12 @@ class TestConnectionCloseIsSerialised:
 class TestCaptureScreenshotSpansEveryMonitor:
     def test_mss_path_grabs_the_virtual_desktop(self, tmp_path, monkeypatch):
         """mss.monitors[0] is the whole virtual desktop; [1] would be the primary only."""
-        pytest.importorskip("mss")
-        import mss
-
         grabbed: dict = {}
         all_monitors: list[dict] = [{"virtual": True}, {"primary": True}]
+
+        class _Raw:
+            size = (2, 1)
+            bgra = b"pixels"
 
         class _FakeSct:
             monitors: ClassVar[list[dict]] = all_monitors
@@ -225,13 +230,23 @@ class TestCaptureScreenshotSpansEveryMonitor:
 
             def grab(self, monitor):
                 grabbed["monitor"] = monitor
-                # Not ImportError: that is the one exception the PIL fallback catches.
-                raise RuntimeError("stop before the PIL conversion")
+                return _Raw()
 
-        monkeypatch.setattr(mss, "mss", _FakeSct)
-        with pytest.raises(RuntimeError):
-            _trace._capture_screenshot(tmp_path / "shot.jpg")
+        class _FakeImage:
+            def save(self, path, *args, **kwargs):
+                grabbed["save"] = (path, args, kwargs)
+
+        from PIL import Image
+
+        monkeypatch.setitem(sys.modules, "mss", SimpleNamespace(mss=_FakeSct))
+        monkeypatch.setattr(Image, "frombytes", lambda *args: _FakeImage())
+        _trace._capture_screenshot(tmp_path / "shot.jpg")
         assert grabbed["monitor"] is all_monitors[0]
+        assert grabbed["save"] == (
+            tmp_path / "shot.jpg",
+            ("JPEG",),
+            {"quality": 75, "optimize": True},
+        )
 
     def test_pil_fallback_spans_every_monitor(self, tmp_path, monkeypatch):
         import builtins
@@ -352,3 +367,262 @@ class TestCloseRace:
         _install_failing_db(session, sqlite3.OperationalError("disk I/O error"))
         session.record_step("click", "{'auto_id': 'ok'}")
         assert session.degraded is True
+
+
+def test_current_session_can_be_set_and_cleared() -> None:
+    marker = object()
+    _trace.set_current_session(marker)  # type: ignore[arg-type]
+    assert _trace.current_session() is marker
+    _trace.set_current_session(None)
+    assert _trace.current_session() is None
+
+
+class TestUiATreeDump:
+    class _Info:
+        def __init__(self, control_type="", name="", automation_id="") -> None:
+            self.control_type = control_type
+            self.name = name
+            self.automation_id = automation_id
+
+    class _Node:
+        def __init__(
+            self, info=None, children=None, children_error: Exception | None = None
+        ) -> None:
+            self.element_info = info
+            self._children = children or []
+            self._children_error = children_error
+
+        def children(self):
+            if self._children_error is not None:
+                raise self._children_error
+            return self._children
+
+    class _BrokenInfoNode:
+        @property
+        def element_info(self):
+            raise RuntimeError("element disappeared")
+
+    def test_collects_nested_nodes_with_limits_and_skips_bad_children(self):
+        leaf = self._Node(self._Info(None, "", None))
+        nested = self._Node(self._Info("Button", "Save", "save"), [leaf])
+        bad_children = self._Node(self._Info("Text", "status", ""), children_error=RuntimeError())
+        root = self._Node(
+            children=[
+                nested,
+                self._BrokenInfoNode(),
+                bad_children,
+                self._Node(self._Info("ignored")),
+            ]
+        )
+
+        dumped = _trace._dump_uia_tree(root, max_depth=1, max_children=3)
+
+        assert dumped is not None
+        assert json.loads(dumped) == [
+            {"d": 0, "ctrl": "Button", "name": "Save", "id": "save"},
+            {"d": 1, "ctrl": "", "name": "", "id": ""},
+            {"d": 0, "ctrl": "Text", "name": "status", "id": ""},
+        ]
+
+    def test_collect_returns_when_the_root_cannot_enumerate_children(self):
+        root = self._Node(children_error=RuntimeError("no longer available"))
+
+        assert _trace._dump_uia_tree(root) == "[]"
+
+    def test_dump_returns_none_when_serialisation_fails(self, monkeypatch):
+        monkeypatch.setattr(_trace, "_collect", lambda *args: (_ for _ in ()).throw(RuntimeError()))
+
+        assert _trace._dump_uia_tree(self._Node()) is None
+
+
+class TestTraceSessionBranches:
+    def test_invalid_mode_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="Invalid trace mode"):
+            _trace.TraceSession("tests/t.py::test_x", tmp_path / "run", mode="sometimes")
+
+    def test_off_mode_does_not_record_steps(self, tmp_path):
+        session = _trace.TraceSession("tests/t.py::test_x", tmp_path / "run", mode="off")
+        session.record_step("click", "selector")
+        session.finish("failed")
+
+        db = sqlite3.connect(str(tmp_path / "run" / "trace.db"))
+        assert db.execute("SELECT COUNT(*) FROM steps").fetchone()[0] == 0
+        db.close()
+
+    def test_existing_schema_is_reused(self, tmp_path):
+        run_dir = tmp_path / "run"
+        first = _trace.TraceSession("tests/t.py::first", run_dir)
+        second = _trace.TraceSession("tests/t.py::second", run_dir)
+        first.finish("failed")
+        second.finish("failed")
+
+        db = sqlite3.connect(str(run_dir / "trace.db"))
+        assert db.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 2
+        db.close()
+
+    def test_successful_screenshot_and_uia_tree_are_stored(self, tmp_path, monkeypatch):
+        session = _trace.TraceSession("tests/t.py::test_x", tmp_path / "run", mode="always")
+        captured: list = []
+
+        def capture(path):
+            captured.append(path)
+            path.write_bytes(b"jpeg")
+
+        monkeypatch.setattr(_trace, "_capture_screenshot", capture)
+        monkeypatch.setattr(_trace, "_dump_uia_tree", lambda element: '[{"ctrl": "Button"}]')
+        session.record_step("click", "<save>", element=object(), error="failed")
+
+        db = sqlite3.connect(str(session.run_dir / "trace.db"))
+        row = db.execute(
+            "SELECT seq, action, selector, result, error, screenshot_file, uia_tree FROM steps"
+        ).fetchone()
+        db.close()
+        session.close_without_finish()
+
+        assert captured == [session.run_dir / "screenshots" / "step_0001.jpg"]
+        assert row == (
+            1,
+            "click",
+            "<save>",
+            "error",
+            "failed",
+            "step_0001.jpg",
+            '[{"ctrl": "Button"}]',
+        )
+
+    def test_screenshot_failure_is_dropped(self, tmp_path, monkeypatch):
+        session = _trace.TraceSession("tests/t.py::test_x", tmp_path / "run", mode="always")
+
+        def fail_capture(path):
+            raise OSError()
+
+        monkeypatch.setattr(_trace, "_capture_screenshot", fail_capture)
+        session.record_step("click", None)
+
+        db = sqlite3.connect(str(session.run_dir / "trace.db"))
+        assert db.execute("SELECT screenshot_file FROM steps").fetchone()[0] is None
+        db.close()
+        session.finish("failed")
+
+    def test_finish_is_idempotent_after_the_first_call(self, tmp_path):
+        session = _trace.TraceSession("tests/t.py::test_x", tmp_path / "run")
+        session.finish("failed", error_message="first")
+        session.finish("passed", error_message="second")
+
+        db = sqlite3.connect(str(tmp_path / "run" / "trace.db"))
+        assert db.execute("SELECT status, error_message FROM runs").fetchone() == (
+            "failed",
+            "first",
+        )
+        db.close()
+
+    def test_close_without_finish_swallows_close_failure(self, tmp_path):
+        session = _trace.TraceSession("tests/t.py::test_x", tmp_path / "run")
+        session._db.close()
+        session._db = _FailingConnection(RuntimeError("close failed"))
+
+        session.close_without_finish()
+
+        assert session._closed is True
+
+
+class TestHtmlRenderingBranches:
+    def test_render_steps_includes_all_optional_content_and_escapes_it(self):
+        html = _trace._render_steps(
+            [
+                {
+                    "seq": 1,
+                    "action": "<click>",
+                    "selector": "<save>",
+                    "ts": 1.23456,
+                    "result": "ok",
+                    "screenshot_file": 'shot"&.jpg',
+                },
+                {
+                    "seq": 2,
+                    "action": "type_text",
+                    "selector": None,
+                    "ts": 2.0,
+                    "result": "error",
+                    "error": "<bad>&",
+                    "uia_tree": json.dumps(
+                        [
+                            {"d": 0, "ctrl": "Window", "name": "Main", "id": "root"},
+                            {"d": 1, "ctrl": "", "name": "", "id": ""},
+                            {},
+                        ]
+                    ),
+                },
+                {
+                    "seq": 3,
+                    "action": "noop",
+                    "selector": "",
+                    "result": "unexpected",
+                    "uia_tree": "<invalid tree>",
+                },
+            ]
+        )
+
+        assert "&lt;click&gt;" in html
+        assert "selector" not in html  # the selector value itself is rendered, not its field name
+        assert 'src="screenshots/shot&quot;&amp;.jpg"' in html
+        assert '<span class="ok">ok</span>' in html
+        assert '<span class="er">err</span>' in html
+        assert "&lt;bad&gt;&amp;" in html
+        assert "UIA tree (3 nodes)" in html
+        assert "Window name=&#x27;Main&#x27; id=&#x27;root&#x27;" in html
+        assert "&lt;invalid tree&gt;" in html
+        assert "UIA tree (? nodes)" in html
+
+    def test_render_html_handles_unknown_status_missing_finish_and_error(self):
+        html = _trace._render_html(
+            {
+                "test_nodeid": "tests/test_<x>",
+                "started_at": 100.0,
+                "finished_at": None,
+                "status": None,
+                "error_message": "<failure>&",
+            },
+            [],
+        )
+
+        assert 'class="badge warn">unknown</span>' in html
+        assert "Dolphin Trace: tests/test_&lt;x&gt;" in html
+        assert "— &bull; 0 steps" in html
+        assert '<div class="err-box"><pre>&lt;failure&gt;&amp;</pre></div>' in html
+
+
+class TestRunListingBranches:
+    def test_list_runs_ignores_missing_dirs_files_empty_dbs_and_corrupt_dbs(self, tmp_path):
+        assert _trace.list_runs(tmp_path / "missing") == []
+
+        (tmp_path / "not-a-run.txt").write_text("ignore", encoding="utf-8")
+        (tmp_path / "without-db").mkdir()
+
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        db = sqlite3.connect(str(empty / "trace.db"))
+        db.executescript(_trace._DDL)
+        db.close()
+
+        corrupt = tmp_path / "corrupt"
+        corrupt.mkdir()
+        (corrupt / "trace.db").write_text("not sqlite", encoding="utf-8")
+
+        valid = _trace.TraceSession("tests/t.py::test_valid", tmp_path / "valid", mode="always")
+        valid.finish("failed")
+
+        runs = _trace.list_runs(tmp_path)
+
+        assert [run["test_nodeid"] for run in runs] == ["tests/t.py::test_valid"]
+        assert runs[0]["run_dir"] == str(tmp_path / "valid")
+
+
+def test_trace_renders_nodes_and_ignores_missing_run_directories(tmp_path: Path) -> None:
+    from dolphin_desktop._trace import _nodes_to_text, list_runs
+
+    assert _nodes_to_text([{"d": 1, "ctrl": "Button", "name": "Save", "id": "save"}]) == (
+        "  Button name='Save' id='save'"
+    )
+    assert list_runs(tmp_path / "missing") == []

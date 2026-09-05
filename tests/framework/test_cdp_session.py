@@ -7,18 +7,34 @@ browser context the context-level operations act on.
 
 from __future__ import annotations
 
+import base64
+import importlib.metadata
+import importlib.util
 import re
+import sys
 from contextlib import contextmanager
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 import pytest
 
+import dolphin_desktop._cdp as cdp
 from dolphin_desktop._cdp import (
     CONSOLE_BUFFER_LIMIT,
+    CDPDownload,
+    CDPFrameLocator,
     CDPLocator,
+    CDPRequest,
+    CDPRoute,
     CDPSession,
     CDPStalePageError,
+    _LazyValue,
+    _substring_text_selector,
+    cdp_install_hint,
+    is_cdp_available,
 )
-from dolphin_desktop._exceptions import DolphinError
+from dolphin_desktop._exceptions import DolphinError, ElementNotFoundError, WaitTimeoutError
 
 
 class _FakeConsoleMessage:
@@ -816,3 +832,1033 @@ class TestPopupSurfacesArmingFailures:
         with pytest.raises(DolphinError, match=re.escape("**/api/**")):
             with session.expect_popup():
                 pass
+
+
+def _completeness_session():
+    page = MagicMock(name="page")
+    page.is_closed.return_value = False
+    page.url = "app://main.html"
+    context = MagicMock(name="context")
+    context.pages = [page]
+    browser = MagicMock(name="browser")
+    browser.contexts = [context]
+    playwright = MagicMock(name="playwright")
+    session = CDPSession(playwright, browser, context, page, endpoint="http://127.0.0.1:9222")
+    return session, page, context, browser, playwright
+
+
+def _locator():
+    session, page, context, browser, playwright = _completeness_session()
+    handle = MagicMock(name="handle")
+    locator = CDPLocator(session, "#target", _handle=handle)
+    return locator, handle, session, page, context, browser, playwright
+
+
+def _png_bytes() -> bytes:
+    # A tiny valid PNG keeps screenshot tests independent of a browser.
+    return base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+
+class TestValueAndOptionalDependencyHelpers:
+    def test_request_route_download_and_lazy_value_adapters(self):
+        raw_request = MagicMock()
+        raw_request.url = "https://example.test/api"
+        raw_request.method = "POST"
+        raw_request.headers = {"Content-Type": "application/json"}
+        raw_request.resource_type = "fetch"
+        raw_request.post_data = '{"ok":true}'
+        raw_request.post_data_json = {"ok": True}
+        request = CDPRequest(raw_request)
+        assert request.url.endswith("/api")
+        assert request.method == "POST"
+        assert request.headers == {"Content-Type": "application/json"}
+        assert request.resource_type == "fetch"
+        assert request.post_data() == '{"ok":true}'
+        assert request.post_data_json() == {"ok": True}
+
+        raw_request.post_data_json = property(lambda _self: None)
+        route = CDPRoute(MagicMock(request=raw_request))
+        route.respond(status=201, body=b"ok", content_type="text/plain", headers={"X": "1"})
+        route.respond_json({"ok": True}, status=202, headers={"X": "2"})
+        route.pass_through()
+        route.abort()
+        route.abort("blockedbyclient")
+        route._pw.fulfill.assert_any_call(
+            status=201, body=b"ok", content_type="text/plain", headers={"X": "1"}
+        )
+        route._pw.fulfill.assert_any_call(status=202, json={"ok": True}, headers={"X": "2"})
+        route._pw.continue_.assert_called_once_with()
+        route._pw.abort.assert_any_call("failed")
+        route._pw.abort.assert_any_call("blockedbyclient")
+
+        raw_download = MagicMock(suggested_filename="report.csv", url="https://example.test/file")
+        raw_download.path.return_value = 123
+        download = CDPDownload(raw_download)
+        assert download.suggested_filename == "report.csv"
+        assert download.url.endswith("/file")
+        assert download.path() == "123"
+        download.save_as("copy.csv")
+        download.cancel()
+        download.delete()
+        raw_download.save_as.assert_called_once_with("copy.csv")
+        raw_download.cancel.assert_called_once_with()
+        raw_download.delete.assert_called_once_with()
+
+        info = SimpleNamespace(value=SimpleNamespace(answer=42))
+        wrapper = Mock(return_value="wrapped")
+        lazy = _LazyValue(info, wrap=wrapper)
+        assert lazy.value == "wrapped"
+        assert lazy.value == "wrapped"
+        wrapper.assert_called_once_with(info.value)
+        raw_lazy = _LazyValue(info)
+        assert raw_lazy.value is info.value
+
+    def test_request_post_data_json_failure_is_swallowed(self):
+        class BadRequest:
+            post_data_json = property(lambda self: (_ for _ in ()).throw(RuntimeError("not JSON")))
+
+        assert CDPRequest(BadRequest()).post_data_json() is None
+
+    @pytest.mark.parametrize("installed", [True, False])
+    def test_is_cdp_available_probes_playwright(self, monkeypatch, installed):
+        if installed:
+            package = ModuleType("playwright")
+            package.sync_api = ModuleType("playwright.sync_api")
+            monkeypatch.setitem(sys.modules, "playwright", package)
+            monkeypatch.setitem(sys.modules, "playwright.sync_api", package.sync_api)
+        else:
+            monkeypatch.setitem(sys.modules, "playwright", None)
+            monkeypatch.delitem(sys.modules, "playwright.sync_api", raising=False)
+        assert is_cdp_available() is installed
+
+    def test_install_hint_and_lazy_playwright_import(self, monkeypatch):
+        assert "playwright install chromium" in cdp_install_hint()
+        sync_api = SimpleNamespace(marker="sync")
+        package = ModuleType("playwright")
+        package.sync_api = sync_api
+        monkeypatch.setitem(sys.modules, "playwright", package)
+        assert cdp._require_playwright() is sync_api
+
+        monkeypatch.setitem(sys.modules, "playwright", None)
+        with pytest.raises(RuntimeError, match=r"dolphin_desktop\[cdp\]"):
+            cdp._require_playwright()
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (" save ", "text=/save/i"),
+            ("a\u200bb\u00adc", "text=/abc/i"),
+            ("a\u00a0\tb", r"text=/a\s+b/i"),
+            (
+                r"a\\b^c$d.e|f?g*h+i(j)k[l]m{n}/o",
+                r"text=/a\\\\b\^c\$d\.e\|f\?g\*h\+i\(j\)k\[l\]m\{n\}\/o/i",
+            ),
+            ("a>\"'`b", r"text=/a\x3e\x22\x27\x60b/i"),
+        ],
+    )
+    def test_substring_selector_escapes_parser_and_normalizer_characters(self, text, expected):
+        assert _substring_text_selector(text) == expected
+
+
+class TestSessionConstructionAndLifecycle:
+    def test_event_binding_is_idempotent_and_each_listener_failure_is_isolated(self):
+        session, page, _context, _browser, _playwright = _completeness_session()
+        session._bind_page_events(page)
+        session._bind_page_events(None)
+
+        replacement = MagicMock()
+        replacement.on.side_effect = [
+            RuntimeError("console gone"),
+            RuntimeError("dialog gone"),
+        ]
+        session._bind_page_events(replacement)
+        assert session._events_page is replacement
+
+        replacement.remove_listener.side_effect = [
+            RuntimeError("console gone"),
+            RuntimeError("dialog gone"),
+        ]
+        session._unbind_page_events(replacement)
+
+        session._on_console_message(object())
+        session._dialog_policy = "accept"
+        dialog = MagicMock()
+        session._on_dialog(dialog)
+        dialog.accept.assert_called_once_with()
+        session._dialog_policy = None
+        session._on_dialog(dialog)
+        dialog.dismiss.assert_called_once_with()
+        session._on_dialog(object())
+
+    def test_backend_class_helpers_delegate_to_backend_registry(self):
+        backend_instance = Mock()
+        backend_instance.supports.return_value = True
+        with patch("dolphin_desktop._backend.resolve", return_value=backend_instance) as resolve:
+            assert CDPSession.backend() is backend_instance
+            assert CDPSession.backend_supports("click") is True
+            CDPSession.require_capability("click")
+        assert resolve.call_count == 3
+        backend_instance.supports.assert_called_once_with("click")
+        backend_instance.require_capability.assert_called_once_with("click")
+
+    def test_connect_success_starts_playwright_and_uses_stable_page(self):
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.url = "app://stable"
+        context = SimpleNamespace(pages=[page])
+        browser = MagicMock(contexts=[context])
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp.return_value = browser
+        sync_api = SimpleNamespace(
+            sync_playwright=lambda: SimpleNamespace(start=lambda: playwright)
+        )
+        with patch.object(cdp, "_require_playwright", return_value=sync_api):
+            session = CDPSession.connect("http://localhost:9222", timeout=2.5)
+        assert session._browser is browser
+        assert session._context is context
+        assert session._page is page
+        playwright.chromium.connect_over_cdp.assert_called_once_with(
+            "http://localhost:9222", timeout=2500.0
+        )
+
+    def test_connect_wraps_connection_failure_and_stops_driver(self):
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp.side_effect = RuntimeError("refused")
+        sync_api = SimpleNamespace(
+            sync_playwright=lambda: SimpleNamespace(start=lambda: playwright)
+        )
+        with patch.object(cdp, "_require_playwright", return_value=sync_api):
+            with pytest.raises(RuntimeError, match="connect_over_cdp"):
+                CDPSession.connect("http://localhost:1", timeout=0.5)
+        playwright.stop.assert_called_once_with()
+
+    @pytest.mark.parametrize("has_context", [False, True])
+    def test_connect_opens_fallback_page_when_no_stable_page(self, has_context):
+        fallback_context = MagicMock()
+        fallback_page = MagicMock()
+        fallback_context.new_page.return_value = fallback_page
+        browser = MagicMock(contexts=[fallback_context] if has_context else [])
+        browser.new_context.return_value = fallback_context
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp.return_value = browser
+        sync_api = SimpleNamespace(
+            sync_playwright=lambda: SimpleNamespace(start=lambda: playwright)
+        )
+        with (
+            patch.object(cdp, "_require_playwright", return_value=sync_api),
+            patch.object(CDPSession, "_pick_stable_page", return_value=(None, None)),
+        ):
+            session = CDPSession.connect("http://localhost:9222")
+        assert session._page is fallback_page
+        if has_context:
+            browser.new_context.assert_not_called()
+        else:
+            browser.new_context.assert_called_once_with()
+        fallback_context.new_page.assert_called_once_with()
+
+    def test_connect_cleans_up_when_stable_page_selection_fails(self):
+        browser = MagicMock()
+        browser.close.side_effect = RuntimeError("already gone")
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp.return_value = browser
+        sync_api = SimpleNamespace(
+            sync_playwright=lambda: SimpleNamespace(start=lambda: playwright)
+        )
+        with (
+            patch.object(cdp, "_require_playwright", return_value=sync_api),
+            patch.object(
+                CDPSession, "_pick_stable_page", side_effect=RuntimeError("target list failed")
+            ),
+        ):
+            with pytest.raises(RuntimeError, match="target list failed"):
+                CDPSession.connect("http://localhost:9222")
+        browser.close.assert_called_once_with()
+        playwright.stop.assert_called_once_with()
+
+    def test_page_property_auto_heals_and_explicit_page_can_reset(self):
+        session, page, _context, browser, _playwright = _completeness_session()
+        replacement = MagicMock()
+        replacement.is_closed.return_value = False
+        replacement.url = "app://replacement"
+        new_context = MagicMock()
+        browser.contexts = [new_context]
+        new_context.pages = [replacement]
+        page.is_closed.return_value = True
+        assert session.page is replacement
+        assert session._context is new_context
+
+        session._page = page
+        session._explicit_page = True
+        session._opener_page = None
+        with pytest.raises(CDPStalePageError):
+            _ = session.page
+        assert session.reset_page_selection() is session
+        session._page = replacement
+        assert session.page is replacement
+
+    def test_page_property_explicit_popup_falls_back_to_live_opener(self):
+        session, page, context, _browser, _playwright = _completeness_session()
+        opener = MagicMock()
+        opener.is_closed.return_value = False
+        opener.url = "app://opener"
+        opener.context = context
+        session._page = page
+        page.is_closed.return_value = True
+        session._explicit_page = True
+        session._opener_page = opener
+        assert session.page is opener
+        assert session._explicit_page is False
+        assert session._opener_page is None
+
+    def test_pick_stable_page_skips_closed_blank_chrome_and_broken_pages(self):
+        closed = MagicMock()
+        closed.is_closed.return_value = True
+        blank = MagicMock()
+        blank.is_closed.return_value = False
+        blank.url = "about:blank"
+        chrome = MagicMock()
+        chrome.is_closed.return_value = False
+        chrome.url = "chrome://newtab"
+        broken = MagicMock()
+        broken.is_closed.return_value = False
+        type(broken).url = property(lambda self: (_ for _ in ()).throw(RuntimeError("closed")))
+        stable = MagicMock()
+        stable.is_closed.return_value = False
+        stable.url = "app://stable"
+        ctx = SimpleNamespace(pages=[closed, blank, chrome, broken, stable])
+        browser = SimpleNamespace(contexts=[ctx])
+        assert CDPSession._pick_stable_page(browser, timeout=0.1) == (ctx, stable)
+
+    def test_pick_stable_page_sleeps_then_falls_back_to_blank(self):
+        blank = MagicMock()
+        blank.is_closed.return_value = False
+        blank.url = "about:blank"
+        ctx = SimpleNamespace(pages=[blank])
+        browser = SimpleNamespace(contexts=[ctx])
+        with patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]), patch("time.sleep") as sleep:
+            assert CDPSession._pick_stable_page(browser, timeout=0.1) == (ctx, blank)
+        sleep.assert_called_once_with(0.25)
+
+    def test_pick_stable_page_returns_none_when_every_fallback_page_is_dead(self):
+        closed = MagicMock()
+        closed.is_closed.return_value = True
+        broken = MagicMock()
+        broken.is_closed.return_value = False
+        type(broken).url = PropertyMock(side_effect=RuntimeError("target closed"))
+        ctx = SimpleNamespace(pages=[closed, broken])
+        assert CDPSession._pick_stable_page(SimpleNamespace(contexts=[ctx]), timeout=0) == (
+            None,
+            None,
+        )
+
+    def test_page_and_context_helpers_delegate(self, tmp_path):
+        session, page, context, _browser, _playwright = _completeness_session()
+        page.keyboard = MagicMock()
+        page.mouse = MagicMock()
+        page.screenshot.return_value = _png_bytes()
+        page.evaluate.return_value = {"ok": True}
+        assert session.evaluate("() => 1", 2) == {"ok": True}
+        assert session.press_key("Enter") is session
+        assert session.set_default_timeout(1.25) is session
+        assert session.wait_for_load_state("networkidle", timeout=2) is session
+        assert session.reload(timeout=3) is session
+        assert session.screenshot() is not None
+        output = tmp_path / "page.png"
+        session.screenshot(str(output))
+        assert output.exists()
+        page.keyboard.press.assert_called_once_with("Enter")
+        page.keyboard = MagicMock()
+        assert session.keyboard_down("Control") is session
+        assert session.keyboard_up("Control") is session
+        assert session.keyboard_type("abc", delay=0.25) is session
+        assert session.mouse_wheel(1, 2) is session
+        assert session.mouse_move(3, 4) is session
+        page.pdf.assert_not_called()
+        assert session.pdf("out.pdf") is session
+        page.pdf.assert_called_once_with(path="out.pdf")
+
+        context.cookies.return_value = [{"name": "sid"}]
+        assert session.cookies() == [{"name": "sid"}]
+        session.local_storage_get("key")
+        session.local_storage_set("key", "value")
+        session.local_storage_clear()
+        session.session_storage_get("key")
+        session.session_storage_set("key", "value")
+        session.session_storage_clear()
+        assert session.frame_locator("iframe#app")._selector == "iframe#app"
+        assert session.locator("#x")._selector == "#x"
+
+        session.add_init_script("window.x=1")
+        session.set_cookies([{"name": "sid", "value": "1"}])
+        session.clear_cookies()
+
+        def callback(value):
+            return value
+
+        session.expose_function("callback", callback)
+        session.set_extra_http_headers({"X": "1"})
+        session.set_offline(True)
+        session.set_geolocation(1.0, 2.0, accuracy=3.0)
+        session.grant_permissions(["geolocation"])
+        session.clear_permissions()
+        context.add_init_script.assert_called_once_with(script="window.x=1")
+        context.add_cookies.assert_called_once_with([{"name": "sid", "value": "1"}])
+        context.clear_cookies.assert_called_once_with()
+        context.expose_function.assert_called_once_with("callback", callback)
+        context.set_extra_http_headers.assert_called_once_with({"X": "1"})
+        context.set_offline.assert_called_once_with(True)
+        context.set_geolocation.assert_called_once_with(
+            {"latitude": 1.0, "longitude": 2.0, "accuracy": 3.0}
+        )
+        context.grant_permissions.assert_called_once_with(["geolocation"])
+        context.clear_permissions.assert_called_once_with()
+
+    def test_page_and_context_error_wrappers_and_closed_guard(self):
+        session, page, _context, _browser, _playwright = _completeness_session()
+        page.wait_for_load_state.side_effect = RuntimeError("load timeout")
+        with pytest.raises(WaitTimeoutError, match="load state"):
+            session.wait_for_load_state(timeout=1)
+        page.reload.side_effect = RuntimeError("reload timeout")
+        with pytest.raises(RuntimeError, match="page reload failed"):
+            session.reload(timeout=1)
+
+        session.clear_console_messages()
+        assert session.console_messages() == []
+        session.close()
+        with pytest.raises(DolphinError, match="closed"):
+            session.pages()
+
+    def test_context_route_migration_covers_success_and_failures(self):
+        session, _page, old_context, _browser, _playwright = _completeness_session()
+        session.route("**/api/**", lambda route: None)
+        new_context = MagicMock()
+        session._bind_context(new_context)
+        old_context.unroute.assert_called_once()
+        new_context.route.assert_called_once()
+
+        session2, _page2, old_context2, _browser2, _playwright2 = _completeness_session()
+        session2.route("**/api/**", lambda route: None)
+        old_context2.unroute.side_effect = RuntimeError("old context closed")
+        target_context = MagicMock()
+        session2._bind_context(target_context)
+        assert session2._context is target_context
+
+        session3, _page3, _old3, _browser3, _playwright3 = _completeness_session()
+        session3.route("**/api/**", lambda route: None)
+        target_context3 = MagicMock()
+        target_context3.route.side_effect = RuntimeError("new context closed")
+        with pytest.raises(DolphinError, match="could not re-arm"):
+            session3._bind_context(target_context3)
+
+    def test_select_page_handles_page_without_context_and_alive_handles_bad_page(self):
+        session, _page, _context, _browser, _playwright = _completeness_session()
+
+        class PageWithoutContext:
+            @property
+            def context(self):
+                raise RuntimeError("target closed")
+
+            def on(self, event, callback):
+                pass
+
+            def is_closed(self):
+                return False
+
+            @property
+            def url(self):
+                return "app://page"
+
+        session._select_page(PageWithoutContext())
+        assert session._explicit_page is True
+        assert CDPSession._is_page_alive(None) is False
+
+    def test_pages_and_switch_to_page_cover_live_closed_and_invalid_entries(self):
+        session, page, context, browser, _playwright = _completeness_session()
+        closed = MagicMock()
+        closed.is_closed.return_value = True
+        broken = MagicMock()
+        broken.is_closed.side_effect = RuntimeError("target gone")
+        context.pages = [page, closed, broken]
+        assert session.pages() == [page]
+        assert session.switch_to_page(0) is session
+        with pytest.raises(IndexError, match="out of range"):
+            session.switch_to_page(3)
+        assert browser.contexts == [context]
+
+    def test_session_shortcut_selectors_have_expected_handles_and_selectors(self):
+        session, page, _context, _browser, _playwright = _completeness_session()
+        methods = [
+            ("get_by_role", ("button",), {"name": "Save"}, "role=button"),
+            ("get_by_text", ("Save",), {"exact": True}, "text='Save'"),
+            ("get_by_label", ("Name",), {}, "label='Name'"),
+            ("get_by_placeholder", ("Search",), {}, "placeholder='Search'"),
+            ("get_by_title", ("Help",), {}, "title='Help'"),
+            ("get_by_alt_text", ("Logo",), {}, "alt='Logo'"),
+            ("get_by_test_id", ("save",), {}, "test_id='save'"),
+        ]
+        for method, args, kwargs, selector in methods:
+            handle = MagicMock(name=method)
+            getattr(page, method).return_value = handle
+            result = getattr(session, method)(*args, **kwargs)
+            assert isinstance(result, CDPLocator)
+            assert result._selector == selector
+            assert result._handle is handle
+            getattr(page, method).assert_called_once_with(*args, **kwargs)
+
+    def test_session_route_handler_and_expectation_contexts(self):
+        session, page, context, _browser, _playwright = _completeness_session()
+        seen = []
+
+        def handler(route):
+            seen.append(route)
+
+        assert session.route("**/api/**", handler) is session
+        registered_handler = context.route.call_args.args[1]
+        raw_route = SimpleNamespace(request=SimpleNamespace(url="https://example.test"))
+        registered_handler(raw_route)
+        assert isinstance(seen[0], CDPRoute)
+
+        def setup_expectation(name, value):
+            info = SimpleNamespace(value=value)
+            manager = MagicMock()
+            manager.__enter__.return_value = info
+            manager.__exit__.return_value = False
+            getattr(page, name).return_value = manager
+            return info
+
+        setup_expectation("expect_response", "response")
+        with session.expect_response("**/api/**", timeout=1) as response:
+            assert response.value == "response"
+        page.expect_response.assert_called_once_with("**/api/**", timeout=1000)
+        request = SimpleNamespace(
+            url="https://example.test",
+            method="GET",
+            headers={},
+            resource_type="xhr",
+            post_data=None,
+        )
+        setup_expectation("expect_request", request)
+        with session.expect_request("**/api/**", timeout=2) as request_value:
+            assert isinstance(request_value.value, CDPRequest)
+        setup_expectation("expect_download", MagicMock(suggested_filename="x", url="app://x"))
+        with session.expect_download(timeout=3) as download:
+            assert isinstance(download.value, CDPDownload)
+        session.unroute("**/api/**")
+        assert session._routes == []
+        session.unroute("**/never-registered/**")
+        context.unroute.assert_called_with("**/never-registered/**")
+
+    def test_popup_expectation_selects_popup_and_handles_missing_value(self):
+        session, page, _context, _browser, _playwright = _completeness_session()
+        popup = MagicMock()
+        popup.context = page.context
+        popup.is_closed.return_value = False
+        popup.url = "app://popup"
+        info = SimpleNamespace(value=popup)
+        manager = MagicMock()
+        manager.__enter__.return_value = info
+        manager.__exit__.return_value = False
+        page.expect_popup.return_value = manager
+        with session.expect_popup(timeout=2) as result:
+            assert result.value is popup
+        assert session._page is popup
+        assert session._explicit_page is True
+        page.expect_popup.assert_called_once_with(timeout=2000)
+
+        missing = MagicMock()
+        missing.__enter__.return_value = SimpleNamespace(
+            value=property(lambda _self: (_ for _ in ()).throw(RuntimeError("vanished")))
+        )
+
+        # A property cannot be evaluated through SimpleNamespace, so use an
+        # object whose value property raises to reach the defensive return.
+        class Missing:
+            @property
+            def value(self):
+                raise RuntimeError("vanished")
+
+        missing.__enter__.return_value = Missing()
+        page.expect_popup.return_value = missing
+        session._page = page
+        with session.expect_popup():
+            pass
+
+    def test_navigation_waits_and_wait_for_selector_translate_failures(self):
+        session, page, _context, _browser, _playwright = _completeness_session()
+        assert session.wait_for_url("**/done", timeout=1.5) is session
+        assert session.current_url() == page.url
+        page.wait_for_url.side_effect = RuntimeError("still loading")
+        with pytest.raises(WaitTimeoutError, match="URL did not match"):
+            session.wait_for_url("**/done", timeout=1)
+        page.url = property(lambda _self: (_ for _ in ()).throw(RuntimeError("gone")))
+
+        locator = Mock()
+        session.locator = Mock(return_value=locator)
+        assert session.wait_for_selector("#ready", state="attached", timeout=2) is locator
+        locator.wait_for.assert_called_once_with(state="attached", timeout=2)
+        locator.wait_for.side_effect = WaitTimeoutError("waited")
+        with pytest.raises(WaitTimeoutError, match="waited"):
+            session.wait_for_selector("#ready")
+        locator.wait_for.side_effect = RuntimeError("bad selector")
+        with pytest.raises(WaitTimeoutError, match="did not become"):
+            session.wait_for_selector("#ready")
+
+    def test_wait_for_url_handles_unavailable_current_url_and_wait_for_text_builds_selectors(self):
+        session, page, _context, _browser, _playwright = _completeness_session()
+        page.wait_for_url.side_effect = RuntimeError("navigation failed")
+        with patch.object(CDPSession, "page", new_callable=PropertyMock, return_value=page):
+            type(page).url = PropertyMock(side_effect=RuntimeError("target closed"))
+            with pytest.raises(WaitTimeoutError, match="URL did not match"):
+                session.wait_for_url("**/done", timeout=1)
+
+        session.wait_for_selector = Mock(side_effect=lambda selector, **kwargs: selector)
+        assert session.wait_for_text("Hello", exact=True, timeout=2) == 'text="Hello"'
+        assert session.wait_for_text("Hello world", exact=False) == "text=/Hello\\s+world/i"
+        with pytest.raises(ValueError, match="matches every element"):
+            session.wait_for_text("  \n ")
+
+    def test_wait_and_context_manager_and_close_are_idempotent(self):
+        session, _page, _context, browser, playwright = _completeness_session()
+        assert session.dismiss_dialogs() is session
+        assert session.accept_dialogs() is session
+        assert session.console_messages() == []
+        with session as entered:
+            assert entered is session
+        assert session._closed is True
+        session.close()
+        browser.close.assert_called_once_with()
+        playwright.stop.assert_called_once_with()
+
+        session2, _page2, _context2, browser2, playwright2 = _completeness_session()
+        browser2.close.side_effect = RuntimeError("browser gone")
+        playwright2.stop.side_effect = RuntimeError("driver gone")
+        session2.close()
+        assert session2._closed is True
+
+
+class TestLocatorOperations:
+    def test_locator_resolution_and_mouse_keyboard_form_operations(self):
+        locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
+        assert locator._resolve() is handle
+        assert (
+            locator.click(
+                timeout=1.5,
+                modifiers=["Control"],
+                position={"x": 1, "y": 2},
+                button="right",
+                force=True,
+            )
+            is locator
+        )
+        handle.click.assert_called_once_with(
+            timeout=1500.0,
+            modifiers=["Control"],
+            position={"x": 1, "y": 2},
+            button="right",
+            force=True,
+        )
+        assert locator.double_click(timeout=1) is locator
+        assert locator.right_click(timeout=1) is locator
+        assert locator.hover(timeout=1) is locator
+        other = CDPLocator(locator._session, "#other", _handle=MagicMock())
+        assert locator.drag_to(other, timeout=1) is locator
+        assert locator.focus(timeout=1) is locator
+        assert locator.press_key("Enter", timeout=1) is locator
+        assert locator.type_text("filled", timeout=1) is locator
+        assert locator.type_text("typed", timeout=2, clear=False) is locator
+        assert locator.set_text("set", timeout=3) is locator
+        assert locator.clear(timeout=4) is locator
+        assert locator.check(timeout=5) is locator
+        assert locator.uncheck(timeout=6) is locator
+        assert locator.scroll_into_view(timeout=7) is locator
+        handle.dblclick.assert_called_once_with(timeout=1000.0)
+        handle.click.assert_any_call(button="right", timeout=1000.0)
+        handle.hover.assert_called_once_with(timeout=1000.0)
+        handle.focus.assert_called_once_with(timeout=1000.0)
+        handle.press.assert_called_once_with("Enter", timeout=1000.0)
+        handle.fill.assert_any_call("filled", timeout=1000.0)
+        handle.type.assert_called_once_with("typed", timeout=2000.0)
+        handle.fill.assert_any_call("set", timeout=3000.0)
+        handle.fill.assert_any_call("", timeout=4000.0)
+        handle.check.assert_called_once_with(timeout=5000.0)
+        handle.uncheck.assert_called_once_with(timeout=6000.0)
+        handle.scroll_into_view_if_needed.assert_called_once_with(timeout=7000.0)
+
+    def test_locator_readers_waiting_selection_and_screenshot(self, tmp_path):
+        locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
+        handle.select_option.return_value = ["one"]
+        assert locator.select_option(value="one", label="One", index=0, timeout=1) == ["one"]
+        assert locator.select_option(timeout=2) == ["one"]
+        handle.inner_text.return_value = "Hello"
+        handle.input_value.return_value = "hello"
+        handle.get_attribute.return_value = "button"
+        handle.bounding_box.return_value = {"x": 1, "y": 2, "width": 3, "height": 4}
+        assert locator.text(timeout=1) == "Hello"
+        assert locator.value(timeout=2) == "hello"
+        assert locator.get_attribute("role", timeout=3) == "button"
+        assert locator.bounding_box(timeout=4)["width"] == 3
+        handle.is_visible.return_value = 1
+        handle.is_enabled.return_value = 0
+        handle.is_checked.return_value = True
+        assert locator.is_visible() is True
+        assert locator.is_enabled() is False
+        assert locator.is_checked() is True
+        handle.count.return_value = 2
+        assert locator.exists() is True
+        assert locator.exists(timeout=1) is True
+        assert locator.count() == 2
+        handle.wait_for.assert_called_once_with(state="attached", timeout=1000.0)
+        assert locator.wait_for(state="hidden", timeout=1) is locator
+
+        handle.screenshot.return_value = _png_bytes()
+        assert locator.screenshot(timeout=1) is not None
+        target = tmp_path / "element.png"
+        assert locator.screenshot(str(target), timeout=2) is not None
+        assert target.exists()
+        handle.screenshot.assert_any_call(timeout=1000.0)
+        handle.screenshot.assert_any_call(timeout=2000.0)
+
+    def test_locator_multi_match_narrowing_and_a11y_helpers(self):
+        locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
+        handle.count.return_value = 2
+        nth_results = [
+            MagicMock(name="direct_nth"),
+            MagicMock(name="first"),
+            MagicMock(name="all_first"),
+            MagicMock(name="all_second"),
+        ]
+        handle.nth.side_effect = nth_results
+        assert locator.nth(0)._handle is nth_results[0]
+        first = locator.first()
+        last = locator.last()
+        all_locators = locator.all()
+        assert isinstance(first, CDPLocator)
+        assert isinstance(last, CDPLocator)
+        assert len(all_locators) == 2
+        assert first._handle is nth_results[1]
+        assert all_locators[0]._handle is nth_results[2]
+        assert all_locators[1]._handle is nth_results[3]
+        handle.locator.return_value = MagicMock(name="nested")
+        assert locator.locator(".child")._selector == "#target"
+
+        has = CDPLocator(locator._session, ".has", _handle=MagicMock(name="has"))
+        has_not = CDPLocator(locator._session, ".has-not", _handle=MagicMock(name="has_not"))
+        handle.filter.return_value = MagicMock(name="filtered")
+        filtered = locator.filter(has_text="yes", has_not_text="no", has=has, has_not=has_not)
+        assert isinstance(filtered, CDPLocator)
+        handle.filter.assert_called_once_with(
+            has_text="yes", has_not_text="no", has=has._handle, has_not=has_not._handle
+        )
+
+        for method, args, kwargs in [
+            ("get_by_role", ("button",), {"name": "Save"}),
+            ("get_by_text", ("Save",), {}),
+            ("get_by_label", ("Name",), {}),
+            ("get_by_placeholder", ("Search",), {}),
+            ("get_by_title", ("Help",), {}),
+            ("get_by_alt_text", ("Logo",), {}),
+            ("get_by_test_id", ("save",), {}),
+        ]:
+            getattr(handle, method).return_value = MagicMock(name=method)
+            result = getattr(locator, method)(*args, **kwargs)
+            assert isinstance(result, CDPLocator)
+            getattr(handle, method).assert_called_once_with(*args, **kwargs)
+
+    def test_locator_raw_html_events_evaluate_and_file_helpers(self):
+        locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
+        handle.inner_html.return_value = "<button>Save</button>"
+        assert locator.inner_html(timeout=1).startswith("<button")
+        assert locator.dispatch_event("click", {"bubbles": True}, timeout=2) is locator
+        assert locator.dispatch_event("blur", timeout=3) is locator
+        handle.evaluate.return_value = {"id": 1}
+        assert locator.evaluate("el => el.id", 1) == {"id": 1}
+        assert locator.press_sequentially("abc", delay=0.1, timeout=2) is locator
+        assert locator.select_text(timeout=3) is locator
+        assert locator.blur(timeout=4) is locator
+        assert locator.tap(timeout=5) is locator
+        handle.all_text_contents.return_value = ["a", "b"]
+        assert locator.all_text_contents() == ["a", "b"]
+        handle.element_handle.return_value = "element-handle"
+        assert locator.element_handle(timeout=6) == "element-handle"
+        assert locator.set_input_files(["a.txt"], timeout=7) is locator
+        handle.dispatch_event.assert_any_call("click", {"bubbles": True}, timeout=2000.0)
+        handle.dispatch_event.assert_any_call("blur", {}, timeout=3000.0)
+        handle.press_sequentially.assert_called_once_with("abc", delay=100.0, timeout=2000.0)
+        handle.select_text.assert_called_once_with(timeout=3000.0)
+        handle.blur.assert_called_once_with(timeout=4000.0)
+        handle.tap.assert_called_once_with(timeout=5000.0)
+        handle.element_handle.assert_called_once_with(timeout=6000.0)
+        handle.set_input_files.assert_called_once_with(["a.txt"], timeout=7000.0)
+
+    @pytest.mark.parametrize(
+        ("method", "args", "message"),
+        [
+            ("click", (), "click failed"),
+            ("double_click", (), "double_click failed"),
+            ("right_click", (), "right_click failed"),
+            ("hover", (), "hover failed"),
+            ("drag_to", ("other",), "drag_to failed"),
+            ("focus", (), "focus failed"),
+            ("press_key", ("Enter",), "press_key"),
+            ("type_text", ("x",), "type_text failed"),
+            ("clear", (), "clear failed"),
+            ("check", (), "check failed"),
+            ("uncheck", (), "uncheck failed"),
+            ("select_option", (), "select_option failed"),
+            ("scroll_into_view", (), "scroll_into_view failed"),
+            ("text", (), r"text\(\) failed"),
+            ("value", (), r"value\(\) failed"),
+            ("get_attribute", ("role",), "get_attribute"),
+            ("bounding_box", (), "bounding_box failed"),
+            ("wait_for", (), "did not reach state"),
+            ("screenshot", (), "screenshot failed"),
+            ("inner_html", (), r"inner_html\(\) failed"),
+            ("dispatch_event", ("click",), "dispatch_event"),
+            ("evaluate", ("el => el",), "locator.evaluate"),
+            ("press_sequentially", ("x",), "press_sequentially"),
+            ("select_text", (), "select_text failed"),
+            ("blur", (), "blur failed"),
+            ("tap", (), "tap failed"),
+            ("all_text_contents", (), "all_text_contents"),
+            ("element_handle", (), "element_handle"),
+            ("set_input_files", ("x.txt",), "set_input_files"),
+        ],
+    )
+    def test_locator_wraps_playwright_errors(self, method, args, message):
+        locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
+        other = CDPLocator(locator._session, "#other", _handle=MagicMock())
+        handle_method = {
+            "click": "click",
+            "double_click": "dblclick",
+            "right_click": "click",
+            "hover": "hover",
+            "drag_to": "drag_to",
+            "focus": "focus",
+            "press_key": "press",
+            "type_text": "fill",
+            "clear": "fill",
+            "check": "check",
+            "uncheck": "uncheck",
+            "select_option": "select_option",
+            "scroll_into_view": "scroll_into_view_if_needed",
+            "text": "inner_text",
+            "value": "input_value",
+            "get_attribute": "get_attribute",
+            "bounding_box": "bounding_box",
+            "wait_for": "wait_for",
+            "screenshot": "screenshot",
+            "inner_html": "inner_html",
+            "dispatch_event": "dispatch_event",
+            "evaluate": "evaluate",
+            "press_sequentially": "press_sequentially",
+            "select_text": "select_text",
+            "blur": "blur",
+            "tap": "tap",
+            "all_text_contents": "all_text_contents",
+            "element_handle": "element_handle",
+            "set_input_files": "set_input_files",
+        }[method]
+        getattr(handle, handle_method).side_effect = RuntimeError("boom")
+        call_args = (other,) if method == "drag_to" else args
+        expected = ElementNotFoundError if method not in {"wait_for"} else WaitTimeoutError
+        with pytest.raises(expected, match=message):
+            getattr(locator, method)(*call_args)
+
+    def test_locator_boolean_and_count_failures_are_safe(self):
+        locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
+        handle.is_visible.side_effect = RuntimeError()
+        handle.is_enabled.side_effect = RuntimeError()
+        handle.is_checked.side_effect = RuntimeError()
+        handle.count.side_effect = RuntimeError()
+        handle.wait_for.side_effect = RuntimeError()
+        assert locator.is_visible() is False
+        assert locator.is_enabled() is False
+        assert locator.is_checked() is False
+        assert locator.count() == 0
+        assert locator.exists() is False
+        assert locator.exists(timeout=1) is False
+
+    def test_locator_scoped_handle_detects_dead_page(self):
+        locator, _handle, session, page, _context, _browser, _playwright = _locator()
+        page.is_closed.return_value = True
+        with pytest.raises(CDPStalePageError, match="bound to a page"):
+            locator._resolve()
+        unscoped = CDPLocator(session, "#target")
+        page.is_closed.return_value = False
+        page.locator.return_value = "fresh-handle"
+        assert unscoped._resolve() == "fresh-handle"
+
+
+class TestFrameLocatorAndImport:
+    def test_frame_locator_resolves_and_builds_nested_locator_selectors(self):
+        session, page, _context, _browser, _playwright = _completeness_session()
+        frame = MagicMock(name="frame")
+        page.frame_locator.return_value = frame
+        frame.locator.return_value = MagicMock(name="inside")
+        frame.get_by_role.return_value = MagicMock(name="role")
+        frame.get_by_text.return_value = MagicMock(name="text")
+        frame.get_by_label.return_value = MagicMock(name="label")
+        frames = CDPFrameLocator(session, "iframe#app")
+        assert frames._resolve() is frame
+        assert frames.locator("#button")._selector == "iframe#app >> #button"
+        assert frames.get_by_role("button", name="Save")._selector == (
+            "frame/iframe#app >> role=button"
+        )
+        assert frames.get_by_text("Save")._selector == "frame/iframe#app >> text='Save'"
+        assert frames.get_by_label("Name")._selector == "frame/iframe#app >> label='Name'"
+        page.frame_locator.assert_called()
+
+    def test_module_can_be_imported_in_a_fresh_namespace(self):
+        """Cover import-time declarations when pytest preloads the package."""
+        module_name = "dolphin_desktop._cdp_completeness_probe"
+        spec = importlib.util.spec_from_file_location(module_name, cdp.__file__)
+        assert spec is not None and spec.loader is not None
+        probe = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = probe
+        try:
+            spec.loader.exec_module(probe)
+            assert probe.CONSOLE_BUFFER_LIMIT == 1000
+            assert probe.CDPSession.backend_id == "cdp"
+        finally:
+            sys.modules.pop(module_name, None)
+
+
+def test_cdp_download_delegates_and_text_selector_normalizes_whitespace() -> None:
+    from dolphin_desktop._cdp import CDPDownload, _substring_text_selector
+
+    download = Mock(suggested_filename="report.csv", url="https://example.test/report")
+    download.path.return_value = Path("temporary.csv")
+    wrapped = CDPDownload(download)
+    assert wrapped.suggested_filename == "report.csv"
+    assert wrapped.path() == "temporary.csv"
+    wrapped.save_as("report.csv")
+    wrapped.cancel()
+    wrapped.delete()
+    assert "\\s+" in _substring_text_selector("  Save   now ")
+
+
+def test_cdp_request_route_and_lazy_value_wrap_playwright_objects() -> None:
+    from dolphin_desktop._cdp import CDPRequest, CDPRoute, _LazyValue, _substring_text_selector
+
+    request = SimpleNamespace(
+        url="https://example.test",
+        method="POST",
+        headers={"A": "B"},
+        resource_type="xhr",
+        post_data="{}",
+        post_data_json={"ok": True},
+    )
+    route = Mock(request=request)
+    wrapped = CDPRoute(route)
+    assert CDPRequest(request).headers == {"A": "B"}
+    assert wrapped.request.post_data_json() == {"ok": True}
+    wrapped.respond_json({"ok": True}, status=201)
+    route.fulfill.assert_called_once_with(status=201, json={"ok": True})
+    value = _LazyValue(SimpleNamespace(value=3), lambda n: n * 2)
+    assert (value.value, value.value) == (6, 6)
+    assert _substring_text_selector(' Save >> "now" ').startswith("text=/")
+
+
+def test_cdp_wrappers_forward_request_route_download_and_missing_dependency(monkeypatch) -> None:
+    import dolphin_desktop._cdp as cdp
+
+    class Request:
+        def __init__(self):
+            self.url = "https://example.test/api"
+            self.method = "GET"
+            self.headers = {"Accept": "application/json"}
+            self.resource_type = "fetch"
+            self.post_data = None
+
+        @property
+        def post_data_json(self):
+            raise RuntimeError("not json")
+
+    request = cdp.CDPRequest(Request())
+    assert request.url.endswith("/api")
+    assert request.method == "GET"
+    assert request.headers == {"Accept": "application/json"}
+    assert request.resource_type == "fetch"
+    assert request.post_data() is None
+    assert request.post_data_json() is None
+
+    raw_route = Mock(request=Request())
+    route = cdp.CDPRoute(raw_route)
+    route.respond(status=201, body="ok", content_type="text/plain", headers={"X": "1"})
+    route.respond_json({"ok": True}, status=202, headers={"X": "2"})
+    route.pass_through()
+    route.abort("blockedbyclient")
+    raw_route.fulfill.assert_any_call(
+        status=201,
+        body="ok",
+        content_type="text/plain",
+        headers={"X": "1"},
+    )
+    raw_route.fulfill.assert_any_call(status=202, json={"ok": True}, headers={"X": "2"})
+    raw_route.continue_.assert_called_once_with()
+    raw_route.abort.assert_called_once_with("blockedbyclient")
+
+    raw_download = Mock(suggested_filename="a.txt", url="https://example.test/a")
+    raw_download.path.return_value = 123
+    download = cdp.CDPDownload(raw_download)
+    assert download.suggested_filename == "a.txt"
+    assert download.url.endswith("/a")
+    assert download.path() == "123"
+    download.save_as("copy.txt")
+    download.cancel()
+    download.delete()
+    raw_download.save_as.assert_called_once_with("copy.txt")
+
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    with pytest.raises(RuntimeError, match=r"dolphin_desktop\[cdp\]"):
+        cdp._require_playwright()
+    assert "playwright install chromium" in cdp.cdp_install_hint()
+
+
+def test_cdp_stable_page_picker_skips_closed_pages_and_uses_fallback() -> None:
+    from dolphin_desktop._cdp import CDPSession
+
+    class Page:
+        def __init__(self, url, closed=False):
+            self.url = url
+            self.closed = closed
+
+        def is_closed(self):
+            return self.closed
+
+    stable = Page("https://example.test")
+    blank = Page("about:blank")
+    closed = Page("https://closed.test", closed=True)
+    browser = SimpleNamespace(
+        contexts=[SimpleNamespace(pages=[closed, blank]), SimpleNamespace(pages=[stable])]
+    )
+    context, page = CDPSession._pick_stable_page(browser, timeout=0.1)
+    assert page is stable
+    assert context is browser.contexts[1]
+
+    fallback_browser = SimpleNamespace(contexts=[SimpleNamespace(pages=[closed, blank])])
+    context, page = CDPSession._pick_stable_page(fallback_browser, timeout=0)
+    assert context is fallback_browser.contexts[0]
+    assert page is blank
+    assert CDPSession._pick_stable_page(SimpleNamespace(contexts=[]), timeout=0) == (None, None)
+
+
+def test_cdp_session_binds_events_and_applies_dialog_policy() -> None:
+    from dolphin_desktop._cdp import CDPSession
+
+    page = Mock()
+    session = CDPSession(Mock(), Mock(), Mock(), page, endpoint="http://localhost")
+    session._on_console_message(SimpleNamespace(type="warning", text="careful"))
+    assert session.console_messages() == [{"type": "warning", "text": "careful"}]
+
+    dialog = Mock()
+    session._dialog_policy = "accept"
+    session._on_dialog(dialog)
+    dialog.accept.assert_called_once_with()
+    session._dialog_policy = "dismiss"
+    session._on_dialog(dialog)
+    dialog.dismiss.assert_called_once_with()
+    assert page.on.call_count == 2

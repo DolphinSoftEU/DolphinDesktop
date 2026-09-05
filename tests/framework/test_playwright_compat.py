@@ -1,15 +1,18 @@
 """Tests for the Playwright-shaped compatibility layer."""
 
+
+# Fakes
+
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
 from dolphin_desktop import playwright_compat as pwc
 from dolphin_desktop._cdp import CDPStalePageError
-
-# Fakes
 
 
 class _FakePage:
@@ -376,3 +379,22 @@ class TestPlaywrightShape:
         loc.fill("a")
         loc.type("b")
         assert [c[1]["clear"] for c in loc._inner.calls] == [True, False]
+
+
+def test_playwright_page_reselects_session_before_delegation() -> None:
+    from dolphin_desktop.playwright_compat import _PlaywrightPage
+
+    session = Mock()
+    page = SimpleNamespace()
+    session.pages.return_value = [page]
+    adapter = _PlaywrightPage(session, page)
+    assert adapter._select() is session
+    session.switch_to_page.assert_called_once_with(0)
+
+
+def test_playwright_compat_converts_timeout_to_milliseconds() -> None:
+    from dolphin_desktop.playwright_compat import _ms_kwargs, _seconds, _timeout_s
+
+    assert _seconds(1500) == 1.5
+    assert _timeout_s(2.5) == {"timeout": 0.0025}
+    assert _ms_kwargs({"timeout": 1.25, "x": 1}) == {"timeout": 0.00125, "x": 1}

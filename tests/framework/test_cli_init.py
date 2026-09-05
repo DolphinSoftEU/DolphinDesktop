@@ -1,16 +1,19 @@
 """Unit tests for `dolphin init` project scaffolding."""
 
+
+# minimal template
+
 from __future__ import annotations
 
+import importlib
 import io
 import sys
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from dolphin_desktop._cli import _doctor_cmd, _scaffold
-
-# minimal template
 
 
 def test_minimal_creates_expected_files(tmp_path):
@@ -193,3 +196,86 @@ def test_doctor_does_not_crash_on_ascii_only_stdout(monkeypatch):
     assert "[ok]  accessible (0 top-level window(s) visible)" in output
     assert "DOLPHIN_TRACE" in output
     assert "?" not in output
+
+
+def test_cli_standard_scaffold_and_unknown_template(tmp_path) -> None:
+    from dolphin_desktop._cli import _scaffold
+
+    target = tmp_path / "standard"
+    _scaffold(target, "demo", "standard", "3.12")
+    assert (target / "objects" / "notepad_page.py").exists()
+    assert (target / "tests" / "test_sample.py").exists()
+    with pytest.raises(ValueError, match="Unknown template"):
+        _scaffold(tmp_path / "bad", "demo", "unknown", "3.12")
+
+
+def test_cli_handlers_scaffold_stats_and_trace_listing(tmp_path, monkeypatch, capsys) -> None:
+    from dolphin_desktop import _cli as cli
+
+    monkeypatch.chdir(tmp_path)
+    cli._init_cmd(
+        SimpleNamespace(
+            yes=True,
+            name="demo",
+            template="minimal",
+            install=False,
+            git=False,
+        )
+    )
+    assert (tmp_path / "demo" / "pyproject.toml").exists()
+    assert (tmp_path / "demo" / "tests" / "test_sample.py").exists()
+
+    with patch("dolphin_desktop._selfheal.selfheal_stats", return_value=[]):
+        cli._selfheal_stats_cmd(SimpleNamespace(last=2, file=None))
+    assert "No self-healing events recorded" in capsys.readouterr().out
+
+    runs = [
+        {"status": "passed", "started_at": 0, "finished_at": 1.25, "test_nodeid": "test_ok"},
+        {"status": None, "started_at": 2, "test_nodeid": "test_running"},
+    ]
+    with patch("dolphin_desktop._trace.list_runs", return_value=runs):
+        cli._trace_list_cmd(SimpleNamespace(dir=str(tmp_path), last=5))
+    output = capsys.readouterr().out
+    assert "PASSED" in output and "TEST_RUNNING" not in output
+    assert "test_running" in output and "—" in output
+
+
+def test_cli_doctor_and_backend_info_are_rendered(monkeypatch, capsys) -> None:
+    from dolphin_desktop import _cli as cli
+
+    real_import = importlib.import_module
+
+    def fake_import(name: str):
+        if name in {"cv2", "pytesseract", "mss", "sentry_sdk"}:
+            raise ImportError(name)
+        return SimpleNamespace(__version__="test")
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    import pywinauto
+
+    monkeypatch.setattr(
+        pywinauto,
+        "Desktop",
+        lambda **_kwargs: SimpleNamespace(windows=lambda: [object(), object()]),
+    )
+    cli._doctor_cmd(None)
+    doctor_output = capsys.readouterr().out
+    assert "Required dependencies:" in doctor_output
+    assert "Optional dependencies:" in doctor_output
+    assert "accessible (2 top-level window(s) visible)" in doctor_output
+
+    monkeypatch.setattr(importlib, "import_module", real_import)
+    backend_rows = [
+        {
+            "id": "demo",
+            "platform": "any",
+            "available": True,
+            "source": "plugin",
+            "description": "A backend with a very long description that is truncated",
+        }
+    ]
+    with patch("dolphin_desktop._backend.list_backends", return_value=backend_rows):
+        cli._info_backends_cmd(SimpleNamespace())
+    info_output = capsys.readouterr().out
+    assert "ID" in info_output and "demo" in info_output
+    assert "Total: 1 backend(s)" in info_output

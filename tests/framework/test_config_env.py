@@ -83,3 +83,22 @@ class TestDefaultsAreBuiltThroughTheValidators:
             for name in ("DOLPHIN_TIMEOUT", "DOLPHIN_VIDEO", "DOLPHIN_VIDEO_FPS"):
                 monkeypatch.delenv(name, raising=False)
             importlib.reload(_config)
+
+
+def test_config_rejects_invalid_modes_and_frame_rates() -> None:
+    from dolphin_desktop import _config
+
+    with pytest.raises(ValueError, match="Invalid trace_mode"):
+        _config.config(trace_mode="sometimes")
+    with pytest.raises(ValueError, match="video_fps"):
+        _config.config(video_fps=31)
+
+
+def test_config_environment_validation_and_runtime_limits(monkeypatch) -> None:
+    from dolphin_desktop import _config
+
+    monkeypatch.setenv("DOLPHIN_UNIT_VALUE", "nan")
+    with pytest.warns(UserWarning, match="not a finite number"):
+        assert _config._env_number("DOLPHIN_UNIT_VALUE", 5.0, float, minimum=0) == 5.0
+    with pytest.raises(ValueError, match="timeout must be non-negative"):
+        _config.config(timeout=-1)
