@@ -5,7 +5,6 @@ These tests keep the same public behaviour testable on CI by modelling the
 small pywinauto/Win32 surfaces the wrapper consumes.
 """
 
-
 from __future__ import annotations
 
 import ctypes
@@ -194,7 +193,7 @@ def test_process_parent_map_builds_snapshot_and_closes_it(monkeypatch) -> None:
         pointer._obj.th32ProcessID = row[0]
         pointer._obj.th32ParentProcessID = row[1]
 
-    k32.Process32FirstW.side_effect = lambda _snap, pointer: (fill(pointer, rows[0]) or True)
+    k32.Process32FirstW.side_effect = lambda _snap, pointer: fill(pointer, rows[0]) or True
     next_rows = iter(rows[1:])
 
     def next_row(_snap, pointer):
@@ -255,9 +254,7 @@ def test_qt_module_info_scans_versions_children_and_misses(monkeypatch) -> None:
         2: ["qt6widgets.dll"],
         3: ["user32.dll"],
     }
-    monkeypatch.setattr(
-        application, "_list_modules", lambda pid, **_kwargs: modules[pid]
-    )
+    monkeypatch.setattr(application, "_list_modules", lambda pid, **_kwargs: modules[pid])
     assert application._qt_module_info_one(1) == (True, "5")
     assert application._qt_module_info_one(2) == (True, "6")
     assert application._qt_module_info_one(3) == (False, None)
@@ -574,8 +571,10 @@ def test_find_all_returns_resolved_locators_and_handles_errors(monkeypatch) -> N
     parent = Mock()
     root._get_spec.return_value.wrapper_object.return_value = parent
     monkeypatch.setattr(app, "_generated_root", Mock(return_value=root))
+
     def wrapper_class(element):
         return ("wrapped", element)
+
     raw.backend = SimpleNamespace(generic_wrapper_class=wrapper_class)
     finder = Mock(return_value=["a", "b"])
     monkeypatch.setattr(application, "_find_elements", finder)
@@ -874,6 +873,7 @@ def test_qt_agent_property_covers_cache_recovery_detection_and_attach(monkeypatc
     assert app.has_qt_agent() is True
 
     broken = Mock(is_broken=True)
+
     def recover():
         # QtAgentClient.reattach() repairs and returns the same client.
         broken.is_broken = False
@@ -956,9 +956,7 @@ def test_qt_helpers_wrap_first_match_and_report_missing(monkeypatch) -> None:
     agent.find.return_value = [widget_meta]
     widget = app.qt_widget(object_name="status", class_name="QLabel", text="Ready")
     assert isinstance(widget, WidgetElement)
-    agent.find.assert_called_with(
-        objectName="status", className="QLabel", text="Ready"
-    )
+    agent.find.assert_called_with(objectName="status", className="QLabel", text="Ready")
     agent.find.return_value = []
     with pytest.raises(ElementNotFoundError, match="no QObject matched"):
         app.qt_widget()
@@ -1109,15 +1107,14 @@ def test_application_generated_locators_detection_and_lifecycle(monkeypatch) -> 
     assert app.process_id == 555
     assert app._generated_criteria("name", "Save", None, None) == {"title": "Save"}
     assert app._generated_criteria("text", "Save", False, 2) == {
-        "title_re": ".*Save.*", "found_index": 2
+        "title_re": ".*Save.*",
+        "found_index": 2,
     }
     assert app._generated_criteria("test_id", "save", None, None) == {"auto_id": "save"}
     assert app._generated_criteria("control_type", "Button", None, None) == {
         "control_type": "Button"
     }
-    assert app._generated_criteria("class_name", "TButton", None, None) == {
-        "class_name": "TButton"
-    }
+    assert app._generated_criteria("class_name", "TButton", None, None) == {"class_name": "TButton"}
     with pytest.raises(ValueError, match="Unsupported"):
         app._generated_criteria("other", "x", None, None)
     with pytest.raises(ValueError, match="non-empty"):

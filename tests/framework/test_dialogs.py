@@ -3,7 +3,6 @@
 
 # Dialog discovery — class beats caption
 
-
 from __future__ import annotations
 
 import time

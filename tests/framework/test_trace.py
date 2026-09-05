@@ -1,6 +1,5 @@
 """Tests for the trace engine's failure isolation and run selection."""
 
-
 from __future__ import annotations
 
 import json

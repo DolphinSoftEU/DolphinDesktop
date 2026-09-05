@@ -5,7 +5,6 @@ selector construction, which page a dead target resolves to, and which
 browser context the context-level operations act on.
 """
 
-
 from __future__ import annotations
 
 import base64
@@ -847,11 +846,13 @@ def _completeness_session():
     session = CDPSession(playwright, browser, context, page, endpoint="http://127.0.0.1:9222")
     return session, page, context, browser, playwright
 
+
 def _locator():
     session, page, context, browser, playwright = _completeness_session()
     handle = MagicMock(name="handle")
     locator = CDPLocator(session, "#target", _handle=handle)
     return locator, handle, session, page, context, browser, playwright
+
 
 def _png_bytes() -> bytes:
     # A tiny valid PNG keeps screenshot tests independent of a browser.
@@ -859,6 +860,7 @@ def _png_bytes() -> bytes:
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
         "+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )
+
 
 class TestValueAndOptionalDependencyHelpers:
     def test_request_route_download_and_lazy_value_adapters(self):
@@ -954,11 +956,12 @@ class TestValueAndOptionalDependencyHelpers:
                 r"a\\b^c$d.e|f?g*h+i(j)k[l]m{n}/o",
                 r"text=/a\\\\b\^c\$d\.e\|f\?g\*h\+i\(j\)k\[l\]m\{n\}\/o/i",
             ),
-            ('a>"\'`b', r"text=/a\x3e\x22\x27\x60b/i"),
+            ("a>\"'`b", r"text=/a\x3e\x22\x27\x60b/i"),
         ],
     )
     def test_substring_selector_escapes_parser_and_normalizer_characters(self, text, expected):
         assert _substring_text_selector(text) == expected
+
 
 class TestSessionConstructionAndLifecycle:
     def test_event_binding_is_idempotent_and_each_listener_failure_is_isolated(self):
@@ -1044,8 +1047,9 @@ class TestSessionConstructionAndLifecycle:
         sync_api = SimpleNamespace(
             sync_playwright=lambda: SimpleNamespace(start=lambda: playwright)
         )
-        with patch.object(cdp, "_require_playwright", return_value=sync_api), patch.object(
-            CDPSession, "_pick_stable_page", return_value=(None, None)
+        with (
+            patch.object(cdp, "_require_playwright", return_value=sync_api),
+            patch.object(CDPSession, "_pick_stable_page", return_value=(None, None)),
         ):
             session = CDPSession.connect("http://localhost:9222")
         assert session._page is fallback_page
@@ -1063,8 +1067,11 @@ class TestSessionConstructionAndLifecycle:
         sync_api = SimpleNamespace(
             sync_playwright=lambda: SimpleNamespace(start=lambda: playwright)
         )
-        with patch.object(cdp, "_require_playwright", return_value=sync_api), patch.object(
-            CDPSession, "_pick_stable_page", side_effect=RuntimeError("target list failed")
+        with (
+            patch.object(cdp, "_require_playwright", return_value=sync_api),
+            patch.object(
+                CDPSession, "_pick_stable_page", side_effect=RuntimeError("target list failed")
+            ),
         ):
             with pytest.raises(RuntimeError, match="target list failed"):
                 CDPSession.connect("http://localhost:9222")
@@ -1131,9 +1138,7 @@ class TestSessionConstructionAndLifecycle:
         blank.url = "about:blank"
         ctx = SimpleNamespace(pages=[blank])
         browser = SimpleNamespace(contexts=[ctx])
-        with patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]), patch(
-            "time.sleep"
-        ) as sleep:
+        with patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]), patch("time.sleep") as sleep:
             assert CDPSession._pick_stable_page(browser, timeout=0.1) == (ctx, blank)
         sleep.assert_called_once_with(0.25)
 
@@ -1189,6 +1194,7 @@ class TestSessionConstructionAndLifecycle:
         session.add_init_script("window.x=1")
         session.set_cookies([{"name": "sid", "value": "1"}])
         session.clear_cookies()
+
         def callback(value):
             return value
 
@@ -1366,6 +1372,7 @@ class TestSessionConstructionAndLifecycle:
         missing.__enter__.return_value = SimpleNamespace(
             value=property(lambda _self: (_ for _ in ()).throw(RuntimeError("vanished")))
         )
+
         # A property cannot be evaluated through SimpleNamespace, so use an
         # object whose value property raises to reach the defensive return.
         class Missing:
@@ -1431,17 +1438,21 @@ class TestSessionConstructionAndLifecycle:
         session2.close()
         assert session2._closed is True
 
+
 class TestLocatorOperations:
     def test_locator_resolution_and_mouse_keyboard_form_operations(self):
         locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
         assert locator._resolve() is handle
-        assert locator.click(
-            timeout=1.5,
-            modifiers=["Control"],
-            position={"x": 1, "y": 2},
-            button="right",
-            force=True,
-        ) is locator
+        assert (
+            locator.click(
+                timeout=1.5,
+                modifiers=["Control"],
+                position={"x": 1, "y": 2},
+                button="right",
+                force=True,
+            )
+            is locator
+        )
         handle.click.assert_called_once_with(
             timeout=1500.0,
             modifiers=["Control"],
@@ -1536,9 +1547,7 @@ class TestLocatorOperations:
         has = CDPLocator(locator._session, ".has", _handle=MagicMock(name="has"))
         has_not = CDPLocator(locator._session, ".has-not", _handle=MagicMock(name="has_not"))
         handle.filter.return_value = MagicMock(name="filtered")
-        filtered = locator.filter(
-            has_text="yes", has_not_text="no", has=has, has_not=has_not
-        )
+        filtered = locator.filter(has_text="yes", has_not_text="no", has=has, has_not=has_not)
         assert isinstance(filtered, CDPLocator)
         handle.filter.assert_called_once_with(
             has_text="yes", has_not_text="no", has=has._handle, has_not=has_not._handle
@@ -1577,9 +1586,7 @@ class TestLocatorOperations:
         assert locator.set_input_files(["a.txt"], timeout=7) is locator
         handle.dispatch_event.assert_any_call("click", {"bubbles": True}, timeout=2000.0)
         handle.dispatch_event.assert_any_call("blur", {}, timeout=3000.0)
-        handle.press_sequentially.assert_called_once_with(
-            "abc", delay=100.0, timeout=2000.0
-        )
+        handle.press_sequentially.assert_called_once_with("abc", delay=100.0, timeout=2000.0)
         handle.select_text.assert_called_once_with(timeout=3000.0)
         handle.blur.assert_called_once_with(timeout=4000.0)
         handle.tap.assert_called_once_with(timeout=5000.0)
@@ -1624,16 +1631,33 @@ class TestLocatorOperations:
         locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
         other = CDPLocator(locator._session, "#other", _handle=MagicMock())
         handle_method = {
-            "click": "click", "double_click": "dblclick", "right_click": "click",
-            "hover": "hover", "drag_to": "drag_to", "focus": "focus", "press_key": "press",
-            "type_text": "fill", "clear": "fill", "check": "check", "uncheck": "uncheck",
-            "select_option": "select_option", "scroll_into_view": "scroll_into_view_if_needed",
-            "text": "inner_text", "value": "input_value", "get_attribute": "get_attribute",
-            "bounding_box": "bounding_box", "wait_for": "wait_for", "screenshot": "screenshot",
-            "inner_html": "inner_html", "dispatch_event": "dispatch_event", "evaluate": "evaluate",
+            "click": "click",
+            "double_click": "dblclick",
+            "right_click": "click",
+            "hover": "hover",
+            "drag_to": "drag_to",
+            "focus": "focus",
+            "press_key": "press",
+            "type_text": "fill",
+            "clear": "fill",
+            "check": "check",
+            "uncheck": "uncheck",
+            "select_option": "select_option",
+            "scroll_into_view": "scroll_into_view_if_needed",
+            "text": "inner_text",
+            "value": "input_value",
+            "get_attribute": "get_attribute",
+            "bounding_box": "bounding_box",
+            "wait_for": "wait_for",
+            "screenshot": "screenshot",
+            "inner_html": "inner_html",
+            "dispatch_event": "dispatch_event",
+            "evaluate": "evaluate",
             "press_sequentially": "press_sequentially",
-            "select_text": "select_text", "blur": "blur",
-            "tap": "tap", "all_text_contents": "all_text_contents",
+            "select_text": "select_text",
+            "blur": "blur",
+            "tap": "tap",
+            "all_text_contents": "all_text_contents",
             "element_handle": "element_handle",
             "set_input_files": "set_input_files",
         }[method]
@@ -1666,6 +1690,7 @@ class TestLocatorOperations:
         page.is_closed.return_value = False
         page.locator.return_value = "fresh-handle"
         assert unscoped._resolve() == "fresh-handle"
+
 
 class TestFrameLocatorAndImport:
     def test_frame_locator_resolves_and_builds_nested_locator_selectors(self):

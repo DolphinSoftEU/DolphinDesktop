@@ -5,7 +5,6 @@ keeps the suite deterministic and exercises the error/fallback paths that are
 not practical to reach with a real Windows application in CI.
 """
 
-
 from __future__ import annotations
 
 import sys

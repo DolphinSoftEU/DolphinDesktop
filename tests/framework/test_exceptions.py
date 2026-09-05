@@ -1,6 +1,5 @@
 """Tests for :mod:`dolphin_desktop._exceptions`."""
 
-
 from __future__ import annotations
 
 

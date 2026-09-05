@@ -5,7 +5,6 @@ use tiny dependency doubles so the matching and OCR control flow is exercised
 even on a base installation where numpy/cv2 are not present.
 """
 
-
 from __future__ import annotations
 
 import importlib

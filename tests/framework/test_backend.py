@@ -3,7 +3,6 @@
 
 # Helpers
 
-
 from __future__ import annotations
 
 import argparse
@@ -659,6 +658,7 @@ class TestPublicAPIExports:
 
 def test_backend_constructor_and_capability_argument_validation() -> None:
     from dolphin_desktop._backend import Backend, ImageBackend
+
     assert repr(ImageBackend()) == "ImageBackend(id='image')"
     with pytest.raises(TypeError, match="Capability"):
         ImageBackend().supports("click")  # type: ignore[arg-type]
@@ -727,9 +727,11 @@ def _additional_backend_class(backend_module, backend_id: str, *, capabilities=(
     TestBackend.__name__ = f"Backend_{backend_id or 'invalid'}"
     return TestBackend
 
+
 def _node(name="root", role="Window", class_name="App", children=()):
     info = SimpleNamespace(name=name, control_type=role, class_name=class_name)
     return SimpleNamespace(element_info=info, children=lambda: list(children))
+
 
 def _win32_node(name="root", role="Window", class_name="App", children=()):
     return SimpleNamespace(
@@ -738,6 +740,7 @@ def _win32_node(name="root", role="Window", class_name="App", children=()):
         class_name=lambda: class_name,
         children=lambda: list(children),
     )
+
 
 class TestCapabilityAndBaseContract:
     @pytest.mark.parametrize(
@@ -809,6 +812,7 @@ class TestCapabilityAndBaseContract:
             cls().require_capability(Capability.INVOKE)
         assert "no other registered backend" in exc_info.value.hint
 
+
 class TestConcreteCapabilitiesAndOperations:
     @pytest.mark.parametrize(
         ("cls", "expected"),
@@ -818,13 +822,26 @@ class TestConcreteCapabilitiesAndOperations:
                 STANDARD_ACCESSIBILITY
                 | {Capability.SCREENSHOT, Capability.DRAG, Capability.SCROLL},
             ),
-            (Win32Backend, frozenset({
-                Capability.LOCATE, Capability.GET_TREE, Capability.READ_TEXT,
-                Capability.READ_STATE, Capability.CLICK, Capability.DOUBLE_CLICK,
-                Capability.RIGHT_CLICK, Capability.HOVER, Capability.DRAG,
-                Capability.TYPE_TEXT, Capability.PRESS_KEY, Capability.SCROLL,
-                Capability.SCREENSHOT,
-            })),
+            (
+                Win32Backend,
+                frozenset(
+                    {
+                        Capability.LOCATE,
+                        Capability.GET_TREE,
+                        Capability.READ_TEXT,
+                        Capability.READ_STATE,
+                        Capability.CLICK,
+                        Capability.DOUBLE_CLICK,
+                        Capability.RIGHT_CLICK,
+                        Capability.HOVER,
+                        Capability.DRAG,
+                        Capability.TYPE_TEXT,
+                        Capability.PRESS_KEY,
+                        Capability.SCROLL,
+                        Capability.SCREENSHOT,
+                    }
+                ),
+            ),
             (ImageBackend, IMAGE_ONLY),
         ],
     )
@@ -892,14 +909,24 @@ class TestConcreteCapabilitiesAndOperations:
         instance = UIABackend()
 
         assert instance.get_tree(root) == {
-            "name": "root", "role": "Window", "class": "WindowClass",
-            "children": [{
-                "name": "child", "role": "Pane", "class": "PaneClass",
-                "children": [{
-                    "name": "grandchild", "role": "Button", "class": "ButtonClass",
-                    "children": [],
-                }],
-            }],
+            "name": "root",
+            "role": "Window",
+            "class": "WindowClass",
+            "children": [
+                {
+                    "name": "child",
+                    "role": "Pane",
+                    "class": "PaneClass",
+                    "children": [
+                        {
+                            "name": "grandchild",
+                            "role": "Button",
+                            "class": "ButtonClass",
+                            "children": [],
+                        }
+                    ],
+                }
+            ],
         }
         assert instance.get_tree(root, depth=0)["children"] == []
         assert instance.get_tree(root, depth=1)["children"][0]["children"] == []
@@ -912,7 +939,10 @@ class TestConcreteCapabilitiesAndOperations:
 
         bad_info = BadInfo()
         assert UIABackend().get_tree(bad_info) == {
-            "name": "", "role": "unknown", "class": "", "children": []
+            "name": "",
+            "role": "unknown",
+            "class": "",
+            "children": [],
         }
 
         bad_children = _node("root")
@@ -928,7 +958,9 @@ class TestConcreteCapabilitiesAndOperations:
 
         bad_info = SimpleNamespace(
             window_text=Mock(side_effect=RuntimeError("metadata unavailable")),
-            friendly_class_name=Mock(), class_name=Mock(), children=Mock(),
+            friendly_class_name=Mock(),
+            class_name=Mock(),
+            children=Mock(),
         )
         assert instance.get_tree(bad_info)["role"] == "unknown"
         bad_children = _win32_node("root")
@@ -964,8 +996,7 @@ class TestConcreteCapabilitiesAndOperations:
         locator = MagicMock()
         with patch("dolphin_desktop._image.ImageLocator", return_value=locator) as locator_cls:
             assert (
-                instance.find_element(None, {"template": "save.png", "threshold": 0.91})
-                is locator
+                instance.find_element(None, {"template": "save.png", "threshold": 0.91}) is locator
             )
         locator_cls.assert_called_once_with("save.png", threshold=0.91)
 
@@ -1008,6 +1039,7 @@ class TestConcreteCapabilitiesAndOperations:
         monkeypatch.setitem(sys.modules, "cv2", ModuleType("cv2"))
         assert ImageBackend().is_available() is True
 
+
 class TestMarkerBackends:
     @pytest.mark.parametrize(
         ("cls", "expected"),
@@ -1036,13 +1068,27 @@ class TestMarkerBackends:
                 STANDARD_ACCESSIBILITY
                 | {Capability.SCREENSHOT, Capability.DRAG, Capability.SCROLL},
             ),
-            (SapBackend, frozenset({
-                Capability.LOCATE, Capability.GET_TREE, Capability.READ_TEXT,
-                Capability.READ_STATE, Capability.CLICK, Capability.DOUBLE_CLICK,
-                Capability.RIGHT_CLICK, Capability.TYPE_TEXT, Capability.PRESS_KEY,
-                Capability.INVOKE, Capability.TOGGLE, Capability.SELECT,
-                Capability.SET_VALUE, Capability.SCREENSHOT,
-            })),
+            (
+                SapBackend,
+                frozenset(
+                    {
+                        Capability.LOCATE,
+                        Capability.GET_TREE,
+                        Capability.READ_TEXT,
+                        Capability.READ_STATE,
+                        Capability.CLICK,
+                        Capability.DOUBLE_CLICK,
+                        Capability.RIGHT_CLICK,
+                        Capability.TYPE_TEXT,
+                        Capability.PRESS_KEY,
+                        Capability.INVOKE,
+                        Capability.TOGGLE,
+                        Capability.SELECT,
+                        Capability.SET_VALUE,
+                        Capability.SCREENSHOT,
+                    }
+                ),
+            ),
             (JavaBackend, STANDARD_ACCESSIBILITY | {Capability.SCREENSHOT, Capability.SCROLL}),
         ],
     )
@@ -1051,8 +1097,15 @@ class TestMarkerBackends:
 
     @pytest.mark.parametrize(
         "cls",
-        [MacOSAccessibilityBackend, LinuxATSPIBackend, CDPBackend, DelphiBackend,
-         MainframeBackend, SapBackend, JavaBackend],
+        [
+            MacOSAccessibilityBackend,
+            LinuxATSPIBackend,
+            CDPBackend,
+            DelphiBackend,
+            MainframeBackend,
+            SapBackend,
+            JavaBackend,
+        ],
     )
     def test_marker_methods_raise_actionable_error(self, cls):
         instance = cls()
@@ -1083,6 +1136,7 @@ class TestMarkerBackends:
         monkeypatch.setattr(sys, "platform", platform_name)
         assert cls().is_available() is expected
 
+
 class _EntryPoint:
     def __init__(self, name, loaded=None, error=None):
         self.name = name
@@ -1093,6 +1147,7 @@ class _EntryPoint:
         if self.error is not None:
             raise self.error
         return self.loaded
+
 
 class TestRegistryAndPluginLoading:
     def test_load_plugins_fast_path_and_reentrant_lock_path(self, monkeypatch):
@@ -1203,12 +1258,17 @@ class TestRegistryAndPluginLoading:
         finally:
             backend._REGISTRY.pop(old.id, None)
 
+
 class TestResolveAndListing:
     @pytest.mark.parametrize(
         ("platform_name", "expected"),
-        [("win32", UIABackend), ("darwin", MacOSAccessibilityBackend),
-         ("linux", LinuxATSPIBackend), ("linux-gnu", LinuxATSPIBackend),
-         ("freebsd", ImageBackend)],
+        [
+            ("win32", UIABackend),
+            ("darwin", MacOSAccessibilityBackend),
+            ("linux", LinuxATSPIBackend),
+            ("linux-gnu", LinuxATSPIBackend),
+            ("freebsd", ImageBackend),
+        ],
     )
     def test_auto_detects_each_platform(self, monkeypatch, platform_name, expected):
         monkeypatch.setattr(sys, "platform", platform_name)
@@ -1257,7 +1317,8 @@ class TestResolveAndListing:
         delattr(no_platform, "platform")
         no_platform.__init__ = Mock(side_effect=RuntimeError("init failed"))
         monkeypatch.setattr(
-            backend, "_REGISTRY",
+            backend,
+            "_REGISTRY",
             {good.id: good, Unstable.id: Unstable, broken.id: broken, no_platform.id: no_platform},
         )
         monkeypatch.setattr(backend, "_load_plugins", lambda: None)
@@ -1276,9 +1337,7 @@ class TestResolveAndListing:
     def test_safe_call_and_safe_capabilities_cover_all_bad_shapes(self):
         assert backend._safe_call(lambda: "ok", default="fallback") == "ok"
         assert (
-            backend._safe_call(
-                lambda: (_ for _ in ()).throw(RuntimeError()), default="fallback"
-            )
+            backend._safe_call(lambda: (_ for _ in ()).throw(RuntimeError()), default="fallback")
             == "fallback"
         )
 
@@ -1299,14 +1358,15 @@ class TestResolveAndListing:
         bad_init.__init__ = Mock(side_effect=RuntimeError("broken"))
         excluded = _backend_class("_support_excluded", caps=frozenset({Capability.CLICK}))
         monkeypatch.setattr(
-            backend, "_REGISTRY",
+            backend,
+            "_REGISTRY",
             {good.id: good, bad_caps.id: bad_caps, bad_init.id: bad_init, excluded.id: excluded},
         )
         monkeypatch.setattr(backend, "_load_plugins", lambda: None)
         assert supported_backends(Capability.CLICK) == [good.id, excluded.id]
-        assert backend._find_supporting_backends(
-            Capability.CLICK, exclude_id=excluded.id
-        ) == [good.id]
+        assert backend._find_supporting_backends(Capability.CLICK, exclude_id=excluded.id) == [
+            good.id
+        ]
         with pytest.raises(TypeError, match="Capability"):
             supported_backends("click")
 
@@ -1408,14 +1468,10 @@ def test_backend_validation_and_safe_plugin_helpers_cover_bad_extensions() -> No
         backend._check_capability_arg("INVOKE", "unit")
     with pytest.raises(TypeError, match="NoneType"):
         backend._check_capability_arg(None, "unit")
-    fallback = backend._safe_call(
-        lambda: (_ for _ in ()).throw(RuntimeError()), default="fallback"
-    )
+    fallback = backend._safe_call(lambda: (_ for _ in ()).throw(RuntimeError()), default="fallback")
     assert fallback == "fallback"
 
-    good = _additional_backend_class(
-        backend, "_unit_caps", capabilities=[Capability.CLICK, "bad"]
-    )
+    good = _additional_backend_class(backend, "_unit_caps", capabilities=[Capability.CLICK, "bad"])
     assert backend._safe_capabilities(good()) == ["click"]
     none_caps = good()
     none_caps.capabilities = lambda: None

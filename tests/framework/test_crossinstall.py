@@ -268,6 +268,17 @@ def test_pytest11_auto_loads_both_plugins(crossinstall_venv):
     )
 
 
+def test_pytest11_exposes_dolphin_desktop_options(crossinstall_venv):
+    """A clean pytest process exposes the installed plugin's public options."""
+    py = crossinstall_venv["py"]
+    scratch = crossinstall_venv["workdir"] / "scratch"
+    r = _run([py, "-m", "pytest", "--help", "-p", "no:cacheprovider"], cwd=scratch)
+    out = r.stdout + "\n" + r.stderr
+    assert r.returncode == 0, f"pytest --help failed:\n{out}"
+    for option in ("--dolphin-backend", "--dolphin-timeout", "--dolphin-retry"):
+        assert option in out, f"pytest --help did not expose {option}:\n{out}"
+
+
 # Test 4 — dolphinsoft.step emits stdout-prefix events
 
 

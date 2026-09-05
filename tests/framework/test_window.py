@@ -1,6 +1,5 @@
 """Tests for Window locator factories and platform seams."""
 
-
 from __future__ import annotations
 
 import sys

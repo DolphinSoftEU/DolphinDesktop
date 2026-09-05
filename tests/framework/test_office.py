@@ -1,6 +1,5 @@
 """Tests for the Office COM wrapper objects."""
 
-
 from __future__ import annotations
 
 import sys

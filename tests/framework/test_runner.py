@@ -1,6 +1,5 @@
 """Tests for the Win32 seams exposed by :mod:`dolphin_desktop._runner`."""
 
-
 from __future__ import annotations
 
 import ctypes

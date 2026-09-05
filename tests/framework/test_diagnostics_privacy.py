@@ -1,6 +1,5 @@
 """Regression locks for logging, config validation, telemetry and diagnostics privacy."""
 
-
 from __future__ import annotations
 
 import json

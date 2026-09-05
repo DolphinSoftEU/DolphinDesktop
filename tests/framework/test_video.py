@@ -1,6 +1,5 @@
 """Tests for ffmpeg discovery and recorder edge cases."""
 
-
 from __future__ import annotations
 
 import os

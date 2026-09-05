@@ -1,6 +1,5 @@
 """Tests for :mod:`dolphin_desktop._crash`."""
 
-
 from __future__ import annotations
 
 

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, testpypi-preview]
   pull_request:
-    branches: [master]
+    branches: [master, testpypi-preview]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -30,6 +30,9 @@ jobs:
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
+
+      - name: Check lockfile
+        run: uv lock --check
 
       - name: Install dependencies
         run: uv sync --group dev --extra vision

@@ -6,7 +6,6 @@ in the pure Python part of the module can be exercised on a CI host without a
 real desktop application.
 """
 
-
 from __future__ import annotations
 
 import builtins

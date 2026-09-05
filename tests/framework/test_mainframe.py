@@ -5,7 +5,6 @@ tests keep the suite headless by replacing those boundaries with tiny fakes
 and exercise the protocol parsers and the public facade directly.
 """
 
-
 from __future__ import annotations
 
 import subprocess
@@ -1290,9 +1289,7 @@ def test_mainframe_screen_field_and_facade_wait_paths(monkeypatch) -> None:
         modified=True,
         attr_byte=0,
     )
-    assert repr(info) == (
-        "FieldInfo(row=1, col=2, length=3 [protected,hidden,numeric,modified])"
-    )
+    assert repr(info) == ("FieldInfo(row=1, col=2, length=3 [protected,hidden,numeric,modified])")
 
     terminal = Mock()
     terminal.screen.return_value = TerminalScreen(["Name     "], cursor=(1, 1))

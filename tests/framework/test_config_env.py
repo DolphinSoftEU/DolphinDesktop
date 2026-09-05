@@ -5,7 +5,6 @@ lookup fail instantly, and ``DOLPHIN_VIDEO=keepAll`` discards every
 recording — the mode comparison downstream is case-sensitive.
 """
 
-
 from __future__ import annotations
 
 import importlib

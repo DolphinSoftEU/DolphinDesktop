@@ -1,6 +1,5 @@
 """Tests for the action recorder's event interpretation."""
 
-
 from __future__ import annotations
 
 import ast
@@ -764,6 +763,7 @@ def _action(
         timestamp=timestamp,
     )
 
+
 def _install_win32gui(monkeypatch, *, title: str = "Target", cls: str = "TargetClass"):
     gui = SimpleNamespace(
         WindowFromPoint=lambda point: 11,
@@ -775,9 +775,11 @@ def _install_win32gui(monkeypatch, *, title: str = "Target", cls: str = "TargetC
     monkeypatch.setattr(_recorder, "_get_root_hwnd", lambda hwnd: hwnd)
     return gui
 
+
 def test_double_click_interval_falls_back_when_user32_fails(monkeypatch) -> None:
     monkeypatch.setattr(_recorder._user32, "GetDoubleClickTime", Mock(side_effect=OSError()))
     assert _recorder._double_click_interval() == 0.5
+
 
 def test_to_unicode_populates_modifier_state_and_returns_one_character(monkeypatch) -> None:
     observed: dict[str, object] = {}
@@ -807,14 +809,17 @@ def test_to_unicode_populates_modifier_state_and_returns_one_character(monkeypat
         "flags": 0,
     }
 
+
 @pytest.mark.parametrize("result", [0, 2])
 def test_to_unicode_returns_empty_for_non_single_character_result(monkeypatch, result) -> None:
     monkeypatch.setattr(_recorder._user32, "ToUnicode", Mock(return_value=result))
     assert _recorder._to_unicode(0x41, 30, False) == ""
 
+
 def test_to_unicode_returns_empty_when_user32_raises(monkeypatch) -> None:
     monkeypatch.setattr(_recorder._user32, "ToUnicode", Mock(side_effect=RuntimeError("layout")))
     assert _recorder._to_unicode(0x41, 30, False) == ""
+
 
 def test_vk_translation_ignores_modifiers_and_unknown_non_printable_keys(monkeypatch) -> None:
     monkeypatch.setattr(_recorder, "_to_unicode", lambda *args, **kwargs: "")
@@ -822,18 +827,17 @@ def test_vk_translation_ignores_modifiers_and_unknown_non_printable_keys(monkeyp
     assert _recorder._vk_to_sendkeys(0xFF, 0, False, False, False) is None
     assert _recorder._vk_to_sendkeys(0xFF, 0, False, True, False) is None
 
+
 def test_selector_and_action_rendering_cover_special_and_fallback_forms() -> None:
     assert _recorder._selector_to_call({"auto_id": "save"}) == "get_by_automation_id('save')"
-    assert (
-        _recorder._selector_to_call({"class_name": "Edit"})
-        == "get_by_class('Edit')"
-    )
+    assert _recorder._selector_to_call({"class_name": "Edit"}) == "get_by_class('Edit')"
     assert _recorder._selector_to_call({"title": "A", "class_name": "B"}) == (
         "locator(title='A', class_name='B')"
     )
 
     unknown = _recorder._action_to_line(_action("drag", selector={"auto_id": "x"}), "win")
     assert unknown == "    # drag: ''"
+
 
 def test_root_window_and_element_helpers_cover_success_none_and_failure(monkeypatch) -> None:
     gui = SimpleNamespace(
@@ -867,6 +871,7 @@ def test_root_window_and_element_helpers_cover_success_none_and_failure(monkeypa
     monkeypatch.setitem(sys.modules, "win32con", None)
     assert _recorder._get_root_hwnd(7) == 7
     assert _recorder._get_window_info(7) == ("", "")
+
 
 def test_focus_helpers_cover_uia_success_empty_and_failures(monkeypatch) -> None:
     element = SimpleNamespace(CurrentIsPassword=1)
@@ -907,6 +912,7 @@ def test_focus_helpers_cover_uia_success_empty_and_failures(monkeypatch) -> None
     uia.GetFocusedElement.side_effect = RuntimeError("COM")
     assert _recorder._focused_element_selector() == {}
 
+
 @pytest.mark.parametrize(
     ("app", "expected"),
     [(None, "EVERY"), ("Notepad", "title contains 'Notepad'")],
@@ -937,6 +943,7 @@ def test_start_logs_scope_and_starts_both_daemon_threads(monkeypatch, app, expec
     assert made[1][0] == rec._process_loop
     assert not rec._stopped.is_set()
 
+
 def test_stop_posts_quit_only_for_a_hook_thread_and_is_idempotent(monkeypatch) -> None:
     rec = Recorder()
     rec._hook_thread_id = 42
@@ -949,6 +956,7 @@ def test_stop_posts_quit_only_for_a_hook_thread_and_is_idempotent(monkeypatch) -
     post.assert_called_once_with(42, _recorder._WM_QUIT, 0, 0)
     assert rec._evt_queue.get_nowait() is None
 
+
 def test_wait_timeout_and_join_from_processor_thread_are_noops() -> None:
     rec = Recorder()
     assert rec.wait(0) is False
@@ -957,6 +965,7 @@ def test_wait_timeout_and_join_from_processor_thread_are_noops() -> None:
     rec._proc_thread = threading.current_thread()
     rec._join_processor()
     assert rec._proc_thread is threading.current_thread()
+
 
 def test_join_grants_one_extra_pass_when_an_event_arrives_during_idle_wait(caplog) -> None:
     class AliveThread:
@@ -977,12 +986,14 @@ def test_join_grants_one_extra_pass_when_an_event_arrives_during_idle_wait(caplo
 
     assert "recording is incomplete" in caplog.text
 
+
 def test_generate_code_writes_requested_output_file(tmp_path: Path) -> None:
     rec = Recorder(app="Demo", backend="win32")
     output = tmp_path / "recorded.py"
     code = rec.generate_code(output, func_name="test_demo")
     assert output.read_text(encoding="utf-8") == code
     assert "def test_demo()" in code
+
 
 def test_process_loop_handles_mouse_key_unknown_and_empty_queue(monkeypatch) -> None:
     rec = Recorder()
@@ -1004,6 +1015,7 @@ def test_process_loop_handles_mouse_key_unknown_and_empty_queue(monkeypatch) -> 
     key.assert_called_once_with(65, 30, True, False, False, 4.0, ralt=True)
     assert rec._processed == 3
 
+
 def test_process_loop_retries_after_an_empty_queue(monkeypatch) -> None:
     class EmptyThenStopQueue:
         def __init__(self):
@@ -1020,6 +1032,7 @@ def test_process_loop_retries_after_an_empty_queue(monkeypatch) -> None:
     rec._evt_queue = event_queue  # type: ignore[assignment]
     rec._process_loop()
     assert event_queue.calls == 2
+
 
 def test_handle_mouse_covers_window_lookup_failure_and_app_filter(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "win32gui", None)
@@ -1038,6 +1051,7 @@ def test_handle_mouse_covers_window_lookup_failure_and_app_filter(monkeypatch) -
     assert filtered.actions() == []
     element.assert_not_called()
 
+
 def test_handle_mouse_upgrades_second_left_press_to_double_click(monkeypatch) -> None:
     _install_win32gui(monkeypatch, title="Target", cls="Dialog")
     selectors = iter([{"auto_id": "first"}, {}])
@@ -1054,6 +1068,7 @@ def test_handle_mouse_upgrades_second_left_press_to_double_click(monkeypatch) ->
     assert actions[0].selector == {"auto_id": "first"}
     assert (actions[0].x, actions[0].y, actions[0].timestamp) == (13, 17, 1.2)
     assert rec._pending_selector == {"auto_id": "first"}
+
 
 def test_handle_key_covers_window_lookup_failure_filter_and_modifier_only(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "win32gui", None)
@@ -1079,6 +1094,7 @@ def test_handle_key_covers_window_lookup_failure_filter_and_modifier_only(monkey
     ignored._handle_key(_recorder._VK_SHIFT, 0, False, False, False, 3.0)
     assert ignored.actions() == []
 
+
 @pytest.mark.parametrize(
     ("actions", "expected_connection", "expected_window"),
     [
@@ -1095,6 +1111,7 @@ def test_build_code_covers_unfiltered_connection_variants(
     assert expected_connection in code
     assert expected_window in code
     ast.parse(code)
+
 
 def test_build_code_declares_multiple_windows_and_passes_when_empty() -> None:
     rec = Recorder()
@@ -1113,6 +1130,7 @@ def test_build_code_declares_multiple_windows_and_passes_when_empty() -> None:
     empty = "\n".join(rec._build_code([], "test_empty"))
     assert 'app = desktop.connect(title_re=".*")  # TODO: specify app' in empty
     assert "pass  # no actions recorded" in empty
+
 
 class _HookAPI:
     def __init__(self, callbacks, handles=(101, 202), dispatch=None, message_returns=(1,)):
@@ -1160,6 +1178,7 @@ class _HookAPI:
     def PostThreadMessageW(self, *args):  # noqa: N802
         return 1
 
+
 def test_hook_loop_queues_mouse_and_keyboard_events_and_stops_on_ctrl_stop_key(monkeypatch) -> None:
     callbacks: dict[int, object] = {}
     structs: list[ctypes.Structure] = []
@@ -1203,9 +1222,7 @@ def test_hook_loop_queues_mouse_and_keyboard_events_and_stops_on_ctrl_stop_key(m
 
     api.dispatch = dispatch
     monkeypatch.setattr(_recorder, "_HOOKPROC", lambda function: function)
-    monkeypatch.setattr(
-        ctypes.windll, "kernel32", SimpleNamespace(GetCurrentThreadId=lambda: 77)
-    )
+    monkeypatch.setattr(ctypes.windll, "kernel32", SimpleNamespace(GetCurrentThreadId=lambda: 77))
     monkeypatch.setattr(_recorder, "_user32", api)
 
     rec._hook_loop()
@@ -1223,6 +1240,7 @@ def test_hook_loop_queues_mouse_and_keyboard_events_and_stops_on_ctrl_stop_key(m
         events.append(event)
     assert events[0][:4] == ("mouse", "click", 12, 34)
     assert events[1][:2] == ("key", 0x41)
+
 
 def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None:
     class FullQueue:
@@ -1260,9 +1278,7 @@ def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None
     api.dispatch = dispatch
 
     monkeypatch.setattr(_recorder, "_HOOKPROC", lambda function: function)
-    monkeypatch.setattr(
-        ctypes.windll, "kernel32", SimpleNamespace(GetCurrentThreadId=lambda: 88)
-    )
+    monkeypatch.setattr(ctypes.windll, "kernel32", SimpleNamespace(GetCurrentThreadId=lambda: 88))
     monkeypatch.setattr(_recorder, "_user32", api)
 
     rec._hook_loop()

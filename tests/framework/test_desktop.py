@@ -5,7 +5,6 @@ These tests keep those seams deterministic by replacing pywinauto, process
 launchers, network probes, and stack factories with mocks.
 """
 
-
 from __future__ import annotations
 
 import atexit
@@ -168,19 +167,18 @@ def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) 
     monkeypatch.setattr(desktop, "_launch_hidden", hidden)
     desktop._resolved_hidden = True
 
-    assert desktop.launch(
-        "hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1
-    ) is hidden_result
-    hidden.assert_called_once_with(
-        "hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1
+    assert (
+        desktop.launch("hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1) is hidden_result
     )
+    hidden.assert_called_once_with("hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1)
     hidden.reset_mock()
-    assert desktop._launch_raw(
-        "raw-hidden.exe", backend="uia", timeout=4, work_dir="raw", startup_delay=0
-    ) is hidden_result
-    hidden.assert_called_once_with(
-        "raw-hidden.exe", timeout=4, work_dir="raw", startup_delay=0
+    assert (
+        desktop._launch_raw(
+            "raw-hidden.exe", backend="uia", timeout=4, work_dir="raw", startup_delay=0
+        )
+        is hidden_result
     )
+    hidden.assert_called_once_with("raw-hidden.exe", timeout=4, work_dir="raw", startup_delay=0)
 
 
 def test_raw_launch_and_connect_success_and_errors(monkeypatch) -> None:
@@ -278,9 +276,10 @@ def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
     desktop = desktop_module.Desktop(hidden=True, default_timeout_ms=42)
     ensure = Mock()
     monkeypatch.setattr(desktop, "_ensure_hidden_mode", ensure)
-    assert desktop._launch_hidden(
-        "hidden.exe", timeout=4, work_dir="wd", startup_delay=0.2
-    ) == "hidden-app"
+    assert (
+        desktop._launch_hidden("hidden.exe", timeout=4, work_dir="wd", startup_delay=0.2)
+        == "hidden-app"
+    )
     ensure.assert_called_once_with()
     launcher.assert_called_once_with("hidden.exe", work_dir="wd")
     close_handle.assert_called_once_with(444)
@@ -312,13 +311,16 @@ def test_connect_builds_all_criteria_and_handles_failures(monkeypatch) -> None:
     monkeypatch.setattr(desktop_module, "Application", application)
     desktop = desktop_module.Desktop(backend="uia", hidden=False, default_timeout_ms=11)
 
-    assert desktop.connect(
-        title="Demo",
-        title_re=".*Demo.*",
-        class_name="Window",
-        found_index=2,
-        timeout=3,
-    ) == "connected"
+    assert (
+        desktop.connect(
+            title="Demo",
+            title_re=".*Demo.*",
+            class_name="Window",
+            found_index=2,
+            timeout=3,
+        )
+        == "connected"
+    )
     py_app.connect.assert_called_once_with(
         timeout=3,
         title="Demo",
@@ -365,13 +367,16 @@ def test_legacy_factory_qt_launch_and_script_builders(monkeypatch) -> None:
     monkeypatch.setattr(legacy, "launch", launch)
     monkeypatch.setenv("QT_ACCESSIBILITY", "old")
     monkeypatch.delenv("QT_LOGGING_RULES", raising=False)
-    assert legacy.launch_qt(
-        "qt.exe",
-        timeout=2,
-        work_dir="qt-wd",
-        startup_delay=0,
-        qt_env={"QT_LOGGING_RULES": "*.debug=true"},
-    ) == "qt-app"
+    assert (
+        legacy.launch_qt(
+            "qt.exe",
+            timeout=2,
+            work_dir="qt-wd",
+            startup_delay=0,
+            qt_env={"QT_LOGGING_RULES": "*.debug=true"},
+        )
+        == "qt-app"
+    )
     assert launch.call_args.args == ("qt.exe",)
     assert launch.call_args.kwargs == {
         "timeout": 2,
@@ -395,9 +400,7 @@ def test_legacy_factory_qt_launch_and_script_builders(monkeypatch) -> None:
     launch_qt = Mock(return_value="qt-script")
     monkeypatch.setattr(legacy, "launch_qt", launch_qt)
     assert legacy.launch_qt_python_script("qt.py", args=["--flag", "two words"]) == "qt-script"
-    assert launch_qt.call_args.args[0] == (
-        '"C:\\Python\\python.exe" "qt.py" "--flag" "two words"'
-    )
+    assert launch_qt.call_args.args[0] == ('"C:\\Python\\python.exe" "qt.py" "--flag" "two words"')
 
 
 def test_launch_qt_restores_environment_when_launch_fails(monkeypatch) -> None:
@@ -569,17 +572,18 @@ def test_stack_factories_delegate_all_arguments(monkeypatch) -> None:
     build_terminal = Mock(return_value=Mock())
     monkeypatch.setattr(mainframe, "_build_terminal", build_terminal)
 
-    assert desktop.launch_delphi(
-        "demo.exe", timeout=2, work_dir="wd", startup_delay=0.3, title_re="Demo"
-    ) == "delphi"
+    assert (
+        desktop.launch_delphi(
+            "demo.exe", timeout=2, work_dir="wd", startup_delay=0.3, title_re="Demo"
+        )
+        == "delphi"
+    )
     delphi._launch_delphi.assert_called_once_with(
         desktop, "demo.exe", timeout=2, startup_delay=0.3, work_dir="wd", title_re="Demo"
     )
     assert desktop.attach_delphi(
         title="Demo", title_re=".*", process=5, path="demo.exe", timeout=3
-    ) == (
-        "delphi-attached"
-    )
+    ) == ("delphi-attached")
     delphi._attach_delphi.assert_called_once_with(
         desktop, title="Demo", title_re=".*", process=5, path="demo.exe", timeout=3
     )
@@ -587,15 +591,18 @@ def test_stack_factories_delegate_all_arguments(monkeypatch) -> None:
     assert desktop.sap(timeout=6) == "sap"
     sap.SapGui.connect.assert_called_once_with(timeout=6)
 
-    assert desktop.launch_oracle_forms(
-        jar="client.jar",
-        classpath="libs",
-        main_class="Main",
-        java_args=["-Xmx1g"],
-        title_re="Forms",
-        timeout=8,
-        startup_delay=1,
-    ) == "forms"
+    assert (
+        desktop.launch_oracle_forms(
+            jar="client.jar",
+            classpath="libs",
+            main_class="Main",
+            java_args=["-Xmx1g"],
+            title_re="Forms",
+            timeout=8,
+            startup_delay=1,
+        )
+        == "forms"
+    )
     oracle._launch_oracle_forms.assert_called_once_with(
         desktop,
         jnlp=None,
@@ -660,9 +667,7 @@ def test_find_process_builds_criteria_and_returns_none_on_attach_error(monkeypat
     assert desktop.find_process(name="demo.exe", pid=7, title="Demo", title_re=".*Demo.*") == (
         "found"
     )
-    connect.assert_called_once_with(
-        path="demo.exe", process=7, title="Demo", title_re=".*Demo.*"
-    )
+    connect.assert_called_once_with(path="demo.exe", process=7, title="Demo", title_re=".*Demo.*")
 
     with pytest.raises(ValueError, match="At least one"):
         desktop.find_process()

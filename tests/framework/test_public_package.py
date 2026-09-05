@@ -2,15 +2,20 @@
 
 import importlib
 import warnings
+from importlib.metadata import version
 
 import dolphin_desktop
 
 
 def test_every_declared_public_name_is_available() -> None:
     """The documented facade must not advertise stale or private names."""
-    assert dolphin_desktop.__version__ == "0.2.0"
     assert dolphin_desktop.__all__
     assert all(hasattr(dolphin_desktop, name) for name in dolphin_desktop.__all__)
+
+
+def test_package_version_matches_metadata() -> None:
+    """The public version must match the installed distribution metadata."""
+    assert dolphin_desktop.__version__ == version("dolphin-desktop")
 
 
 def test_top_level_reexports_keep_their_canonical_objects() -> None:

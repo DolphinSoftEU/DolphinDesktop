@@ -3,7 +3,6 @@
 
 # Trace run directory naming
 
-
 from __future__ import annotations
 
 import builtins
@@ -341,6 +340,7 @@ class _Options:
     def getoption(self, name, default=None):
         return self.options.get(name, default)
 
+
 class _Item:
     def __init__(self, tmp_path: Path, nodeid: str = "tests/test_x.py::test_y", **options) -> None:
         self.nodeid = nodeid
@@ -351,6 +351,7 @@ class _Item:
 
     def add_report_section(self, when: str, key: str, content: str) -> None:
         self.sections.append((when, key, content))
+
 
 def _report(*, failed: bool, outcome: str | None = None, **kwargs):
     return SimpleNamespace(
@@ -364,6 +365,7 @@ def _report(*, failed: bool, outcome: str | None = None, **kwargs):
         **kwargs,
     )
 
+
 def _request(tmp_path: Path, nodeid: str = "tests/test_x.py::test_y", **options):
     node = SimpleNamespace(
         nodeid=nodeid,
@@ -371,6 +373,7 @@ def _request(tmp_path: Path, nodeid: str = "tests/test_x.py::test_y", **options)
         get_closest_marker=lambda _name: None,
     )
     return SimpleNamespace(node=node, config=_Options(tmp_path, **options))
+
 
 def _fake_allure(calls: list[tuple], file_calls: list[tuple] | None = None):
     class _AttachmentType:
@@ -392,6 +395,7 @@ def _fake_allure(calls: list[tuple], file_calls: list[tuple] | None = None):
     module.attachment_type = _AttachmentType
     module.attach = _Attach()
     return module
+
 
 class TestBasicHooksAndOptions:
     def test_sessionstart_clears_previous_report_rows(self):
@@ -640,6 +644,7 @@ class TestBasicHooksAndOptions:
         assert added[0][1]["default"] == "uia"
         assert added[6][1]["choices"] == ["off", "keepfailedonly", "keepall"]
 
+
 class TestFixtures:
     def test_session_fixtures_resolve_cli_env_and_defaults(self, monkeypatch, tmp_path):
         request = SimpleNamespace(
@@ -756,6 +761,7 @@ class TestFixtures:
         next(generator)
         with pytest.raises(StopIteration):
             next(generator)
+
 
 class TestTraceAndVideoFixtures:
     def test_trace_fixture_is_noop_when_disabled(self, monkeypatch, tmp_path):
@@ -936,6 +942,7 @@ class TestTraceAndVideoFixtures:
             next(generator)
         assert events == ["first.exe", "second.exe"]
 
+
 class TestAllureAndVideoHelpers:
     def test_allure_availability_returns_false_when_import_fails(self, monkeypatch):
         real_import = builtins.__import__
@@ -1111,6 +1118,7 @@ class TestAllureAndVideoHelpers:
         monkeypatch.setattr(plugin, "_attach_allure_video", lambda _path: None)
         assert plugin._handle_video(item, _report(failed=False), "call") is not None
 
+
 class TestReportCollection:
     def test_makereport_calls_collector_after_yield(self, monkeypatch):
         seen: list[tuple] = []
@@ -1269,6 +1277,7 @@ class TestReportCollection:
         ]
         plugin._session_reports.clear()
 
+
 class TestSessionReports:
     def test_sessionfinish_returns_without_reports(self, monkeypatch):
         from dolphin_desktop import _application
@@ -1387,6 +1396,7 @@ class TestSessionReports:
         plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
         assert pids == set()
         assert live == set()
+
 
 class TestHtmlReport:
     def test_generate_html_renders_all_statuses_and_artifact_links(self, tmp_path):

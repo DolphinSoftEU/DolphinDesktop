@@ -7,9 +7,7 @@ import pytest
 import dolphin_desktop._qt_agent as qt_agent
 
 
-@pytest.mark.parametrize(
-    ("version", "attribute"), [("5", "QT5_AGENT_DLL"), ("6", "QT6_AGENT_DLL")]
-)
+@pytest.mark.parametrize(("version", "attribute"), [("5", "QT5_AGENT_DLL"), ("6", "QT6_AGENT_DLL")])
 def test_agent_dll_for_returns_the_requested_existing_dll(
     tmp_path, monkeypatch, version, attribute
 ) -> None:

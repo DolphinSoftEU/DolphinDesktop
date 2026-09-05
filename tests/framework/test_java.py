@@ -5,7 +5,6 @@ JVM.  Apart from making the suite runnable on CI, this lets us exercise the
 failure paths which are difficult to trigger reliably with a real Swing app.
 """
 
-
 from __future__ import annotations
 
 import ctypes

@@ -1,6 +1,5 @@
 """Tests for specialized UI elements."""
 
-
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -409,9 +408,7 @@ def test_specialized_elements_cover_selection_tree_list_tab_and_toolbar(monkeypa
     assert tree.select_item_by_path() is tree
     assert tree.select_item_by_path("Leaf") is tree
 
-    selected = SimpleNamespace(
-        is_selected=lambda: True, window_text=lambda: "Selected"
-    )
+    selected = SimpleNamespace(is_selected=lambda: True, window_text=lambda: "Selected")
     toggled = Mock()
     toggled.is_selected.side_effect = RuntimeError("no selection pattern")
     toggled.get_toggle_state.return_value = 1

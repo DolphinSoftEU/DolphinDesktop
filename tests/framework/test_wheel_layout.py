@@ -81,8 +81,7 @@ def test_hatch_sdist_contains_no_top_level_dolphin_files():
 
         forbidden = [name for name in names if re.search(r"(?:^|/)src/dolphin(?:/|$)", name)]
         assert not forbidden, (
-            f"sdist {archives[0].name} contains a top-level ``dolphin/`` tree: "
-            f"{forbidden!r}"
+            f"sdist {archives[0].name} contains a top-level ``dolphin/`` tree: {forbidden!r}"
         )
 
 

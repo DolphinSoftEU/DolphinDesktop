@@ -2071,6 +2071,7 @@ class _TreeCollection:
     def __call__(self, index):
         return self.items[index]
 
+
 def test_sap_tree_search_helpers_match_aliases_text_and_cycles() -> None:
     import dolphin_desktop._sap as sap
 
@@ -2086,15 +2087,18 @@ def test_sap_tree_search_helpers_match_aliases_text_and_cycles() -> None:
     result = []
     sap._find_all_in_tree(root, type="GuiButton", seen=set(), depth=4, result=result)
     assert result == [leaf]
-    assert sap._find_by_text(
-        root,
-        text="sav",
-        comp_type="GuiButton",
-        partial=True,
-        case_sensitive=False,
-        seen=set(),
-        depth=4,
-    ) is leaf
+    assert (
+        sap._find_by_text(
+            root,
+            text="sav",
+            comp_type="GuiButton",
+            partial=True,
+            case_sensitive=False,
+            seen=set(),
+            depth=4,
+        )
+        is leaf
+    )
     assert sap._component_key(leaf) == "leaf"
     assert sap._key_seen_before("leaf", {"leaf"}) is True
 
@@ -2106,6 +2110,7 @@ class _SessionCollection:
 
     def __call__(self, index):
         return self.items[index]
+
 
 def test_sap_session_tree_queries_and_locator_table_fallbacks() -> None:
     import dolphin_desktop._sap as sap
@@ -2185,6 +2190,7 @@ class _GuiCollection:
 
     def __call__(self, index):
         return self._items[index]
+
 
 def test_sap_gui_and_connection_facades_cover_com_collections(monkeypatch) -> None:
     import dolphin_desktop._sap as sap

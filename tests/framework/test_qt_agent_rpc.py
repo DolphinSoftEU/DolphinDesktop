@@ -5,7 +5,6 @@ substituted so the response framing, id validation and architecture checks
 can be exercised on their own.
 """
 
-
 from __future__ import annotations
 
 import ctypes

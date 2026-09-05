@@ -4,7 +4,6 @@ The agent client is replaced by a scripted stub: these cover what the
 wrappers do with a reply, not how the reply reached them.
 """
 
-
 from __future__ import annotations
 
 from unittest.mock import Mock

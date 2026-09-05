@@ -1,6 +1,5 @@
 """Tests for the `dolphin spy` command's argument handling and pick wiring."""
 
-
 from __future__ import annotations
 
 from argparse import Namespace

@@ -1,6 +1,5 @@
 """Tests for the Oracle Forms facade."""
 
-
 from __future__ import annotations
 
 import ctypes
@@ -157,6 +156,7 @@ def test_wait_for_status_rejects_empty_needle_and_times_out() -> None:
 def _empty_app() -> forms.OracleFormsApp:
     return forms.OracleFormsApp(Mock())
 
+
 def test_block_and_app_accessors_expose_their_wrapped_objects() -> None:
     application = Mock()
     app = forms.OracleFormsApp(application, title_re="Forms")
@@ -164,6 +164,7 @@ def test_block_and_app_accessors_expose_their_wrapped_objects() -> None:
     assert app.application is application
     assert app.block("EMP").name == "EMP"
     assert repr(app.block("EMP")) == "OracleFormsBlock(name='EMP')"
+
 
 @pytest.mark.parametrize(
     "error",
@@ -175,12 +176,14 @@ def test_lov_is_open_returns_false_when_lookup_fails(error: Exception) -> None:
 
     assert forms.OracleFormsLov(app).is_open() is False
 
+
 def test_form_window_title_returns_empty_when_the_native_window_fails() -> None:
     app = SimpleNamespace(
         _application=SimpleNamespace(window=Mock(side_effect=RuntimeError("gone")))
     )
 
     assert forms.OracleFormsWindow(app).title() == ""
+
 
 def test_form_window_wait_ready_pumps_jab_and_releases_the_root_context(monkeypatch) -> None:
     session = Mock()
@@ -199,6 +202,7 @@ def test_form_window_wait_ready_pumps_jab_and_releases_the_root_context(monkeypa
     session.get_root_context.assert_called_once_with(123)
     session.release.assert_called_once_with(7, 11)
 
+
 def test_form_window_wait_ready_swallows_probe_errors_then_times_out(monkeypatch) -> None:
     app = _empty_app()
     app._primary_hwnd = Mock(side_effect=RuntimeError("JAB unavailable"))
@@ -211,6 +215,7 @@ def test_form_window_wait_ready_swallows_probe_errors_then_times_out(monkeypatch
         forms.OracleFormsWindow(app).wait_ready(timeout=1)
 
     sleep.assert_called_once_with(0.25)
+
 
 def test_backend_class_helpers_resolve_and_delegate_capabilities(monkeypatch) -> None:
     backend = Mock()
@@ -226,6 +231,7 @@ def test_backend_class_helpers_resolve_and_delegate_capabilities(monkeypatch) ->
     backend.supports.assert_called_once_with("jab")
     backend.require_capability.assert_called_once_with("jab")
 
+
 def test_function_key_handles_missing_window_by_using_foreground_fallback(monkeypatch) -> None:
     app = _empty_app()
     app._primary_hwnd = Mock(side_effect=forms.OracleFormsError("no window"))
@@ -237,6 +243,7 @@ def test_function_key_handles_missing_window_by_using_foreground_fallback(monkey
 
     app.bring_to_foreground.assert_called_once_with()
     press.assert_called_once_with("^Q")
+
 
 def test_request_java_focus_requests_and_releases_the_root_context(monkeypatch) -> None:
     session = Mock()
@@ -253,6 +260,7 @@ def test_request_java_focus_requests_and_releases_the_root_context(monkeypatch) 
     session.get_root_context.assert_called_once_with(88)
     session.request_focus.assert_called_once_with(4, 9)
     session.release.assert_called_once_with(4, 9)
+
 
 def test_request_java_focus_ignores_missing_context_and_session_errors(monkeypatch) -> None:
     session = Mock()
@@ -273,6 +281,7 @@ def test_request_java_focus_ignores_missing_context_and_session_errors(monkeypat
     )
     _empty_app()._request_java_focus(88)
 
+
 def test_request_java_focus_releases_context_when_focus_request_raises(monkeypatch) -> None:
     session = Mock()
     session.get_root_context.return_value = (4, 9)
@@ -286,6 +295,7 @@ def test_request_java_focus_releases_context_when_focus_request_raises(monkeypat
     _empty_app()._request_java_focus(88)
 
     session.release.assert_called_once_with(4, 9)
+
 
 def test_all_command_helpers_forward_their_forms_key(monkeypatch) -> None:
     app = _empty_app()
@@ -308,6 +318,7 @@ def test_all_command_helpers_forward_their_forms_key(monkeypatch) -> None:
 
     assert function_key.call_args_list == [call(key) for _, key in expected]
 
+
 def test_status_line_uses_the_role_fallback_and_description() -> None:
     named = Mock()
     named.exists.return_value = False
@@ -319,6 +330,7 @@ def test_status_line_uses_the_role_fallback_and_description() -> None:
     app._locator = Mock(side_effect=[named, role])
 
     assert app.status_line() == "Ready."
+
 
 def test_status_line_handles_missing_locators_and_reader_errors() -> None:
     named = Mock()
@@ -344,6 +356,7 @@ def test_status_line_handles_missing_locators_and_reader_errors() -> None:
     assert app.status_line() == ""
     bad.close.assert_called_once_with()
 
+
 def test_app_title_close_and_context_manager_delegate_to_application() -> None:
     application = Mock()
     application.window.return_value.title.return_value = "Forms"
@@ -359,6 +372,7 @@ def test_app_title_close_and_context_manager_delegate_to_application() -> None:
         assert entered is app
     assert application.kill.call_count == 3
 
+
 def test_locator_and_all_locators_are_scoped_to_the_primary_hwnd(monkeypatch) -> None:
     locator = Mock()
     locator.all.return_value = ["first", "second"]
@@ -373,6 +387,7 @@ def test_locator_and_all_locators_are_scoped_to_the_primary_hwnd(monkeypatch) ->
         call(42, control_type="push button", title="Save", title_re="^Save$"),
         call(42, control_type="label", title=None, title_re=None),
     ]
+
 
 def test_bring_to_foreground_attaches_threads_and_detaches_them(monkeypatch) -> None:
     user32 = Mock()
@@ -394,6 +409,7 @@ def test_bring_to_foreground_attaches_threads_and_detaches_them(monkeypatch) -> 
     user32.SetFocus.assert_called_once_with(42)
     assert user32.AttachThreadInput.call_args_list == [call(10, 20, True), call(10, 20, False)]
 
+
 def test_bring_to_foreground_logs_when_windows_refuses_activation(monkeypatch) -> None:
     user32 = Mock()
     user32.GetForegroundWindow.return_value = 99
@@ -412,6 +428,7 @@ def test_bring_to_foreground_logs_when_windows_refuses_activation(monkeypatch) -
     logger.warning.assert_called_once()
     user32.AttachThreadInput.assert_not_called()
 
+
 def test_bring_to_foreground_logs_native_exceptions(monkeypatch) -> None:
     user32 = Mock()
     user32.GetForegroundWindow.side_effect = RuntimeError("user32 unavailable")
@@ -426,6 +443,7 @@ def test_bring_to_foreground_logs_native_exceptions(monkeypatch) -> None:
 
     logger.warning.assert_called_once()
 
+
 def test_bring_to_foreground_logs_when_the_window_cannot_be_found(monkeypatch) -> None:
     logger = Mock()
     monkeypatch.setattr(forms, "_log", logger)
@@ -435,6 +453,7 @@ def test_bring_to_foreground_logs_when_the_window_cannot_be_found(monkeypatch) -
     app.bring_to_foreground()
 
     logger.warning.assert_called_once()
+
 
 class _FakeWindow:
     def __init__(self, class_name: str, title: str, handle: int) -> None:
@@ -448,6 +467,7 @@ class _FakeWindow:
     def window_text(self) -> str:
         return self._title
 
+
 def test_primary_hwnd_prefers_matching_java_window() -> None:
     wins = [
         _FakeWindow("Notepad", "Other", 1),
@@ -459,12 +479,14 @@ def test_primary_hwnd_prefers_matching_java_window() -> None:
 
     assert app._primary_hwnd() == 2
 
+
 def test_primary_hwnd_falls_back_to_the_first_candidate_when_title_does_not_match() -> None:
     wins = [_FakeWindow("SunAwtFrame", "Oracle Forms", 2), _FakeWindow("SunAwtDialog", "Dialog", 3)]
     application = SimpleNamespace(_app=SimpleNamespace(windows=Mock(return_value=wins)))
     app = forms.OracleFormsApp(application, title_re="Missing")
 
     assert app._primary_hwnd() == 2
+
 
 def test_primary_hwnd_uses_non_java_windows_when_no_java_window_exists() -> None:
     wins = [
@@ -476,6 +498,7 @@ def test_primary_hwnd_uses_non_java_windows_when_no_java_window_exists() -> None
 
     assert app._primary_hwnd() == 6
 
+
 def test_primary_hwnd_raises_a_forms_error_when_window_enumeration_fails() -> None:
     application = SimpleNamespace(
         _app=SimpleNamespace(windows=Mock(side_effect=RuntimeError("closed")))
@@ -484,8 +507,10 @@ def test_primary_hwnd_raises_a_forms_error_when_window_enumeration_fails() -> No
     with pytest.raises(forms.OracleFormsError, match="no top-level window"):
         _empty_app_with_application(application)._primary_hwnd()
 
+
 def _empty_app_with_application(application) -> forms.OracleFormsApp:
     return forms.OracleFormsApp(application)
+
 
 def _launch_kwargs(**overrides):
     values = {
@@ -501,6 +526,7 @@ def _launch_kwargs(**overrides):
     values.update(overrides)
     return values
 
+
 def test_launch_oracle_forms_requires_exactly_one_client_source(monkeypatch) -> None:
     ensure = Mock()
     monkeypatch.setattr(forms.JavaAccessBridge, "ensure_enabled", ensure)
@@ -510,6 +536,7 @@ def test_launch_oracle_forms_requires_exactly_one_client_source(monkeypatch) -> 
     with pytest.raises(forms.OracleFormsError, match="exactly one"):
         forms._launch_oracle_forms(Mock(), **_launch_kwargs(jnlp="a", jar="b"))
     ensure.assert_not_called()
+
 
 def test_launch_oracle_forms_uses_javaws_for_jnlp(monkeypatch) -> None:
     desktop = Mock()
@@ -529,6 +556,7 @@ def test_launch_oracle_forms_uses_javaws_for_jnlp(monkeypatch) -> None:
         "javaws http://example/forms.jnlp", timeout=4.0, startup_delay=0.5
     )
 
+
 def test_launch_oracle_forms_falls_back_to_java_for_jnlp(monkeypatch) -> None:
     desktop = Mock()
     desktop.launch_java.return_value = Mock()
@@ -539,6 +567,7 @@ def test_launch_oracle_forms_falls_back_to_java_for_jnlp(monkeypatch) -> None:
     forms._launch_oracle_forms(desktop, **_launch_kwargs(jnlp="forms.jnlp"))
 
     desktop.launch_java.assert_called_once_with("java forms.jnlp", timeout=4.0, startup_delay=0.5)
+
 
 def test_launch_oracle_forms_builds_a_jar_command_with_java_args(monkeypatch) -> None:
     desktop = Mock()
@@ -552,11 +581,12 @@ def test_launch_oracle_forms_builds_a_jar_command_with_java_args(monkeypatch) ->
     )
 
     desktop.launch_java.assert_called_once_with(
-        r'java -Djava.accessibility=true -Doracle.forms.accessible=true -Xmx256m '
+        r"java -Djava.accessibility=true -Doracle.forms.accessible=true -Xmx256m "
         r'-jar "C:\Forms App\client.jar"',
         timeout=4.0,
         startup_delay=0.5,
     )
+
 
 def test_launch_oracle_forms_builds_a_main_class_command_with_classpath(monkeypatch) -> None:
     desktop = Mock()
@@ -574,11 +604,12 @@ def test_launch_oracle_forms_builds_a_main_class_command_with_classpath(monkeypa
     )
 
     desktop.launch_java.assert_called_once_with(
-        r'java -Djava.accessibility=true -Doracle.forms.accessible=true '
+        r"java -Djava.accessibility=true -Doracle.forms.accessible=true "
         r'-cp "C:\Forms Lib\forms.jar" com.example.Forms',
         timeout=4.0,
         startup_delay=0.5,
     )
+
 
 def test_attach_oracle_forms_enables_jab_builds_criteria_and_connects(monkeypatch) -> None:
     desktop = Mock()
@@ -608,6 +639,7 @@ def test_attach_oracle_forms_enables_jab_builds_criteria_and_connects(monkeypatc
     )
     desktop.connect.assert_called_once_with(timeout=3.0, title="Forms", process=77)
 
+
 def test_find_java_and_javaws_use_java_home_when_binaries_exist(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -620,17 +652,20 @@ def test_find_java_and_javaws_use_java_home_when_binaries_exist(
     assert forms._find_java() == str(bindir / "java.exe")
     assert forms._find_javaws() == str(bindir / "javaws.exe")
 
+
 def test_find_java_and_javaws_fall_back_without_java_home(monkeypatch) -> None:
     monkeypatch.setattr(forms.JavaAccessBridge, "java_home", Mock(return_value=None))
 
     assert forms._find_java() == "java"
     assert forms._find_javaws() is None
 
+
 def _patch_post_message(monkeypatch, returns):
     user32 = Mock()
     user32.PostMessageW.side_effect = returns
     monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=user32))
     return user32
+
 
 def test_post_key_to_window_posts_normal_and_extended_key_pairs(monkeypatch) -> None:
     user32 = _patch_post_message(monkeypatch, [1, 1])
@@ -647,9 +682,10 @@ def test_post_key_to_window_posts_normal_and_extended_key_pairs(monkeypatch) -> 
         call(55, 0x0101, 0x26, 0xC1000001),
     ]
 
+
 @pytest.mark.parametrize(
     ("returns", "expected"),
-        [([0, 1], False), ([1, 1], True), ([1, 0, 0], False)],
+    [([0, 1], False), ([1, 1], True), ([1, 0, 0], False)],
 )
 def test_post_key_to_window_reports_postmessage_failures_and_retries_release(
     monkeypatch, returns, expected
@@ -657,6 +693,7 @@ def test_post_key_to_window_reports_postmessage_failures_and_retries_release(
     _patch_post_message(monkeypatch, returns)
 
     assert forms._post_key_to_window(55, "F10") is expected
+
 
 def test_post_key_to_window_declines_modifiers_and_unknown_keys(monkeypatch) -> None:
     _patch_post_message(monkeypatch, [1, 1])

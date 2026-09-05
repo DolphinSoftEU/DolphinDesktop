@@ -5,7 +5,6 @@ portable across VCL and LCL and must therefore be testable without a Delphi
 or Lazarus executable installed on the runner.
 """
 
-
 from __future__ import annotations
 
 from types import SimpleNamespace
