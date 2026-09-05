@@ -130,25 +130,21 @@ class TestImageElementFocusClick:
 
 
 class TestImageLocatorMissingCv2:
-    def test_find_raises_runtime_error_without_cv2(self):
-        try:
-            import cv2  # noqa: F401
+    def test_find_raises_runtime_error_without_cv2(self, monkeypatch):
+        from dolphin_desktop import _image
 
-            pytest.skip("cv2 is installed — cannot test missing-cv2 path")
-        except ImportError:
-            pass
+        monkeypatch.setattr(_image, "_CV2_ERROR", ImportError("no cv2"))
+        monkeypatch.setattr(_image, "_cv2", None)
 
         loc = ImageLocator("nonexistent.png")
         with pytest.raises(RuntimeError, match="opencv-python"):
             loc.find()
 
-    def test_find_all_raises_without_cv2(self):
-        try:
-            import cv2  # noqa: F401
+    def test_find_all_raises_without_cv2(self, monkeypatch):
+        from dolphin_desktop import _image
 
-            pytest.skip("cv2 is installed")
-        except ImportError:
-            pass
+        monkeypatch.setattr(_image, "_CV2_ERROR", ImportError("no cv2"))
+        monkeypatch.setattr(_image, "_cv2", None)
 
         loc = ImageLocator("nonexistent.png")
         with pytest.raises(RuntimeError, match="opencv-python"):
@@ -197,24 +193,22 @@ def test_pixel_color_is_rgb_tuple():
 # Screen — OCR missing tesseract raises clearly
 
 
-def test_screen_text_raises_without_tesseract():
-    try:
-        import pytesseract  # noqa: F401
+def test_screen_text_raises_without_tesseract(monkeypatch):
+    from dolphin_desktop import _image
 
-        pytest.skip("pytesseract is installed")
-    except ImportError:
-        pass
+    monkeypatch.setattr(_image, "_TESS_ERROR", ImportError("no pytesseract"))
+    monkeypatch.setattr(_image, "_pytesseract", None)
+
     with pytest.raises(RuntimeError, match="pytesseract"):
         Screen.text()
 
 
-def test_screen_find_image_raises_without_cv2():
-    try:
-        import cv2  # noqa: F401
+def test_screen_find_image_raises_without_cv2(monkeypatch):
+    from dolphin_desktop import _image
 
-        pytest.skip("cv2 is installed")
-    except ImportError:
-        pass
+    monkeypatch.setattr(_image, "_CV2_ERROR", ImportError("no cv2"))
+    monkeypatch.setattr(_image, "_cv2", None)
+
     with pytest.raises(RuntimeError, match="opencv-python"):
         Screen.find_image("nonexistent.png")
 

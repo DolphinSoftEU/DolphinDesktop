@@ -1,30 +1,46 @@
 """Unit tests for the plug-in backend architecture."""
 
+
+# Helpers
+
+
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.metadata
+import importlib.util
 import sys
-from unittest.mock import MagicMock, patch
+import warnings
+from types import ModuleType, SimpleNamespace
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 import dolphin_desktop._backend as _bmod
+import dolphin_desktop._backend as backend
 from dolphin_desktop._backend import (
     _BUILT_IN,
     _REGISTRY,
     Backend,
     CDPBackend,
+    DelphiBackend,
     ImageBackend,
+    JavaBackend,
     LinuxATSPIBackend,
     MacOSAccessibilityBackend,
+    MainframeBackend,
+    QtBackend,
+    SapBackend,
     UIABackend,
     Win32Backend,
     list_backends,
     register,
     resolve,
+    supported_backends,
 )
-
-# Helpers
+from dolphin_desktop._capabilities import IMAGE_ONLY, STANDARD_ACCESSIBILITY, Capability
+from dolphin_desktop._exceptions import UnsupportedCapabilityError
 
 
 def _make_backend(id_: str = "_tmp", platform_: str = "any") -> type[Backend]:
@@ -639,3 +655,835 @@ class TestPublicAPIExports:
         from dolphin_desktop._backend import resolve as _resolve
 
         assert d.resolve_backend is _resolve
+
+
+def test_backend_constructor_and_capability_argument_validation() -> None:
+    from dolphin_desktop._backend import Backend, ImageBackend
+    assert repr(ImageBackend()) == "ImageBackend(id='image')"
+    with pytest.raises(TypeError, match="Capability"):
+        ImageBackend().supports("click")  # type: ignore[arg-type]
+
+    class MissingId(Backend):
+        platform = "any"
+
+        find_element = click = type_text = get_tree = screenshot = lambda *args, **kwargs: None
+
+    with pytest.raises(TypeError, match="must set a class attribute"):
+        MissingId()
+
+
+def _backend_class(backend_id: str = "_completeness", *, caps=()):
+    """Build a concrete backend with a deliberately configurable contract."""
+
+    class TestBackend(backend.Backend):
+        id = backend_id
+        platform = "any"
+
+        def find_element(self, parent, criteria):
+            return None
+
+        def click(self, element, *, button="left"):
+            return None
+
+        def type_text(self, element, text):
+            return None
+
+        def get_tree(self, root, *, depth=None):
+            return {}
+
+        def screenshot(self, element=None):
+            return None
+
+        def capabilities(self):
+            return caps
+
+    TestBackend.__name__ = f"Backend_{backend_id or 'invalid'}"
+    return TestBackend
+
+
+def _additional_backend_class(backend_module, backend_id: str, *, capabilities=()):
+    class TestBackend(backend_module.Backend):
+        id = backend_id
+        platform = "any"
+
+        def find_element(self, parent, criteria):
+            return None
+
+        def click(self, element, *, button="left"):
+            return None
+
+        def type_text(self, element, text):
+            return None
+
+        def get_tree(self, root, *, depth=None):
+            return {}
+
+        def screenshot(self, element=None):
+            return None
+
+        def capabilities(self):
+            return capabilities
+
+    TestBackend.__name__ = f"Backend_{backend_id or 'invalid'}"
+    return TestBackend
+
+def _node(name="root", role="Window", class_name="App", children=()):
+    info = SimpleNamespace(name=name, control_type=role, class_name=class_name)
+    return SimpleNamespace(element_info=info, children=lambda: list(children))
+
+def _win32_node(name="root", role="Window", class_name="App", children=()):
+    return SimpleNamespace(
+        window_text=lambda: name,
+        friendly_class_name=lambda: role,
+        class_name=lambda: class_name,
+        children=lambda: list(children),
+    )
+
+class TestCapabilityAndBaseContract:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("invoke", Capability.INVOKE), ("INVOKE", Capability.INVOKE)],
+    )
+    def test_capability_string_hints_the_matching_member(self, value, expected):
+        with pytest.raises(TypeError, match=f"Capability\\.{expected.name}"):
+            backend._check_capability_arg(value, "unit")
+
+    def test_unknown_string_and_arbitrary_object_get_clear_type_errors(self):
+        with pytest.raises(TypeError, match="got str"):
+            backend._check_capability_arg("not-a-capability", "unit")
+        with pytest.raises(TypeError, match="list"):
+            backend._check_capability_arg([], "unit")
+
+    @pytest.mark.parametrize("attribute", ["id", "platform"])
+    @pytest.mark.parametrize("bad_value", [None, "", 123])
+    def test_backend_constructor_validates_class_metadata(self, attribute, bad_value):
+        cls = _backend_class(f"_bad_{attribute}_{bad_value!r}")
+        setattr(cls, attribute, bad_value)
+        with pytest.raises(TypeError, match=attribute):
+            cls()
+
+    def test_default_base_helpers(self):
+        cls = _backend_class("_base_defaults")
+        delattr(cls, "capabilities")
+        instance = cls()
+        assert instance.is_available() is True
+        assert instance.description() == ""
+        assert instance.capabilities() == frozenset()
+        assert instance.supports(Capability.CLICK) is False
+        assert repr(instance) == "Backend__base_defaults(id='_base_defaults')"
+
+    def test_supports_accepts_member_and_rejects_none_capabilities(self):
+        cls = _backend_class("_supports", caps=frozenset({Capability.CLICK}))
+        instance = cls()
+        assert instance.supports(Capability.CLICK) is True
+        assert instance.supports(Capability.INVOKE) is False
+
+        none_cls = _backend_class("_none_caps")
+        none_cls.capabilities = lambda self: None
+        with pytest.raises(TypeError, match="returned None"):
+            none_cls().supports(Capability.CLICK)
+
+    def test_require_capability_returns_for_supported_operation(self):
+        cls = _backend_class("_require_ok", caps=frozenset({Capability.CLICK}))
+        cls().require_capability(Capability.CLICK)
+
+    def test_require_capability_reports_alternative_and_excludes_self(self, monkeypatch):
+        source = _backend_class("_source", caps=frozenset())
+        alternative = _backend_class("_alternative", caps=frozenset({Capability.INVOKE}))
+        monkeypatch.setattr(backend, "_REGISTRY", {source.id: source, alternative.id: alternative})
+        monkeypatch.setattr(backend, "_load_plugins", lambda: None)
+
+        with pytest.raises(UnsupportedCapabilityError) as exc_info:
+            source().require_capability(Capability.INVOKE)
+        message = str(exc_info.value)
+        assert "_source" not in exc_info.value.hint
+        assert "_alternative" in message
+        assert "Capability.INVOKE" in message
+
+    def test_require_capability_reports_no_alternative(self, monkeypatch):
+        cls = _backend_class("_only_backend", caps=frozenset())
+        monkeypatch.setattr(backend, "_REGISTRY", {cls.id: cls})
+        monkeypatch.setattr(backend, "_load_plugins", lambda: None)
+
+        with pytest.raises(UnsupportedCapabilityError) as exc_info:
+            cls().require_capability(Capability.INVOKE)
+        assert "no other registered backend" in exc_info.value.hint
+
+class TestConcreteCapabilitiesAndOperations:
+    @pytest.mark.parametrize(
+        ("cls", "expected"),
+        [
+            (
+                UIABackend,
+                STANDARD_ACCESSIBILITY
+                | {Capability.SCREENSHOT, Capability.DRAG, Capability.SCROLL},
+            ),
+            (Win32Backend, frozenset({
+                Capability.LOCATE, Capability.GET_TREE, Capability.READ_TEXT,
+                Capability.READ_STATE, Capability.CLICK, Capability.DOUBLE_CLICK,
+                Capability.RIGHT_CLICK, Capability.HOVER, Capability.DRAG,
+                Capability.TYPE_TEXT, Capability.PRESS_KEY, Capability.SCROLL,
+                Capability.SCREENSHOT,
+            })),
+            (ImageBackend, IMAGE_ONLY),
+        ],
+    )
+    def test_concrete_capability_sets_are_declared(self, cls, expected):
+        assert cls().capabilities() == expected
+
+    def test_qt_backend_uses_uia_capabilities_and_custom_description(self):
+        assert QtBackend().capabilities() == UIABackend().capabilities()
+        assert QtBackend().description().startswith("Qt 5/6 backend")
+
+    @pytest.mark.parametrize(
+        ("backend_cls", "element_method", "button"),
+        [
+            (UIABackend, "click_input", "left"),
+            (UIABackend, "right_click_input", "right"),
+            (UIABackend, "click_input", "middle"),
+            (Win32Backend, "click_input", "left"),
+            (Win32Backend, "right_click_input", "right"),
+            (Win32Backend, "click_input", "middle"),
+        ],
+    )
+    def test_uia_and_win32_click_variants(self, backend_cls, element_method, button):
+        element = MagicMock()
+        backend_cls().click(element, button=button)
+        if button == "middle":
+            getattr(element, element_method).assert_called_once_with(button="middle")
+        else:
+            getattr(element, element_method).assert_called_once_with()
+
+    def test_uia_and_win32_unknown_button_uses_standard_click(self):
+        for backend_cls in (UIABackend, Win32Backend):
+            element = MagicMock()
+            backend_cls().click(element, button="not-a-special-button")
+            element.click_input.assert_called_once_with()
+
+    def test_uia_find_and_type_escape_text(self):
+        instance = UIABackend()
+        parent = MagicMock()
+        assert instance.find_element(parent, {"title": "Save"}) is parent.child_window.return_value
+        parent.child_window.assert_called_once_with(title="Save")
+        element = MagicMock()
+        instance.type_text(element, "literal {text} + ^ %")
+        element.type_keys.assert_called_once_with(
+            "literal {{}text{}} {+} {^} {%}",
+            with_spaces=True,
+            with_tabs=True,
+            with_newlines=True,
+        )
+
+    def test_win32_find_and_type_escape_text(self):
+        instance = Win32Backend()
+        parent = MagicMock()
+        instance.find_element(parent, {"title": "Save"})
+        parent.child_window.assert_called_once_with(title="Save")
+        element = MagicMock()
+        instance.type_text(element, "literal {text}")
+        element.type_keys.assert_called_once_with(
+            "literal {{}text{}}", with_spaces=True, with_tabs=True, with_newlines=True
+        )
+
+    def test_uia_tree_walks_children_and_honours_depth(self):
+        grandchild = _node("grandchild", "Button", "ButtonClass")
+        child = _node("child", "Pane", "PaneClass", [grandchild])
+        root = _node("root", "Window", "WindowClass", [child])
+        instance = UIABackend()
+
+        assert instance.get_tree(root) == {
+            "name": "root", "role": "Window", "class": "WindowClass",
+            "children": [{
+                "name": "child", "role": "Pane", "class": "PaneClass",
+                "children": [{
+                    "name": "grandchild", "role": "Button", "class": "ButtonClass",
+                    "children": [],
+                }],
+            }],
+        }
+        assert instance.get_tree(root, depth=0)["children"] == []
+        assert instance.get_tree(root, depth=1)["children"][0]["children"] == []
+
+    def test_uia_tree_uses_fallback_for_bad_info_and_bad_children(self):
+        class BadInfo:
+            @property
+            def element_info(self):
+                raise RuntimeError("metadata unavailable")
+
+        bad_info = BadInfo()
+        assert UIABackend().get_tree(bad_info) == {
+            "name": "", "role": "unknown", "class": "", "children": []
+        }
+
+        bad_children = _node("root")
+        bad_children.children = Mock(side_effect=RuntimeError("children unavailable"))
+        assert UIABackend().get_tree(bad_children)["children"] == []
+
+    def test_win32_tree_walks_children_and_handles_failures(self):
+        child = _win32_node("child", "Button", "ButtonClass")
+        root = _win32_node("root", "Window", "WindowClass", [child])
+        instance = Win32Backend()
+        assert instance.get_tree(root, depth=1)["children"][0]["name"] == "child"
+        assert instance.get_tree(root, depth=0)["children"] == []
+
+        bad_info = SimpleNamespace(
+            window_text=Mock(side_effect=RuntimeError("metadata unavailable")),
+            friendly_class_name=Mock(), class_name=Mock(), children=Mock(),
+        )
+        assert instance.get_tree(bad_info)["role"] == "unknown"
+        bad_children = _win32_node("root")
+        bad_children.children = Mock(side_effect=RuntimeError("children unavailable"))
+        assert instance.get_tree(bad_children)["children"] == []
+
+    @pytest.mark.parametrize("backend_cls", [UIABackend, Win32Backend])
+    def test_screenshot_uses_element_or_all_monitors(self, backend_cls):
+        instance = backend_cls()
+        element = MagicMock()
+        assert instance.screenshot(element) is element.capture_as_image.return_value
+        element.capture_as_image.assert_called_once_with()
+        with patch("PIL.ImageGrab.grab", return_value="desktop") as grab:
+            assert instance.screenshot() == "desktop"
+        grab.assert_called_once_with(all_screens=True)
+
+    @pytest.mark.parametrize("platform_name, expected", [("win32", True), ("linux", False)])
+    def test_uia_and_win32_availability_with_dependency(self, monkeypatch, platform_name, expected):
+        monkeypatch.setitem(sys.modules, "pywinauto", ModuleType("pywinauto"))
+        monkeypatch.setattr(sys, "platform", platform_name)
+        assert UIABackend().is_available() is expected
+        assert Win32Backend().is_available() is expected
+
+    @pytest.mark.parametrize("backend_cls", [UIABackend, Win32Backend])
+    def test_uia_and_win32_availability_without_dependency(self, monkeypatch, backend_cls):
+        monkeypatch.setitem(sys.modules, "pywinauto", None)
+        assert backend_cls().is_available() is False
+
+    def test_image_find_click_type_and_screenshot(self, monkeypatch):
+        instance = ImageBackend()
+        with pytest.raises(ValueError, match="template"):
+            instance.find_element(None, {})
+        locator = MagicMock()
+        with patch("dolphin_desktop._image.ImageLocator", return_value=locator) as locator_cls:
+            assert (
+                instance.find_element(None, {"template": "save.png", "threshold": 0.91})
+                is locator
+            )
+        locator_cls.assert_called_once_with("save.png", threshold=0.91)
+
+        left = MagicMock()
+        instance.click(left)
+        left.click.assert_called_once_with()
+        right = MagicMock()
+        instance.click(right, button="right")
+        right.right_click_input.assert_called_once_with()
+        middle = MagicMock()
+        instance.click(middle, button="middle")
+        middle.click_input.assert_called_once_with()
+        other = MagicMock()
+        instance.click(other, button="unknown")
+        other.click.assert_called_once_with()
+
+        typed = MagicMock()
+        keyboard = Mock()
+        monkeypatch.setattr("dolphin_desktop._keyboard.Keyboard", keyboard)
+        instance.type_text(typed, "hello")
+        typed.click.assert_called_once_with()
+        keyboard.type.assert_called_once_with("hello")
+
+        with patch("dolphin_desktop._image.Screen.screenshot", return_value="screen") as shot:
+            assert instance.screenshot() == "screen"
+        shot.assert_called_once_with()
+
+    def test_image_get_tree_assertion_is_defensive_only(self, monkeypatch):
+        instance = ImageBackend()
+        monkeypatch.setattr(instance, "require_capability", lambda capability: None)
+        with pytest.raises(AssertionError, match="unreachable"):
+            instance.get_tree(None)
+
+    @pytest.mark.parametrize("dependency", ["cv2"])
+    def test_image_availability_without_optional_dependency(self, monkeypatch, dependency):
+        monkeypatch.setitem(sys.modules, dependency, None)
+        assert ImageBackend().is_available() is False
+
+    def test_image_availability_with_optional_dependency(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "cv2", ModuleType("cv2"))
+        assert ImageBackend().is_available() is True
+
+class TestMarkerBackends:
+    @pytest.mark.parametrize(
+        ("cls", "expected"),
+        [
+            (MacOSAccessibilityBackend, frozenset()),
+            (LinuxATSPIBackend, frozenset()),
+            (
+                DelphiBackend,
+                STANDARD_ACCESSIBILITY
+                | {Capability.SCREENSHOT, Capability.DRAG, Capability.SCROLL},
+            ),
+            (
+                MainframeBackend,
+                frozenset(
+                    {
+                        Capability.LOCATE,
+                        Capability.READ_TEXT,
+                        Capability.READ_STATE,
+                        Capability.TYPE_TEXT,
+                        Capability.PRESS_KEY,
+                    }
+                ),
+            ),
+            (
+                CDPBackend,
+                STANDARD_ACCESSIBILITY
+                | {Capability.SCREENSHOT, Capability.DRAG, Capability.SCROLL},
+            ),
+            (SapBackend, frozenset({
+                Capability.LOCATE, Capability.GET_TREE, Capability.READ_TEXT,
+                Capability.READ_STATE, Capability.CLICK, Capability.DOUBLE_CLICK,
+                Capability.RIGHT_CLICK, Capability.TYPE_TEXT, Capability.PRESS_KEY,
+                Capability.INVOKE, Capability.TOGGLE, Capability.SELECT,
+                Capability.SET_VALUE, Capability.SCREENSHOT,
+            })),
+            (JavaBackend, STANDARD_ACCESSIBILITY | {Capability.SCREENSHOT, Capability.SCROLL}),
+        ],
+    )
+    def test_marker_capability_sets(self, cls, expected):
+        assert cls().capabilities() == expected
+
+    @pytest.mark.parametrize(
+        "cls",
+        [MacOSAccessibilityBackend, LinuxATSPIBackend, CDPBackend, DelphiBackend,
+         MainframeBackend, SapBackend, JavaBackend],
+    )
+    def test_marker_methods_raise_actionable_error(self, cls):
+        instance = cls()
+        with pytest.raises(UnsupportedCapabilityError) as exc_info:
+            instance.find_element(None, {})
+        assert type(instance).__name__ in str(exc_info.value)
+        assert "matching facade" in exc_info.value.hint
+
+        with pytest.raises(UnsupportedCapabilityError):
+            instance.click(None)
+        with pytest.raises(UnsupportedCapabilityError):
+            instance.type_text(None, "")
+        with pytest.raises(UnsupportedCapabilityError):
+            instance.get_tree(None)
+        with pytest.raises(UnsupportedCapabilityError):
+            instance.screenshot()
+
+    def test_default_marker_availability_is_false(self):
+        assert MacOSAccessibilityBackend().is_available() is False
+
+    @pytest.mark.parametrize("cls", [CDPBackend, MainframeBackend])
+    def test_cross_platform_markers_are_available(self, cls):
+        assert cls().is_available() is True
+
+    @pytest.mark.parametrize("cls", [DelphiBackend, SapBackend, JavaBackend])
+    @pytest.mark.parametrize("platform_name, expected", [("win32", True), ("linux", False)])
+    def test_windows_marker_availability(self, monkeypatch, cls, platform_name, expected):
+        monkeypatch.setattr(sys, "platform", platform_name)
+        assert cls().is_available() is expected
+
+class _EntryPoint:
+    def __init__(self, name, loaded=None, error=None):
+        self.name = name
+        self.loaded = loaded
+        self.error = error
+
+    def load(self):
+        if self.error is not None:
+            raise self.error
+        return self.loaded
+
+class TestRegistryAndPluginLoading:
+    def test_load_plugins_fast_path_and_reentrant_lock_path(self, monkeypatch):
+        loader = Mock()
+        monkeypatch.setattr(backend, "_load_plugins_locked", loader)
+        monkeypatch.setattr(backend, "_plugins_loaded", True)
+        backend._load_plugins()
+        loader.assert_not_called()
+
+        class LockThatSeesAnotherLoader:
+            def __enter__(self):
+                backend._plugins_loaded = True
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setattr(backend, "_plugins_loaded", False)
+        monkeypatch.setattr(backend, "_plugins_lock", LockThatSeesAnotherLoader())
+        backend._load_plugins()
+        loader.assert_not_called()
+
+    def test_plugin_discovery_handles_entry_points_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            importlib.metadata, "entry_points", Mock(side_effect=RuntimeError("metadata broken"))
+        )
+        backend._load_plugins_locked()
+
+    def test_load_plugins_runs_discovery_once_when_not_loaded(self, monkeypatch):
+        loader = Mock()
+        monkeypatch.setattr(backend, "_load_plugins_locked", loader)
+        monkeypatch.setattr(backend, "_plugins_loaded", False)
+        backend._load_plugins()
+        assert backend._plugins_loaded is True
+        loader.assert_called_once_with()
+
+    def test_plugin_discovery_registers_valid_plugins_and_skips_invalid_ones(self, monkeypatch):
+        valid = _backend_class("_ep_valid")
+        same = _backend_class("_ep_same")
+        invalid_id = _backend_class("")
+        collision = _backend_class("uia")
+        registry = dict(backend._REGISTRY)
+        registry[same.id] = same
+        monkeypatch.setattr(backend, "_REGISTRY", registry)
+        monkeypatch.setattr(
+            importlib.metadata,
+            "entry_points",
+            lambda **kwargs: [
+                _EntryPoint("broken", error=ImportError("dependency missing")),
+                _EntryPoint("not-backend", loaded=object()),
+                _EntryPoint("invalid-id", loaded=invalid_id),
+                _EntryPoint(valid.id, loaded=valid),
+                _EntryPoint(same.id, loaded=same),
+                _EntryPoint("alias", loaded=_backend_class("_ep_alias")),
+                _EntryPoint("replace-uia", loaded=collision),
+            ],
+        )
+
+        with pytest.warns(RuntimeWarning) as caught:
+            backend._load_plugins_locked()
+        assert registry[valid.id] is valid
+        assert registry[same.id] is same
+        assert registry["uia"] is not collision
+        messages = [str(w.message) for w in caught]
+        assert any("failed to load" in message for message in messages)
+        assert any("does not point at a Backend" in message for message in messages)
+        assert any("not a non-empty str" in message for message in messages)
+        assert any("does not match" in message for message in messages)
+        assert any("tries to replace" in message for message in messages)
+
+    @pytest.mark.parametrize("bad_value", [object(), lambda: None])
+    def test_register_rejects_non_backend_objects(self, bad_value):
+        with pytest.raises(TypeError, match="Backend subclass"):
+            register(bad_value)
+
+    def test_register_rejects_a_class_that_is_not_a_backend(self):
+        class NotABackend:
+            pass
+
+        with pytest.raises(TypeError, match="Backend subclass"):
+            register(NotABackend)
+
+    @pytest.mark.parametrize("bad_id", [None, "", 0])
+    def test_register_rejects_invalid_backend_ids(self, bad_id):
+        cls = _backend_class(f"_register_bad_{bad_id!r}")
+        cls.id = bad_id
+        with pytest.raises(TypeError, match="non-empty"):
+            register(cls)
+
+    def test_register_same_class_is_idempotent(self):
+        cls = _backend_class("_register_same")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert register(cls) is cls
+            assert register(cls) is cls
+        assert not caught
+        assert backend._REGISTRY[cls.id] is cls
+        backend._REGISTRY.pop(cls.id, None)
+
+    def test_register_warns_and_replaces_different_class(self):
+        old = _backend_class("_register_collision")
+        new = _backend_class("_register_collision")
+        backend._REGISTRY[old.id] = old
+        try:
+            with pytest.warns(RuntimeWarning, match="already registered"):
+                register(new)
+            assert backend._REGISTRY[new.id] is new
+        finally:
+            backend._REGISTRY.pop(old.id, None)
+
+class TestResolveAndListing:
+    @pytest.mark.parametrize(
+        ("platform_name", "expected"),
+        [("win32", UIABackend), ("darwin", MacOSAccessibilityBackend),
+         ("linux", LinuxATSPIBackend), ("linux-gnu", LinuxATSPIBackend),
+         ("freebsd", ImageBackend)],
+    )
+    def test_auto_detects_each_platform(self, monkeypatch, platform_name, expected):
+        monkeypatch.setattr(sys, "platform", platform_name)
+        assert isinstance(backend._auto_detect(), expected)
+
+    def test_resolve_auto_delegates_to_auto_detect(self, monkeypatch):
+        detected = object()
+        monkeypatch.setattr(backend, "_load_plugins", Mock())
+        monkeypatch.setattr(backend, "_auto_detect", Mock(return_value=detected))
+        assert resolve("auto") is detected
+        backend._auto_detect.assert_called_once_with()
+
+    def test_resolve_wraps_constructor_error(self, monkeypatch):
+        cls = _backend_class("_constructor_error")
+        cls.__init__ = Mock(side_effect=RuntimeError("constructor failed"))
+        monkeypatch.setattr(backend, "_REGISTRY", {cls.id: cls})
+        monkeypatch.setattr(backend, "_load_plugins", lambda: None)
+        with pytest.raises(ValueError, match="constructor_error") as exc_info:
+            resolve(cls.id)
+        assert "RuntimeError: constructor failed" in str(exc_info.value)
+
+    def test_resolve_unknown_backend_names_available_ids(self, monkeypatch):
+        cls = _backend_class("_known_backend")
+        monkeypatch.setattr(backend, "_REGISTRY", {cls.id: cls})
+        monkeypatch.setattr(backend, "_load_plugins", lambda: None)
+        with pytest.raises(ValueError, match="Unknown backend") as exc_info:
+            resolve("_missing_backend")
+        assert "_known_backend" in str(exc_info.value)
+
+    def test_list_backends_is_resilient_to_broken_plugins(self, monkeypatch):
+        good = _backend_class("_listed_good", caps=[Capability.CLICK, "ignored"])
+
+        class Unstable(_backend_class("_listed_unstable")):
+            def is_available(self):
+                raise RuntimeError("availability failed")
+
+            def description(self):
+                raise RuntimeError("description failed")
+
+            def capabilities(self):
+                raise RuntimeError("capability failed")
+
+        broken = _backend_class("_listed_broken")
+        broken.__init__ = Mock(side_effect=RuntimeError("init failed"))
+        no_platform = _backend_class("_listed_no_platform")
+        delattr(no_platform, "platform")
+        no_platform.__init__ = Mock(side_effect=RuntimeError("init failed"))
+        monkeypatch.setattr(
+            backend, "_REGISTRY",
+            {good.id: good, Unstable.id: Unstable, broken.id: broken, no_platform.id: no_platform},
+        )
+        monkeypatch.setattr(backend, "_load_plugins", lambda: None)
+
+        rows = list_backends()
+        by_id = {row["id"]: row for row in rows}
+        assert by_id[good.id]["available"] is True
+        assert by_id[good.id]["capabilities"] == ["click"]
+        assert by_id[Unstable.id]["available"] is False
+        assert by_id[Unstable.id]["description"] == ""
+        assert by_id[Unstable.id]["capabilities"] == []
+        assert by_id[broken.id]["available"] is False
+        assert "instantiation failed" in by_id[broken.id]["description"]
+        assert by_id[no_platform.id]["platform"] == "unknown"
+
+    def test_safe_call_and_safe_capabilities_cover_all_bad_shapes(self):
+        assert backend._safe_call(lambda: "ok", default="fallback") == "ok"
+        assert (
+            backend._safe_call(
+                lambda: (_ for _ in ()).throw(RuntimeError()), default="fallback"
+            )
+            == "fallback"
+        )
+
+        instance = _backend_class("_safe_shapes")()
+        for raw in (None, 1):
+            instance.capabilities = lambda raw=raw: raw
+            assert backend._safe_capabilities(instance) == []
+        instance.capabilities = lambda: [Capability.CLICK, "wrong"]
+        assert backend._safe_capabilities(instance) == ["click"]
+        instance.capabilities = Mock(side_effect=RuntimeError("broken"))
+        assert backend._safe_capabilities(instance) == []
+
+    def test_supported_backends_filters_bad_plugins_and_validates_argument(self, monkeypatch):
+        good = _backend_class("_support_good", caps=frozenset({Capability.CLICK}))
+        bad_caps = _backend_class("_support_bad_caps")
+        bad_caps.capabilities = Mock(side_effect=RuntimeError("broken"))
+        bad_init = _backend_class("_support_bad_init")
+        bad_init.__init__ = Mock(side_effect=RuntimeError("broken"))
+        excluded = _backend_class("_support_excluded", caps=frozenset({Capability.CLICK}))
+        monkeypatch.setattr(
+            backend, "_REGISTRY",
+            {good.id: good, bad_caps.id: bad_caps, bad_init.id: bad_init, excluded.id: excluded},
+        )
+        monkeypatch.setattr(backend, "_load_plugins", lambda: None)
+        assert supported_backends(Capability.CLICK) == [good.id, excluded.id]
+        assert backend._find_supporting_backends(
+            Capability.CLICK, exclude_id=excluded.id
+        ) == [good.id]
+        with pytest.raises(TypeError, match="Capability"):
+            supported_backends("click")
+
+    def test_marker_get_tree_defensive_return_is_exercised(self, monkeypatch):
+        instance = MacOSAccessibilityBackend()
+        monkeypatch.setattr(instance, "_raise", Mock(return_value=None))
+        assert instance.get_tree(None) == {}
+
+    def test_backend_module_imports_cleanly_in_a_fresh_namespace(self):
+        """Execute module startup under coverage even when pytest preloads it.
+
+        The installed pytest entry point imports ``dolphin_desktop`` before
+        pytest-cov starts tracing.  Loading the same source into an isolated
+        package namespace verifies the import-time registry construction and
+        makes those top-level declarations visible to the coverage collector.
+        """
+        module_name = "dolphin_desktop._backend_completeness_probe"
+        spec = importlib.util.spec_from_file_location(module_name, backend.__file__)
+        assert spec is not None and spec.loader is not None
+        probe = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = probe
+        try:
+            spec.loader.exec_module(probe)
+            assert probe._REGISTRY["uia"] is probe.UIABackend
+            assert probe._REGISTRY["mainframe"] is probe.MainframeBackend
+        finally:
+            sys.modules.pop(module_name, None)
+
+
+def test_backend_registry_listing_and_auto_detection(monkeypatch) -> None:
+    import dolphin_desktop._backend as backend
+    from dolphin_desktop import Capability
+
+    class GoodBackend(backend.Backend):
+        id = "plugin-good"
+        platform = "test"
+
+        def capabilities(self):
+            return frozenset({Capability.CLICK})
+
+        def find_element(self, parent, criteria):
+            return None
+
+        def click(self, element, *, button="left"):
+            return None
+
+        def type_text(self, element, text):
+            return None
+
+        def get_tree(self, root, *, depth=None):
+            return {}
+
+        def screenshot(self, element=None):
+            return None
+
+    class BrokenBackend(GoodBackend):
+        id = "plugin-broken"
+
+        def __init__(self):
+            raise RuntimeError("broken plugin")
+
+    registry = {GoodBackend.id: GoodBackend, BrokenBackend.id: BrokenBackend}
+    monkeypatch.setattr(backend, "_REGISTRY", registry)
+    monkeypatch.setattr(backend, "_load_plugins", lambda: None)
+    rows = backend.list_backends()
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["plugin-good"]["available"] is True
+    assert by_id["plugin-good"]["capabilities"] == ["click"]
+    assert by_id["plugin-good"]["source"] == "plugin"
+    assert by_id["plugin-broken"]["available"] is False
+    assert "instantiation failed" in by_id["plugin-broken"]["description"]
+    assert backend.supported_backends(Capability.CLICK) == ["plugin-good"]
+    with pytest.raises(TypeError, match="Capability"):
+        backend.supported_backends("click")  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert isinstance(backend._auto_detect(), backend.MacOSAccessibilityBackend)
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert isinstance(backend._auto_detect(), backend.LinuxATSPIBackend)
+    monkeypatch.setattr(sys, "platform", "other")
+    assert isinstance(backend._auto_detect(), backend.ImageBackend)
+
+
+def test_backend_capability_contract_explains_unsupported_operation() -> None:
+    from dolphin_desktop._backend import ImageBackend
+    from dolphin_desktop._capabilities import Capability
+    from dolphin_desktop._exceptions import UnsupportedCapabilityError
+
+    assert ImageBackend().supports(Capability.CLICK)
+    with pytest.raises(UnsupportedCapabilityError):
+        ImageBackend().require_capability(Capability.INVOKE)
+
+
+def test_backend_validation_and_safe_plugin_helpers_cover_bad_extensions() -> None:
+    import dolphin_desktop._backend as backend
+    from dolphin_desktop._capabilities import Capability
+
+    with pytest.raises(TypeError, match=r"Capability\.INVOKE"):
+        backend._check_capability_arg("INVOKE", "unit")
+    with pytest.raises(TypeError, match="NoneType"):
+        backend._check_capability_arg(None, "unit")
+    fallback = backend._safe_call(
+        lambda: (_ for _ in ()).throw(RuntimeError()), default="fallback"
+    )
+    assert fallback == "fallback"
+
+    good = _additional_backend_class(
+        backend, "_unit_caps", capabilities=[Capability.CLICK, "bad"]
+    )
+    assert backend._safe_capabilities(good()) == ["click"]
+    none_caps = good()
+    none_caps.capabilities = lambda: None
+    assert backend._safe_capabilities(none_caps) == []
+    failing = good()
+    failing.capabilities = Mock(side_effect=RuntimeError("broken plugin"))
+    assert backend._safe_capabilities(failing) == []
+
+
+def test_backend_registry_loads_valid_plugins_and_skips_broken_entries(monkeypatch) -> None:
+    import dolphin_desktop._backend as backend
+
+    valid = _additional_backend_class(backend, "_unit_loaded")
+    invalid_id = _additional_backend_class(backend, "")
+    collision = _additional_backend_class(backend, "uia")
+
+    class EntryPoint:
+        def __init__(self, name, value=None, error=None):
+            self.name = name
+            self._value = value
+            self._error = error
+
+        def load(self):
+            if self._error is not None:
+                raise self._error
+            return self._value
+
+    entries = [
+        EntryPoint("broken", error=ImportError("missing dependency")),
+        EntryPoint("not-backend", object()),
+        EntryPoint("invalid-id", invalid_id),
+        EntryPoint("alias", valid),
+        EntryPoint("replace-uia", collision),
+    ]
+    monkeypatch.setattr(importlib.metadata, "entry_points", lambda **kwargs: entries)
+    monkeypatch.setattr(backend, "_REGISTRY", dict(backend._REGISTRY))
+
+    with pytest.warns(RuntimeWarning) as warnings:
+        backend._load_plugins_locked()
+
+    assert backend._REGISTRY["_unit_loaded"] is valid
+    assert backend._REGISTRY["uia"] is not collision
+    messages = [str(w.message) for w in warnings]
+    assert any("failed to load" in message for message in messages)
+    assert any("does not point at a Backend" in message for message in messages)
+    assert any("id" in message and "Skipping" in message for message in messages)
+    assert any("does not match" in message for message in messages)
+    assert any("tries to replace" in message for message in messages)
+
+
+def test_backend_load_plugins_is_serialized_and_resolve_wraps_constructor_errors(
+    monkeypatch,
+) -> None:
+    import dolphin_desktop._backend as backend
+
+    loader = Mock()
+    monkeypatch.setattr(backend, "_load_plugins_locked", loader)
+    monkeypatch.setattr(backend, "_plugins_loaded", False)
+    backend._load_plugins()
+    backend._load_plugins()
+    loader.assert_called_once_with()
+
+    class Broken(_additional_backend_class(backend, "_unit_broken")):
+        def __init__(self):
+            raise RuntimeError("constructor failed")
+
+    registry = dict(backend._REGISTRY)
+    registry[Broken.id] = Broken
+    monkeypatch.setattr(backend, "_REGISTRY", registry)
+    with pytest.raises(ValueError, match="could not be instantiated"):
+        backend.resolve(Broken.id)

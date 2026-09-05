@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -49,37 +50,39 @@ def test_hatch_wheel_packages_only_dolphin_desktop(pyproject_text: str):
     )
 
 
-def test_hatch_sdist_includes_no_top_level_dolphin(pyproject_text: str):
-    """The sdist include list must not reference any ``src/dolphin/`` path."""
-    m = re.search(
-        r"^\[tool\.hatch\.build\.targets\.sdist\]\s*\n"
-        r"(?:^(?!\[).*\n)*?"
-        r"^include\s*=\s*(\[[^\]]*\])",
-        pyproject_text,
-        re.M | re.S,
-    )
-    if not m:
-        pytest.skip("sdist has no explicit include list (defaults are fine)")
-    includes = m.group(1)
-    # Match src/dolphin/ as its own path segment — not a substring of
-    # src/dolphin_desktop/.
-    forbidden = re.search(
-        r"""["']src/dolphin(?:/[^"']*)?["']""",
-        includes,
-    )
-    if forbidden:
-        # The literal ``src/dolphin_desktop`` is legal — it starts with
-        # the same prefix but continues past the segment boundary.
-        # Filter false positives by re-checking against the exact
-        # ``src/dolphin`` and ``src/dolphin/…`` shapes.
-        bad_segment = re.search(
-            r"""["']src/dolphin(?:/[^"']*)?["'](?!_)""",
-            includes,
+def test_hatch_sdist_contains_no_top_level_dolphin_files():
+    """The built sdist must not contain a separate ``src/dolphin/`` tree."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "build",
+                "--sdist",
+                "--outdir",
+                str(out_dir),
+                str(REPO_ROOT),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
         )
-        assert not bad_segment, (
-            f"sdist includes reference ``src/dolphin`` path segment "
-            f"({bad_segment.group(0)!r}). No file under top-level "
-            f"``dolphin/`` may ship in either wheel or sdist."
+        if result.returncode != 0:
+            pytest.fail(
+                f"python -m build --sdist exited {result.returncode}. "
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+
+        archives = list(out_dir.glob("dolphin_desktop-*.tar.gz"))
+        assert len(archives) == 1, f"Expected exactly one built sdist, found {archives}."
+        with tarfile.open(archives[0], "r:gz") as archive:
+            names = archive.getnames()
+
+        forbidden = [name for name in names if re.search(r"(?:^|/)src/dolphin(?:/|$)", name)]
+        assert not forbidden, (
+            f"sdist {archives[0].name} contains a top-level ``dolphin/`` tree: "
+            f"{forbidden!r}"
         )
 
 

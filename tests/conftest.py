@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from dolphin_desktop import Desktop
+pytest_plugins = ("dolphin_desktop.pytest_plugin",)
+
+from dolphin_desktop import Desktop  # noqa: E402
 
 # tests/framework/ is the headless suite; every other directory drives a
 # real application and cannot pass on a bare CI runner. Marking them here

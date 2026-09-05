@@ -1,8 +1,11 @@
 """Tests for the `dolphin spy` command's argument handling and pick wiring."""
 
+
 from __future__ import annotations
 
 from argparse import Namespace
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -88,3 +91,31 @@ class TestInitTimeouts:
     def test_pip_and_git_helpers_are_bounded(self):
         assert _cli._PIP_INSTALL_TIMEOUT > 0
         assert _cli._GIT_INIT_TIMEOUT > 0
+
+
+def test_cli_spy_tree_mode_escapes_window_filter(monkeypatch, capsys) -> None:
+    from dolphin_desktop import _cli as cli
+
+    tree = {"root": {"control_type": "Window", "name": "Demo", "children": []}}
+    with patch("dolphin_desktop._spy.inspect", return_value=tree) as inspect:
+        cli._spy_cmd(
+            SimpleNamespace(
+                sap=False,
+                jab=False,
+                cdp=None,
+                mainframe=None,
+                delphi=False,
+                image_pick=False,
+                pick=False,
+                output_dir=".",
+                backend="uia",
+                window="A+B",
+                exact=None,
+                cls=None,
+                pid=None,
+                depth=2,
+                json=True,
+            )
+        )
+    inspect.assert_called_once_with(backend="uia", title_re=r".*A\+B.*", depth=2)
+    assert '"control_type": "Window"' in capsys.readouterr().out
