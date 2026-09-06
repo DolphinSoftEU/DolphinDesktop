@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -196,6 +197,33 @@ def test_doctor_does_not_crash_on_ascii_only_stdout(monkeypatch):
     assert "[ok]  accessible (0 top-level window(s) visible)" in output
     assert "DOLPHIN_TRACE" in output
     assert "?" not in output
+
+
+def test_doctor_command_executes_successfully_and_returns_zero(tmp_path):
+    result = subprocess.run(
+        [sys.executable, "-c", "from dolphin_desktop._cli import main; main()", "doctor"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0
+    assert "dolphin  " in result.stdout
+    assert "Python   " in result.stdout
+
+
+def test_doctor_reports_a_diagnostic_failure(monkeypatch, capsys):
+    import pywinauto
+
+    def broken_desktop(**_kwargs):
+        raise RuntimeError("UIA unavailable")
+
+    monkeypatch.setattr(pywinauto, "Desktop", broken_desktop)
+
+    _doctor_cmd(SimpleNamespace())
+
+    assert "FAILED — UIA unavailable" in capsys.readouterr().out
 
 
 def test_cli_standard_scaffold_and_unknown_template(tmp_path) -> None:

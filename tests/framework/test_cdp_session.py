@@ -8,8 +8,6 @@ browser context the context-level operations act on.
 from __future__ import annotations
 
 import base64
-import importlib.metadata
-import importlib.util
 import re
 import sys
 from contextlib import contextmanager
@@ -1709,17 +1707,3 @@ class TestFrameLocatorAndImport:
         assert frames.get_by_text("Save")._selector == "frame/iframe#app >> text='Save'"
         assert frames.get_by_label("Name")._selector == "frame/iframe#app >> label='Name'"
         page.frame_locator.assert_called()
-
-    def test_module_can_be_imported_in_a_fresh_namespace(self):
-        """Cover import-time declarations when pytest preloads the package."""
-        module_name = "dolphin_desktop._cdp_completeness_probe"
-        spec = importlib.util.spec_from_file_location(module_name, cdp.__file__)
-        assert spec is not None and spec.loader is not None
-        probe = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = probe
-        try:
-            spec.loader.exec_module(probe)
-            assert probe.CONSOLE_BUFFER_LIMIT == 1000
-            assert probe.CDPSession.backend_id == "cdp"
-        finally:
-            sys.modules.pop(module_name, None)

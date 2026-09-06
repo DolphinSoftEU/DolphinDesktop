@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from PIL import Image
 
 from dolphin_desktop._element import (
     Button,
@@ -303,6 +304,20 @@ def test_window_actions_screenshot_and_waits_use_the_spec() -> None:
     with pytest.raises(WaitTimeoutError) as exc_info:
         window.wait_for_close(0)
     assert "did not close" in str(exc_info.value)
+
+
+def test_window_screenshot_saves_to_the_requested_path(tmp_path) -> None:
+    spec = Mock()
+    image = Image.new("RGB", (3, 2), (10, 20, 30))
+    spec.capture_as_image.return_value = image
+    target = tmp_path / "nested" / "window.png"
+
+    result = Window(spec).screenshot(target)
+
+    assert result is image
+    spec.capture_as_image.assert_called_once_with()
+    assert target.exists()
+    assert Image.open(target).getpixel((0, 0)) == (10, 20, 30)
 
 
 def test_window_wait_until_ready_wraps_spec_failures() -> None:

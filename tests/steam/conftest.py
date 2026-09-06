@@ -32,6 +32,10 @@ def _allow_launch() -> bool:
     return (env_var("DOLPHIN_STEAM_ALLOW_LAUNCH") or "").strip() == "1"
 
 
+def _preflight_required() -> bool:
+    return (env_var("DOLPHIN_STEAM_PREFLIGHT") or "").strip() == "1"
+
+
 @pytest.fixture(scope="session")
 def steam_cdp():
     """Session-scoped ``CDPSession`` attached to Steam's CEF runtime.
@@ -41,14 +45,20 @@ def steam_cdp():
     and treats it read-only where possible.
     """
     if not has_playwright():
+        if _preflight_required():
+            raise RuntimeError("dolphin_desktop[cdp] extra not installed")
         pytest.skip("dolphin_desktop[cdp] extra not installed")
     if STEAM is None:
+        if _preflight_required():
+            raise RuntimeError("Steam not installed")
         pytest.skip("Steam not installed")
 
     if steam_cdp_up():
         try:
             cdp = CDPSession.connect(STEAM_CDP_ENDPOINT, timeout=10)
         except Exception as exc:
+            if _preflight_required():
+                raise
             pytest.skip(f"Steam CDP port is open but connect failed: {exc}")
         try:
             yield cdp
@@ -60,6 +70,8 @@ def steam_cdp():
         return
 
     if not _allow_launch():
+        if _preflight_required():
+            raise RuntimeError("Steam CDP port 8080 is not open")
         pytest.skip(
             "Steam CDP port 8080 is not open. Either:\n"
             "  1) start Steam manually with `-cef-enable-debugging`, OR\n"
@@ -83,6 +95,8 @@ def steam_cdp():
     try:
         app, cdp = desktop.launch_cef_cdp(f'"{STEAM}"', timeout=45, startup_delay=3.0)
     except Exception as exc:
+        if _preflight_required():
+            raise
         pytest.skip(f"Steam launch with CDP failed: {exc}")
 
     app.detach()

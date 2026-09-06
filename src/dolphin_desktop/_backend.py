@@ -568,7 +568,9 @@ class ImageBackend(Backend):
         # ImageBackend does not publish GET_TREE, so this always raises —
         # a screen has no element tree to walk.
         self.require_capability(Capability.GET_TREE)
-        raise AssertionError("unreachable: require_capability always raises here")
+        raise AssertionError(
+            "unreachable: require_capability always raises here"
+        )  # pragma: no cover
 
     def screenshot(self, element: Any | None = None) -> Any:
         self.require_capability(Capability.SCREENSHOT)
@@ -650,7 +652,7 @@ class _MarkerBackend(Backend):
 
     def get_tree(self, root: Any, *, depth: int | None = None) -> dict[str, Any]:
         self._raise()
-        return {}  # unreachable — satisfies type checker
+        return {}  # pragma: no cover  # unreachable — satisfies type checker
 
     def screenshot(self, element: Any | None = None) -> Any:
         self._raise()
