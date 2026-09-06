@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from dolphin_desktop import Desktop, MainframeError, add_import_path, dirname, path_join
+from dolphin_desktop import (
+    Desktop,
+    MainframeError,
+    add_import_path,
+    dirname,
+    env_var,
+    path_join,
+)
 
 # Put the sibling pub400/ folder on sys.path so its modules are
 # importable directly as well as by dotted path.
@@ -48,6 +55,8 @@ def mock_term(mock_server):
             timeout=10,
         )
     except MainframeError as exc:
+        if (env_var("DOLPHIN_COMPONENT_PREFLIGHT") or "").strip() == "1":
+            raise
         pytest.skip(f"mock connect failed: {exc}")
     try:
         term.wait_ready(timeout=8)
