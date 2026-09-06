@@ -19,7 +19,7 @@ import pytest
 
 from dolphin_desktop import Desktop, env_var
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.system
 
 
 @pytest.fixture

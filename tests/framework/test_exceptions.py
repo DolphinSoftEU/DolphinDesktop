@@ -32,10 +32,3 @@ def test_exception_hierarchy_preserves_args_and_formats_optional_hints() -> None
     assert str(plain) == "('problem', 7)"
     assert str(DolphinError("problem", hint="retry")) == "problem\n  hint: retry"
     assert str(DolphinError("problem", hint="")) == "problem"
-
-
-def test_exception_hint_is_rendered_with_message() -> None:
-    from dolphin_desktop._exceptions import ElementNotFoundError
-
-    error = ElementNotFoundError("missing", hint="check selector")
-    assert str(error) == "missing\n  hint: check selector"

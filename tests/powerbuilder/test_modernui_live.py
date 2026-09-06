@@ -32,7 +32,7 @@ from dolphin_desktop import (
     sleep,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
+pytestmark = [pytest.mark.system, pytest.mark.timeout(120)]
 
 _PID = find_pid_by_image_name("modernui.exe")
 

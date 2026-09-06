@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
+pytestmark = [pytest.mark.external, pytest.mark.timeout(180)]
 
 # ALV grids sit inside a container control, and the nesting differs per
 # transaction: SM04 wraps its grid in a splitter, SM66 does not.

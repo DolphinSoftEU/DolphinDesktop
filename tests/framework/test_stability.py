@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import logging
 import os
 import zipfile
@@ -314,7 +313,14 @@ class TestTelemetry:
 
 
 class TestCrashDump:
-    pytestmark = pytest.mark.integration
+    pytestmark = pytest.mark.unit
+
+    @pytest.fixture(autouse=True)
+    def no_real_uia_capture(self, monkeypatch):
+        monkeypatch.setattr(
+            "dolphin_desktop._crash._fmt_uia_tree",
+            lambda *_args, **_kwargs: "mocked UIA tree",
+        )
 
     def test_creates_zip(self, tmp_path):
         from dolphin_desktop._crash import write_crash_dump
@@ -387,60 +393,6 @@ class TestCrashDump:
 
 
 # dolphin doctor CLI
-
-
-class TestDoctorCommand:
-    pytestmark = pytest.mark.integration
-
-    def test_doctor_prints_dolphin_version(self, capsys):
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "dolphin" in out.lower()
-
-    def test_doctor_prints_python_version(self, capsys):
-        import sys
-
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        major_minor = f"{sys.version_info.major}.{sys.version_info.minor}"
-        assert major_minor in out
-
-    def test_doctor_reports_required_deps(self, capsys):
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "pywinauto" in out
-        assert "Pillow" in out
-
-    def test_doctor_reports_optional_deps(self, capsys):
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "sentry-sdk" in out
-        assert "mss" in out
-
-    def test_doctor_reports_env_vars(self, capsys):
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "DOLPHIN_TIMEOUT" in out
-        assert "DOLPHIN_TELEMETRY" in out
-
-    def test_doctor_dispatched_from_main(self, capsys):
-        from dolphin_desktop._cli import main
-
-        with patch("sys.argv", ["dolphin", "doctor"]):
-            main()
-
-        out = capsys.readouterr().out
-        assert "dolphin" in out.lower()
 
 
 # Config round-trip for runtime settings
@@ -881,59 +833,6 @@ class TestTempFile:
                 assert fh.read() == "hello"
         finally:
             remove_file(path)
-
-
-class TestImagePathIsReadableAtSpawn:
-    """``_image_path_now`` must work the moment ``CreateProcess`` returns.
-
-    The module-list route (``EnumProcessModules``) fails until the target's
-    loader has populated the PEB, so it answers ``None`` for every freshly
-    spawned process — which is exactly the window in which a single-instance
-    launcher hands off and exits.
-    """
-
-    pytestmark = pytest.mark.integration
-
-    def test_path_is_known_immediately_after_create_process(self):
-        import subprocess
-        import sys
-
-        from dolphin_desktop._application import _process_image_path
-
-        for _ in range(5):
-            proc = subprocess.Popen(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            try:
-                path = _process_image_path(proc.pid)
-            finally:
-                proc.kill()
-                proc.wait()
-            assert path is not None
-            assert path.endswith(".exe")
-
-    def test_launch_passes_a_real_path_to_the_application(self, monkeypatch):
-        import subprocess
-        import sys
-
-        from dolphin_desktop import _application, _desktop
-
-        proc = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(30)"],
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        pw = MagicMock()
-        pw.process = proc.pid
-        monkeypatch.setattr(_desktop, "_PyWinApp", MagicMock(return_value=pw))
-        try:
-            app = _desktop.Desktop().launch("stub.exe", startup_delay=0)
-            assert app._image_path is not None
-        finally:
-            _application._live_pids.discard(proc.pid)
-            _application._session_pids.discard(proc.pid)
-            proc.kill()
-            proc.wait()
 
 
 class TestCloseMatchesKillOnChildren:

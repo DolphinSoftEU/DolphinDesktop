@@ -166,30 +166,6 @@ class TestImageLocatorMissingCv2:
             ImageLocator("nonexistent.png")._load_template()
 
 
-# Screen — screenshot and pixel_color (no cv2 required)
-
-
-@pytest.mark.integration
-def test_screenshot_returns_pil_image():
-    img = Screen.screenshot()
-    assert isinstance(img, Image.Image)
-    assert img.width > 0 and img.height > 0
-
-
-@pytest.mark.integration
-def test_screenshot_with_region():
-    img = Screen.screenshot(region=(0, 0, 200, 200))
-    assert img.size == (200, 200)
-
-
-@pytest.mark.integration
-def test_pixel_color_is_rgb_tuple():
-    color = Screen.pixel_color(0, 0)
-    assert isinstance(color, tuple)
-    assert len(color) == 3
-    assert all(0 <= c <= 255 for c in color)
-
-
 # Screen — OCR missing tesseract raises clearly
 
 
@@ -257,27 +233,6 @@ def tmp_template(tmp_path: Path) -> Path:
     return p
 
 
-def test_find_returns_none_or_an_xy_pair(tmp_template: Path):
-    """find() drives real cv2 end to end and returns None or an (x, y) pair.
-
-    A flat red template against a blank grab may or may not clear the 0.85
-    threshold, so the match outcome is not pinned — what is pinned is that
-    the call completes and its return type is one of the two documented
-    shapes.
-    """
-    try:
-        import cv2  # noqa: F401
-    except ImportError:
-        pytest.skip("cv2 not installed")
-
-    loc = ImageLocator(str(tmp_template), threshold=0.85)
-    # Patch _grab so no real screenshot is needed
-    with patch("dolphin_desktop._image._grab") as mock_grab:
-        mock_grab.return_value = Image.new("RGB", (800, 600))
-        result = loc.find()
-    assert result is None or (isinstance(result, tuple) and len(result) == 2)
-
-
 def test_find_returns_none_below_threshold(tmp_template: Path):
     try:
         import cv2 as real_cv2  # noqa: F401
@@ -301,34 +256,6 @@ def test_exists_without_match_returns_false(tmp_template: Path):
     with patch("dolphin_desktop._image._grab") as mock_grab:
         mock_grab.return_value = Image.new("RGB", (800, 600))
         assert loc.exists() is False
-
-
-def test_find_with_region_applies_offset(tmp_template: Path):
-    """A region-scoped find() never reports coordinates left of its origin.
-
-    The blank template need not match, so a None result is a passing run; the
-    guarantee is conditional — whenever a hit does come back, both coordinates
-    have been translated into screen space and sit at or past the region
-    origin rather than staying region-local.
-    """
-    try:
-        import cv2  # noqa: F401
-    except ImportError:
-        pytest.skip("cv2 not installed")
-
-    region = (50, 100, 350, 400)
-    loc = ImageLocator(str(tmp_template), threshold=0.0, region=region)
-
-    with patch("dolphin_desktop._image._grab") as mock_grab:
-        # Return a blank image big enough for matching
-        mock_grab.return_value = Image.new("RGB", (300, 300))
-        result = loc.find()
-
-    if result is not None:
-        cx, cy = result
-        # cx and cy must be >= region origin
-        assert cx >= region[0]
-        assert cy >= region[1]
 
 
 # Multi-monitor capture

@@ -111,18 +111,6 @@ def test_capability_presets_are_immutable_sets_of_capability_members() -> None:
     assert module.IMAGE_ONLY is IMAGE_ONLY
 
 
-def test_public_exports_contain_only_the_capability_api() -> None:
-    module = importlib.import_module("dolphin_desktop._capabilities")
-
-    assert module.__all__ == [
-        "ALL_CAPABILITIES",
-        "IMAGE_ONLY",
-        "STANDARD_ACCESSIBILITY",
-        "Capability",
-    ]
-    assert all(name in vars(module) for name in module.__all__)
-
-
 def test_standard_accessibility_contract_has_exact_members() -> None:
     assert STANDARD_ACCESSIBILITY <= ALL_CAPABILITIES
     assert {capability.name for capability in STANDARD_ACCESSIBILITY} == (

@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from tests.sap.conftest import sap_config
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
+pytestmark = [pytest.mark.external, pytest.mark.timeout(120)]
 
 
 def test_session_reports_expected_system(sap_session):

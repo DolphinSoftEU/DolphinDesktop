@@ -147,6 +147,11 @@ timeout = 30
 markers = [
     "slow: marks tests as slow",
     "integration: marks tests requiring a real app process",
+    "unit: deterministic tests without a real AUT, process, or network",
+    "component: tests using a controlled local process or dependency",
+    "windows_component: Windows-specific tests using a controlled process",
+    "system: tests driving a real AUT through the public API",
+    "external: tests requiring a system outside the test process",
     "dolphin_headless: marks tests that require headless desktop mode",
     "dolphin(timeout): overrides Dolphin runtime options for a test",
     "qt_agent: Qt agent DLL injection tests",

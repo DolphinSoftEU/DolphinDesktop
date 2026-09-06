@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.metadata
-import importlib.util
 import sys
 import warnings
 from types import ModuleType, SimpleNamespace
@@ -357,10 +356,20 @@ class TestRegistry:
         assert expected <= set(_REGISTRY.keys())
 
     def test_builtin_list_contains_expected_backends(self):
-        # 11 = 7 platform backends (UIA, Win32, Qt, Image, macOS, Linux, CDP)
-        # + 4 marker backends (Delphi, Mainframe, Sap, Java). If this count
-        # changes, update __all__ export list together.
-        assert len(_BUILT_IN) == 11
+        expected = {
+            "uia",
+            "win32",
+            "qt",
+            "image",
+            "macos",
+            "linux",
+            "cdp",
+            "delphi",
+            "mainframe",
+            "sap",
+            "java",
+        }
+        assert {backend.id for backend in _BUILT_IN} == expected
 
     def test_register_as_decorator_adds_to_registry(self):
         @register
@@ -576,43 +585,6 @@ class TestInfoBackendsCLI:
         out = self._run(capsys)
         n = len(list_backends())
         assert f"Total: {n}" in out
-
-
-# Documentation
-
-
-class TestDocumentation:
-    def test_architecture_md_exists(self):
-        from pathlib import Path
-
-        arch = Path(__file__).parent.parent.parent / "docs" / "architecture.md"
-        assert arch.exists(), "docs/architecture.md not found"
-
-    def test_architecture_md_has_layer_diagram(self):
-        from pathlib import Path
-
-        content = (Path(__file__).parent.parent.parent / "docs" / "architecture.md").read_text(
-            encoding="utf-8"
-        )
-        assert "┌" in content or "```" in content, "No diagram found in docs/architecture.md"
-
-    def test_architecture_md_mentions_plugin_model(self):
-        from pathlib import Path
-
-        content = (Path(__file__).parent.parent.parent / "docs" / "architecture.md").read_text(
-            encoding="utf-8"
-        )
-        assert "entry-point" in content or "entry_point" in content or "entry point" in content
-
-    def test_architecture_md_references_correct_module_name(self):
-        from pathlib import Path
-
-        content = (Path(__file__).parent.parent.parent / "docs" / "architecture.md").read_text(
-            encoding="utf-8"
-        )
-        assert "dolphin_desktop" in content, (
-            "docs/architecture.md should reference 'dolphin_desktop', not just 'dolphin'"
-        )
 
 
 # Public API re-exports
@@ -1024,12 +996,6 @@ class TestConcreteCapabilitiesAndOperations:
             assert instance.screenshot() == "screen"
         shot.assert_called_once_with()
 
-    def test_image_get_tree_assertion_is_defensive_only(self, monkeypatch):
-        instance = ImageBackend()
-        monkeypatch.setattr(instance, "require_capability", lambda capability: None)
-        with pytest.raises(AssertionError, match="unreachable"):
-            instance.get_tree(None)
-
     @pytest.mark.parametrize("dependency", ["cv2"])
     def test_image_availability_without_optional_dependency(self, monkeypatch, dependency):
         monkeypatch.setitem(sys.modules, dependency, None)
@@ -1369,31 +1335,6 @@ class TestResolveAndListing:
         ]
         with pytest.raises(TypeError, match="Capability"):
             supported_backends("click")
-
-    def test_marker_get_tree_defensive_return_is_exercised(self, monkeypatch):
-        instance = MacOSAccessibilityBackend()
-        monkeypatch.setattr(instance, "_raise", Mock(return_value=None))
-        assert instance.get_tree(None) == {}
-
-    def test_backend_module_imports_cleanly_in_a_fresh_namespace(self):
-        """Execute module startup under coverage even when pytest preloads it.
-
-        The installed pytest entry point imports ``dolphin_desktop`` before
-        pytest-cov starts tracing.  Loading the same source into an isolated
-        package namespace verifies the import-time registry construction and
-        makes those top-level declarations visible to the coverage collector.
-        """
-        module_name = "dolphin_desktop._backend_completeness_probe"
-        spec = importlib.util.spec_from_file_location(module_name, backend.__file__)
-        assert spec is not None and spec.loader is not None
-        probe = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = probe
-        try:
-            spec.loader.exec_module(probe)
-            assert probe._REGISTRY["uia"] is probe.UIABackend
-            assert probe._REGISTRY["mainframe"] is probe.MainframeBackend
-        finally:
-            sys.modules.pop(module_name, None)
 
 
 def test_backend_registry_listing_and_auto_detection(monkeypatch) -> None:

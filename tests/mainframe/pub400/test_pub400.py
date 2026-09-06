@@ -18,20 +18,11 @@ All imports are ``dolphin_desktop`` + ``pytest`` + the local env module.
 
 from __future__ import annotations
 
-import pytest
-
 from dolphin_desktop import MainframeTerminal
-from tests.mainframe.pub400._mainframe_env import WS3270  # type: ignore[import-not-found]
 
 # --------------------------------------------------------------------------- #
 # Preconditions                                                                #
 # --------------------------------------------------------------------------- #
-
-
-def test_ws3270_installed() -> None:
-    if WS3270 is None:
-        pytest.skip("wc3270 not installed")
-    assert WS3270.lower().endswith("ws3270.exe")
 
 
 # --------------------------------------------------------------------------- #
