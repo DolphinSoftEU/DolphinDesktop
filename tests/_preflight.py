@@ -80,6 +80,9 @@ def _preflight_pub400() -> None:
 
 
 def _preflight_sap() -> None:
+    if _sap_has_ready_session():
+        return
+
     missing: list[str] = []
     if not (_env_var("DOLPHIN_SAP_CONNECTION") or "").strip():
         missing.append("DOLPHIN_SAP_CONNECTION")
@@ -90,6 +93,22 @@ def _preflight_sap() -> None:
         missing.append("DOLPHIN_SAP_USER/DOLPHIN_SAP_PASSWORD")
     if missing:
         raise RuntimeError("external SAP job preflight failed; missing: " + ", ".join(missing))
+
+
+def _sap_has_ready_session() -> bool:
+    """Return whether SAP exposes an already logged-in, idle session."""
+    from dolphin_desktop import SapGui
+
+    stop_security_handler = SapGui.scripting_security_handler()
+    try:
+        gui = SapGui.connect(timeout=3)
+        session = gui.session(connection=0, session=0)
+        session.wait_until_ready(timeout=3)
+        return not session.find_by_id("wnd[0]/usr/txtRSYST-BNAME", timeout=1).exists()
+    except Exception:
+        return False
+    finally:
+        stop_security_handler.set()
 
 
 def _preflight_steam() -> None:

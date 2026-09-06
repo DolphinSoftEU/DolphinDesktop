@@ -107,8 +107,9 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     run_preflight()
 
 
-def _load_production_plugin(config: pytest.Config) -> None:
+def _load_production_plugin(session: pytest.Session) -> None:
     """Register the production plugin after pytest-cov starts measurement."""
+    config = session.config
     if config.pluginmanager.get_plugin("dolphin_desktop.pytest_plugin") is not None:
         return
     from importlib import import_module
@@ -126,12 +127,16 @@ def _load_production_plugin(config: pytest.Config) -> None:
     finally:
         plugin.pytest_addoption = addoption
         plugin.pytest_configure = configure
+    # pytest does not replay pytest_sessionstart for a plugin registered this
+    # late.  Run the plugin's session initialization explicitly so repeated
+    # pytest.main() calls cannot inherit artifact rows from an earlier run.
+    plugin.pytest_sessionstart(session)
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection(session: pytest.Session) -> None:
     """Load production fixtures after coverage starts, before collection."""
-    _load_production_plugin(session.config)
+    _load_production_plugin(session)
 
 
 # Categories are assigned by repository ownership, not by a broad

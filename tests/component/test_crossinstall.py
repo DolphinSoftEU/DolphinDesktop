@@ -93,3 +93,35 @@ def test_installed_plugins_expose_dolphin_options(tmp_path: Path) -> None:
     assert probe.returncode == 0, probe.stderr
     for option in ("--dolphin-backend", "--dolphin-timeout", "--dolphin-retry"):
         assert option in probe.stdout
+
+    markers = subprocess.run(
+        [str(python), "-m", "pytest", "--markers", "-p", "no:cacheprovider"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_env(),
+    )
+    assert markers.returncode == 0, markers.stderr
+    assert "dolphinsoft_stub" in markers.stdout
+
+    imports = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "import dolphin_desktop, dolphinsoft; "
+            "print(dolphin_desktop.__file__); print(dolphinsoft.__file__)",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_env(),
+    )
+    assert imports.returncode == 0, imports.stderr
+    desktop_path, dolphinsoft_path = (
+        Path(line).resolve() for line in imports.stdout.splitlines() if line.strip()
+    )
+    assert desktop_path.is_file()
+    assert dolphinsoft_path.is_file()
+    assert desktop_path.parent != dolphinsoft_path.parent
