@@ -161,7 +161,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source_pkgs = ["dolphin_desktop"]
+source = ["src/dolphin_desktop"]
 branch = false
 
 [tool.coverage.report]

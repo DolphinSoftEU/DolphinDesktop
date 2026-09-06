@@ -44,6 +44,8 @@ def mock_server():
 def mock_term(mock_server):
     """MainframeTerminal connected to the mock server via ws3270."""
     if WS3270 is None:
+        if (env_var("DOLPHIN_COMPONENT_PREFLIGHT") or "").strip() == "1":
+            raise RuntimeError("wc3270 is required when DOLPHIN_COMPONENT_PREFLIGHT=1")
         pytest.skip("wc3270 not installed")
     srv, port = mock_server
     try:

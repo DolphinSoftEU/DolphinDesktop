@@ -29,6 +29,11 @@ from dolphin_desktop import ApplicationError, SapGui, env_var
 
 pytestmark = pytest.mark.external
 
+
+def _preflight_required() -> bool:
+    return (env_var("DOLPHIN_SAP_PREFLIGHT") or "").strip() == "1"
+
+
 # Logon-screen field ids — identical across releases.
 _F_CLIENT = "wnd[0]/usr/txtRSYST-MANDT"
 _F_USER = "wnd[0]/usr/txtRSYST-BNAME"
@@ -71,6 +76,8 @@ def _on_logon_screen(session) -> bool:
 
 def _sign_in(session, cfg: dict[str, str]) -> None:
     if not cfg["user"] or not cfg["password"]:
+        if _preflight_required():
+            raise RuntimeError("SAP logon requires DOLPHIN_SAP_USER and DOLPHIN_SAP_PASSWORD")
         pytest.skip(
             "SAP session is on the logon screen but DOLPHIN_SAP_USER / "
             "DOLPHIN_SAP_PASSWORD are not set"
@@ -108,6 +115,8 @@ def sap_gui():
         gui = SapGui.connect(timeout=30)
     except ApplicationError as exc:
         stop_security_handler.set()
+        if _preflight_required():
+            raise
         pytest.skip(f"SAP GUI Scripting not available: {exc}")
     try:
         yield gui
@@ -129,6 +138,8 @@ def sap_session(sap_gui):
         # same way, and reporting "no open connection" sends the operator
         # to SAP Logon instead of to RZ11.
         if _connection_without_sessions(sap_gui):
+            if _preflight_required():
+                raise
             pytest.skip(
                 "SAP GUI shows an open connection but it publishes no "
                 "scripting session — enable server-side scripting: RZ11, "
@@ -136,6 +147,10 @@ def sap_session(sap_gui):
                 "profile too, or it reverts on the next restart)"
             )
         if not cfg["connection"]:
+            if _preflight_required():
+                raise RuntimeError(
+                    "no open SAP connection and DOLPHIN_SAP_CONNECTION is not set"
+                ) from None
             pytest.skip(
                 "no open SAP connection and DOLPHIN_SAP_CONNECTION is not set "
                 "(name of the SAP Logon entry to open)"
@@ -143,6 +158,8 @@ def sap_session(sap_gui):
         session = sap_gui.open_connection(cfg["connection"], timeout=30)
         opened_by_us = True
         if session is None:
+            if _preflight_required():
+                raise RuntimeError("SAP scripting session is not accessible") from None
             pytest.skip(
                 "opened the SAP connection but the scripting session is not "
                 "accessible — enable server-side scripting "

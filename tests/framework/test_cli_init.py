@@ -198,6 +198,19 @@ def test_doctor_does_not_crash_on_ascii_only_stdout(monkeypatch):
     assert "?" not in output
 
 
+def test_doctor_reports_a_diagnostic_failure(monkeypatch, capsys):
+    import pywinauto
+
+    def broken_desktop(**_kwargs):
+        raise RuntimeError("UIA unavailable")
+
+    monkeypatch.setattr(pywinauto, "Desktop", broken_desktop)
+
+    _doctor_cmd(SimpleNamespace())
+
+    assert "FAILED — UIA unavailable" in capsys.readouterr().out
+
+
 def test_cli_standard_scaffold_and_unknown_template(tmp_path) -> None:
     from dolphin_desktop._cli import _scaffold
 

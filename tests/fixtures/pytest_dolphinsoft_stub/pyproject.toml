@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pytest-dolphinsoft"
+version = "0.0.0.dev0+crossinstallstub"
+description = "Minimal pytest-dolphinsoft distribution used by cross-install tests"
+requires-python = ">=3.11"
+dependencies = ["pytest>=8.0"]
+
+[project.entry-points."pytest11"]
+dolphinsoft = "dolphinsoft._plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dolphinsoft"]
