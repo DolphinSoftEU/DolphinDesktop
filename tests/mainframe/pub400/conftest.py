@@ -2,29 +2,13 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
-from dolphin_desktop import Desktop, MainframeError, tcp_reachable
+from dolphin_desktop import Desktop, MainframeError
 from tests.mainframe.pub400._mainframe_env import WS3270  # type: ignore[import-not-found]
 
 _PUB400_HOST = "pub400.com"
 _PUB400_PORT = 23
-
-
-def pytest_sessionstart(session: pytest.Session) -> None:
-    if os.environ.get("DOLPHIN_EXTERNAL_PREFLIGHT") != "1":
-        return
-    if WS3270 is None:
-        raise pytest.UsageError(
-            "external mainframe job requires wc3270/ws3270.exe; "
-            "configure the runner before starting pytest"
-        )
-    if not tcp_reachable(_PUB400_HOST, _PUB400_PORT, timeout=3):
-        raise pytest.UsageError(
-            f"external mainframe job cannot reach {_PUB400_HOST}:{_PUB400_PORT}"
-        )
 
 
 @pytest.fixture(scope="module")

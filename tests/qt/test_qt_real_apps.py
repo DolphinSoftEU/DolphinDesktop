@@ -29,8 +29,6 @@ suite non-destructive.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from dolphin_desktop import Desktop, find_pid_by_image_name, is_windows
@@ -42,22 +40,6 @@ pytestmark = [
         reason="Qt UIA backend tests are Windows-only",
     ),
 ]
-
-
-def pytest_sessionstart(session: pytest.Session) -> None:
-    if os.environ.get("DOLPHIN_QT_ENVIRONMENT_JOB") != "1":
-        return
-    candidates = (
-        "RadeonSoftware.exe",
-        "AMD Ryzen Master.exe",
-        "lghub.exe",
-        "lghub_agent.exe",
-    )
-    if not is_windows() or not any(find_pid_by_image_name(name) for name in candidates):
-        raise pytest.UsageError(
-            "Qt real-app job requires at least one configured target process "
-            "(RadeonSoftware, AMD Ryzen Master, or Logitech G HUB)"
-        )
 
 
 # ---------------------------------------------------------------------------

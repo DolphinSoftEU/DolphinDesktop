@@ -7,6 +7,13 @@ import pytest
 pytest_plugins = ("dolphin_desktop.pytest_plugin",)
 
 from dolphin_desktop import Desktop  # noqa: E402
+from tests._preflight import run_preflight  # noqa: E402
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Fail configured jobs before nested conftests are collected."""
+    run_preflight()
+
 
 # Categories are assigned by repository ownership, not by a broad
 # "everything outside framework" rule.  Keeping the mapping here makes an

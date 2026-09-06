@@ -84,6 +84,36 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev --extra vision
 
+      - name: Install wc3270
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "wc3270-4.5ga6-noinstall-64.zip"
+          $installRoot = Join-Path $env:RUNNER_TEMP "wc3270"
+          Invoke-WebRequest `
+            -Uri "https://x3270.bgp.nu/download/04.05/wc3270-4.5ga6-noinstall-64.zip" `
+            -OutFile $archive
+          $expectedHash = "EB3A7A6AACAA769F00676CA56A5F1718B9068F359A96BDF26477499E4AED7468"
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+          if ($actualHash -ne $expectedHash) {
+            throw "wc3270 archive SHA256 mismatch: $actualHash"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $installRoot -Force
+          $ws3270 = Get-ChildItem -LiteralPath $installRoot -Recurse -Filter "ws3270.exe" |
+            Select-Object -First 1
+          if ($null -eq $ws3270) {
+            throw "wc3270 archive did not contain ws3270.exe"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "DOLPHIN_WS3270_PATH=$($ws3270.FullName)"
+          Add-Content -Path $env:GITHUB_PATH -Value $ws3270.DirectoryName
+
+      - name: Verify wc3270
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath $env:DOLPHIN_WS3270_PATH)) {
+            throw "DOLPHIN_WS3270_PATH does not point to ws3270.exe"
+          }
+          Get-Item -LiteralPath $env:DOLPHIN_WS3270_PATH | Format-List FullName,Length
+
       - name: Component tests
         run: uv run pytest -m "component or windows_component" -q
 
