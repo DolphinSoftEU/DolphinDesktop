@@ -144,11 +144,16 @@ class Desktop:
         cmd: str,
         *,
         backend: str,
-        timeout: float,
         work_dir: str | None,
         env: Mapping[str, str],
-    ) -> _PyWinApp:
-        """Create a visible child with a private environment block."""
+    ) -> tuple[_PyWinApp, str | None]:
+        """Create a child with a private environment block.
+
+        This mirrors the process-registration part of pywinauto's
+        ``Application.start``: assign the freshly-created PID directly
+        instead of reconnecting to it.  A single-instance launcher may hand
+        off and exit before a ``connect(process=...)`` call runs.
+        """
         from ._runner import close_process_handle, launch_cmd_on_desktop
 
         pid, h_process = launch_cmd_on_desktop(
@@ -157,10 +162,16 @@ class Desktop:
             work_dir=work_dir,
             env=env,
         )
-        close_process_handle(h_process)
-        app = _PyWinApp(backend=backend)
-        app.connect(process=pid, timeout=timeout)
-        return app
+        try:
+            # Query the image while the launcher PID is still as fresh as
+            # possible.  Application._is_hand_off_pid uses this cached path
+            # after a single-instance handoff has replaced the launcher.
+            image_path = _process_image_path(pid)
+            app = _PyWinApp(backend=backend)
+            app.process = pid
+            return app, image_path
+        finally:
+            close_process_handle(h_process)
 
     # Launch / connect
 
@@ -210,12 +221,20 @@ class Desktop:
                 # WaitForInputIdle and would raise RuntimeWarning otherwise.
                 app.start(cmd, timeout=timeout, wait_for_idle=False, work_dir=work_dir)
             else:
-                app = self._launch_with_environment(
+                app, image_path = self._launch_with_environment(
                     cmd,
                     backend=self._backend,
-                    timeout=timeout,
                     work_dir=work_dir,
                     env=env,
+                )
+                if startup_delay > 0:
+                    time.sleep(startup_delay)
+                return Application(
+                    app,
+                    backend=self._backend,
+                    default_timeout_ms=self._default_timeout_ms,
+                    desktop=self,
+                    image_path=image_path,
                 )
         except Exception as exc:
             raise ApplicationError(f"Failed to launch {cmd!r}: {exc}") from exc
@@ -271,12 +290,20 @@ class Desktop:
                 pw = _PyWinApp(backend=backend)
                 pw.start(cmd, timeout=timeout, wait_for_idle=False, work_dir=work_dir)
             else:
-                pw = self._launch_with_environment(
+                pw, image_path = self._launch_with_environment(
                     cmd,
                     backend=backend,
-                    timeout=timeout,
                     work_dir=work_dir,
                     env=env,
+                )
+                if startup_delay > 0:
+                    time.sleep(startup_delay)
+                return Application(
+                    pw,
+                    backend=backend,
+                    default_timeout_ms=self._default_timeout_ms,
+                    desktop=self,
+                    image_path=image_path,
                 )
         except Exception as exc:
             raise ApplicationError(f"Failed to launch {cmd!r}: {exc}") from exc

@@ -165,6 +165,7 @@ def test_launch_passes_env_to_child_without_mutating_parent(monkeypatch) -> None
 
     process_app = Mock(process=654)
     observed: dict[str, object] = {}
+    process_app.connect.side_effect = RuntimeError("launcher PID already handed off")
 
     def launch(command, desktop_name, *, work_dir, env):
         observed["command"] = command
@@ -181,7 +182,7 @@ def test_launch_passes_env_to_child_without_mutating_parent(monkeypatch) -> None
     monkeypatch.setattr(runner, "close_process_handle", close_handle)
     monkeypatch.delenv("DOLPHIN_TEST_ENV", raising=False)
     monkeypatch.setattr(desktop_module, "_PyWinApp", Mock(return_value=process_app))
-    monkeypatch.setattr(desktop_module, "_image_path_now", lambda app: "probe.exe")
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
     monkeypatch.setattr(desktop_module.time, "sleep", Mock())
     monkeypatch.setattr(desktop_module, "Application", application)
 
@@ -190,7 +191,7 @@ def test_launch_passes_env_to_child_without_mutating_parent(monkeypatch) -> None
         desktop.launch(
             "probe.exe",
             env={"DOLPHIN_TEST_ENV": "expected-value"},
-            startup_delay=0,
+            startup_delay=0.25,
         )
         == "wrapped"
     )
@@ -209,16 +210,48 @@ def test_launch_passes_env_to_child_without_mutating_parent(monkeypatch) -> None
         env={"DOLPHIN_TEST_ENV": "expected-value"},
     )
     close_handle.assert_called_once_with(987)
-    process_app.connect.assert_called_once_with(process=654, timeout=10.0)
+    desktop_module.time.sleep.assert_called_once_with(0.25)
+    assert process_app.process == 654
+    process_app.connect.assert_not_called()
+    application.assert_called_once_with(
+        process_app,
+        backend="uia",
+        default_timeout_ms=10_000,
+        desktop=desktop,
+        image_path="probe.exe",
+    )
     assert "DOLPHIN_TEST_ENV" not in os.environ
+
+
+def test_launch_with_environment_closes_spawn_handle_if_configuration_fails(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    launcher = Mock(return_value=(654, 987))
+    close_handle = Mock()
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(runner, "close_process_handle", close_handle)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
+    monkeypatch.setattr(
+        desktop_module,
+        "_PyWinApp",
+        Mock(side_effect=RuntimeError("pywinauto setup failed")),
+    )
+
+    with pytest.raises(ApplicationError, match=r"Failed to launch 'probe\.exe'"):
+        Desktop(hidden=False).launch(
+            "probe.exe",
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+            startup_delay=0,
+        )
+
+    close_handle.assert_called_once_with(987)
 
 
 def test_raw_launch_passes_env_to_private_child(monkeypatch) -> None:
     process_app = Mock(process=654)
     application = Mock(return_value="wrapped")
-    launch_with_environment = Mock(return_value=process_app)
+    launch_with_environment = Mock(return_value=(process_app, "probe.exe"))
     monkeypatch.setattr(desktop_module, "Application", application)
-    monkeypatch.setattr(desktop_module, "_image_path_now", lambda app: "probe.exe")
     monkeypatch.setattr(desktop_module.time, "sleep", Mock())
 
     desktop = desktop_module.Desktop(hidden=False)
@@ -230,7 +263,7 @@ def test_raw_launch_passes_env_to_private_child(monkeypatch) -> None:
             backend="win32",
             timeout=3,
             work_dir="C:\\tmp",
-            startup_delay=0,
+            startup_delay=0.25,
             env={"DOLPHIN_TEST_ENV": "expected-value"},
         )
         == "wrapped"
@@ -238,9 +271,16 @@ def test_raw_launch_passes_env_to_private_child(monkeypatch) -> None:
     launch_with_environment.assert_called_once_with(
         "probe.exe",
         backend="win32",
-        timeout=3,
         work_dir="C:\\tmp",
         env={"DOLPHIN_TEST_ENV": "expected-value"},
+    )
+    desktop_module.time.sleep.assert_called_once_with(0.25)
+    application.assert_called_once_with(
+        process_app,
+        backend="win32",
+        default_timeout_ms=10_000,
+        desktop=desktop,
+        image_path="probe.exe",
     )
 
 
