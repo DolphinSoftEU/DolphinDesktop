@@ -393,9 +393,7 @@ def test_locator_negative_nth_prefers_complete_descendants_over_limited_tree_wal
             control_type="Pane",
             children=lambda child=nested: [child],
         )
-    parent.wrapper.element_info = SimpleNamespace(
-        children=lambda: [shallow_info, nested]
-    )
+    parent.wrapper.element_info = SimpleNamespace(children=lambda: [shallow_info, nested])
 
     wrapper_cls = Mock(side_effect=lambda info: ("wrapped", info))
     fake_pw = sys.modules["pywinauto"]
