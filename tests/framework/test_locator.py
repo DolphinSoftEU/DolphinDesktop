@@ -440,20 +440,20 @@ def test_locator_negative_nth_uses_tree_walk_when_descendants_has_no_match():
     tree_walk.assert_called_once_with(parent, criteria)
 
 
-def test_locator_negative_nth_does_not_tree_walk_unsupported_criteria():
+def test_locator_negative_nth_uses_tree_walk_for_auto_id():
     parent = FakeSpec(wrapper=FakeElement())
     criteria = {"auto_id": "btn", "found_index": -1}
-
-    from pywinauto.timings import TimeoutError as PyTimeoutError
+    tree_result = object()
 
     with (
-        monotonic_values(0, 1),
-        patch.object(locator_module, "_tree_walk_find") as tree_walk,
-        pytest.raises(PyTimeoutError),
+        monotonic_values(0),
+        patch.object(locator_module, "_tree_walk_find", return_value=tree_result) as tree_walk,
     ):
-        locator_module._resolve_negative_found_index(parent, criteria, timeout=0)
+        assert (
+            locator_module._resolve_negative_found_index(parent, criteria, timeout=0) is tree_result
+        )
 
-    tree_walk.assert_not_called()
+    tree_walk.assert_called_once_with(parent, criteria)
 
 
 def test_locator_negative_nth_out_of_range_uses_not_found_behavior():

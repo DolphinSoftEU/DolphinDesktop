@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from pywinauto.uia_defines import NoPatternInterfaceError
@@ -140,9 +142,46 @@ class TestKeySyntaxEscaping:
 class TestTreeWalkFallbackCriteria:
     def test_refuses_criteria_it_cannot_evaluate(self):
         parent = MagicMock()
-        result = _tree_walk_find(parent, {"control_type": "Button", "auto_id": "btnDelete"})
+        result = _tree_walk_find(parent, {"control_type": "Button", "class_name": "Toolbar"})
         assert result is None
         parent.wrapper_object.assert_not_called()
+
+    def test_matches_auto_id_for_virtualized_tree_items(self):
+        wanted = MagicMock()
+        wanted.name = "Item 450"
+        wanted.control_type = "TreeItem"
+        wanted.automation_id = "item_450"
+        wanted.children.return_value = []
+        other = MagicMock()
+        other.name = "Item 449"
+        other.control_type = "TreeItem"
+        other.automation_id = "item_449"
+        other.children.return_value = []
+        parent = MagicMock()
+        parent.wrapper_object.return_value.element_info.children.return_value = [other, wanted]
+        wrapper_cls = Mock(side_effect=lambda info: info)
+        fake_pw = sys.modules["pywinauto"]
+        with patch.object(
+            fake_pw,
+            "Application",
+            return_value=SimpleNamespace(
+                backend=SimpleNamespace(generic_wrapper_class=wrapper_cls)
+            ),
+        ):
+            assert (
+                _tree_walk_find(
+                    parent,
+                    {"control_type": "TreeItem", "auto_id": "item_450"},
+                )
+                is wanted
+            )
+        assert (
+            _tree_walk_find(
+                parent,
+                {"control_type": "TreeItem", "auto_id": "missing"},
+            )
+            is None
+        )
 
     def test_refuses_title_re(self):
         parent = MagicMock()

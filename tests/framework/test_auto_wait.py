@@ -470,21 +470,24 @@ class TestWaitForUsesFallbacks:
 
     def test_exists_reports_an_existing_hidden_element(self):
         spec = _succeeding_spec()
-        spec.child_window.return_value.wrapper_object.return_value.is_visible.return_value = (
-            False
-        )
+        spec.child_window.return_value.wrapper_object.return_value.is_visible.return_value = False
         loc = _window(spec).get_by_role("Button")
 
         assert loc.exists() is True
 
     def test_wait_for_exists_accepts_an_existing_hidden_element(self):
         spec = _succeeding_spec()
-        spec.child_window.return_value.wrapper_object.return_value.is_visible.return_value = (
-            False
-        )
+        spec.child_window.return_value.wrapper_object.return_value.is_visible.return_value = False
         loc = _window(spec).get_by_role("Button")
 
         assert loc.wait_for(state="exists", timeout=0.1) is loc
+
+    def test_presence_wait_uses_selector_fallbacks(self):
+        spec = self._spec_where_only_the_fallback_resolves()
+        loc = Locator(_window(spec), title="OK", fallback=[{"auto_id": "btnOk"}]).timeout(0.05)
+
+        assert loc.exists() is True
+        assert loc.wait_for(state="exists") is loc
 
     def test_resolved_locator_exists_when_wrapped_element_is_hidden(self):
         element = MagicMock()
@@ -493,6 +496,13 @@ class TestWaitForUsesFallbacks:
 
         assert loc.exists() is True
         assert loc.wait_for(state="exists", timeout=0) is loc
+
+    @pytest.mark.parametrize("timeout", [-1.0, float("nan"), float("inf"), float("-inf")])
+    def test_locator_timeout_rejects_invalid_values(self, timeout):
+        loc = Locator(_window())
+
+        with pytest.raises(ValueError):
+            loc.timeout(timeout)
 
 
 # py.typed consumers must be able to chain through timeout()/nth()

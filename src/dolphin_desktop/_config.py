@@ -128,10 +128,14 @@ def config(
             or the ``--dolphin-retry`` pytest CLI option.
     """
     if timeout is not None:
+        if not math.isfinite(timeout):
+            raise ValueError("timeout must be finite")
         if timeout < 0:
             raise ValueError("timeout must be non-negative")
         _defaults["timeout"] = float(timeout)
     if poll_interval is not None:
+        if not math.isfinite(poll_interval):
+            raise ValueError("poll_interval must be finite")
         if poll_interval < 0:
             raise ValueError("poll_interval must be non-negative")
         _defaults["poll_interval"] = float(poll_interval)

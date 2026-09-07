@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import math
 import sys
 import time
 from collections.abc import Callable
@@ -214,6 +215,30 @@ def _wait_until_visible(spec: Any, timeout: float) -> None:
     raise _PwTimeoutError(f"element did not become visible within {timeout}s") from last_exc
 
 
+def _wait_until_present(spec: Any, timeout: float) -> None:
+    """Block until *spec* yields a wrapper, without checking visibility."""
+    from pywinauto.findwindows import (  # type: ignore[import-untyped]
+        ElementAmbiguousError as _PwAmbiguousError,
+    )
+    from pywinauto.timings import TimeoutError as _PwTimeoutError
+
+    deadline = time.monotonic() + timeout
+    poll = _get_poll_interval()
+    last_exc: Exception | None = None
+    while True:
+        try:
+            spec.wrapper_object()
+            return
+        except _PwAmbiguousError:
+            raise
+        except Exception as exc:
+            last_exc = exc
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll)
+    raise _PwTimeoutError(f"element did not become present within {timeout}s") from last_exc
+
+
 def _is_foreground(spec: Any) -> bool:
     """True when *spec* is the active top-level window.
 
@@ -328,6 +353,10 @@ class Locator:
 
     def timeout(self, seconds: float) -> Self:
         """Return a new Locator with a different timeout (does not mutate self)."""
+        if not math.isfinite(seconds):
+            raise ValueError("timeout must be finite")
+        if seconds < 0:
+            raise ValueError("timeout must be non-negative")
         clone = self._clone()
         clone._timeout = seconds
         return clone
@@ -1080,38 +1109,71 @@ class Locator:
             ElementAmbiguousError as _PwAmbiguousError,
         )
 
-        spec = parent_spec.child_window(**self._criteria)
-        from pywinauto.application import WindowSpecification
+        primary_exc: Exception | None = None
+        try:
+            criteria = self._criteria
+            if _is_negative_found_index(criteria):
+                resolved = _resolve_negative_found_index(parent_spec, criteria, self._timeout)
+                if isinstance(resolved, dict):
+                    criteria = resolved
+                else:
+                    return resolved
+            spec = parent_spec.child_window(**criteria)
+            _wait_until_present(spec, self._timeout)
+            return spec
+        except _PwAmbiguousError as exc:
+            from ._exceptions import AmbiguousMatchError
 
-        if isinstance(spec, WindowSpecification):
-            if spec.exists(timeout=self._timeout):
-                return spec
-            raise ElementNotFoundError(
-                _NotFoundMessage(self._criteria, self._timeout, parent_spec)
-            )
+            raise AmbiguousMatchError(
+                f"{self._criteria!r} matched more than one element — "
+                "narrow the criteria or pick one with found_index=N"
+            ) from exc
+        except Exception as exc:
+            primary_exc = exc
 
-        deadline = time.monotonic() + self._timeout
-        last_exc: Exception | None = None
-        while True:
+        # Presence checks use the same fallback order as actions, but probe
+        # only whether the handle can be materialised. Hidden controls are
+        # valid UIA elements and must not be rejected by a visibility wait.
+        from . import _selfheal
+
+        for fb in self._fallback:
             try:
-                spec.wrapper_object()
-                return spec
+                fb_spec = parent_spec.child_window(**fb)
+                _wait_until_present(fb_spec, 0)
+                _selfheal.record_fallback(self._criteria, fb)
+                return fb_spec
             except _PwAmbiguousError as exc:
                 from ._exceptions import AmbiguousMatchError
 
                 raise AmbiguousMatchError(
-                    f"{self._criteria!r} matched more than one element — "
+                    f"{fb!r} matched more than one element — "
                     "narrow the criteria or pick one with found_index=N"
                 ) from exc
-            except Exception as exc:
-                last_exc = exc
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(_get_poll_interval())
+            except Exception:
+                continue
+
+        if self._image_fallback is not None:
+            try:
+                result = self._image_fallback.find_with_size()
+                if result is not None:
+                    cx, cy, tw, th = result
+                    from ._image import _ImageElement
+
+                    _selfheal.record_fallback(
+                        self._criteria,
+                        {"image": str(self._image_fallback._template_path)},
+                    )
+                    return _ImageElement(cx, cy, tw, th)
+            except Exception:
+                pass
+
+        tree_result = _tree_walk_find(parent_spec, self._criteria)
+        if tree_result is not None:
+            return tree_result
 
         raise ElementNotFoundError(
             _NotFoundMessage(self._criteria, self._timeout, parent_spec)
-        ) from last_exc
+        ) from primary_exc
 
     def exists(self, timeout: float = 0.0) -> bool:
         """Return True if the element exists within *timeout* seconds.
@@ -1128,6 +1190,8 @@ class Locator:
             return True
         except AmbiguousMatchError:
             return True
+        except ValueError:
+            raise
         except Exception:
             return False
 
@@ -1801,7 +1865,7 @@ def _toggle_element(element: Any) -> None:
         element.click_input()
 
 
-_TREE_WALK_KEYS = frozenset({"title", "control_type", "found_index"})
+_TREE_WALK_KEYS = frozenset({"title", "control_type", "auto_id", "found_index"})
 
 # Locator.wait_for state → the wrapper predicate that answers it, for results
 # that are raw wrappers instead of a WindowSpecification with .wait().
@@ -1919,16 +1983,16 @@ def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
     which calls TreeWalker internally and can reach those elements.
     Returns a pywinauto wrapper on success, or None.
     """
-    # Only ``title`` and ``control_type`` can be evaluated against a raw
-    # UIAElementInfo here. Matching on a subset of the caller's criteria would
-    # return the wrong element (e.g. a stale ``auto_id`` silently degrading to
-    # "the first Button in the window"), so any other key disqualifies this
+    # Only ``title``, ``control_type`` and ``auto_id`` can be evaluated against
+    # a raw UIAElementInfo here. Matching on a subset of the caller's criteria
+    # would return the wrong element, so any other key disqualifies this
     # fallback entirely — the caller must get an ElementNotFoundError instead.
     if not set(criteria) <= _TREE_WALK_KEYS:
         return None
     title = criteria.get("title", "")
     ct = criteria.get("control_type", "")
-    if not title and not ct:
+    auto_id = criteria.get("auto_id", "")
+    if not title and not ct and not auto_id:
         return None
     # ``nth()`` merges found_index into the criteria; skipping that many
     # matches here keeps .nth(N) with the same fallbacks as the bare locator.
@@ -1952,9 +2016,14 @@ def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
             try:
                 child_name = (child.name or "").split("\t")[0]
                 child_ct = child.control_type or ""
+                child_auto_id = getattr(child, "automation_id", "") or ""
             except Exception:
                 continue
-            if (not title or child_name == title) and (not ct or child_ct == ct):
+            if (
+                (not title or child_name == title)
+                and (not ct or child_ct == ct)
+                and (not auto_id or child_auto_id == auto_id)
+            ):
                 if found_index < 0:
                     negative_matches.append(child)
                 elif remaining[0] > 0:
@@ -2021,9 +2090,4 @@ class _ResolvedLocator(Locator):
         return self._resolve()
 
     def _resolve(self) -> Any:
-        is_visible = getattr(self._element, "is_visible", None)
-        if callable(is_visible) and not is_visible():
-            raise ElementNotFoundError(
-                _NotFoundMessage(self._criteria, self._timeout, self._element)
-            )
         return self._element
