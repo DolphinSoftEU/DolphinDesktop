@@ -154,6 +154,131 @@ def test_window_class_probe_handles_callback_and_outer_errors(monkeypatch) -> No
     assert application._electron_by_window_class(42) is False
 
 
+def test_windows_includes_visible_owned_dialogs_missing_from_backend(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    app, raw = _bare_application(application, pid=42)
+    main = Mock(handle=101)
+    extra = Mock(handle=102)
+    dialog = Mock(handle=103)
+    raw.windows.return_value = [main, extra]
+    raw.window.return_value = dialog
+
+    gui = SimpleNamespace(IsWindowVisible=lambda hwnd: hwnd != 104)
+    process = SimpleNamespace(
+        GetWindowThreadProcessId=Mock(side_effect=[(0, 42), (0, 42), (0, 42), (0, 999)])
+    )
+
+    def enumerate_windows(callback, extra_data):
+        for hwnd in (101, 102, 103, 104):
+            callback(hwnd, extra_data)
+
+    gui.EnumWindows = enumerate_windows
+    monkeypatch.setitem(sys.modules, "win32gui", gui)
+    monkeypatch.setitem(sys.modules, "win32process", process)
+
+    windows = app.windows()
+
+    assert [window._spec for window in windows] == [main, extra, dialog]
+    raw.window.assert_called_once_with(handle=103)
+
+
+def test_visible_window_handles_tolerates_missing_apis_callback_errors_and_enumeration_errors(
+    monkeypatch,
+) -> None:
+    import dolphin_desktop._application as application
+
+    monkeypatch.setitem(sys.modules, "win32gui", None)
+    monkeypatch.setitem(sys.modules, "win32process", None)
+    assert application._visible_window_handles(42) == []
+
+    gui = SimpleNamespace(IsWindowVisible=lambda hwnd: hwnd != 1)
+    process = SimpleNamespace(
+        GetWindowThreadProcessId=Mock(side_effect=[RuntimeError("window disappeared"), (0, 42)])
+    )
+
+    def enumerate_windows(callback, extra_data):
+        for hwnd in (1, 2, 3):
+            callback(hwnd, extra_data)
+
+    gui.EnumWindows = enumerate_windows
+    monkeypatch.setitem(sys.modules, "win32gui", gui)
+    monkeypatch.setitem(sys.modules, "win32process", process)
+    assert application._visible_window_handles(42) == [3]
+
+    gui.EnumWindows = Mock(side_effect=RuntimeError("enumeration failed"))
+    assert application._visible_window_handles(42) == []
+
+
+def test_last_active_popup_handles_missing_api_and_popup_probe_errors(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    monkeypatch.setattr(application, "_visible_window_handles", lambda _pid: [101])
+    monkeypatch.setitem(sys.modules, "win32gui", None)
+    assert application._last_active_popup_handle(42) is None
+
+    gui = SimpleNamespace(GetLastActivePopup=Mock(side_effect=RuntimeError("window disappeared")))
+    monkeypatch.setitem(sys.modules, "win32gui", gui)
+    assert application._last_active_popup_handle(42) is None
+
+
+def test_top_window_prefers_visible_active_popup(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    app, raw = _bare_application(application, pid=42)
+    main = Mock(handle=101)
+    dialog = Mock(handle=103)
+    raw.top_window.return_value = main
+    raw.window.return_value = dialog
+
+    monkeypatch.setattr(application, "_visible_window_handles", lambda _pid: [101, 103])
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(GetLastActivePopup=lambda hwnd: 103 if hwnd == 101 else hwnd),
+    )
+
+    assert app.top_window()._spec is dialog
+    raw.window.assert_called_once_with(handle=103)
+    raw.top_window.assert_not_called()
+
+
+def test_top_window_falls_back_when_popup_spec_cannot_be_created(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    app, raw = _bare_application(application, pid=42)
+    top = Mock(handle=101)
+    raw.top_window.return_value = top
+    raw.window.side_effect = RuntimeError("dialog disappeared")
+
+    monkeypatch.setattr(application, "_visible_window_handles", lambda _pid: [101, 103])
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(GetLastActivePopup=lambda hwnd: 103 if hwnd == 101 else hwnd),
+    )
+
+    assert app.top_window()._spec is top
+    raw.top_window.assert_called_once_with()
+
+
+def test_windows_tolerates_stale_backend_handle_and_popup_wrap_errors(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    class StaleWindow:
+        @property
+        def handle(self):
+            raise RuntimeError("window disappeared")
+
+    app, raw = _bare_application(application, pid=42)
+    raw.windows.return_value = [StaleWindow()]
+    raw.window.side_effect = RuntimeError("dialog disappeared")
+    monkeypatch.setattr(application, "_visible_window_handles", lambda _pid: [103])
+
+    assert len(app.windows()) == 1
+    raw.window.assert_called_once_with(handle=103)
+
+
 def test_module_detection_empty_and_negative_cases(monkeypatch) -> None:
     import dolphin_desktop._application as application
 

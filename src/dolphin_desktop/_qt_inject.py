@@ -32,12 +32,14 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import json
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 from ._exceptions import DolphinError
+from ._platform_compat import _UnavailableObject
 from ._qt_agent import agent_dll_for
 
 # Win32 constants and prototypes
@@ -82,7 +84,11 @@ MAX_ABANDONED_IDS = 256
 _READ_CHUNK = 64 * 1024
 _READ_POLL_S = 0.005
 
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32: Any = (
+    ctypes.WinDLL("kernel32", use_last_error=True)
+    if sys.platform == "win32"
+    else _UnavailableObject("Qt agent injection")
+)
 
 _OpenProcess = _kernel32.OpenProcess
 _OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]

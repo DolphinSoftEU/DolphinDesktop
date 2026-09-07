@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 import warnings
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from pywinauto import Application as _PyWinApp
+if sys.platform == "win32":
+    from pywinauto import Application as _PyWinApp
+else:
+    from ._platform_compat import _unavailable_class
+
+    _PyWinApp = _unavailable_class("Application", "pywinauto.Application")
 
 from ._application import Application, _process_image_path
 from ._exceptions import ApplicationError, DolphinError
@@ -132,6 +139,40 @@ class Desktop:
 
         atexit.register(close_desktop, self._hDesk)
 
+    def _launch_with_environment(
+        self,
+        cmd: str,
+        *,
+        backend: str,
+        work_dir: str | None,
+        env: Mapping[str, str],
+    ) -> tuple[_PyWinApp, str | None]:
+        """Create a child with a private environment block.
+
+        This mirrors the process-registration part of pywinauto's
+        ``Application.start``: assign the freshly-created PID directly
+        instead of reconnecting to it.  A single-instance launcher may hand
+        off and exit before a ``connect(process=...)`` call runs.
+        """
+        from ._runner import close_process_handle, launch_cmd_on_desktop
+
+        pid, h_process = launch_cmd_on_desktop(
+            cmd,
+            None,
+            work_dir=work_dir,
+            env=env,
+        )
+        try:
+            # Query the image while the launcher PID is still as fresh as
+            # possible.  Application._is_hand_off_pid uses this cached path
+            # after a single-instance handoff has replaced the launcher.
+            image_path = _process_image_path(pid)
+            app = _PyWinApp(backend=backend)
+            app.process = pid
+            return app, image_path
+        finally:
+            close_process_handle(h_process)
+
     # Launch / connect
 
     def launch(
@@ -141,6 +182,7 @@ class Desktop:
         timeout: float = 10.0,
         work_dir: str | None = None,
         startup_delay: float = 0.5,
+        env: Mapping[str, str] | None = None,
     ) -> Application:
         """Start a new process and return an :class:`Application`.
 
@@ -158,17 +200,42 @@ class Desktop:
             Useful for single-instance apps (e.g. Windows 11 Notepad) that
             hand off to an existing process — a brief pause lets the target
             window appear before :meth:`Application.window` is called.
+        env:
+            Optional environment overlay for the child process. Values are
+            merged into a private environment block for this spawn only;
+            the caller's environment is never modified.
         """
         if self._is_hidden:
             return self._launch_hidden(
-                cmd, timeout=timeout, work_dir=work_dir, startup_delay=startup_delay
+                cmd,
+                timeout=timeout,
+                work_dir=work_dir,
+                startup_delay=startup_delay,
+                env=env,
             )
 
         try:
-            app = _PyWinApp(backend=self._backend)
-            # wait_for_idle=False: packaged/store apps do not support
-            # WaitForInputIdle and would raise RuntimeWarning otherwise.
-            app.start(cmd, timeout=timeout, wait_for_idle=False, work_dir=work_dir)
+            if env is None:
+                app = _PyWinApp(backend=self._backend)
+                # wait_for_idle=False: packaged/store apps do not support
+                # WaitForInputIdle and would raise RuntimeWarning otherwise.
+                app.start(cmd, timeout=timeout, wait_for_idle=False, work_dir=work_dir)
+            else:
+                app, image_path = self._launch_with_environment(
+                    cmd,
+                    backend=self._backend,
+                    work_dir=work_dir,
+                    env=env,
+                )
+                if startup_delay > 0:
+                    time.sleep(startup_delay)
+                return Application(
+                    app,
+                    backend=self._backend,
+                    default_timeout_ms=self._default_timeout_ms,
+                    desktop=self,
+                    image_path=image_path,
+                )
         except Exception as exc:
             raise ApplicationError(f"Failed to launch {cmd!r}: {exc}") from exc
         image_path = _image_path_now(app)
@@ -197,6 +264,7 @@ class Desktop:
         timeout: float = 10.0,
         work_dir: str | None = None,
         startup_delay: float = 0.5,
+        env: Mapping[str, str] | None = None,
     ) -> Application:
         """Launch a process on an explicit backend, bypassing ``self._backend``.
 
@@ -211,11 +279,32 @@ class Desktop:
             # Hidden-desktop path always respects the configured
             # self._backend — hidden-mode is orthogonal to UIA/Win32.
             return self._launch_hidden(
-                cmd, timeout=timeout, work_dir=work_dir, startup_delay=startup_delay
+                cmd,
+                timeout=timeout,
+                work_dir=work_dir,
+                startup_delay=startup_delay,
+                env=env,
             )
         try:
-            pw = _PyWinApp(backend=backend)
-            pw.start(cmd, timeout=timeout, wait_for_idle=False, work_dir=work_dir)
+            if env is None:
+                pw = _PyWinApp(backend=backend)
+                pw.start(cmd, timeout=timeout, wait_for_idle=False, work_dir=work_dir)
+            else:
+                pw, image_path = self._launch_with_environment(
+                    cmd,
+                    backend=backend,
+                    work_dir=work_dir,
+                    env=env,
+                )
+                if startup_delay > 0:
+                    time.sleep(startup_delay)
+                return Application(
+                    pw,
+                    backend=backend,
+                    default_timeout_ms=self._default_timeout_ms,
+                    desktop=self,
+                    image_path=image_path,
+                )
         except Exception as exc:
             raise ApplicationError(f"Failed to launch {cmd!r}: {exc}") from exc
         image_path = _image_path_now(pw)
@@ -305,13 +394,14 @@ class Desktop:
         timeout: float,
         work_dir: str | None,
         startup_delay: float,
+        env: Mapping[str, str] | None = None,
     ) -> Application:
         """Launch *cmd* on the hidden desktop and connect pywinauto by PID."""
         from ._runner import close_process_handle, launch_cmd_on_desktop
 
         self._ensure_hidden_mode()
         try:
-            pid, h_process = launch_cmd_on_desktop(cmd, work_dir=work_dir)
+            pid, h_process = launch_cmd_on_desktop(cmd, work_dir=work_dir, env=env)
             close_process_handle(h_process)
         except OSError as exc:
             raise ApplicationError(f"Failed to launch {cmd!r} on hidden desktop: {exc}") from exc
@@ -429,29 +519,20 @@ class Desktop:
         qt_env:
             Additional environment variables to set in the child process
             (e.g. ``{"QT_LOGGING_RULES": "*.debug=true"}``).  Always merged
-            on top of ``QT_ACCESSIBILITY=1``.
+            on top of ``QT_ACCESSIBILITY=1``.  The parent environment is
+            never modified.
         """
-        import os
-
         overrides = {"QT_ACCESSIBILITY": "1"}
         if qt_env:
             overrides.update(qt_env)
 
-        # Save and override env vars only for the spawn — restore in finally so
-        # subsequent launches of non-Qt apps don't inherit these settings.
-        # (pywinauto's Application.start uses subprocess.Popen with no env=,
-        # so the child inherits os.environ at spawn time.)
-        saved: dict[str, str | None] = {k: os.environ.get(k) for k in overrides}
-        try:
-            for k, v in overrides.items():
-                os.environ[k] = v
-            return self.launch(cmd, timeout=timeout, work_dir=work_dir, startup_delay=startup_delay)
-        finally:
-            for k, prev in saved.items():
-                if prev is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = prev
+        return self.launch(
+            cmd,
+            timeout=timeout,
+            work_dir=work_dir,
+            startup_delay=startup_delay,
+            env=overrides,
+        )
 
     def launch_python_script(
         self,

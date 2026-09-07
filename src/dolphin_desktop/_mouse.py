@@ -1,6 +1,13 @@
 """Global mouse utilities for screen-coordinate operations."""
 
-from pywinauto import mouse as _mouse
+import sys
+
+if sys.platform == "win32":
+    from pywinauto import mouse as _mouse
+else:
+    from ._platform_compat import _UnavailableObject
+
+    _mouse = _UnavailableObject("pywinauto.mouse")
 
 # pywinauto builds an empty event list for anything else and the call then only
 # moves the cursor, so an unrecognised name clicks nothing at all.

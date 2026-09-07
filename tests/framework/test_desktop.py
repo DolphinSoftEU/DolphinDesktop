@@ -160,6 +160,130 @@ def test_launch_visible_success_and_application_failure(monkeypatch) -> None:
         desktop.launch("broken.exe", startup_delay=0)
 
 
+def test_launch_passes_env_to_child_without_mutating_parent(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    process_app = Mock(process=654)
+    observed: dict[str, object] = {}
+    process_app.connect.side_effect = RuntimeError("launcher PID already handed off")
+
+    def launch(command, desktop_name, *, work_dir, env):
+        observed["command"] = command
+        observed["desktop_name"] = desktop_name
+        observed["work_dir"] = work_dir
+        observed["env"] = dict(env)
+        observed["parent_value"] = os.environ.get("DOLPHIN_TEST_ENV")
+        return 654, 987
+
+    launcher = Mock(side_effect=launch)
+    close_handle = Mock()
+    application = Mock(return_value="wrapped")
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(runner, "close_process_handle", close_handle)
+    monkeypatch.delenv("DOLPHIN_TEST_ENV", raising=False)
+    monkeypatch.setattr(desktop_module, "_PyWinApp", Mock(return_value=process_app))
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
+    monkeypatch.setattr(desktop_module.time, "sleep", Mock())
+    monkeypatch.setattr(desktop_module, "Application", application)
+
+    desktop = desktop_module.Desktop(hidden=False)
+    assert (
+        desktop.launch(
+            "probe.exe",
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+            startup_delay=0.25,
+        )
+        == "wrapped"
+    )
+
+    assert observed == {
+        "command": "probe.exe",
+        "desktop_name": None,
+        "work_dir": None,
+        "env": {"DOLPHIN_TEST_ENV": "expected-value"},
+        "parent_value": None,
+    }
+    launcher.assert_called_once_with(
+        "probe.exe",
+        None,
+        work_dir=None,
+        env={"DOLPHIN_TEST_ENV": "expected-value"},
+    )
+    close_handle.assert_called_once_with(987)
+    desktop_module.time.sleep.assert_called_once_with(0.25)
+    assert process_app.process == 654
+    process_app.connect.assert_not_called()
+    application.assert_called_once_with(
+        process_app,
+        backend="uia",
+        default_timeout_ms=10_000,
+        desktop=desktop,
+        image_path="probe.exe",
+    )
+    assert "DOLPHIN_TEST_ENV" not in os.environ
+
+
+def test_launch_with_environment_closes_spawn_handle_if_configuration_fails(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    launcher = Mock(return_value=(654, 987))
+    close_handle = Mock()
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(runner, "close_process_handle", close_handle)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
+    monkeypatch.setattr(
+        desktop_module,
+        "_PyWinApp",
+        Mock(side_effect=RuntimeError("pywinauto setup failed")),
+    )
+
+    with pytest.raises(ApplicationError, match=r"Failed to launch 'probe\.exe'"):
+        Desktop(hidden=False).launch(
+            "probe.exe",
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+            startup_delay=0,
+        )
+
+    close_handle.assert_called_once_with(987)
+
+
+def test_raw_launch_passes_env_to_private_child(monkeypatch) -> None:
+    process_app = Mock(process=654)
+    application = Mock(return_value="wrapped")
+    launch_with_environment = Mock(return_value=(process_app, "probe.exe"))
+    monkeypatch.setattr(desktop_module, "Application", application)
+    monkeypatch.setattr(desktop_module.time, "sleep", Mock())
+
+    desktop = desktop_module.Desktop(hidden=False)
+    monkeypatch.setattr(desktop, "_launch_with_environment", launch_with_environment)
+
+    assert (
+        desktop._launch_raw(
+            "probe.exe",
+            backend="win32",
+            timeout=3,
+            work_dir="C:\\tmp",
+            startup_delay=0.25,
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+        )
+        == "wrapped"
+    )
+    launch_with_environment.assert_called_once_with(
+        "probe.exe",
+        backend="win32",
+        work_dir="C:\\tmp",
+        env={"DOLPHIN_TEST_ENV": "expected-value"},
+    )
+    desktop_module.time.sleep.assert_called_once_with(0.25)
+    application.assert_called_once_with(
+        process_app,
+        backend="win32",
+        default_timeout_ms=10_000,
+        desktop=desktop,
+        image_path="probe.exe",
+    )
+
+
 def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) -> None:
     desktop = desktop_module.Desktop(backend="win32", hidden=False)
     hidden_result = object()
@@ -170,7 +294,9 @@ def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) 
     assert (
         desktop.launch("hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1) is hidden_result
     )
-    hidden.assert_called_once_with("hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1)
+    hidden.assert_called_once_with(
+        "hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1, env=None
+    )
     hidden.reset_mock()
     assert (
         desktop._launch_raw(
@@ -178,7 +304,9 @@ def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) 
         )
         is hidden_result
     )
-    hidden.assert_called_once_with("raw-hidden.exe", timeout=4, work_dir="raw", startup_delay=0)
+    hidden.assert_called_once_with(
+        "raw-hidden.exe", timeout=4, work_dir="raw", startup_delay=0, env=None
+    )
 
 
 def test_raw_launch_and_connect_success_and_errors(monkeypatch) -> None:
@@ -261,7 +389,18 @@ def test_build_attach_criteria_filters_selectors_and_uses_custom_error() -> None
 def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
     import dolphin_desktop._runner as runner
 
-    launcher = Mock(return_value=(333, 444))
+    observed_environment: list[tuple[str | None, dict[str, str] | None]] = []
+
+    def launch(
+        command: str,
+        *,
+        work_dir: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, int]:
+        observed_environment.append((os.environ.get("DOLPHIN_TEST_ENV"), env))
+        return 333, 444
+
+    launcher = Mock(side_effect=launch)
     close_handle = Mock()
     py_app = Mock()
     py_app.connect = Mock()
@@ -276,13 +415,26 @@ def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
     desktop = desktop_module.Desktop(hidden=True, default_timeout_ms=42)
     ensure = Mock()
     monkeypatch.setattr(desktop, "_ensure_hidden_mode", ensure)
+    monkeypatch.delenv("DOLPHIN_TEST_ENV", raising=False)
     assert (
-        desktop._launch_hidden("hidden.exe", timeout=4, work_dir="wd", startup_delay=0.2)
+        desktop._launch_hidden(
+            "hidden.exe",
+            timeout=4,
+            work_dir="wd",
+            startup_delay=0.2,
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+        )
         == "hidden-app"
     )
     ensure.assert_called_once_with()
-    launcher.assert_called_once_with("hidden.exe", work_dir="wd")
+    launcher.assert_called_once_with(
+        "hidden.exe",
+        work_dir="wd",
+        env={"DOLPHIN_TEST_ENV": "expected-value"},
+    )
     close_handle.assert_called_once_with(444)
+    assert observed_environment == [(None, {"DOLPHIN_TEST_ENV": "expected-value"})]
+    assert "DOLPHIN_TEST_ENV" not in os.environ
     py_app.connect.assert_called_once_with(process=333, timeout=4)
     application.assert_called_once_with(
         py_app,
@@ -382,6 +534,10 @@ def test_legacy_factory_qt_launch_and_script_builders(monkeypatch) -> None:
         "timeout": 2,
         "work_dir": "qt-wd",
         "startup_delay": 0,
+        "env": {
+            "QT_ACCESSIBILITY": "1",
+            "QT_LOGGING_RULES": "*.debug=true",
+        },
     }
     assert os.environ["QT_ACCESSIBILITY"] == "old"
     assert "QT_LOGGING_RULES" not in os.environ
@@ -403,14 +559,21 @@ def test_legacy_factory_qt_launch_and_script_builders(monkeypatch) -> None:
     assert launch_qt.call_args.args[0] == ('"C:\\Python\\python.exe" "qt.py" "--flag" "two words"')
 
 
-def test_launch_qt_restores_environment_when_launch_fails(monkeypatch) -> None:
+def test_launch_qt_passes_environment_without_mutating_parent(monkeypatch) -> None:
     desktop = desktop_module.Desktop(hidden=False)
     launch = Mock(side_effect=RuntimeError("spawn failed"))
     monkeypatch.setattr(desktop, "launch", launch)
-    monkeypatch.delenv("QT_ACCESSIBILITY", raising=False)
+    monkeypatch.setenv("QT_ACCESSIBILITY", "parent-value")
     with pytest.raises(RuntimeError, match="spawn failed"):
         desktop.launch_qt("qt.exe", qt_env={"QT_ACCESSIBILITY": "custom"})
-    assert "QT_ACCESSIBILITY" not in os.environ
+    launch.assert_called_once_with(
+        "qt.exe",
+        timeout=10.0,
+        work_dir=None,
+        startup_delay=0.5,
+        env={"QT_ACCESSIBILITY": "custom"},
+    )
+    assert os.environ["QT_ACCESSIBILITY"] == "parent-value"
 
 
 def test_process_lookup_and_semantic_launch_wrappers(monkeypatch) -> None:

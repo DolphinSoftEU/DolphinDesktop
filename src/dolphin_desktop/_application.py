@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from pywinauto import Application as _PyWinApp
-from pywinauto import Desktop as _PwDesktop
-from pywinauto.findwindows import ElementNotFoundError as _PyWinElementNotFoundError
-from pywinauto.findwindows import find_elements as _find_elements
-from pywinauto.keyboard import send_keys as _send_keys
+if sys.platform == "win32":
+    from pywinauto import Application as _PyWinApp
+    from pywinauto import Desktop as _PwDesktop
+    from pywinauto.findwindows import ElementNotFoundError as _PyWinElementNotFoundError
+    from pywinauto.findwindows import find_elements as _find_elements
+    from pywinauto.keyboard import send_keys as _send_keys
+else:
+    from ._platform_compat import _unavailable_class, _unsupported_callable
+
+    _PyWinApp = _unavailable_class("Application", "pywinauto.Application")
+    _PwDesktop = _unavailable_class("Desktop", "pywinauto.Desktop")
+    _PyWinElementNotFoundError = RuntimeError
+    _find_elements = _unsupported_callable("pywinauto.findwindows.find_elements")
+    _send_keys = _unsupported_callable("pywinauto.keyboard.send_keys")
 
 from ._exceptions import WindowNotFoundError
 from ._locator import _ResolvedLocator
@@ -194,6 +204,61 @@ def _electron_by_window_class(pid: int) -> bool:
         return bool(found)
     except Exception:
         return False
+
+
+def _visible_window_handles(pid: int) -> list[int]:
+    """Return visible top-level window handles owned by *pid*.
+
+    ``pywinauto.Application.windows()`` builds its result from the selected
+    accessibility backend.  UIA can omit owned/transient top-level windows,
+    including the active modal dialog of an application.  Win32's window list
+    is the authoritative source for that relationship, so use it to fill in
+    anything the backend did not expose.
+    """
+    try:
+        import win32gui
+        import win32process
+    except Exception:
+        return []
+
+    handles: list[int] = []
+
+    def _cb(hwnd: int, _: object) -> None:
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+            if window_pid == pid:
+                handles.append(int(hwnd))
+        except Exception:
+            # Windows can destroy a dialog between EnumWindows and the
+            # callback.  Ignore that window and keep the enumeration useful.
+            pass
+
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:
+        return []
+    return handles
+
+
+def _last_active_popup_handle(pid: int) -> int | None:
+    """Return the visible active popup handle for *pid*, if one exists."""
+    try:
+        import win32gui
+    except Exception:
+        return None
+
+    handles = _visible_window_handles(pid)
+    visible_handles = set(handles)
+    for hwnd in handles:
+        try:
+            popup = int(win32gui.GetLastActivePopup(hwnd))
+        except Exception:
+            continue
+        if popup != hwnd and popup in visible_handles:
+            return popup
+    return None
 
 
 def _webview2_by_modules(pid: int) -> bool:
@@ -573,11 +638,45 @@ class Application:
         return _process_image_path(pid) == self._image_path
 
     def top_window(self) -> Window:
+        # pywinauto selects the first element returned by the accessibility
+        # backend, which can be the owner window even when a modal popup is
+        # active.  Win32 tracks that owner/popup relationship directly.
+        popup_handle = _last_active_popup_handle(self.process_id)
+        if popup_handle is not None:
+            try:
+                spec = self._app.window(handle=popup_handle)
+                return Window(spec, application=self)
+            except Exception:
+                pass
         spec = self._app.top_window()
         return Window(spec, application=self)
 
     def windows(self) -> list[Window]:
-        return [Window(w, application=self) for w in self._app.windows()]
+        raw_windows = self._app.windows()
+        windows = [Window(w, application=self) for w in raw_windows]
+
+        # The accessibility backend may omit an owned modal dialog.  Merge
+        # the native top-level list without disturbing pywinauto's existing
+        # ordering or its handling of hidden windows.
+        known_handles: set[int] = set()
+        for raw_window in raw_windows:
+            try:
+                handle = raw_window.handle
+                if isinstance(handle, int):
+                    known_handles.add(handle)
+            except Exception:
+                continue
+
+        for hwnd in _visible_window_handles(self.process_id):
+            if hwnd in known_handles:
+                continue
+            try:
+                spec = self._app.window(handle=hwnd)
+            except Exception:
+                continue
+            windows.append(Window(spec, application=self))
+            known_handles.add(hwnd)
+        return windows
 
     def set_default_timeout(self, timeout_ms: int) -> None:
         if timeout_ms < 0:

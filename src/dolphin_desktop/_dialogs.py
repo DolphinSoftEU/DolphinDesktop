@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import re
+import sys
 import time
 
-from pywinauto import Desktop as _PWDesktop  # type: ignore[import-untyped]
+if sys.platform == "win32":
+    from pywinauto import Desktop as _PWDesktop  # type: ignore[import-untyped]
+else:
+    from ._platform_compat import _unavailable_class
+
+    _PWDesktop = _unavailable_class("Desktop", "pywinauto.Desktop")
 
 from ._helpers import _escape_keys
 

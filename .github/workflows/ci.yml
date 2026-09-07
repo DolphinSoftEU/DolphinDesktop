@@ -63,6 +63,49 @@ jobs:
           flags: windows-py${{ matrix.python-version }}
           fail_ci_if_error: false
 
+  package-linux:
+    name: "Linux package install and import"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel
+
+      - name: Install wheel and verify Windows-only dependencies stay absent
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/dolphin-smoke"
+          "$RUNNER_TEMP/dolphin-smoke/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/dolphin-smoke/bin/python" - <<'PY'
+          import importlib.metadata
+          import warnings
+
+          installed = {
+              distribution.metadata["Name"].lower()
+              for distribution in importlib.metadata.distributions()
+          }
+          assert "pywin32" not in installed
+          assert "comtypes" not in installed
+
+          with warnings.catch_warnings(record=True) as caught:
+              warnings.simplefilter("always")
+              import dolphin_desktop
+
+          assert any(
+              warning.category is RuntimeWarning
+              and "designed for Windows" in str(warning.message)
+              for warning in caught
+          )
+          print("Linux wheel import succeeded without Windows-only dependencies")
+          PY
+
   component-windows:
     name: "Windows component tests"
     runs-on: windows-latest
