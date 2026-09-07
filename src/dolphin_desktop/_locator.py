@@ -1773,9 +1773,11 @@ def _resolve_negative_found_index(
     """Resolve a negative index against the complete match set.
 
     ``pywinauto`` does not consistently handle negative ``found_index`` values
-    across its UIA and wrapper paths.  Poll the collection ourselves, and use
-    the TreeWalker fallback for criteria it can evaluate so hidden FindAll
-    matches do not change the requested ordering.
+    across its UIA and wrapper paths. Poll the complete ``descendants()``
+    collection ourselves first, then use the TreeWalker fallback for criteria
+    it can evaluate when FindAll exposes no usable match. This keeps a
+    depth-limited TreeWalker result from changing the requested ordering of the
+    complete descendant set.
     """
     if not _is_negative_found_index(criteria):
         return criteria
@@ -1788,11 +1790,6 @@ def _resolve_negative_found_index(
     from pywinauto.timings import TimeoutError as _PwTimeoutError
 
     while True:
-        if set(match_criteria) <= _TREE_WALK_KEYS:
-            tree_result = _tree_walk_find(parent_spec, criteria)
-            if tree_result is not None:
-                return tree_result
-
         try:
             matches = parent_spec.wrapper_object().descendants(**match_criteria)
             resolved_index = len(matches) + index
@@ -1800,6 +1797,11 @@ def _resolve_negative_found_index(
                 return {**criteria, "found_index": resolved_index}
         except Exception as exc:
             last_exc = exc
+
+        if set(match_criteria) <= _TREE_WALK_KEYS:
+            tree_result = _tree_walk_find(parent_spec, criteria)
+            if tree_result is not None:
+                return tree_result
 
         if time.monotonic() >= deadline:
             break

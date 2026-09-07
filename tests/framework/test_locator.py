@@ -381,6 +381,52 @@ def test_locator_negative_nth_resolves_against_complete_match_set(index, expecte
     waiter.assert_called_once_with(parent, loc._timeout)
 
 
+def test_locator_negative_nth_prefers_complete_descendants_over_limited_tree_walk():
+    parent = FakeSpec(wrapper=FakeElement())
+    parent.wrapper.descendants_result = [FakeElement(), FakeElement()]
+    shallow_info = SimpleNamespace(name="", control_type="Button", children=lambda: [])
+    deep_info = SimpleNamespace(name="", control_type="Button", children=lambda: [])
+    nested = deep_info
+    for _ in range(9):
+        nested = SimpleNamespace(
+            name="",
+            control_type="Pane",
+            children=lambda child=nested: [child],
+        )
+    parent.wrapper.element_info = SimpleNamespace(
+        children=lambda: [shallow_info, nested]
+    )
+
+    wrapper_cls = Mock(side_effect=lambda info: ("wrapped", info))
+    fake_pw = sys.modules["pywinauto"]
+    with patch.object(
+        fake_pw,
+        "Application",
+        return_value=SimpleNamespace(backend=SimpleNamespace(generic_wrapper_class=wrapper_cls)),
+    ):
+        tree_result = locator_module._tree_walk_find(
+            parent, {"control_type": "Button", "found_index": -1}
+        )
+    assert tree_result == ("wrapped", shallow_info)
+
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        control_type="Button",
+    ).nth(-1)
+    loc._timeout = 0
+
+    # TreeWalker can find the shallow first match while its depth cap hides the
+    # later match. The nth() index must still be resolved from descendants().
+    with (
+        monotonic_values(0, 1),
+        patch.object(locator_module, "_tree_walk_find", return_value=tree_result),
+        patch.object(locator_module, "_wait_until_visible"),
+    ):
+        assert loc._resolve() is parent
+
+    assert parent.child_window_calls == [{"control_type": "Button", "found_index": 1}]
+
+
 def test_locator_negative_nth_out_of_range_uses_not_found_behavior():
     parent = FakeSpec(wrapper=FakeElement())
     parent.wrapper.descendants_result = [FakeElement(), FakeElement(), FakeElement()]

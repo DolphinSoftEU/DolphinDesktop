@@ -687,11 +687,12 @@ class Application:
         repoint this Application at a stranger and — when we own the process —
         hand that PID to the per-test teardown reaper, killing a user's app.
         Only a genuine hand-off qualifies: the same PID, a descendant of it, or
-        another instance of the same executable image after the launched
-        process has exited (the single-instance pattern this fallback exists
-        for). A matching image while the original is still alive is not enough
-        to distinguish an independent process, so anything unverifiable is
-        refused.
+        another instance of the same executable image after a DolphinDesktop-
+        launched process has exited (the single-instance pattern this fallback
+        exists for). Attached processes never use that image-only fallback: a
+        matching image there could be an independent process. A matching image
+        while the original is still alive is not enough to distinguish an
+        independent process, so anything unverifiable is refused.
         """
         try:
             if pid == self.process_id:
@@ -699,6 +700,12 @@ class Application:
             if pid in _enumerate_descendant_pids(self.process_id):
                 return True
         except Exception:
+            return False
+        # An attached process is not a launcher-owned single-instance stub.
+        # Matching its executable after it exits can therefore identify any
+        # unrelated process running the same image, so only launch()-owned
+        # applications may use the image-path hand-off fallback.
+        if not self._owns_process:
             return False
         if self._image_path is None:
             return False

@@ -607,7 +607,7 @@ def test_adopt_hand_off_reconnects_attached_and_preserves_original_on_failure(mo
 def test_is_hand_off_pid_checks_same_pid_descendants_and_executable(monkeypatch) -> None:
     import dolphin_desktop._application as application
 
-    app, _raw = _bare_application(application, pid=10)
+    app, _raw = _bare_application(application, pid=10, owns=True)
     assert app._is_hand_off_pid(10) is True
     monkeypatch.setattr(application, "_enumerate_descendant_pids", lambda _pid: {20})
     assert app._is_hand_off_pid(20) is True
@@ -626,6 +626,12 @@ def test_is_hand_off_pid_checks_same_pid_descendants_and_executable(monkeypatch)
 
     monkeypatch.setattr(application, "_process_state", lambda _pid: "unknown")
     assert app._is_hand_off_pid(30) is False
+
+    attached, _raw = _bare_application(application, pid=10, owns=False)
+    attached._image_path = r"c:\demo.exe"
+    monkeypatch.setattr(application, "_process_state", lambda _pid: "stopped")
+    monkeypatch.setattr(application, "_process_image_path", lambda _pid: r"c:\demo.exe")
+    assert attached._is_hand_off_pid(30) is False
 
     monkeypatch.setattr(
         application, "_enumerate_descendant_pids", Mock(side_effect=RuntimeError("snapshot"))
