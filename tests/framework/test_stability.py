@@ -550,6 +550,7 @@ class TestDesktopWideWindowFallback:
             monkeypatch.setattr(
                 _application, "_process_image_path", lambda pid: r"c:\windows\notepad.exe"
             )
+            monkeypatch.setattr(_application, "_process_state", lambda _pid: "stopped")
             new_app = MagicMock()
             new_app.process = 9999
             monkeypatch.setattr(_application, "_PyWinApp", MagicMock(return_value=new_app))
@@ -564,6 +565,30 @@ class TestDesktopWideWindowFallback:
             for pid in (4242, 9999):
                 _application._live_pids.discard(pid)
                 _application._session_pids.discard(pid)
+
+    def test_same_image_hand_off_is_not_adopted_for_attached_process(self, monkeypatch):
+        from dolphin_desktop import WindowNotFoundError, _application
+
+        app = self._app_whose_own_process_has_no_window(4242)
+        app._owns_process = False
+        try:
+            app._image_path = r"c:\windows\python.exe"
+            monkeypatch.setattr(_application, "_PwDesktop", self._desktop_returning_pid(9999))
+            monkeypatch.setattr(_application, "_process_parent_map", dict)
+            monkeypatch.setattr(
+                _application, "_process_image_path", lambda pid: r"c:\windows\python.exe"
+            )
+            monkeypatch.setattr(_application, "_process_state", lambda _pid: "stopped")
+
+            with pytest.raises(WindowNotFoundError):
+                app._find_window({"title": "Python window"}, 0.1)
+
+            assert app._app.process == 4242
+        finally:
+            for pid in (4242, 9999):
+                _application._live_pids.discard(pid)
+                _application._session_pids.discard(pid)
+                _application._attached_pids.discard(pid)
 
     def test_child_process_is_adopted(self, monkeypatch):
         from dolphin_desktop import _application

@@ -8,6 +8,50 @@
 
 ---
 
+## Simplified XPath
+
+`Window.find_by_xpath()` supports a strict, simplified XPath grammar for
+walking the UIA element tree. It is not a full XPath engine. Leading and
+trailing whitespace is ignored; whitespace elsewhere is only allowed inside a
+quoted value.
+
+```text
+expression ::= segment+
+segment ::= ("/" | "//") tag predicate*
+tag ::= ASCII letters+ | "*"
+predicate ::= "[@" attribute "=" quoted_value "]"
+attribute ::= "Name" | "AutomationId" | "ClassName"
+quoted_value ::= "'" value "'" | '"' value '"'
+value ::= zero or more characters other than quotes or brackets
+```
+
+The supported attributes map to locator criteria as follows:
+
+| XPath attribute | Locator criterion |
+| --- | --- |
+| `Name` | `title` |
+| `AutomationId` | `auto_id` |
+| `ClassName` | `class_name` |
+
+Values may be empty. Segments remain lazy and can be chained:
+
+```python
+win.find_by_xpath("/Button[@Name='Save']")
+win.find_by_xpath("//Edit[@AutomationId='tbSearch']")
+win.find_by_xpath("//MenuBar//MenuItem[@Name='File']")
+win.find_by_xpath("//Button[@Name='']")
+```
+
+Unsupported or malformed syntax raises `ValueError` before a partial locator
+is created. For example, these are rejected:
+
+```python
+win.find_by_xpath("//Button[contains(@Name, 'Save')]")
+win.find_by_xpath("//Button[@HelpText='Save document']")
+win.find_by_xpath("//Button[1]")
+win.find_by_xpath("//Button[@Name='Save'")
+```
+
 ## Locator factory methods
 
 ```python
