@@ -67,13 +67,20 @@ def test_project_name_is_dolphin_desktop(pyproject_text: str):
     )
 
 
-def test_pywin32_dependency_is_limited_to_windows(pyproject_text: str):
-    """The Windows-only pywin32 dependency must not block non-Windows installs."""
+def test_windows_only_dependencies_are_limited_to_windows(pyproject_text: str):
+    """Windows-only dependencies must not block non-Windows installs."""
     project = tomllib.loads(pyproject_text)["project"]
     dependencies = project["dependencies"]
-    pywin32 = next(dep for dep in dependencies if dep.lower().startswith("pywin32"))
+    windows_only = {
+        dep.split(";", 1)[0].split(">=", 1)[0].lower(): dep
+        for dep in dependencies
+        if ";" in dep and 'platform_system == "Windows"' in dep
+    }
 
-    assert pywin32 == 'pywin32>=306; platform_system == "Windows"'
+    assert windows_only == {
+        "comtypes": 'comtypes>=1.4; platform_system == "Windows"',
+        "pywin32": 'pywin32>=306; platform_system == "Windows"',
+    }
 
 
 def test_no_entry_point_targets_dolphin_top_level(pyproject_text: str):

@@ -166,9 +166,7 @@ def test_windows_includes_visible_owned_dialogs_missing_from_backend(monkeypatch
 
     gui = SimpleNamespace(IsWindowVisible=lambda hwnd: hwnd != 104)
     process = SimpleNamespace(
-        GetWindowThreadProcessId=Mock(
-            side_effect=[(0, 42), (0, 42), (0, 42), (0, 999)]
-        )
+        GetWindowThreadProcessId=Mock(side_effect=[(0, 42), (0, 42), (0, 42), (0, 999)])
     )
 
     def enumerate_windows(callback, extra_data):

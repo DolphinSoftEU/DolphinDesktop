@@ -366,7 +366,7 @@ name = "dolphin-desktop"
 version = "0.2.0.dev5"
 source = { editable = "." }
 dependencies = [
-    { name = "comtypes" },
+    { name = "comtypes", marker = "sys_platform == 'win32'" },
     { name = "pillow" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pywinauto" },
@@ -423,7 +423,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "allure-pytest", marker = "extra == 'pytest'", specifier = ">=2.13" },
-    { name = "comtypes", specifier = ">=1.4" },
+    { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4" },
     { name = "dolphin-desktop", extras = ["cdp", "fast", "pytest", "vision"], marker = "extra == 'all'" },
     { name = "mike", marker = "extra == 'docs'", specifier = ">=2.0" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },

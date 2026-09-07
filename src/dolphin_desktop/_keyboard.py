@@ -5,6 +5,7 @@ import sys
 if sys.platform == "win32":
     from pywinauto.keyboard import CODES as _PYWINAUTO_CODES  # type: ignore[import-untyped]
     from pywinauto.keyboard import send_keys as _send_keys
+
     _CODES = _PYWINAUTO_CODES
 else:
     from ._platform_compat import _unsupported_callable

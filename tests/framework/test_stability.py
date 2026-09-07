@@ -785,7 +785,11 @@ class TestStackLauncherWiring:
     def test_launch_hidden_binds_desktop_and_default_timeout(self, monkeypatch):
         from dolphin_desktop import _application, _desktop, _runner
 
-        monkeypatch.setattr(_runner, "launch_cmd_on_desktop", lambda cmd, work_dir=None: (50505, 1))
+        monkeypatch.setattr(
+            _runner,
+            "launch_cmd_on_desktop",
+            lambda cmd, work_dir=None, env=None: (50505, 1),
+        )
         monkeypatch.setattr(_runner, "close_process_handle", lambda _h: None)
         pw = MagicMock()
         pw.process = 50505

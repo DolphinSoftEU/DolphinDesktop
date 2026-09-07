@@ -162,9 +162,7 @@ _HOOKPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
     ctypes.c_longlong, ctypes.c_int, _wt.WPARAM, _wt.LPARAM
 )
 
-_user32 = (
-    ctypes.windll.user32 if sys.platform == "win32" else _UnavailableObject("recorder")
-)
+_user32 = ctypes.windll.user32 if sys.platform == "win32" else _UnavailableObject("recorder")
 
 _log = get_logger("recorder")
 

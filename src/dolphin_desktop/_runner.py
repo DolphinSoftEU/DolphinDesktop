@@ -23,6 +23,8 @@ import ctypes
 import ctypes.wintypes
 import os
 import sys
+from collections.abc import Mapping
+from typing import Any
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -102,6 +104,7 @@ _DESKTOP_ACCESS = 0x10000000  # GENERIC_ALL
 _INFINITE = 0xFFFFFFFF
 _WAIT_OBJECT_0 = 0x00000000
 _STARTF_USESTDHANDLES = 0x00000100
+_CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _UOI_FLAGS = 1
 _WSF_VISIBLE = 0x0001
 
@@ -271,22 +274,28 @@ def launch_on_desktop(
 
 def launch_cmd_on_desktop(
     cmd: str,
-    desktop_name: str = DESKTOP_NAME,
+    desktop_name: str | None = DESKTOP_NAME,
     *,
     work_dir: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[int, int]:
     """Launch a command string on *desktop_name* without inheriting stdio.
 
     Returns ``(pid, h_process)``.  The caller must close *h_process* via
     :func:`close_process_handle`.
 
-    Used by :meth:`Desktop.launch` when headless mode is active.
+    When *env* is provided, it is merged with the parent's environment into a
+    private Unicode environment block.  The parent ``os.environ`` is never
+    modified.  Passing ``desktop_name=None`` launches on the caller's desktop.
     """
     si = _StartupInfoW()
     si.cb = ctypes.sizeof(_StartupInfoW)
     si.lpDesktop = desktop_name
 
     pi = _ProcessInformation()
+    environment = _build_environment_block(env)
+    creation_flags = _CREATE_UNICODE_ENVIRONMENT if environment is not None else 0
+    environment_ptr = ctypes.cast(environment, ctypes.c_void_p) if environment is not None else None
 
     ok = _kernel32.CreateProcessW(
         None,
@@ -294,8 +303,8 @@ def launch_cmd_on_desktop(
         None,
         None,
         False,  # bInheritHandles
-        0,
-        None,  # inherit parent env
+        creation_flags,
+        environment_ptr,
         work_dir,
         ctypes.byref(si),
         ctypes.byref(pi),
@@ -304,6 +313,16 @@ def launch_cmd_on_desktop(
         raise OSError(f"CreateProcessW({cmd!r}) failed: error {ctypes.get_last_error()}")
     _kernel32.CloseHandle(pi.hThread)
     return pi.dwProcessId, pi.hProcess
+
+
+def _build_environment_block(overrides: Mapping[str, str] | None) -> Any:
+    """Build a private UTF-16 environment block for ``CreateProcessW``."""
+    if overrides is None:
+        return None
+    environment = os.environ.copy()
+    environment.update(overrides)
+    block = "\0".join(f"{key}={value}" for key, value in sorted(environment.items()))
+    return ctypes.create_unicode_buffer(f"{block}\0")
 
 
 def _build_cmd_string(args: list[str]) -> str:

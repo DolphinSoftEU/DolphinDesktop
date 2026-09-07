@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -208,6 +209,57 @@ def test_launch_cmd_on_desktop_forwards_command_work_dir_and_no_stdio(monkeypatc
     startup_info = args[8]._obj
     assert startup_info.cb == ctypes.sizeof(_runner._StartupInfoW)
     assert startup_info.lpDesktop == "Desk"
+
+
+def test_launch_cmd_on_desktop_passes_private_environment_block(monkeypatch) -> None:
+    kernel32 = _FakeLauncher(pid=111, process=222, thread=333)
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setenv("DOLPHIN_PARENT_ENV", "parent-value")
+    monkeypatch.delenv("DOLPHIN_CHILD_ENV", raising=False)
+
+    assert _runner.launch_cmd_on_desktop(
+        "tool.exe",
+        None,
+        env={"DOLPHIN_CHILD_ENV": "child-value"},
+    ) == (111, 222)
+
+    args = kernel32.create_process_args
+    assert args is not None
+    assert args[5] == _runner._CREATE_UNICODE_ENVIRONMENT
+    assert isinstance(args[6], ctypes.c_void_p)
+    assert args[6].value
+    block = _runner._build_environment_block({"DOLPHIN_CHILD_ENV": "child-value"})
+    text = "".join(block)
+    assert "DOLPHIN_PARENT_ENV=parent-value\0" in text
+    assert "DOLPHIN_CHILD_ENV=child-value\0" in text
+    assert text.endswith("\0\0")
+    assert os.environ.get("DOLPHIN_CHILD_ENV") is None
+
+
+def test_environment_blocks_are_independent_under_concurrency(monkeypatch) -> None:
+    monkeypatch.delenv("DOLPHIN_SHARED_ENV", raising=False)
+    barrier = threading.Barrier(2)
+    results: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def build(value: str) -> None:
+        try:
+            barrier.wait(timeout=5)
+            results[value] = "".join(
+                _runner._build_environment_block({"DOLPHIN_SHARED_ENV": value})
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=build, args=(value,)) for value in ("A", "B")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert errors == []
+    assert all(f"DOLPHIN_SHARED_ENV={value}\0" in results[value] for value in ("A", "B"))
+    assert os.environ.get("DOLPHIN_SHARED_ENV") is None
 
 
 def test_launch_cmd_on_desktop_reports_create_process_failure(monkeypatch) -> None:
