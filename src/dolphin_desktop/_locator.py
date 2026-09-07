@@ -1070,8 +1070,51 @@ class Locator:
         """
         return _require_check_state(self._resolve_readonly(), "is_checked") == 1
 
+    def _resolve_presence(self) -> Any:
+        """Resolve an element without requiring it to be visible."""
+        parent_spec = self._get_parent_spec()
+        if not hasattr(parent_spec, "child_window"):
+            return self._resolve()
+
+        from pywinauto.findwindows import (  # type: ignore[import-untyped]
+            ElementAmbiguousError as _PwAmbiguousError,
+        )
+
+        spec = parent_spec.child_window(**self._criteria)
+        from pywinauto.application import WindowSpecification
+
+        if isinstance(spec, WindowSpecification):
+            if spec.exists(timeout=self._timeout):
+                return spec
+            raise ElementNotFoundError(
+                _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+            )
+
+        deadline = time.monotonic() + self._timeout
+        last_exc: Exception | None = None
+        while True:
+            try:
+                spec.wrapper_object()
+                return spec
+            except _PwAmbiguousError as exc:
+                from ._exceptions import AmbiguousMatchError
+
+                raise AmbiguousMatchError(
+                    f"{self._criteria!r} matched more than one element — "
+                    "narrow the criteria or pick one with found_index=N"
+                ) from exc
+            except Exception as exc:
+                last_exc = exc
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_get_poll_interval())
+
+        raise ElementNotFoundError(
+            _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+        ) from last_exc
+
     def exists(self, timeout: float = 0.0) -> bool:
-        """Return True if the element exists (and is visible) within *timeout* seconds.
+        """Return True if the element exists within *timeout* seconds.
 
         Ambiguous criteria (multiple matches) count as *existing* — there
         is at least one such element. Actions on the same locator still
@@ -1081,7 +1124,7 @@ class Locator:
         from ._exceptions import AmbiguousMatchError
 
         try:
-            self.timeout(timeout)._resolve_readonly()
+            self.timeout(timeout)._resolve_presence()
             return True
         except AmbiguousMatchError:
             return True
@@ -1103,7 +1146,7 @@ class Locator:
     # Waiting
 
     def wait_for(self, *, state: str = "visible", timeout: float | None = None) -> Locator:
-        """Wait until the element reaches *state* ('visible', 'enabled', 'exists').
+        """Wait until the element reaches *state* ('visible', 'enabled', 'exists', 'hidden').
 
         Resolution goes through the same path as every action, so declared
         ``fallback`` selectors and the image fallback count here too — an
@@ -1114,8 +1157,13 @@ class Locator:
         never reaches *state*.
         """
         t = timeout if timeout is not None else self._timeout
+        if state == "hidden":
+            return self.wait_until_hidden(timeout=t)
+        if state == "exists":
+            self.timeout(t)._resolve_presence()
+            return self
         spec = self.timeout(t)._resolve()
-        if state in ("visible", "exists"):
+        if state == "visible":
             return self
         # ``wait`` is a WindowSpecification method; the fallback, image and
         # tree-walk branches of _resolve hand back raw wrappers / _ImageElement
@@ -1968,5 +2016,14 @@ class _ResolvedLocator(Locator):
     def _get_parent_spec(self) -> Any:
         return self._element
 
+    def _resolve_presence(self) -> Any:
+        """Return the wrapped element when its resolved handle is usable."""
+        return self._resolve()
+
     def _resolve(self) -> Any:
+        is_visible = getattr(self._element, "is_visible", None)
+        if callable(is_visible) and not is_visible():
+            raise ElementNotFoundError(
+                _NotFoundMessage(self._criteria, self._timeout, self._element)
+            )
         return self._element
