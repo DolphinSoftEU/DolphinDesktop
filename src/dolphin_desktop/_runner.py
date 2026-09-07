@@ -374,4 +374,11 @@ def main() -> None:
         print("  dolphin-run pytest tests/", file=sys.stderr)
         print("  dolphin-run pytest tests/ -k test_notepad --dolphin-backend=uia", file=sys.stderr)
         sys.exit(1)
+    if sys.argv[1] in ("-h", "--help"):
+        print("Usage: dolphin-run <command> [args...]")
+        print("")
+        print("Examples:")
+        print("  dolphin-run pytest tests/")
+        print("  dolphin-run pytest tests/ -k test_notepad --dolphin-backend=uia")
+        sys.exit(0)
     sys.exit(run_hidden(sys.argv[1:]))

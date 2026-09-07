@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import copy
 import inspect
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
-from pywinauto.keyboard import send_keys as _send_keys
+if sys.platform == "win32":
+    from pywinauto.keyboard import send_keys as _send_keys
+else:
+    from ._platform_compat import _unsupported_callable
+
+    _send_keys = _unsupported_callable("pywinauto.keyboard.send_keys")
 
 from ._config import get_poll_interval as _get_poll_interval
 from ._config import get_timeout as _get_timeout

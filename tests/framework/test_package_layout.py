@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,15 @@ def test_project_name_is_dolphin_desktop(pyproject_text: str):
     assert match.group(1) == "dolphin-desktop", (
         f"[project.name] must be 'dolphin-desktop'. Got {match.group(1)!r}."
     )
+
+
+def test_pywin32_dependency_is_limited_to_windows(pyproject_text: str):
+    """The Windows-only pywin32 dependency must not block non-Windows installs."""
+    project = tomllib.loads(pyproject_text)["project"]
+    dependencies = project["dependencies"]
+    pywin32 = next(dep for dep in dependencies if dep.lower().startswith("pywin32"))
+
+    assert pywin32 == 'pywin32>=306; platform_system == "Windows"'
 
 
 def test_no_entry_point_targets_dolphin_top_level(pyproject_text: str):

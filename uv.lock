@@ -368,7 +368,7 @@ source = { editable = "." }
 dependencies = [
     { name = "comtypes" },
     { name = "pillow" },
-    { name = "pywin32" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pywinauto" },
     { name = "pyyaml" },
 ]
@@ -435,7 +435,7 @@ requires-dist = [
     { name = "playwright", marker = "extra == 'cdp'", specifier = ">=1.40" },
     { name = "pytesseract", marker = "extra == 'vision'", specifier = ">=0.3.10" },
     { name = "pytest", marker = "extra == 'pytest'", specifier = ">=8.3" },
-    { name = "pywin32", specifier = ">=306" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
     { name = "pywinauto", specifier = ">=0.6.8" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sentry-sdk", marker = "extra == 'telemetry'", specifier = ">=2.0" },

@@ -160,6 +160,39 @@ def test_launch_visible_success_and_application_failure(monkeypatch) -> None:
         desktop.launch("broken.exe", startup_delay=0)
 
 
+def test_launch_applies_env_overlay_only_during_spawn(monkeypatch) -> None:
+    process_app = Mock(process=654)
+    observed: list[str | None] = []
+
+    def start(*args, **kwargs) -> None:
+        observed.append(os.environ.get("DOLPHIN_TEST_ENV"))
+
+    process_app.start.side_effect = start
+    monkeypatch.delenv("DOLPHIN_TEST_ENV", raising=False)
+    monkeypatch.setattr(desktop_module, "_PyWinApp", Mock(return_value=process_app))
+    monkeypatch.setattr(desktop_module, "_image_path_now", lambda app: "probe.exe")
+    monkeypatch.setattr(desktop_module.time, "sleep", Mock())
+
+    desktop = desktop_module.Desktop(hidden=False)
+    desktop.launch(
+        "probe.exe",
+        env={"DOLPHIN_TEST_ENV": "expected-value"},
+        startup_delay=0,
+    )
+
+    assert observed == ["expected-value"]
+    assert "DOLPHIN_TEST_ENV" not in os.environ
+
+
+def test_temporary_environment_restores_an_existing_value(monkeypatch) -> None:
+    monkeypatch.setenv("DOLPHIN_TEST_ENV", "parent-value")
+
+    with desktop_module._temporary_environment({"DOLPHIN_TEST_ENV": "child-value"}):
+        assert os.environ["DOLPHIN_TEST_ENV"] == "child-value"
+
+    assert os.environ["DOLPHIN_TEST_ENV"] == "parent-value"
+
+
 def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) -> None:
     desktop = desktop_module.Desktop(backend="win32", hidden=False)
     hidden_result = object()
@@ -170,7 +203,9 @@ def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) 
     assert (
         desktop.launch("hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1) is hidden_result
     )
-    hidden.assert_called_once_with("hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1)
+    hidden.assert_called_once_with(
+        "hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1, env=None
+    )
     hidden.reset_mock()
     assert (
         desktop._launch_raw(
@@ -178,7 +213,9 @@ def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) 
         )
         is hidden_result
     )
-    hidden.assert_called_once_with("raw-hidden.exe", timeout=4, work_dir="raw", startup_delay=0)
+    hidden.assert_called_once_with(
+        "raw-hidden.exe", timeout=4, work_dir="raw", startup_delay=0, env=None
+    )
 
 
 def test_raw_launch_and_connect_success_and_errors(monkeypatch) -> None:
@@ -261,7 +298,13 @@ def test_build_attach_criteria_filters_selectors_and_uses_custom_error() -> None
 def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
     import dolphin_desktop._runner as runner
 
-    launcher = Mock(return_value=(333, 444))
+    observed_environment: list[str | None] = []
+
+    def launch(command: str, *, work_dir: str | None = None) -> tuple[int, int]:
+        observed_environment.append(os.environ.get("DOLPHIN_TEST_ENV"))
+        return 333, 444
+
+    launcher = Mock(side_effect=launch)
     close_handle = Mock()
     py_app = Mock()
     py_app.connect = Mock()
@@ -276,13 +319,22 @@ def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
     desktop = desktop_module.Desktop(hidden=True, default_timeout_ms=42)
     ensure = Mock()
     monkeypatch.setattr(desktop, "_ensure_hidden_mode", ensure)
+    monkeypatch.delenv("DOLPHIN_TEST_ENV", raising=False)
     assert (
-        desktop._launch_hidden("hidden.exe", timeout=4, work_dir="wd", startup_delay=0.2)
+        desktop._launch_hidden(
+            "hidden.exe",
+            timeout=4,
+            work_dir="wd",
+            startup_delay=0.2,
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+        )
         == "hidden-app"
     )
     ensure.assert_called_once_with()
     launcher.assert_called_once_with("hidden.exe", work_dir="wd")
     close_handle.assert_called_once_with(444)
+    assert observed_environment == ["expected-value"]
+    assert "DOLPHIN_TEST_ENV" not in os.environ
     py_app.connect.assert_called_once_with(process=333, timeout=4)
     application.assert_called_once_with(
         py_app,

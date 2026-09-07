@@ -38,6 +38,7 @@ import ctypes.wintypes as _wt
 import datetime
 import queue
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -45,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from ._logging import get_logger
+from ._platform_compat import _UnavailableObject
 
 # Windows constants
 
@@ -156,9 +158,13 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
     ]
 
 
-_HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, _wt.WPARAM, _wt.LPARAM)
+_HOOKPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
+    ctypes.c_longlong, ctypes.c_int, _wt.WPARAM, _wt.LPARAM
+)
 
-_user32 = ctypes.windll.user32
+_user32 = (
+    ctypes.windll.user32 if sys.platform == "win32" else _UnavailableObject("recorder")
+)
 
 _log = get_logger("recorder")
 

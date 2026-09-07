@@ -263,6 +263,25 @@ def test_main_prints_usage_without_a_command(monkeypatch, capsys) -> None:
     )
 
 
+def test_main_prints_help_without_launching_a_hidden_desktop(monkeypatch, capsys) -> None:
+    run_hidden = Mock()
+    monkeypatch.setattr(_runner.sys, "argv", ["dolphin-run", "--help"])
+    monkeypatch.setattr(_runner, "run_hidden", run_hidden)
+
+    with pytest.raises(SystemExit) as error:
+        _runner.main()
+
+    assert error.value.code == 0
+    assert capsys.readouterr().out == (
+        "Usage: dolphin-run <command> [args...]\n"
+        "\n"
+        "Examples:\n"
+        "  dolphin-run pytest tests/\n"
+        "  dolphin-run pytest tests/ -k test_notepad --dolphin-backend=uia\n"
+    )
+    run_hidden.assert_not_called()
+
+
 def test_main_passes_command_arguments_to_run_hidden_and_exits(monkeypatch) -> None:
     run_hidden = Mock(return_value=23)
     monkeypatch.setattr(_runner.sys, "argv", ["dolphin-run", "pytest", "tests/"])
