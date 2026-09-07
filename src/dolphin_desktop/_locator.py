@@ -369,8 +369,15 @@ class Locator:
         )
 
         primary_exc: Exception | None = None
+        criteria = self._criteria
         try:
-            spec = parent_spec.child_window(**self._criteria)
+            if _is_negative_found_index(criteria):
+                resolved = _resolve_negative_found_index(parent_spec, criteria, self._timeout)
+                if isinstance(resolved, dict):
+                    criteria = resolved
+                else:
+                    return resolved
+            spec = parent_spec.child_window(**criteria)
             _wait_until_visible(spec, self._timeout)
             return spec
         except _PwAmbiguousError as exc:
@@ -1586,6 +1593,7 @@ class _QtObjectNameLocator(Locator):
         parent_spec = self._get_parent_spec()
         suffix = f".{self._object_name}"
         index = self._criteria.get("found_index", 0)
+        negative_index = isinstance(index, int) and index < 0
         # ``time.monotonic()`` is immune to wall-clock jumps (NTP, DST)
         # that would otherwise cause the Qt objectName scan to either
         # early-abort or loop forever.
@@ -1598,15 +1606,22 @@ class _QtObjectNameLocator(Locator):
                 last_exc = exc
                 descendants = []
             seen = 0
+            matches: list[Any] = []
             for desc in descendants:
                 try:
                     aid = desc.element_info.automation_id or ""
                 except Exception:
                     continue
                 if aid == self._object_name or aid.endswith(suffix):
-                    if seen == index:
+                    if negative_index:
+                        matches.append(desc)
+                    elif seen == index:
                         return desc
                     seen += 1
+            if negative_index:
+                resolved_index = len(matches) + index
+                if 0 <= resolved_index < len(matches):
+                    return matches[resolved_index]
             if time.monotonic() >= deadline:
                 break
             time.sleep(0.1)
@@ -1745,6 +1760,56 @@ _TREE_WALK_KEYS = frozenset({"title", "control_type", "found_index"})
 _STATE_PROBES = {"enabled": "is_enabled", "active": "is_active"}
 
 
+def _is_negative_found_index(criteria: dict[str, Any]) -> bool:
+    index = criteria.get("found_index")
+    return isinstance(index, int) and index < 0
+
+
+def _resolve_negative_found_index(
+    parent_spec: Any,
+    criteria: dict[str, Any],
+    timeout: float,
+) -> dict[str, Any] | Any:
+    """Resolve a negative index against the complete match set.
+
+    ``pywinauto`` does not consistently handle negative ``found_index`` values
+    across its UIA and wrapper paths.  Poll the collection ourselves, and use
+    the TreeWalker fallback for criteria it can evaluate so hidden FindAll
+    matches do not change the requested ordering.
+    """
+    if not _is_negative_found_index(criteria):
+        return criteria
+
+    index = int(criteria["found_index"])
+    match_criteria = {key: value for key, value in criteria.items() if key != "found_index"}
+    deadline = time.monotonic() + timeout
+    last_exc: Exception | None = None
+
+    from pywinauto.timings import TimeoutError as _PwTimeoutError
+
+    while True:
+        if set(match_criteria) <= _TREE_WALK_KEYS:
+            tree_result = _tree_walk_find(parent_spec, criteria)
+            if tree_result is not None:
+                return tree_result
+
+        try:
+            matches = parent_spec.wrapper_object().descendants(**match_criteria)
+            resolved_index = len(matches) + index
+            if 0 <= resolved_index < len(matches):
+                return {**criteria, "found_index": resolved_index}
+        except Exception as exc:
+            last_exc = exc
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(_get_poll_interval())
+
+    raise _PwTimeoutError(
+        f"negative index {index} was not available within {timeout}s"
+    ) from last_exc
+
+
 def _find_under_wrapper(parent: Any, criteria: dict[str, Any], timeout: float) -> Any:
     """Find a descendant of an already-resolved pywinauto *wrapper*.
 
@@ -1764,6 +1829,12 @@ def _find_under_wrapper(parent: Any, criteria: dict[str, Any], timeout: float) -
         )
     deadline = time.monotonic() + timeout
     last_exc: Exception | None = None
+    negative_index = int(criteria["found_index"]) if _is_negative_found_index(criteria) else None
+    search_criteria = (
+        {key: value for key, value in criteria.items() if key != "found_index"}
+        if negative_index is not None
+        else criteria
+    )
     while True:
         try:
             found = find_elements(
@@ -1771,9 +1842,13 @@ def _find_under_wrapper(parent: Any, criteria: dict[str, Any], timeout: float) -
                 top_level_only=False,
                 backend=backend_name,
                 depth=None,
-                **criteria,
+                **search_criteria,
             )
-            if found:
+            if negative_index is not None:
+                resolved_index = len(found) + negative_index
+                if 0 <= resolved_index < len(found):
+                    return wrapper_cls(found[resolved_index])
+            elif found:
                 return wrapper_cls(found[0])
         except Exception as exc:
             last_exc = exc
@@ -1807,7 +1882,9 @@ def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
         return None
     # ``nth()`` merges found_index into the criteria; skipping that many
     # matches here keeps .nth(N) with the same fallbacks as the bare locator.
-    remaining = [int(criteria.get("found_index", 0) or 0)]
+    found_index = int(criteria.get("found_index", 0) or 0)
+    remaining = [found_index]
+    negative_matches: list[Any] = []
 
     try:
         root_info = parent_spec.wrapper_object().element_info
@@ -1828,7 +1905,9 @@ def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
             except Exception:
                 continue
             if (not title or child_name == title) and (not ct or child_ct == ct):
-                if remaining[0] > 0:
+                if found_index < 0:
+                    negative_matches.append(child)
+                elif remaining[0] > 0:
                     remaining[0] -= 1
                 else:
                     try:
@@ -1843,7 +1922,20 @@ def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
                 return result
         return None
 
-    return _search(root_info, 8)
+    result = _search(root_info, 8)
+    if result is not None:
+        return result
+    if found_index < 0:
+        try:
+            child = negative_matches[found_index]
+            import pywinauto as _pw
+
+            wrapper_cls = _pw.Application(backend="uia").backend.generic_wrapper_class
+            return wrapper_cls(child)
+        except Exception:
+            return None
+
+    return None
 
 
 class _ResolvedLocator(Locator):

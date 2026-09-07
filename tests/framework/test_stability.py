@@ -550,6 +550,7 @@ class TestDesktopWideWindowFallback:
             monkeypatch.setattr(
                 _application, "_process_image_path", lambda pid: r"c:\windows\notepad.exe"
             )
+            monkeypatch.setattr(_application, "_process_state", lambda _pid: "stopped")
             new_app = MagicMock()
             new_app.process = 9999
             monkeypatch.setattr(_application, "_PyWinApp", MagicMock(return_value=new_app))

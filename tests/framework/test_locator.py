@@ -361,6 +361,60 @@ def test_locator_resolve_direct_wrapper_and_window_spec_paths():
     assert spec.child_window_calls == [{"title": "x"}]
 
 
+@pytest.mark.parametrize(
+    ("index", "expected_index"),
+    [(-1, 2), (-2, 1), (-3, 0)],
+)
+def test_locator_negative_nth_resolves_against_complete_match_set(index, expected_index):
+    parent = FakeSpec(wrapper=FakeElement())
+    parent.wrapper.descendants_result = [FakeElement(), FakeElement(), FakeElement()]
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        control_type="Button",
+    ).nth(index)
+    loc._timeout = 0
+
+    with monotonic_values(0, 1), patch.object(locator_module, "_wait_until_visible") as waiter:
+        assert loc._resolve() is parent
+
+    assert parent.child_window_calls == [{"control_type": "Button", "found_index": expected_index}]
+    waiter.assert_called_once_with(parent, loc._timeout)
+
+
+def test_locator_negative_nth_out_of_range_uses_not_found_behavior():
+    parent = FakeSpec(wrapper=FakeElement())
+    parent.wrapper.descendants_result = [FakeElement(), FakeElement(), FakeElement()]
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        control_type="Button",
+    ).nth(-4)
+    loc._timeout = 0
+
+    with monotonic_values(0, 1):
+        with pytest.raises(ElementNotFoundError):
+            loc._resolve()
+
+    assert parent.child_window_calls == []
+
+
+def test_locator_negative_nth_polls_until_delayed_match_is_available():
+    matches = [FakeElement(), FakeElement(), FakeElement()]
+    parent = FakeSpec(wrapper=FakeElement())
+    parent.wrapper.descendants = Mock(side_effect=[[], matches])
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        control_type="Button",
+    ).nth(-2)
+    loc._timeout = 1
+
+    with monotonic_values(0, 0), patch.object(locator_module.time, "sleep"):
+        with patch.object(locator_module, "_wait_until_visible"):
+            assert loc._resolve() is parent
+
+    assert parent.wrapper.descendants.call_count == 2
+    assert parent.child_window_calls == [{"control_type": "Button", "found_index": 1}]
+
+
 def test_locator_resolve_ambiguity_fallback_image_tree_and_not_found():
     from pywinauto.findwindows import ElementAmbiguousError
 
@@ -1414,6 +1468,11 @@ def test_tree_walk_find_filters_walks_children_and_builds_wrapper():
             "wrapped",
             second_match,
         )
+    with application:
+        assert locator_module._tree_walk_find(
+            root, {"control_type": "Button", "found_index": -1}
+        ) == ("wrapped", second_match)
+        assert locator_module._tree_walk_find(root, {"title": "Wanted", "found_index": -3}) is None
 
     class BadTreeChild:
         control_type = "Button"

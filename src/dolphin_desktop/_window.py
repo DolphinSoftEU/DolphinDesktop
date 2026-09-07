@@ -24,12 +24,11 @@ from ._locator import Locator
 if TYPE_CHECKING:
     from PIL.Image import Image
 
-_XPATH_SEGMENT_RE = re.compile(
-    r"//?"  # required leading / or //
-    r"([A-Za-z*]+)"  # control type / tag name
-    r"((?:\[@[A-Za-z]+=['\"][^'\"]*['\"])*)"  # zero or more attribute predicates
+_XPATH_SEGMENT_START_RE = re.compile(r"/{1,2}(?P<tag>[A-Za-z]+|\*)")
+_XPATH_PREDICATE_RE = re.compile(
+    r"\[@(?P<attribute>Name|AutomationId|ClassName)="
+    r"(?P<quote>['\"])(?P<value>[^'\"\[\]]*)(?P=quote)\]"
 )
-_XPATH_ATTR_RE = re.compile(r"\[@([A-Za-z]+)=['\"]([^'\"]*)['\"]")
 _XPATH_ATTR_MAP = {
     "Name": "title",
     "AutomationId": "auto_id",
@@ -41,20 +40,37 @@ _JAB_CRITERIA = frozenset({"control_type", "title", "title_re"})
 
 
 def _parse_xpath(root: Any, xpath: str) -> Locator:
-    """Parse a simplified XPath expression and return a chain of Locators."""
-    current: Any = root
-    for m in _XPATH_SEGMENT_RE.finditer(xpath):
-        tag = m.group(1)
-        attrs_str = m.group(2)
+    """Parse a complete simplified XPath expression into a Locator chain."""
+    expression = xpath.strip()
+    if not expression:
+        raise ValueError(f"No valid XPath segments found in: {xpath!r}")
+
+    segments: list[dict[str, Any]] = []
+    position = 0
+    while position < len(expression):
+        segment_match = _XPATH_SEGMENT_START_RE.match(expression, position)
+        if segment_match is None:
+            if not segments:
+                raise ValueError(f"No valid XPath segments found in: {xpath!r}")
+            raise ValueError(f"Invalid simplified XPath syntax at position {position}: {xpath!r}")
+
+        position = segment_match.end()
+        tag = segment_match.group("tag")
         criteria: dict[str, Any] = {}
         if tag != "*":
             criteria["control_type"] = tag
-        for am in _XPATH_ATTR_RE.finditer(attrs_str):
-            key = _XPATH_ATTR_MAP.get(am.group(1), am.group(1).lower())
-            criteria[key] = am.group(2)
+
+        while predicate_match := _XPATH_PREDICATE_RE.match(expression, position):
+            criteria[_XPATH_ATTR_MAP[predicate_match.group("attribute")]] = predicate_match.group(
+                "value"
+            )
+            position = predicate_match.end()
+
+        segments.append(criteria)
+
+    current: Any = root
+    for criteria in segments:
         current = Locator(current, **criteria)
-    if current is root:
-        raise ValueError(f"No valid XPath segments found in: {xpath!r}")
     return current
 
 
@@ -388,7 +404,9 @@ class Window:
     def find_by_xpath(self, xpath: str) -> Locator:
         """Find an element using a simplified XPath expression.
 
-        Supports a subset of XPath syntax for navigating the UIA element tree:
+        This is a small, strict grammar for navigating the UIA element tree,
+        not a full XPath engine. Leading and trailing whitespace is ignored;
+        whitespace elsewhere is only allowed inside quoted values.
 
         Usage::
 
@@ -396,7 +414,21 @@ class Window:
             window.find_by_xpath("//Edit[@AutomationId='tbSearch']").type_text("q")
             window.find_by_xpath("//MenuBar//MenuItem[@Name='File']")
 
-        Supported syntax:
+        Supported grammar::
+
+            expression ::= segment+
+            segment ::= ("/" | "//") tag predicate*
+            tag ::= ASCII letters+ | "*"
+            predicate ::= "[@" attribute "=" quoted_value "]"
+            attribute ::= "Name" | "AutomationId" | "ClassName"
+            quoted_value ::= "'" value "'" | '"' value '"'
+            value ::= zero or more characters other than quotes or brackets
+
+        ``value`` may be empty and cannot contain quote or square-bracket
+        characters. The three attributes map to ``title``, ``auto_id``, and
+        ``class_name`` respectively. Segments are chained as lazy Locators.
+        Unsupported or malformed syntax raises ``ValueError`` before a
+        partial Locator is constructed.
 
         * ``//Tag`` or ``/Tag`` — find descendant with that control type
         * ``[@Name='val']``         → ``title='val'``
@@ -406,6 +438,10 @@ class Window:
         Multiple segments chain locators::
 
             //MenuBar//MenuItem[@Name='File']
+
+        Rejected examples include ``//Button[contains(@Name, 'Save')]``,
+        ``//Button[@HelpText='Save document']``, numeric predicates, unknown
+        attributes, unsupported operators, and malformed or trailing syntax.
         """
         return _parse_xpath(self, xpath)
 

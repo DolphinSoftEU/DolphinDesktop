@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 from PIL import Image
 
+import dolphin_desktop._window as window_module
 from dolphin_desktop._element import (
     Button,
     CheckBox,
@@ -31,15 +32,15 @@ def _window(monkeypatch: pytest.MonkeyPatch, spec: Mock | None = None) -> Window
     return Window(spec or Mock())
 
 
-def test_parse_xpath_supports_wildcards_and_unmapped_attributes() -> None:
+def test_parse_xpath_supports_wildcards_and_mapped_attributes() -> None:
     root = Mock()
 
     locator = _parse_xpath(
         root,
-        "/Window[@Name=\"Main\"]/*[@ClassName='QPushButton']/*[@RuntimeId='42']",
+        "/Window[@Name=\"Main\"]/*[@ClassName='QPushButton']/*",
     )
 
-    assert locator._criteria == {"runtimeid": "42"}
+    assert locator._criteria == {}
     assert locator._parent._criteria == {"class_name": "QPushButton"}
     assert locator._parent._parent._criteria == {"control_type": "Window", "title": "Main"}
     assert locator._parent._parent._parent is root
@@ -360,3 +361,41 @@ def test_window_xpath_rejects_an_empty_expression() -> None:
 
     with pytest.raises(ValueError):
         _parse_xpath(Mock(), "")
+
+
+@pytest.mark.parametrize(
+    "xpath",
+    [
+        "//Button[contains(@Name, 'Save')]",
+        "//Button[@HelpText='Save document']",
+        "//Button[@RuntimeId='42']",
+        "//Button[@Unknown='value']",
+        "//Button[@name='Save']",
+        "//Button[1]",
+        "//Button[@Name!='Save']",
+        "//Button[@Name='Save'",
+        "//Button[@Name='Save\"]",
+        "//Button[@Name='Save']]",
+        "//Button[@Name='Save']trailing",
+        "prefix//Button",
+        "///Button",
+        "//Button//",
+    ],
+)
+def test_parse_xpath_rejects_unsupported_or_malformed_syntax_without_partial_locator(
+    monkeypatch: pytest.MonkeyPatch,
+    xpath: str,
+) -> None:
+    locator_constructor = Mock()
+    monkeypatch.setattr(window_module, "Locator", locator_constructor)
+
+    with pytest.raises(ValueError):
+        _parse_xpath(Mock(), xpath)
+
+    locator_constructor.assert_not_called()
+
+
+def test_parse_xpath_preserves_empty_quoted_values_and_outer_whitespace() -> None:
+    locator = _parse_xpath(Mock(), "  //Button[@Name='']  ")
+
+    assert locator._criteria == {"control_type": "Button", "title": ""}

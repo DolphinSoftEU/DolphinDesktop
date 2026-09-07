@@ -6,7 +6,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 if sys.platform == "win32":
     from pywinauto import Application as _PyWinApp
@@ -70,6 +70,8 @@ _PROCESS_VM_READ = 0x0010
 # Enough for QueryFullProcessImageNameW, and granted where the wider
 # _PROCESS_QUERY_INFORMATION is refused.
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_STILL_ACTIVE = 259
+_PROCESS_NOT_FOUND_ERRORS = frozenset({87, 1168})
 
 # ``EnumProcessModulesEx`` filter: 0x03 = LIST_MODULES_ALL — needed for
 # 64-bit hosts loading Qt DLLs that a plain EnumProcessModules misses.
@@ -177,6 +179,41 @@ def _process_image_path(pid: int) -> str | None:
             pass
 
 
+def _process_state(pid: int) -> Literal["running", "stopped", "unknown"]:
+    """Return the process state without collapsing query failures into stopped."""
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wt.HANDLE
+        k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        k32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+        k32.GetExitCodeProcess.restype = wt.BOOL
+        k32.CloseHandle.argtypes = [wt.HANDLE]
+    except Exception:
+        return "unknown"
+
+    try:
+        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    except Exception:
+        return "unknown"
+    if not handle:
+        return "stopped" if ctypes.get_last_error() in _PROCESS_NOT_FOUND_ERRORS else "unknown"
+    try:
+        exit_code = wt.DWORD()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return "unknown"
+        return "running" if exit_code.value == _PROCESS_STILL_ACTIVE else "stopped"
+    except Exception:
+        return "unknown"
+    finally:
+        try:
+            k32.CloseHandle(handle)
+        except Exception:
+            pass
+
+
 def _has_any_signature(names: list[str], signatures: tuple[str, ...]) -> bool:
     """Return True if any signature substring appears in any module name."""
     return any(sig in name for name in names for sig in signatures)
@@ -242,19 +279,37 @@ def _visible_window_handles(pid: int) -> list[int]:
     return handles
 
 
-def _last_active_popup_handle(pid: int) -> int | None:
-    """Return the visible active popup handle for *pid*, if one exists."""
+def _get_last_active_popup(hwnd: int) -> int | None:
+    """Return the last active popup for *hwnd*, or ``None`` on failure."""
     try:
         import win32gui
+
+        get_last_active_popup = getattr(win32gui, "GetLastActivePopup", None)
+        if get_last_active_popup is not None:
+            return int(get_last_active_popup(hwnd))
+    except Exception:
+        pass
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        get_last_active_popup = user32.GetLastActivePopup
+        get_last_active_popup.argtypes = (wintypes.HWND,)
+        get_last_active_popup.restype = wintypes.HWND
+        return int(get_last_active_popup(hwnd))
     except Exception:
         return None
 
+
+def _last_active_popup_handle(pid: int) -> int | None:
+    """Return the visible active popup handle for *pid*, if one exists."""
     handles = _visible_window_handles(pid)
     visible_handles = set(handles)
     for hwnd in handles:
-        try:
-            popup = int(win32gui.GetLastActivePopup(hwnd))
-        except Exception:
+        popup = _get_last_active_popup(hwnd)
+        if popup is None:
             continue
         if popup != hwnd and popup in visible_handles:
             return popup
@@ -538,6 +593,7 @@ class Application:
         try:
             spec = self._app.window(**criteria)
             spec.wait("visible", timeout=timeout * 0.6)
+            spec = self._bind_window_handle(self._app, spec)
             return Window(spec, application=self)
         except Exception:
             pass
@@ -546,8 +602,10 @@ class Application:
         # an existing process, so the window's PID differs from the launched one.
         # Search the entire desktop with the same criteria.
         try:
-            spec = _PwDesktop(backend=self._backend).window(**criteria)
+            desktop = _PwDesktop(backend=self._backend)
+            spec = desktop.window(**criteria)
             spec.wait("visible", timeout=timeout * 0.4)
+            spec = self._bind_window_handle(desktop, spec)
         except Exception as exc:
             raise WindowNotFoundError(
                 f"Window {criteria!r} not found after {timeout}s "
@@ -555,6 +613,12 @@ class Application:
             ) from exc
         self._adopt_hand_off(spec, criteria)
         return Window(spec, application=self)
+
+    @staticmethod
+    def _bind_window_handle(owner: Any, spec: Any) -> Any:
+        """Rebuild a discovered window specification around its native handle."""
+        handle = spec.wrapper_object().handle
+        return owner.window(handle=handle)
 
     def _adopt_hand_off(self, spec: Any, criteria: dict[str, Any]) -> None:
         """Repoint ``self._app`` at the process that really owns *spec*'s window.
@@ -623,8 +687,11 @@ class Application:
         repoint this Application at a stranger and — when we own the process —
         hand that PID to the per-test teardown reaper, killing a user's app.
         Only a genuine hand-off qualifies: the same PID, a descendant of it, or
-        another instance of the same executable image (the single-instance
-        pattern this fallback exists for). Anything unverifiable is refused.
+        another instance of the same executable image after the launched
+        process has exited (the single-instance pattern this fallback exists
+        for). A matching image while the original is still alive is not enough
+        to distinguish an independent process, so anything unverifiable is
+        refused.
         """
         try:
             if pid == self.process_id:
@@ -634,6 +701,8 @@ class Application:
         except Exception:
             return False
         if self._image_path is None:
+            return False
+        if _process_state(self.process_id) != "stopped":
             return False
         return _process_image_path(pid) == self._image_path
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import ctypes
 import sys
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -215,11 +215,30 @@ def test_last_active_popup_handles_missing_api_and_popup_probe_errors(monkeypatc
 
     monkeypatch.setattr(application, "_visible_window_handles", lambda _pid: [101])
     monkeypatch.setitem(sys.modules, "win32gui", None)
+    monkeypatch.setattr(
+        ctypes,
+        "WinDLL",
+        Mock(side_effect=OSError("user32 unavailable")),
+        raising=False,
+    )
     assert application._last_active_popup_handle(42) is None
 
     gui = SimpleNamespace(GetLastActivePopup=Mock(side_effect=RuntimeError("window disappeared")))
     monkeypatch.setitem(sys.modules, "win32gui", gui)
     assert application._last_active_popup_handle(42) is None
+
+
+def test_last_active_popup_uses_user32_when_pywin32_api_is_missing(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    get_last_active_popup = Mock(return_value=103)
+    user32 = SimpleNamespace(GetLastActivePopup=get_last_active_popup)
+    monkeypatch.setattr(application, "_visible_window_handles", lambda _pid: [101, 103])
+    monkeypatch.setitem(sys.modules, "win32gui", SimpleNamespace())
+    monkeypatch.setattr(ctypes, "WinDLL", Mock(return_value=user32), raising=False)
+
+    assert application._last_active_popup_handle(42) == 103
+    get_last_active_popup.assert_called_once_with(101)
 
 
 def test_top_window_prefers_visible_active_popup(monkeypatch) -> None:
@@ -475,24 +494,35 @@ def test_find_window_uses_own_process_before_desktop_fallback(monkeypatch) -> No
     import dolphin_desktop._application as application
 
     app, raw = _bare_application(application)
-    own_spec = Mock()
-    raw.window.return_value = own_spec
-    result = app._find_window({"title": "Main"}, 10)
-    assert result._spec is own_spec
-    own_spec.wait.assert_called_once_with("visible", timeout=6.0)
+    criteria = {
+        "title": "Main",
+        "title_re": ".*Main.*",
+        "class_name": "Dialog",
+        "found_index": 2,
+    }
+    discovered_spec = Mock()
+    discovered_spec.wrapper_object.return_value.handle = 101
+    bound_spec = Mock()
+    raw.window.side_effect = [discovered_spec, bound_spec]
+    result = app._find_window(criteria, 10)
+    assert result._spec is bound_spec
+    discovered_spec.wait.assert_called_once_with("visible", timeout=6.0)
+    assert raw.window.call_args_list == [call(**criteria), call(handle=101)]
 
     raw.window.side_effect = RuntimeError("not in own process")
-    desktop_spec = Mock()
-    desktop_spec.wait = Mock()
+    desktop_discovered_spec = Mock()
+    desktop_discovered_spec.wrapper_object.return_value.handle = 202
+    desktop_bound_spec = Mock()
+    desktop_bound_spec.wait = Mock()
     desktop = Mock()
-    desktop.window.return_value = desktop_spec
+    desktop.window.side_effect = [desktop_discovered_spec, desktop_bound_spec]
     monkeypatch.setattr(application, "_PwDesktop", Mock(return_value=desktop))
     monkeypatch.setattr(app, "_adopt_hand_off", Mock())
-    fallback = app._find_window({"title": "Main"}, 10)
-    assert fallback._spec is desktop_spec
-    desktop.window.assert_called_once_with(title="Main")
-    desktop_spec.wait.assert_called_once_with("visible", timeout=4.0)
-    app._adopt_hand_off.assert_called_once_with(desktop_spec, {"title": "Main"})
+    fallback = app._find_window(criteria, 10)
+    assert fallback._spec is desktop_bound_spec
+    desktop.window.assert_has_calls([call(**criteria), call(handle=202)])
+    desktop_discovered_spec.wait.assert_called_once_with("visible", timeout=4.0)
+    app._adopt_hand_off.assert_called_once_with(desktop_bound_spec, criteria)
 
 
 def test_find_window_reports_desktop_failure(monkeypatch) -> None:
@@ -586,13 +616,38 @@ def test_is_hand_off_pid_checks_same_pid_descendants_and_executable(monkeypatch)
     app._image_path = r"c:\demo.exe"
     monkeypatch.setattr(application, "_process_image_path", lambda _pid: r"C:\DEMO.EXE")
     assert app._is_hand_off_pid(30) is False
+
     monkeypatch.setattr(application, "_process_image_path", lambda _pid: r"c:\demo.exe")
+    monkeypatch.setattr(application, "_process_state", lambda _pid: "stopped")
     assert app._is_hand_off_pid(30) is True
+
+    monkeypatch.setattr(application, "_process_state", lambda _pid: "running")
+    assert app._is_hand_off_pid(30) is False
+
+    monkeypatch.setattr(application, "_process_state", lambda _pid: "unknown")
+    assert app._is_hand_off_pid(30) is False
 
     monkeypatch.setattr(
         application, "_enumerate_descendant_pids", Mock(side_effect=RuntimeError("snapshot"))
     )
     assert app._is_hand_off_pid(30) is False
+
+
+def test_same_image_hand_off_rejects_swallowed_process_query_error(monkeypatch) -> None:
+    """A pywinauto-style false on query failure must not authorize adoption."""
+    import dolphin_desktop._application as application
+
+    app, raw = _bare_application(application, pid=10)
+    app._image_path = r"c:\demo.exe"
+    monkeypatch.setattr(application, "_enumerate_descendant_pids", lambda _pid: set())
+    monkeypatch.setattr(application, "_process_image_path", lambda _pid: r"c:\demo.exe")
+    raw.is_process_running.return_value = False
+
+    kernel32 = SimpleNamespace(OpenProcess=Mock(side_effect=OSError("access denied")))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32)
+
+    assert app._is_hand_off_pid(30) is False
+    raw.is_process_running.assert_not_called()
 
 
 def test_basic_accessors_timeouts_and_window_delegates(monkeypatch) -> None:
