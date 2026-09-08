@@ -477,7 +477,17 @@ class OracleFormsApp:
         Prefer ``block(...).item(...)`` when the block is known; use
         this shortcut for globally-unique items (e.g. header buttons).
         """
-        jab = self._locator(name=name)
+        try:
+            jab = self._locator(name=name)
+        except OracleFormsError as exc:
+            # Resolving the JAB locator also resolves the top-level window.
+            # Keep that domain error, but add the public operation and item
+            # name so a failed facade call remains diagnosable.
+            reason = exc.args[0] if exc.args else "lookup failed"
+            raise OracleFormsError(
+                f"item {name!r} lookup failed for Oracle Forms app: {reason}",
+                hint=exc.hint,
+            ) from exc
         return OracleFormsItem(jab, name=name, app=self)
 
     def menu(self, name: str) -> OracleFormsMenu:

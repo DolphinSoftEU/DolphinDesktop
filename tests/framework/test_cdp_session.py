@@ -1437,6 +1437,16 @@ class TestSessionConstructionAndLifecycle:
 
 
 class TestLocatorOperations:
+    def test_click_propagates_stale_page_error_unchanged(self):
+        locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
+        stale_error = CDPStalePageError("the selected page has closed")
+        handle.click.side_effect = stale_error
+
+        with pytest.raises(CDPStalePageError) as raised:
+            locator.click()
+
+        assert raised.value is stale_error
+
     def test_locator_resolution_and_mouse_keyboard_form_operations(self):
         locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
         assert locator._resolve() is handle
