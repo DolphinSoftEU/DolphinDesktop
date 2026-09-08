@@ -304,6 +304,33 @@ def test_waiters_reject_a_match_that_resolves_after_the_deadline(waiter, message
             waiter(spec, 0.25)
 
 
+def test_deadline_helpers_preserve_zero_timeout_semantics():
+    with monotonic_values(0):
+        assert locator_module._deadline_expired(1, 0) is False
+    assert locator_module._remaining_timeout(1, 0) == 0
+    assert locator_module._remaining_timeout(1, 1, enforce=False) == 0
+
+
+def test_wait_until_present_retries_before_timing_out_and_propagates_ambiguity():
+    from pywinauto.findwindows import ElementAmbiguousError
+    from pywinauto.timings import TimeoutError as PyTimeoutError
+
+    missing = FakeSpec()
+    missing.wrapper_object = Mock(side_effect=RuntimeError("not ready"))
+    with (
+        monotonic_values(0, 0.1, 2),
+        patch.object(locator_module.time, "sleep") as sleep,
+        pytest.raises(PyTimeoutError, match="did not become present"),
+    ):
+        locator_module._wait_until_present(missing, 1)
+    sleep.assert_called_once()
+
+    ambiguous = FakeSpec()
+    ambiguous.wrapper_object = Mock(side_effect=ElementAmbiguousError("ambiguous"))
+    with monotonic_values(0), pytest.raises(ElementAmbiguousError):
+        locator_module._wait_until_present(ambiguous, 1)
+
+
 @pytest.mark.parametrize(
     "waiter",
     [locator_module._wait_until_visible, locator_module._wait_until_present],
@@ -416,6 +443,123 @@ def test_presence_resolution_uses_presence_for_an_unresolved_hidden_parent():
     hidden_parent.child_window.assert_called_once_with(title="hidden child")
 
 
+def test_presence_resolution_rejects_expired_parent_and_raw_wrapper_deadlines():
+    window = SimpleNamespace(_get_spec=Mock(return_value=FakeSpec()))
+    loc = locator_module.Locator(window, title="x").timeout(1)
+    with monotonic_values(0, 1), pytest.raises(ElementNotFoundError):
+        loc._resolve_presence(deadline=0.5)
+
+    raw = FakeElement()
+    raw_loc = locator_module.Locator(SimpleNamespace(_get_spec=Mock(return_value=raw)), title="x")
+    with monotonic_values(0, 0, 1), pytest.raises(ElementNotFoundError):
+        raw_loc._resolve_presence(deadline=0.5)
+
+
+def test_presence_resolution_handles_negative_index_ambiguity_and_late_fallback():
+    parent = FakeSpec()
+    element = FakeElement(visible=False)
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="target",
+    ).nth(-1)
+    loc._timeout = 0
+    with (
+        monotonic_values(0),
+        patch.object(locator_module, "_resolve_negative_found_index", return_value=element),
+    ):
+        assert loc._resolve_presence() is element
+
+    from pywinauto.findwindows import ElementAmbiguousError
+
+    ambiguous = FakeSpec()
+    ambiguous.child_window = Mock(side_effect=ElementAmbiguousError("ambiguous"))
+    ambiguous_loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=ambiguous)), title="target"
+    ).timeout(0)
+    with monotonic_values(0), pytest.raises(AmbiguousMatchError):
+        ambiguous_loc._resolve_presence()
+
+    fallback = FakeSpec()
+    fallback_parent = FakeSpec()
+    fallback_parent.child_window = Mock(side_effect=[RuntimeError("primary"), fallback])
+    fallback_loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=fallback_parent)),
+        title="primary",
+        fallback=[{"title": "fallback"}],
+    ).timeout(1)
+    with (
+        monotonic_values(0, 0, 0, 1, 1, 1, 1),
+        patch.object(
+            locator_module,
+            "_wait_until_present",
+            side_effect=[RuntimeError("primary"), None],
+        ),
+    ):
+        with pytest.raises(ElementNotFoundError):
+            fallback_loc._resolve_presence()
+
+
+def test_presence_resolution_reports_fallback_ambiguity_image_and_tree_results():
+    from pywinauto.findwindows import ElementAmbiguousError
+
+    parent = FakeSpec()
+    parent.child_window = Mock(
+        side_effect=[RuntimeError("primary"), ElementAmbiguousError("ambiguous")]
+    )
+    ambiguous_loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="primary",
+        fallback=[{"title": "fallback"}],
+    ).timeout(0)
+    with monotonic_values(0), pytest.raises(AmbiguousMatchError):
+        ambiguous_loc._resolve_presence()
+
+    image_parent = FakeSpec()
+    image_parent.child_window = Mock(side_effect=RuntimeError("primary"))
+    image = SimpleNamespace(
+        find_with_size=Mock(return_value=(1, 2, 3, 4)), _template_path="template.png"
+    )
+    image_loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=image_parent)),
+        title="primary",
+        image_fallback=image,
+    ).timeout(0)
+    with (
+        monotonic_values(0),
+        patch("dolphin_desktop._selfheal.record_fallback"),
+    ):
+        assert image_loc._resolve_presence().__class__.__name__ == "_ImageElement"
+
+    tree_parent = FakeSpec()
+    tree_parent.child_window = Mock(side_effect=RuntimeError("primary"))
+    tree_loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=tree_parent)), title="primary"
+    ).timeout(0)
+    with monotonic_values(0), patch.object(locator_module, "_tree_walk_find", return_value="tree"):
+        assert tree_loc._resolve_presence() == "tree"
+
+
+def test_presence_resolution_polls_after_a_missed_attempt_and_exists_preserves_value_error():
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=RuntimeError("missing"))
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), title="target"
+    ).timeout(1)
+    with (
+        monotonic_values(0, 0, 0, 0, 0, 2),
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        patch.object(locator_module.time, "sleep") as sleep,
+        pytest.raises(ElementNotFoundError),
+    ):
+        loc._resolve_presence()
+    sleep.assert_called_once()
+
+    value_error = locator_module.Locator(SimpleNamespace(_get_spec=Mock()), title="x")
+    with patch.object(value_error, "_resolve_presence", side_effect=ValueError("bad")):
+        with pytest.raises(ValueError, match="bad"):
+            value_error.exists()
+
+
 def test_fallback_is_retried_before_a_positive_deadline():
     primary = FakeSpec(wrapper=FakeElement(visible=False))
     fallback = FakeSpec(wrapper=FakeElement(visible=True))
@@ -478,6 +622,67 @@ def test_locator_resolve_direct_wrapper_and_window_spec_paths():
         assert loc._resolve() is spec
     waiter.assert_called_once_with(spec, 0)
     assert spec.child_window_calls == [{"title": "x"}]
+
+
+def test_locator_resolution_rejects_expired_parent_and_raw_wrapper_deadlines():
+    window = SimpleNamespace(_get_spec=Mock(return_value=FakeSpec()))
+    loc = locator_module.Locator(window, title="x").timeout(1)
+    with monotonic_values(0, 1), pytest.raises(ElementNotFoundError):
+        loc._resolve(deadline=0.5)
+
+    raw = FakeElement()
+    raw_loc = locator_module.Locator(SimpleNamespace(_get_spec=Mock(return_value=raw)), title="x")
+    with monotonic_values(0, 0, 1), pytest.raises(ElementNotFoundError):
+        raw_loc._resolve(deadline=0.5)
+
+
+def test_locator_negative_found_index_can_return_a_resolved_wrapper_directly():
+    parent = FakeSpec()
+    element = FakeElement()
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="target",
+    ).nth(-1)
+    loc._timeout = 0
+    with (
+        monotonic_values(0),
+        patch.object(locator_module, "_resolve_negative_found_index", return_value=element),
+    ):
+        assert loc._resolve() is element
+
+
+def test_locator_fallback_is_discarded_when_it_resolves_after_the_deadline():
+    primary = FakeSpec()
+    fallback = FakeSpec()
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=[primary, fallback])
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="primary",
+        fallback=[{"title": "fallback"}],
+    ).timeout(1)
+    with (
+        monotonic_values(0, 0, 0, 1, 1, 1, 1),
+        patch.object(
+            locator_module,
+            "_wait_until_visible",
+            side_effect=[RuntimeError("primary"), None],
+        ),
+    ):
+        with pytest.raises(ElementNotFoundError):
+            loc._resolve()
+
+
+def test_locator_tree_result_with_broken_visibility_is_not_returned():
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=RuntimeError("primary"))
+    tree_result = SimpleNamespace(is_visible=Mock(side_effect=RuntimeError("stale")))
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), title="target"
+    ).timeout(0)
+    with patch.object(locator_module, "_tree_walk_find", return_value=tree_result):
+        with pytest.raises(ElementNotFoundError):
+            loc._resolve()
 
 
 @pytest.mark.parametrize(
@@ -1215,6 +1420,21 @@ def test_exists_waits_and_bounding_box_error_safe_queries():
     assert loc.wait_until_enabled(timeout=0) is loc
 
 
+def test_last_seen_state_reports_unknown_missing_and_boolean_probes(monkeypatch):
+    assert locator_module._last_seen_state(SimpleNamespace(), "unknown") == "unavailable"
+    assert locator_module._last_seen_state(SimpleNamespace(), "enabled") == "unavailable"
+
+    target = SimpleNamespace(
+        is_enabled=Mock(return_value=False),
+        is_active=Mock(return_value=True),
+        probe=Mock(return_value=True),
+    )
+    assert locator_module._last_seen_state(target, "enabled") == "disabled"
+    assert locator_module._last_seen_state(target, "active") == "active"
+    monkeypatch.setitem(locator_module._STATE_PROBES, "probe_state", "probe")
+    assert locator_module._last_seen_state(target, "probe_state") == "True"
+
+
 def test_wait_until_hidden_checked_and_text_matching():
     visible = FakeElement(visible=False)
     loc = resolved(visible)
@@ -1609,6 +1829,33 @@ def test_qt_object_name_locator_resolves_suffix_index_and_times_out():
     assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
+def test_qt_object_name_locator_supports_negative_index_and_deadline_polling():
+    matches = [
+        SimpleNamespace(element_info=FakeInfo(automation_id="root.target")),
+        SimpleNamespace(element_info=FakeInfo(automation_id="target")),
+    ]
+    parent = FakeSpec(descendants=matches)
+    window = SimpleNamespace(_get_spec=Mock(return_value=parent))
+    qt = locator_module._QtObjectNameLocator(window, "target").nth(-1).timeout(0)
+    with monotonic_values(0):
+        assert qt._resolve() is matches[-1]
+
+    missing_parent = FakeSpec(descendants=[])
+    missing = locator_module._QtObjectNameLocator(
+        SimpleNamespace(_get_spec=Mock(return_value=missing_parent)), "missing"
+    ).timeout(1)
+    with (
+        monotonic_values(0, 0, 0, 2),
+        patch.object(locator_module.time, "sleep") as sleep,
+        pytest.raises(ElementNotFoundError),
+    ):
+        missing._resolve()
+    sleep.assert_called_once()
+
+    with monotonic_values(0, 1), pytest.raises(ElementNotFoundError):
+        missing._resolve(deadline=0.5)
+
+
 def test_read_text_via_clipboard_success_and_all_best_effort_failures():
     clipboard = types.SimpleNamespace(
         OpenClipboard=Mock(),
@@ -1679,6 +1926,19 @@ def test_find_under_wrapper_success_invalid_and_timeout():
         with pytest.raises(ElementNotFoundError, match="not found") as exc_info:
             locator_module._find_under_wrapper(parent, {"title": "x"}, 1)
     assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+def test_find_under_wrapper_resolves_negative_found_index():
+    found = [object(), object(), object()]
+    wrapper_cls = Mock(side_effect=lambda element: ("wrapped", element))
+    parent = SimpleNamespace(backend=SimpleNamespace(name="uia", generic_wrapper_class=wrapper_cls))
+    with patch("pywinauto.findwindows.find_elements", return_value=found) as find:
+        assert locator_module._find_under_wrapper(parent, {"title": "x", "found_index": -1}, 0) == (
+            "wrapped",
+            found[-1],
+        )
+    assert find.call_args.kwargs["visible_only"] is True
+    assert "found_index" not in find.call_args.kwargs
 
 
 def test_presence_search_under_raw_wrapper_includes_hidden_elements():
@@ -1809,6 +2069,13 @@ def test_resolved_locator_exists_accepts_a_live_hidden_uia_element():
     element.element_info.element = SimpleNamespace(CurrentProcessId=123)
 
     assert locator_module._ResolvedLocator(element).exists() is True
+
+
+def test_resolved_locator_rejects_an_expired_inherited_deadline():
+    loc = locator_module._ResolvedLocator(FakeElement())
+    with patch.object(locator_module.time, "monotonic", return_value=10):
+        with pytest.raises(ElementNotFoundError, match="deadline expired"):
+            loc._resolve(deadline=9)
 
 
 def test_locator_normalizes_friendly_selector_names() -> None:

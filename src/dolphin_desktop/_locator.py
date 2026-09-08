@@ -661,12 +661,29 @@ class Locator:
                 enforce=enforce_deadline,
             ):
                 tree_result = _tree_walk_find(parent_spec, self._criteria)
-                if tree_result is not None and not _deadline_expired(
-                    deadline,
-                    self._timeout,
-                    enforce=enforce_deadline,
-                ):
-                    return tree_result
+                if tree_result is not None:
+                    # TreeWalker can find controls that FindAll misses, but
+                    # it does not enforce the visible-state contract used by
+                    # actions and wait_for(state="visible").  Do not return a
+                    # hidden wrapper as if it were ready; continue polling so
+                    # click() waits for the control to become visible.
+                    try:
+                        visibility_probe = getattr(tree_result, "is_visible", None)
+                        tree_result_is_visible = (
+                            True
+                            if visibility_probe is None
+                            else bool(visibility_probe())
+                            if callable(visibility_probe)
+                            else bool(visibility_probe)
+                        )
+                    except Exception:
+                        tree_result_is_visible = False
+                    if tree_result_is_visible and not _deadline_expired(
+                        deadline,
+                        self._timeout,
+                        enforce=enforce_deadline,
+                    ):
+                        return tree_result
 
             if single_attempt or _deadline_expired(
                 deadline,
@@ -1549,7 +1566,8 @@ class Locator:
                 waiter(state, timeout=t)
             except Exception as exc:
                 raise WaitTimeoutError(
-                    f"Element {self._criteria!r} did not reach state '{state}' after {t}s"
+                    f"Element {self._criteria!r} did not reach state '{state}' "
+                    f"after {t}s (last seen: {_last_seen_state(spec, state)})"
                 ) from exc
             return self
         probe_name = _STATE_PROBES.get(state)
@@ -1570,7 +1588,8 @@ class Locator:
                 break
             time.sleep(0.05)
         raise WaitTimeoutError(
-            f"Element {self._criteria!r} did not reach state '{state}' after {t}s"
+            f"Element {self._criteria!r} did not reach state '{state}' "
+            f"after {t}s (last seen: {_last_seen_state(spec, state)})"
         )
 
     def wait_until_hidden(self, timeout: float = 10.0) -> Locator:
@@ -1622,7 +1641,7 @@ class Locator:
         text_re: str | None = None,
         contains: bool = True,
         timeout: float | None = None,
-        poll_interval: float = 0.15,
+        poll_interval: float | None = None,
     ) -> Locator:
         """Poll the element until its text matches — the auto-waiting
         counterpart to reading ``.text()`` after a programmatic action.
@@ -1642,7 +1661,8 @@ class Locator:
             timeout: Seconds to wait. Defaults to the locator's own
                 timeout (usually the global ``dolphin_desktop.config``
                 value).
-            poll_interval: Seconds between checks (default 0.15).
+            poll_interval: Seconds between checks. Defaults to the global
+                ``config(poll_interval=...)`` value.
 
         Returns ``self`` for chaining.
 
@@ -1671,6 +1691,7 @@ class Locator:
 
         pat = _re.compile(text_re) if text_re else None
         t = timeout if timeout is not None else self._timeout
+        poll = _get_poll_interval() if poll_interval is None else poll_interval
         deadline = time.monotonic() + t
         current = ""
         while True:
@@ -1693,7 +1714,7 @@ class Locator:
                     return self
             if time.monotonic() >= deadline:
                 break
-            time.sleep(poll_interval)
+            time.sleep(poll)
         target = text if text is not None else f"regex {text_re!r}"
         raise WaitTimeoutError(
             f"Element {self._criteria!r} text did not match {target!r} "
@@ -2204,6 +2225,28 @@ _TREE_WALK_KEYS = frozenset({"title", "control_type", "auto_id", "found_index"})
 # Locator.wait_for state → the wrapper predicate that answers it, for results
 # that are raw wrappers instead of a WindowSpecification with .wait().
 _STATE_PROBES = {"enabled": "is_enabled", "active": "is_active"}
+
+
+def _last_seen_state(spec: Any, state: str) -> str:
+    """Return a readable final state for a failed state wait."""
+    probe_name = _STATE_PROBES.get(state)
+    if probe_name is None:
+        return "unavailable"
+
+    target = _wrapper_of(spec)
+    try:
+        probe = getattr(target, probe_name, None)
+        if not callable(probe):
+            return "unavailable"
+        observed = bool(probe())
+    except Exception:
+        return "unavailable"
+
+    if state == "enabled":
+        return "enabled" if observed else "disabled"
+    if state == "active":
+        return "active" if observed else "inactive"
+    return repr(observed)
 
 
 def _is_negative_found_index(criteria: dict[str, Any]) -> bool:
