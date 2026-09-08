@@ -465,7 +465,9 @@ def test_locator_resolve_direct_wrapper_and_window_spec_paths():
         assert loc._resolve() == "found"
         finder.assert_called_once()
         args, kwargs = finder.call_args
-        assert args == (raw, {"title": "x"}, loc._timeout)
+        assert args[:2] == (raw, {"title": "x"})
+        assert 0 < args[2] <= loc._timeout
+        assert args[2] == pytest.approx(loc._timeout, abs=0.01)
         assert kwargs.keys() == {"deadline", "enforce_deadline"}
         assert kwargs["deadline"] > time.monotonic()
         assert kwargs["enforce_deadline"] is True
