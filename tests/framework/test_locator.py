@@ -8,6 +8,7 @@ not practical to reach with a real Windows application in CI.
 from __future__ import annotations
 
 import sys
+import time
 import types
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
@@ -287,6 +288,59 @@ def test_wait_until_visible_success_retry_timeout_and_ambiguity():
     assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
+@pytest.mark.parametrize(
+    ("waiter", "message"),
+    [
+        (locator_module._wait_until_visible, "did not become visible"),
+        (locator_module._wait_until_present, "did not become present"),
+    ],
+)
+def test_waiters_reject_a_match_that_resolves_after_the_deadline(waiter, message):
+    from pywinauto.timings import TimeoutError as PyTimeoutError
+
+    spec = FakeSpec(wrapper=FakeElement())
+    with monotonic_values(0, 0.5):
+        with pytest.raises(PyTimeoutError, match=message):
+            waiter(spec, 0.25)
+
+
+@pytest.mark.parametrize(
+    "waiter",
+    [locator_module._wait_until_visible, locator_module._wait_until_present],
+)
+def test_waiters_bound_pywinauto_resolution_to_the_dolphin_deadline(waiter):
+    from pywinauto.timings import TimeoutError as PyTimeoutError
+
+    class TimeoutAwareSpec:
+        def __init__(self):
+            self.criteria = [{"title": "missing"}]
+            self.wrapper_calls = 0
+            self.resolver_timeouts = []
+
+        def wrapper_object(self):
+            self.wrapper_calls += 1
+            time.sleep(0.5)
+            return FakeElement()
+
+    spec = TimeoutAwareSpec()
+
+    def resolve_control(self, criteria, *, timeout, retry_interval):
+        spec.resolver_timeouts.append(timeout)
+        time.sleep(timeout + 0.02)
+        return (FakeElement(),)
+
+    TimeoutAwareSpec._WindowSpecification__resolve_control = resolve_control
+
+    started = time.monotonic()
+    with pytest.raises(PyTimeoutError):
+        waiter(spec, 0.1)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.3
+    assert spec.wrapper_calls == 0
+    assert spec.resolver_timeouts == [pytest.approx(0.1, abs=0.03)]
+
+
 def test_is_foreground_and_trace_step_cover_known_unknown_and_no_session():
     spec = FakeSpec(wrapper=SimpleNamespace(handle=42))
     fake_gui = types.SimpleNamespace(GetForegroundWindow=Mock(return_value=42))
@@ -346,18 +400,83 @@ def test_locator_configuration_and_parent_resolution():
     assert child._get_parent_spec() is parent_locator._element
 
 
+def test_presence_resolution_uses_presence_for_an_unresolved_hidden_parent():
+    root = FakeSpec()
+    hidden_parent = FakeSpec(wrapper=FakeElement(visible=False))
+    hidden_child = FakeSpec(wrapper=FakeElement(visible=False))
+    root.child_window = Mock(return_value=hidden_parent)
+    hidden_parent.child_window = Mock(return_value=hidden_child)
+
+    window = SimpleNamespace(_get_spec=Mock(return_value=root))
+    parent = locator_module.Locator(window, title="hidden parent")
+    child = parent.locator(title="hidden child")
+
+    assert child.exists() is True
+    root.child_window.assert_called_once_with(title="hidden parent")
+    hidden_parent.child_window.assert_called_once_with(title="hidden child")
+
+
+def test_fallback_is_retried_before_a_positive_deadline():
+    primary = FakeSpec(wrapper=FakeElement(visible=False))
+    fallback = FakeSpec(wrapper=FakeElement(visible=True))
+    fallback.wrapper.is_visible = Mock(side_effect=[False, True])
+    parent = FakeSpec()
+
+    def child_window(**criteria):
+        return primary if criteria == {"title": "primary"} else fallback
+
+    parent.child_window = Mock(side_effect=child_window)
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="primary",
+        fallback=[{"title": "fallback"}],
+    ).timeout(0.25)
+
+    with patch.object(locator_module.time, "sleep"):
+        assert loc._resolve() is fallback
+
+    assert parent.child_window.call_args_list == [
+        call(title="primary"),
+        call(title="fallback"),
+        call(title="primary"),
+        call(title="fallback"),
+    ]
+
+
+def test_child_resolution_passes_its_deadline_to_a_locator_parent():
+    parent = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=FakeSpec())),
+        title="parent",
+    ).timeout(2)
+    child = parent.locator(title="child").timeout(0.25)
+
+    with patch.object(parent, "_resolve", side_effect=ElementNotFoundError("parent")) as resolve:
+        with pytest.raises(ElementNotFoundError):
+            child._resolve()
+
+    resolve.assert_called_once()
+    assert resolve.call_args.kwargs["deadline"] < time.monotonic() + 0.5
+
+
 def test_locator_resolve_direct_wrapper_and_window_spec_paths():
     raw = FakeElement()
     with patch.object(locator_module, "_find_under_wrapper", return_value="found") as finder:
         loc = locator_module.Locator(SimpleNamespace(_get_spec=Mock(return_value=raw)), title="x")
         assert loc._resolve() == "found"
-        finder.assert_called_once_with(raw, {"title": "x"}, loc._timeout)
+        finder.assert_called_once()
+        args, kwargs = finder.call_args
+        assert args[:2] == (raw, {"title": "x"})
+        assert 0 < args[2] <= loc._timeout
+        assert args[2] == pytest.approx(loc._timeout, abs=0.01)
+        assert kwargs.keys() == {"deadline", "enforce_deadline"}
+        assert kwargs["deadline"] > time.monotonic()
+        assert kwargs["enforce_deadline"] is True
 
     spec = FakeSpec()
     with patch.object(locator_module, "_wait_until_visible") as waiter:
         loc = locator_module.Locator(SimpleNamespace(_get_spec=Mock(return_value=spec)), name="x")
         assert loc._resolve() is spec
-    waiter.assert_called_once_with(spec, loc._timeout)
+    waiter.assert_called_once_with(spec, 0)
     assert spec.child_window_calls == [{"title": "x"}]
 
 
@@ -440,20 +559,20 @@ def test_locator_negative_nth_uses_tree_walk_when_descendants_has_no_match():
     tree_walk.assert_called_once_with(parent, criteria)
 
 
-def test_locator_negative_nth_does_not_tree_walk_unsupported_criteria():
+def test_locator_negative_nth_uses_tree_walk_for_auto_id():
     parent = FakeSpec(wrapper=FakeElement())
     criteria = {"auto_id": "btn", "found_index": -1}
-
-    from pywinauto.timings import TimeoutError as PyTimeoutError
+    tree_result = object()
 
     with (
-        monotonic_values(0, 1),
-        patch.object(locator_module, "_tree_walk_find") as tree_walk,
-        pytest.raises(PyTimeoutError),
+        monotonic_values(0),
+        patch.object(locator_module, "_tree_walk_find", return_value=tree_result) as tree_walk,
     ):
-        locator_module._resolve_negative_found_index(parent, criteria, timeout=0)
+        assert (
+            locator_module._resolve_negative_found_index(parent, criteria, timeout=0) is tree_result
+        )
 
-    tree_walk.assert_not_called()
+    tree_walk.assert_called_once_with(parent, criteria)
 
 
 def test_locator_negative_nth_out_of_range_uses_not_found_behavior():
@@ -482,7 +601,7 @@ def test_locator_negative_nth_polls_until_delayed_match_is_available():
     ).nth(-2)
     loc._timeout = 1
 
-    with monotonic_values(0, 0), patch.object(locator_module.time, "sleep"):
+    with monotonic_values(*([0] * 20 + [2])), patch.object(locator_module.time, "sleep"):
         with patch.object(locator_module, "_wait_until_visible"):
             assert loc._resolve() is parent
 
@@ -516,6 +635,7 @@ def test_locator_resolve_ambiguity_fallback_image_tree_and_not_found():
 
     primary = FakeSpec()
     fb_spec = FakeSpec()
+    fb_spec.wrapper = FakeElement(visible=False)
     fb_spec.wait = Mock(side_effect=RuntimeError("fallback miss"))
 
     def child_window(**criteria):
@@ -570,6 +690,57 @@ def test_locator_resolve_ambiguity_fallback_image_tree_and_not_found():
         with pytest.raises(ElementNotFoundError) as exc_info:
             loc._resolve()
     assert "Last seen tree" in str(exc_info.value)
+
+
+def test_action_fallback_is_not_used_after_the_primary_deadline():
+    from pywinauto.timings import TimeoutError as PyTimeoutError
+
+    primary = FakeSpec()
+    fallback = FakeSpec()
+    fallback.click_input = Mock()
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=[primary, fallback])
+    window = SimpleNamespace(_get_spec=Mock(return_value=parent))
+    loc = locator_module.Locator(
+        window,
+        title="primary",
+        fallback=[{"auto_id": "fallback"}],
+    ).timeout(0.01)
+
+    def late_primary(*args, **kwargs):
+        time.sleep(0.03)
+        raise PyTimeoutError("primary timed out")
+
+    with patch.object(locator_module, "_wait_until_visible", side_effect=late_primary):
+        with pytest.raises(ElementNotFoundError):
+            loc.click()
+
+    parent.child_window.assert_called_once_with(title="primary")
+    fallback.click_input.assert_not_called()
+
+
+def test_presence_fallback_is_not_used_after_the_primary_deadline():
+    from pywinauto.timings import TimeoutError as PyTimeoutError
+
+    primary = FakeSpec()
+    fallback = FakeSpec()
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=[primary, fallback])
+    window = SimpleNamespace(_get_spec=Mock(return_value=parent))
+    loc = locator_module.Locator(
+        window,
+        title="primary",
+        fallback=[{"auto_id": "fallback"}],
+    ).timeout(0.01)
+
+    def late_primary(*args, **kwargs):
+        time.sleep(0.03)
+        raise PyTimeoutError("primary timed out")
+
+    with patch.object(locator_module, "_wait_until_present", side_effect=late_primary):
+        assert loc.exists(timeout=0.01) is False
+
+    parent.child_window.assert_called_once_with(title="primary")
 
 
 def test_focus_for_input_uses_root_or_resolved_element_and_swallows_errors():
@@ -1414,10 +1585,10 @@ def test_qt_object_name_locator_resolves_suffix_index_and_times_out():
     window = SimpleNamespace(_get_spec=Mock(return_value=parent))
     qt = locator_module._QtObjectNameLocator(window, "target")
     qt._timeout = 1
-    with monotonic_values(0):
+    with monotonic_values(*([0] * 5)):
         assert qt._resolve().element_info.automation_id == "target"
     qt._criteria["found_index"] = 1
-    with monotonic_values(0):
+    with monotonic_values(*([0] * 5)):
         assert qt._resolve().element_info.automation_id == "root.target"
 
     class BadAutomationId:
@@ -1432,7 +1603,7 @@ def test_qt_object_name_locator_resolves_suffix_index_and_times_out():
             qt._resolve()
 
     parent.descendants = Mock(side_effect=RuntimeError("descendants"))
-    with monotonic_values(0, 2), patch.object(locator_module.time, "sleep"):
+    with monotonic_values(0, 0, 2), patch.object(locator_module.time, "sleep"):
         with pytest.raises(ElementNotFoundError) as exc_info:
             qt._resolve()
     assert isinstance(exc_info.value.__cause__, RuntimeError)
@@ -1508,6 +1679,16 @@ def test_find_under_wrapper_success_invalid_and_timeout():
         with pytest.raises(ElementNotFoundError, match="not found") as exc_info:
             locator_module._find_under_wrapper(parent, {"title": "x"}, 1)
     assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+def test_presence_search_under_raw_wrapper_includes_hidden_elements():
+    wrapped = object()
+    wrapper_cls = Mock(return_value="wrapped-result")
+    parent = SimpleNamespace(backend=SimpleNamespace(name="uia", generic_wrapper_class=wrapper_cls))
+    loc = locator_module.Locator(locator_module._ResolvedLocator(parent), title="hidden")
+    with patch("pywinauto.findwindows.find_elements", return_value=[wrapped]) as find:
+        assert loc._resolve_presence() == "wrapped-result"
+    assert find.call_args.kwargs["visible_only"] is False
 
 
 def test_tree_walk_find_filters_walks_children_and_builds_wrapper():
@@ -1605,6 +1786,29 @@ def test_resolved_locator_nth_and_resolve():
     assert loc.nth(0)._element is element
     with pytest.raises(ValueError, match="not supported"):
         loc.nth(1)
+
+
+def test_resolved_locator_exists_rejects_a_stale_uia_element_without_visibility_probe():
+    class StaleRawElement:
+        def __getattr__(self, name):
+            if name == "CurrentProcessId":
+                raise RuntimeError("stale UIA element")
+            raise AttributeError(name)
+
+    element = FakeElement(visible=False)
+    element.element_info.element = StaleRawElement()
+    loc = locator_module._ResolvedLocator(element)
+
+    assert loc.exists() is False
+    with pytest.raises(ElementNotFoundError, match="no longer available"):
+        loc._resolve()
+
+
+def test_resolved_locator_exists_accepts_a_live_hidden_uia_element():
+    element = FakeElement(visible=False)
+    element.element_info.element = SimpleNamespace(CurrentProcessId=123)
+
+    assert locator_module._ResolvedLocator(element).exists() is True
 
 
 def test_locator_normalizes_friendly_selector_names() -> None:

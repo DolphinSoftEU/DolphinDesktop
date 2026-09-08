@@ -102,3 +102,9 @@ def test_config_environment_validation_and_runtime_limits(monkeypatch) -> None:
         assert _config._env_number("DOLPHIN_UNIT_VALUE", 5.0, float, minimum=0) == 5.0
     with pytest.raises(ValueError, match="timeout must be non-negative"):
         _config.config(timeout=-1)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_config_rejects_non_finite_timeouts(value) -> None:
+    with pytest.raises(ValueError, match="timeout must be finite"):
+        _config.config(timeout=value)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -25,7 +26,7 @@ def test_mouse_forwards_all_coordinate_operations_and_checks_buttons(monkeypatch
         monkeypatch.setattr(_mouse._mouse, name, mock)
 
     _mouse.Mouse.click(1, 2)
-    _mouse.Mouse.double_click(3, 4, button="x")
+    _mouse.Mouse.double_click(3, 4, button="middle")
     _mouse.Mouse.right_click(5, 6)
     _mouse.Mouse.move(7, 8)
     _mouse.Mouse.scroll(9, 10, -2)
@@ -33,7 +34,7 @@ def test_mouse_forwards_all_coordinate_operations_and_checks_buttons(monkeypatch
     _mouse.Mouse.release(13, 14)
 
     calls["click"].assert_called_once_with(button="left", coords=(1, 2))
-    calls["double_click"].assert_called_once_with(button="x", coords=(3, 4))
+    calls["double_click"].assert_called_once_with(button="middle", coords=(3, 4))
     calls["right_click"].assert_called_once_with(coords=(5, 6))
     calls["move"].assert_called_once_with(coords=(7, 8))
     calls["scroll"].assert_called_once_with(coords=(9, 10), wheel_dist=-2)
@@ -55,3 +56,19 @@ def test_mouse_validates_buttons_before_delegating(monkeypatch) -> None:
     click.assert_called_once_with(button="middle", coords=(3, 4))
     with pytest.raises(ValueError, match="Unknown mouse button"):
         _mouse.Mouse.click(0, 0, "trackball")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="XBUTTON1 is Windows-only")
+def test_mouse_x_button_sends_xbutton1_data(monkeypatch) -> None:
+    from dolphin_desktop import _mouse
+
+    win32api = Mock()
+    monkeypatch.setattr(_mouse, "_win32api", win32api)
+
+    _mouse.Mouse.click(30, 40, button="x")
+
+    win32api.SetCursorPos.assert_called_once_with((30, 40))
+    assert win32api.mouse_event.call_args_list == [
+        ((_mouse._win32con.MOUSEEVENTF_XDOWN, 0, 0, 1, 0),),
+        ((_mouse._win32con.MOUSEEVENTF_XUP, 0, 0, 1, 0),),
+    ]

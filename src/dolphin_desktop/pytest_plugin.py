@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import time
@@ -259,13 +260,16 @@ def dolphin_backend(request: pytest.FixtureRequest) -> str:
 @pytest.fixture(scope="session")
 def dolphin_timeout(request: pytest.FixtureRequest) -> float:
     """Effective global timeout: CLI > DOLPHIN_TIMEOUT env var > built-in default."""
+    from ._config import _env_number
+
     cli_val: float | None = request.config.getoption("--dolphin-timeout")
     if cli_val is not None:
+        if not math.isfinite(cli_val):
+            raise ValueError("timeout must be finite")
+        if cli_val < 0:
+            raise ValueError("timeout must be non-negative")
         return cli_val
-    env_val = os.environ.get("DOLPHIN_TIMEOUT")
-    if env_val is not None:
-        return float(env_val)
-    return 10.0
+    return float(_env_number("DOLPHIN_TIMEOUT", 10.0, float, minimum=0))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -275,7 +279,7 @@ def _dolphin_apply_session_config(dolphin_timeout: float, request: pytest.Fixtur
     from ._logging import apply_log_level, install_redaction
     from ._telemetry import init as _init_telemetry
 
-    _cfg._defaults["timeout"] = dolphin_timeout
+    _cfg.config(timeout=dolphin_timeout)
 
     cli_trace: str | None = request.config.getoption("--dolphin-trace", default=None)
     if cli_trace is not None:

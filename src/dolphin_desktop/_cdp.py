@@ -1344,6 +1344,8 @@ class CDPLocator:
             kwargs["force"] = True
         try:
             self._resolve().click(**kwargs)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP click failed for selector {self._selector!r}: {exc}"

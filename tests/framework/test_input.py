@@ -273,7 +273,7 @@ class TestMouseButtonValidation:
                 getattr(Mouse, method)(10, 20, "primary")
         sent.assert_not_called()
 
-    @pytest.mark.parametrize("button", ["left", "right", "middle", "x"])
+    @pytest.mark.parametrize("button", ["left", "right", "middle"])
     def test_supported_buttons_pass_through(self, button):
         from dolphin_desktop import Mouse
 

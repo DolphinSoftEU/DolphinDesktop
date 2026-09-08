@@ -5,13 +5,20 @@
 
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 
-from dolphin_desktop._dialogs import _CONTROL_TIMEOUT, FileDialog, MessageBox, _find_dialog_window
+from dolphin_desktop._dialogs import (
+    _CONTROL_TIMEOUT,
+    FileDialog,
+    MessageBox,
+    _find_dialog_window,
+)
 
 
 def _windows(*entries: tuple[int, str, str]) -> list[tuple[int, str, str]]:
@@ -76,9 +83,17 @@ _PYWINAUTO_FIND_TIMEOUT = 5.0
 class _Spec:
     """A pywinauto WindowSpecification stand-in with a resolve cost."""
 
-    def __init__(self, dialog: _Dialog, present: bool) -> None:
+    def __init__(
+        self,
+        dialog: _Dialog,
+        present: bool,
+        key: str,
+        control_type: str | None,
+    ) -> None:
         self._dialog = dialog
         self._present = present
+        self.key = key
+        self.control_type = control_type
 
     def exists(self, timeout: float = 0.0, *args, **kwargs) -> bool:
         self._dialog.exists_timeouts.append(timeout)
@@ -93,25 +108,75 @@ class _Spec:
             time.sleep(_PYWINAUTO_FIND_TIMEOUT)
             raise LookupError("no such control")
         self._dialog.clicked.append(self)
+        close_control = self._dialog.close_control
+        if close_control is None or close_control == (self.key, self.control_type):
+            self._dialog._alive = False
+
+    def set_focus(self) -> None:
+        if not self._present:
+            raise LookupError("no such control")
+        self._dialog.focused.append(self)
 
 
 class _Dialog:
     """Fake dialog window exposing a fixed set of controls."""
 
-    def __init__(self, present: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        present: set[str] | None = None,
+        *,
+        controls: set[tuple[str, str]] | None = None,
+        close_control: tuple[str, str] | None = None,
+    ) -> None:
         self._present = present or set()
+        self._controls = controls
+        self.close_control = close_control
+        self._alive = True
         self.exists_timeouts: list[float] = []
         self.clicked: list[_Spec] = []
+        self.focused: list[_Spec] = []
 
     def child_window(self, **criteria) -> _Spec:
         key = criteria.get("auto_id") or criteria.get("title") or ""
-        return _Spec(self, key in self._present)
+        control_type = criteria.get("control_type")
+        present = (
+            (key, control_type) in self._controls
+            if self._controls is not None
+            else key in self._present
+        )
+        return _Spec(self, present, key, control_type)
 
-    def exists(self) -> bool:
-        return True
+    def exists(self, timeout: float = 0.0) -> bool:
+        return self._alive
 
     def is_visible(self) -> bool:
-        return True
+        return self._alive
+
+
+class _NativeDialog(_Dialog):
+    handle = 100
+
+    def wrapper_object(self):
+        return SimpleNamespace(handle=100)
+
+
+class _UnresolvedWindow:
+    """Window stand-in whose wrapper resolution must never be attempted."""
+
+    def __init__(self, exists_error: Exception | None = None) -> None:
+        self.exists_error = exists_error
+        self.exists_timeouts: list[float] = []
+        self.wrapper_calls = 0
+
+    def exists(self, timeout: float = 0.0) -> bool:
+        self.exists_timeouts.append(timeout)
+        if self.exists_error is not None:
+            raise self.exists_error
+        return False
+
+    def wrapper_object(self):
+        self.wrapper_calls += 1
+        raise AssertionError("dialog-close probe must not resolve a lazy wrapper")
 
 
 class TestControlLookupIsBudgeted:
@@ -119,7 +184,10 @@ class TestControlLookupIsBudgeted:
 
     @pytest.fixture(autouse=True)
     def _fast_probe(self):
-        with patch("dolphin_desktop._dialogs._CONTROL_TIMEOUT", 0.05):
+        with (
+            patch("dolphin_desktop._dialogs._CONTROL_TIMEOUT", 0.05),
+            patch("dolphin_desktop._dialogs._DIALOG_CLOSE_TIMEOUT", 0.05),
+        ):
             yield
 
     def test_a_missing_control_is_probed_not_clicked(self):
@@ -153,6 +221,170 @@ class TestControlLookupIsBudgeted:
         dialog = _Dialog(present={"1"})
         FileDialog(dialog).confirm()
         assert len(dialog.clicked) == 1
+
+    def test_unknown_dialog_probe_error_does_not_report_success(self):
+        dialog = _Dialog(present={"1"})
+        dialog.exists = Mock(side_effect=RuntimeError("COM failure"))
+
+        assert FileDialog(dialog)._dialog_gone() is False
+        with pytest.raises(RuntimeError, match="confirm button"):
+            FileDialog(dialog).confirm()
+
+    def test_pywinauto_missing_dialog_is_reported_as_gone(self):
+        from pywinauto.findwindows import ElementNotFoundError
+
+        dialog = _Dialog()
+        dialog.exists = Mock(side_effect=ElementNotFoundError("dialog gone"))
+
+        assert FileDialog(dialog)._dialog_gone() is True
+
+    def test_missing_window_does_not_trigger_unbounded_wrapper_resolution(self):
+        window = _UnresolvedWindow()
+        started = time.perf_counter()
+
+        assert FileDialog(window)._dialog_gone() is True
+
+        elapsed = time.perf_counter() - started
+        assert elapsed < 0.2
+        assert window.exists_timeouts == [0.0]
+        assert window.wrapper_calls == 0
+
+    def test_unavailable_window_wait_is_bounded_and_not_reported_gone(self):
+        window = _UnresolvedWindow(RuntimeError("UIA unavailable"))
+        started = time.perf_counter()
+
+        assert FileDialog(window)._wait_for_dialog_gone(timeout=0.05) is False
+
+        elapsed = time.perf_counter() - started
+        assert elapsed < 0.5
+        assert window.exists_timeouts
+        assert all(timeout == 0.0 for timeout in window.exists_timeouts)
+        assert window.wrapper_calls == 0
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Win32 HWND validation")
+    def test_com_error_with_valid_visible_hwnd_is_not_reported_as_gone(self, monkeypatch):
+        from _ctypes import COMError
+
+        dialog = _NativeDialog()
+        dialog.is_visible = Mock(side_effect=COMError(-1, "stale UIA", None))
+        win32gui = SimpleNamespace(
+            IsWindow=Mock(return_value=True),
+            IsWindowVisible=Mock(return_value=True),
+        )
+        monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+
+        assert FileDialog(dialog)._dialog_gone() is False
+        win32gui.IsWindow.assert_called_once_with(100)
+        win32gui.IsWindowVisible.assert_called_once_with(100)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Win32 HWND validation")
+    def test_com_error_with_invalid_hwnd_is_reported_as_gone(self, monkeypatch):
+        from _ctypes import COMError
+
+        dialog = _NativeDialog()
+        dialog.is_visible = Mock(side_effect=COMError(-1, "stale UIA", None))
+        win32gui = SimpleNamespace(
+            IsWindow=Mock(return_value=False),
+            IsWindowVisible=Mock(),
+        )
+        monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+
+        assert FileDialog(dialog)._dialog_gone() is True
+        win32gui.IsWindow.assert_called_once_with(100)
+        win32gui.IsWindowVisible.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Win32 HWND validation")
+    def test_unknown_wrapper_error_with_valid_visible_hwnd_is_not_reported_as_gone(
+        self, monkeypatch
+    ):
+        dialog = _NativeDialog()
+        dialog.is_visible = Mock(side_effect=RuntimeError("unexpected wrapper error"))
+        win32gui = SimpleNamespace(
+            IsWindow=Mock(return_value=True),
+            IsWindowVisible=Mock(return_value=True),
+        )
+        monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+
+        assert FileDialog(dialog)._dialog_gone() is False
+
+    def test_confirm_verifies_close_and_tries_the_next_auto_id_candidate(self):
+        dialog = _Dialog(
+            controls={("1", "Button"), ("1", "SplitButton")},
+            close_control=("1", "SplitButton"),
+        )
+        FileDialog(dialog).confirm()
+
+        assert [(item.key, item.control_type) for item in dialog.clicked] == [
+            ("1", "Button"),
+            ("1", "SplitButton"),
+        ]
+
+    def test_confirm_uses_enter_after_splitbutton_click_has_no_effect(self):
+        dialog = _Dialog(
+            controls={("1", "SplitButton")},
+            close_control=("keyboard", "Enter"),
+        )
+
+        def submit_with_enter() -> None:
+            assert [(item.key, item.control_type) for item in dialog.focused] == [
+                ("1", "SplitButton"),
+            ]
+            dialog._alive = False
+
+        with patch(
+            "dolphin_desktop._dialogs._send_enter",
+            side_effect=submit_with_enter,
+        ):
+            FileDialog(dialog).confirm()
+
+        assert [(item.key, item.control_type) for item in dialog.clicked] == [
+            ("1", "SplitButton"),
+        ]
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Win32 message fallback")
+    def test_confirm_uses_async_native_post_message_fallback(self, monkeypatch):
+        dialog = _NativeDialog()
+        events = []
+        win32con = SimpleNamespace(BM_CLICK=0x00F5, WM_COMMAND=0x0111, BN_CLICKED=0)
+
+        def post_message(hwnd, message, w_param, l_param):
+            events.append((hwnd, message, w_param, l_param))
+            if message == win32con.WM_COMMAND:
+                dialog._alive = False
+
+        win32gui = SimpleNamespace(
+            GetDlgItem=Mock(return_value=200),
+            PostMessage=post_message,
+        )
+        monkeypatch.setitem(sys.modules, "win32con", win32con)
+        monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+
+        FileDialog(dialog).confirm()
+
+        assert events == [
+            (200, win32con.BM_CLICK, 0, 0),
+            (100, win32con.WM_COMMAND, 1, 200),
+        ]
+        win32gui.GetDlgItem.assert_called_once_with(100, 1)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Win32 message fallback")
+    def test_native_confirm_does_not_report_success_when_dialog_remains(self, monkeypatch):
+        dialog = _NativeDialog()
+        win32con = SimpleNamespace(BM_CLICK=0x00F5, WM_COMMAND=0x0111, BN_CLICKED=0)
+        win32gui = SimpleNamespace(
+            GetDlgItem=Mock(return_value=200),
+            PostMessage=Mock(return_value=True),
+        )
+        monkeypatch.setitem(sys.modules, "win32con", win32con)
+        monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+
+        with pytest.raises(RuntimeError, match="confirm button"):
+            FileDialog(dialog).confirm()
+
+        assert win32gui.PostMessage.call_args_list == [
+            ((200, win32con.BM_CLICK, 0, 0),),
+            ((100, win32con.WM_COMMAND, 1, 200),),
+        ]
 
     def test_the_title_fallback_is_still_reached(self):
         dialog = _Dialog(present={"Zapisz"})
@@ -207,6 +439,54 @@ def test_file_dialog_confirm_uses_auto_id_before_localized_titles(monkeypatch) -
     auto_id.assert_called_once_with("1")
 
 
+def test_file_dialog_confirm_clicks_split_button_main_area(monkeypatch) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    window = Mock()
+    window._alive = True
+    window.exists.side_effect = lambda timeout=0.0: window._alive
+    window.is_visible.side_effect = lambda: window._alive
+
+    button = Mock()
+    button.exists.return_value = False
+
+    split_button = Mock()
+    split_button.exists.return_value = True
+    split_button.click_input.return_value = None
+
+    wrapper = Mock()
+    wrapper.rectangle.return_value = SimpleNamespace(
+        width=lambda: 100,
+        height=lambda: 20,
+    )
+
+    def click_main_area(*, coords):
+        assert coords == (25, 10)
+        window._alive = False
+
+    wrapper.click_input.side_effect = click_main_area
+    split_button.wrapper_object.return_value = wrapper
+
+    def child_window(**criteria):
+        if criteria == {"auto_id": "1", "control_type": "Button"}:
+            return button
+        if criteria == {"auto_id": "1", "control_type": "SplitButton"}:
+            return split_button
+        raise AssertionError(f"unexpected lookup: {criteria}")
+
+    window.child_window.side_effect = child_window
+
+    with (
+        monkeypatch.context() as patcher,
+    ):
+        patcher.setattr(dialogs, "_DIALOG_CLOSE_TIMEOUT", 0.01)
+        patcher.setattr(dialogs.time, "sleep", Mock())
+        dialogs.FileDialog(window).confirm()
+
+    wrapper.rectangle.assert_called_once_with()
+    wrapper.click_input.assert_called_once_with(coords=(25, 10))
+
+
 def test_dialog_file_path_and_message_box_fallbacks(monkeypatch) -> None:
     import dolphin_desktop._dialogs as dialogs
 
@@ -217,6 +497,26 @@ def test_dialog_file_path_and_message_box_fallbacks(monkeypatch) -> None:
     assert dialogs.FileDialog(window).set_path("C:\\reports\\April report.txt")._win is window
     edit.set_focus.assert_called_once_with()
     edit.set_edit_text.assert_called_once_with("C:\\reports\\April report.txt")
+
+    nested_window = Mock()
+    nested_edit = Mock()
+    nested_spec = Mock()
+    nested_spec.exists.return_value = True
+    nested_spec.wrapper_object.return_value = nested_edit
+    nested_window.children.return_value = []
+    nested_window.child_window.return_value = nested_spec
+    assert (
+        dialogs.FileDialog(nested_window).set_path("artifacts/DESKTOP-059/input.txt")._win
+        is nested_window
+    )
+    nested_window.child_window.assert_called_once_with(
+        auto_id="1148",
+        control_type="Edit",
+    )
+    nested_edit.set_focus.assert_called_once_with()
+    nested_edit.set_edit_text.assert_called_once_with(
+        str(Path("artifacts/DESKTOP-059/input.txt").resolve())
+    )
 
     fallback_window = Mock()
     broken = Mock()
@@ -234,6 +534,7 @@ def test_dialog_file_path_and_message_box_fallbacks(monkeypatch) -> None:
     gone.exists.return_value = False
     gone.is_visible.return_value = False
     dialogs.FileDialog(gone).confirm()
+
     dialogs.FileDialog(gone).cancel()
 
     static_empty = Mock()
@@ -251,6 +552,35 @@ def test_dialog_file_path_and_message_box_fallbacks(monkeypatch) -> None:
     box.click_yes()
     box.click_no()
     assert box_window.child_window.call_count == 4
+
+
+def test_file_dialog_resolves_relative_path_from_process_cwd(monkeypatch, tmp_path) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    edit = Mock()
+    edit.class_name.return_value = "Edit"
+    window = Mock()
+    window.children.return_value = [edit]
+    monkeypatch.chdir(tmp_path)
+
+    relative_path = "artifacts/DESKTOP-059/input.txt"
+    dialogs.FileDialog(window).set_path(relative_path)
+
+    edit.set_edit_text.assert_called_once_with(str((tmp_path / relative_path).resolve()))
+
+
+def test_file_dialog_preserves_absolute_path(monkeypatch) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    edit = Mock()
+    edit.class_name.return_value = "Edit"
+    window = Mock()
+    window.children.return_value = [edit]
+    absolute_path = r"C:\reports\April report.txt"
+
+    dialogs.FileDialog(window).set_path(absolute_path)
+
+    edit.set_edit_text.assert_called_once_with(absolute_path)
 
 
 def test_dialog_discovery_filters_class_title_and_foreground(monkeypatch) -> None:

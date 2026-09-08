@@ -3,15 +3,53 @@
 import sys
 
 if sys.platform == "win32":
+    import win32api as _win32api  # type: ignore[import-untyped]
+    import win32con as _win32con  # type: ignore[import-untyped]
     from pywinauto import mouse as _mouse
 else:
     from ._platform_compat import _UnavailableObject
 
     _mouse = _UnavailableObject("pywinauto.mouse")
+    _win32api = None
+    _win32con = None
 
 # pywinauto builds an empty event list for anything else and the call then only
 # moves the cursor, so an unrecognised name clicks nothing at all.
 _BUTTONS = frozenset({"left", "right", "middle", "x"})
+_XBUTTON1 = 0x0001
+
+
+def _x_button_input(
+    x: int,
+    y: int,
+    *,
+    button_down: bool = True,
+    button_up: bool = True,
+    double: bool = False,
+) -> None:
+    """Send an XBUTTON1 event when pywinauto lacks its X-button constants."""
+    if _win32api is None or _win32con is None:
+        raise RuntimeError("X-button input is only available on Windows")
+
+    _win32api.SetCursorPos((x, y))
+    repeats = 2 if double and button_down and button_up else 1
+    for _ in range(repeats):
+        if button_down:
+            _win32api.mouse_event(
+                _win32con.MOUSEEVENTF_XDOWN,
+                0,
+                0,
+                _XBUTTON1,
+                0,
+            )
+        if button_up:
+            _win32api.mouse_event(
+                _win32con.MOUSEEVENTF_XUP,
+                0,
+                0,
+                _XBUTTON1,
+                0,
+            )
 
 
 def _check_button(button: str) -> str:
@@ -36,11 +74,19 @@ class Mouse:
 
     @staticmethod
     def click(x: int, y: int, button: str = "left") -> None:
-        _mouse.click(button=_check_button(button), coords=(x, y))
+        button = _check_button(button)
+        if button == "x":
+            _x_button_input(x, y)
+            return
+        _mouse.click(button=button, coords=(x, y))
 
     @staticmethod
     def double_click(x: int, y: int, button: str = "left") -> None:
-        _mouse.double_click(button=_check_button(button), coords=(x, y))
+        button = _check_button(button)
+        if button == "x":
+            _x_button_input(x, y, double=True)
+            return
+        _mouse.double_click(button=button, coords=(x, y))
 
     @staticmethod
     def right_click(x: int, y: int) -> None:
@@ -57,8 +103,16 @@ class Mouse:
 
     @staticmethod
     def press(x: int, y: int, button: str = "left") -> None:
-        _mouse.press(button=_check_button(button), coords=(x, y))
+        button = _check_button(button)
+        if button == "x":
+            _x_button_input(x, y, button_up=False)
+            return
+        _mouse.press(button=button, coords=(x, y))
 
     @staticmethod
     def release(x: int, y: int, button: str = "left") -> None:
-        _mouse.release(button=_check_button(button), coords=(x, y))
+        button = _check_button(button)
+        if button == "x":
+            _x_button_input(x, y, button_down=False)
+            return
+        _mouse.release(button=button, coords=(x, y))
