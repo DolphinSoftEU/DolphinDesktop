@@ -199,6 +199,34 @@ def _toggle_via_iface(wrapper: Any) -> None:
     wrapper.iface_toggle.Toggle()
 
 
+def _wrapper_object_until(spec: Any, deadline: float, timeout: float) -> Any:
+    """Resolve a ``WindowSpecification`` without borrowing pywinauto's 5 s wait.
+
+    ``WindowSpecification.wrapper_object()`` does not expose a timeout and
+    delegates to pywinauto's global ``Timings.window_find_timeout``.  Its
+    private resolver does accept one, so use that path when the object is a
+    real pywinauto ``WindowSpecification``.  The public method remains the
+    fallback for compatible test doubles and other specification-like objects.
+
+    A single COM/UIA search can still take as long as the underlying provider
+    needs; this bounds pywinauto's retry loop and prevents its independent
+    multi-second wait from extending a DolphinDesktop action timeout.
+    """
+    resolve_control = getattr(type(spec), "_WindowSpecification__resolve_control", None)
+    criteria = getattr(spec, "criteria", None)
+    if not callable(resolve_control) or criteria is None:
+        return spec.wrapper_object()
+
+    remaining = max(0.0, deadline - time.monotonic()) if timeout > 0 else 0.0
+    controls = resolve_control(
+        spec,
+        criteria,
+        timeout=remaining,
+        retry_interval=_get_poll_interval(),
+    )
+    return controls[-1]
+
+
 def _wait_until_visible(spec: Any, timeout: float) -> None:
     """Block until *spec* resolves to a visible element, else raise.
 
@@ -221,13 +249,17 @@ def _wait_until_visible(spec: Any, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     poll = _get_poll_interval()
     last_exc: Exception | None = None
+    first_attempt = True
     while True:
+        if not first_attempt and timeout > 0 and time.monotonic() >= deadline:
+            break
+        first_attempt = False
         try:
             # Not ``_wrapper_of``: that helper answers a "not found" by
             # returning the WindowSpecification unchanged, whose
             # ``__getattribute__`` would then turn ``is_visible`` into a
             # child_window lookup instead of raising.
-            visible = spec.wrapper_object().is_visible()
+            visible = _wrapper_object_until(spec, deadline, timeout).is_visible()
             if visible:
                 # A zero timeout means "try once" throughout this module.
                 # For a positive timeout, however, the probe itself must also
@@ -257,9 +289,13 @@ def _wait_until_present(spec: Any, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     poll = _get_poll_interval()
     last_exc: Exception | None = None
+    first_attempt = True
     while True:
+        if not first_attempt and timeout > 0 and time.monotonic() >= deadline:
+            break
+        first_attempt = False
         try:
-            spec.wrapper_object()
+            _wrapper_object_until(spec, deadline, timeout)
             if timeout <= 0 or time.monotonic() < deadline:
                 return
             break
@@ -415,6 +451,11 @@ class Locator:
     def _get_parent_spec(self) -> Any:
         if isinstance(self._parent, Locator):
             return self._parent._resolve()
+        return self._parent._get_spec()
+
+    def _get_parent_presence_spec(self) -> Any:
+        if isinstance(self._parent, Locator):
+            return self._parent._resolve_presence()
         return self._parent._get_spec()
 
     def _resolve(self) -> Any:
@@ -1135,7 +1176,7 @@ class Locator:
 
     def _resolve_presence(self) -> Any:
         """Resolve an element without requiring it to be visible."""
-        parent_spec = self._get_parent_spec()
+        parent_spec = self._get_parent_presence_spec()
         if not hasattr(parent_spec, "child_window"):
             return _find_under_wrapper(
                 parent_spec,

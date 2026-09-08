@@ -8,6 +8,7 @@ not practical to reach with a real Windows application in CI.
 from __future__ import annotations
 
 import sys
+import time
 import types
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
@@ -303,6 +304,43 @@ def test_waiters_reject_a_match_that_resolves_after_the_deadline(waiter, message
             waiter(spec, 0.25)
 
 
+@pytest.mark.parametrize(
+    "waiter",
+    [locator_module._wait_until_visible, locator_module._wait_until_present],
+)
+def test_waiters_bound_pywinauto_resolution_to_the_dolphin_deadline(waiter):
+    from pywinauto.timings import TimeoutError as PyTimeoutError
+
+    class TimeoutAwareSpec:
+        def __init__(self):
+            self.criteria = [{"title": "missing"}]
+            self.wrapper_calls = 0
+            self.resolver_timeouts = []
+
+        def wrapper_object(self):
+            self.wrapper_calls += 1
+            time.sleep(0.5)
+            return FakeElement()
+
+    spec = TimeoutAwareSpec()
+
+    def resolve_control(self, criteria, *, timeout, retry_interval):
+        spec.resolver_timeouts.append(timeout)
+        time.sleep(timeout + 0.02)
+        return (FakeElement(),)
+
+    TimeoutAwareSpec._WindowSpecification__resolve_control = resolve_control
+
+    started = time.monotonic()
+    with pytest.raises(PyTimeoutError):
+        waiter(spec, 0.1)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.3
+    assert spec.wrapper_calls == 0
+    assert spec.resolver_timeouts == [pytest.approx(0.1, abs=0.03)]
+
+
 def test_is_foreground_and_trace_step_cover_known_unknown_and_no_session():
     spec = FakeSpec(wrapper=SimpleNamespace(handle=42))
     fake_gui = types.SimpleNamespace(GetForegroundWindow=Mock(return_value=42))
@@ -360,6 +398,22 @@ def test_locator_configuration_and_parent_resolution():
     parent_locator = resolved(FakeElement())
     child = locator_module.Locator(parent_locator, title="child")
     assert child._get_parent_spec() is parent_locator._element
+
+
+def test_presence_resolution_uses_presence_for_an_unresolved_hidden_parent():
+    root = FakeSpec()
+    hidden_parent = FakeSpec(wrapper=FakeElement(visible=False))
+    hidden_child = FakeSpec(wrapper=FakeElement(visible=False))
+    root.child_window = Mock(return_value=hidden_parent)
+    hidden_parent.child_window = Mock(return_value=hidden_child)
+
+    window = SimpleNamespace(_get_spec=Mock(return_value=root))
+    parent = locator_module.Locator(window, title="hidden parent")
+    child = parent.locator(title="hidden child")
+
+    assert child.exists() is True
+    root.child_window.assert_called_once_with(title="hidden parent")
+    hidden_parent.child_window.assert_called_once_with(title="hidden child")
 
 
 def test_locator_resolve_direct_wrapper_and_window_spec_paths():
