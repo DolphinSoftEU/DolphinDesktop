@@ -506,9 +506,7 @@ def test_dialog_file_path_and_message_box_fallbacks(monkeypatch) -> None:
     nested_window.children.return_value = []
     nested_window.child_window.return_value = nested_spec
     assert (
-        dialogs.FileDialog(nested_window).set_path(
-            "artifacts/DESKTOP-059/input.txt"
-        )._win
+        dialogs.FileDialog(nested_window).set_path("artifacts/DESKTOP-059/input.txt")._win
         is nested_window
     )
     nested_window.child_window.assert_called_once_with(

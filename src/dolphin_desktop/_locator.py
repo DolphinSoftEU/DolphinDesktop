@@ -43,6 +43,31 @@ def _wrapper_of(element: Any) -> Any:
         return element
 
 
+def _ensure_element_present(element: Any) -> None:
+    """Raise when a previously resolved UIA element is no longer usable.
+
+    ``UIAWrapper.is_visible()`` is not a liveness check: a live hidden element
+    is valid, while a stale element can still be represented by the Python
+    wrapper.  UIA's raw ``IUIAutomationElement`` exposes current properties
+    through COM, and those calls fail with ``ElementNotAvailable`` after the
+    control is destroyed or its provider is torn down.  Probe a non-visual
+    property so hidden controls remain present.
+
+    Non-UIA wrappers and lightweight test doubles do not expose the raw UIA
+    element; their existing behaviour is left unchanged.
+    """
+    element_info = getattr(element, "element_info", None)
+    raw_element = getattr(element_info, "element", None)
+    if raw_element is None:
+        return
+    try:
+        _ = raw_element.CurrentProcessId
+    except Exception as exc:
+        raise ElementNotFoundError(
+            "the previously resolved UIA element is no longer available"
+        ) from exc
+
+
 # comtypes surfaces a pattern that exists but refuses the call as a bare
 # COMError; E_ACCESSDENIED is what ValuePattern.SetValue returns on a
 # read-only element.
@@ -202,8 +227,15 @@ def _wait_until_visible(spec: Any, timeout: float) -> None:
             # returning the WindowSpecification unchanged, whose
             # ``__getattribute__`` would then turn ``is_visible`` into a
             # child_window lookup instead of raising.
-            if spec.wrapper_object().is_visible():
-                return
+            visible = spec.wrapper_object().is_visible()
+            if visible:
+                # A zero timeout means "try once" throughout this module.
+                # For a positive timeout, however, the probe itself must also
+                # finish before the deadline; otherwise a slow UIA resolve
+                # silently turns a timed-out action into a successful one.
+                if timeout <= 0 or time.monotonic() < deadline:
+                    return
+                break
             last_exc = None
         except _PwAmbiguousError:
             raise
@@ -228,7 +260,9 @@ def _wait_until_present(spec: Any, timeout: float) -> None:
     while True:
         try:
             spec.wrapper_object()
-            return
+            if timeout <= 0 or time.monotonic() < deadline:
+                return
+            break
         except _PwAmbiguousError:
             raise
         except Exception as exc:
@@ -1103,7 +1137,12 @@ class Locator:
         """Resolve an element without requiring it to be visible."""
         parent_spec = self._get_parent_spec()
         if not hasattr(parent_spec, "child_window"):
-            return self._resolve()
+            return _find_under_wrapper(
+                parent_spec,
+                self._criteria,
+                self._timeout,
+                visible_only=False,
+            )
 
         from pywinauto.findwindows import (  # type: ignore[import-untyped]
             ElementAmbiguousError as _PwAmbiguousError,
@@ -1924,7 +1963,13 @@ def _resolve_negative_found_index(
     ) from last_exc
 
 
-def _find_under_wrapper(parent: Any, criteria: dict[str, Any], timeout: float) -> Any:
+def _find_under_wrapper(
+    parent: Any,
+    criteria: dict[str, Any],
+    timeout: float,
+    *,
+    visible_only: bool = True,
+) -> Any:
     """Find a descendant of an already-resolved pywinauto *wrapper*.
 
     ``child_window`` is defined on ``WindowSpecification`` only, so a locator
@@ -1956,6 +2001,7 @@ def _find_under_wrapper(parent: Any, criteria: dict[str, Any], timeout: float) -
                 top_level_only=False,
                 backend=backend_name,
                 depth=None,
+                visible_only=visible_only,
                 **search_criteria,
             )
             if negative_index is not None:
@@ -2090,4 +2136,5 @@ class _ResolvedLocator(Locator):
         return self._resolve()
 
     def _resolve(self) -> Any:
+        _ensure_element_present(self._element)
         return self._element

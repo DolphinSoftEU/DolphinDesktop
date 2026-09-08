@@ -318,9 +318,8 @@ class FileDialog:
             # when Win32 cannot contradict it.  For COM/runtime failures the
             # HWND check below is mandatory; an unknown exception with a valid,
             # visible HWND means the dialog is still present.
-            known_missing = (
-                _PywinautoElementNotFoundError is not None
-                and isinstance(exc, _PywinautoElementNotFoundError)
+            known_missing = _PywinautoElementNotFoundError is not None and isinstance(
+                exc, _PywinautoElementNotFoundError
             )
         else:
             known_missing = False
@@ -354,9 +353,8 @@ class FileDialog:
         try:
             return not is_visible()
         except Exception as exc:
-            if (
-                _PywinautoElementNotFoundError is not None
-                and isinstance(exc, _PywinautoElementNotFoundError)
+            if _PywinautoElementNotFoundError is not None and isinstance(
+                exc, _PywinautoElementNotFoundError
             ):
                 return True
             return False

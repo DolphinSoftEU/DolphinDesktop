@@ -287,6 +287,22 @@ def test_wait_until_visible_success_retry_timeout_and_ambiguity():
     assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
+@pytest.mark.parametrize(
+    ("waiter", "message"),
+    [
+        (locator_module._wait_until_visible, "did not become visible"),
+        (locator_module._wait_until_present, "did not become present"),
+    ],
+)
+def test_waiters_reject_a_match_that_resolves_after_the_deadline(waiter, message):
+    from pywinauto.timings import TimeoutError as PyTimeoutError
+
+    spec = FakeSpec(wrapper=FakeElement())
+    with monotonic_values(0, 0.5):
+        with pytest.raises(PyTimeoutError, match=message):
+            waiter(spec, 0.25)
+
+
 def test_is_foreground_and_trace_step_cover_known_unknown_and_no_session():
     spec = FakeSpec(wrapper=SimpleNamespace(handle=42))
     fake_gui = types.SimpleNamespace(GetForegroundWindow=Mock(return_value=42))
@@ -1510,6 +1526,16 @@ def test_find_under_wrapper_success_invalid_and_timeout():
     assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
+def test_presence_search_under_raw_wrapper_includes_hidden_elements():
+    wrapped = object()
+    wrapper_cls = Mock(return_value="wrapped-result")
+    parent = SimpleNamespace(backend=SimpleNamespace(name="uia", generic_wrapper_class=wrapper_cls))
+    loc = locator_module.Locator(locator_module._ResolvedLocator(parent), title="hidden")
+    with patch("pywinauto.findwindows.find_elements", return_value=[wrapped]) as find:
+        assert loc._resolve_presence() == "wrapped-result"
+    assert find.call_args.kwargs["visible_only"] is False
+
+
 def test_tree_walk_find_filters_walks_children_and_builds_wrapper():
     assert locator_module._tree_walk_find(SimpleNamespace(), {"auto_id": "x"}) is None
     assert locator_module._tree_walk_find(SimpleNamespace(), {}) is None
@@ -1605,6 +1631,29 @@ def test_resolved_locator_nth_and_resolve():
     assert loc.nth(0)._element is element
     with pytest.raises(ValueError, match="not supported"):
         loc.nth(1)
+
+
+def test_resolved_locator_exists_rejects_a_stale_uia_element_without_visibility_probe():
+    class StaleRawElement:
+        def __getattr__(self, name):
+            if name == "CurrentProcessId":
+                raise RuntimeError("stale UIA element")
+            raise AttributeError(name)
+
+    element = FakeElement(visible=False)
+    element.element_info.element = StaleRawElement()
+    loc = locator_module._ResolvedLocator(element)
+
+    assert loc.exists() is False
+    with pytest.raises(ElementNotFoundError, match="no longer available"):
+        loc._resolve()
+
+
+def test_resolved_locator_exists_accepts_a_live_hidden_uia_element():
+    element = FakeElement(visible=False)
+    element.element_info.element = SimpleNamespace(CurrentProcessId=123)
+
+    assert locator_module._ResolvedLocator(element).exists() is True
 
 
 def test_locator_normalizes_friendly_selector_names() -> None:
