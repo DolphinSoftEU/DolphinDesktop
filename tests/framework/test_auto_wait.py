@@ -424,11 +424,7 @@ class TestWaitForUsesFallbacks:
 
     def test_fallback_selector_satisfies_wait_for(self):
         spec = self._spec_where_only_the_fallback_resolves()
-        # A positive timeout is shared by primary and fallback resolution.  A
-        # primary that keeps failing until that deadline must not be rescued by
-        # a fallback afterwards, so exercise the fallback path with the
-        # documented single-attempt timeout instead.
-        loc = Locator(_window(spec), title="OK", fallback=[{"auto_id": "btnOk"}]).timeout(0)
+        loc = Locator(_window(spec), title="OK", fallback=[{"auto_id": "btnOk"}]).timeout(0.05)
         assert loc.wait_for() is loc
 
     def test_missing_element_raises_the_same_error_as_click(self):
@@ -488,7 +484,7 @@ class TestWaitForUsesFallbacks:
 
     def test_presence_wait_uses_selector_fallbacks(self):
         spec = self._spec_where_only_the_fallback_resolves()
-        loc = Locator(_window(spec), title="OK", fallback=[{"auto_id": "btnOk"}]).timeout(0)
+        loc = Locator(_window(spec), title="OK", fallback=[{"auto_id": "btnOk"}]).timeout(0.05)
 
         assert loc.exists() is True
         assert loc.wait_for(state="exists") is loc

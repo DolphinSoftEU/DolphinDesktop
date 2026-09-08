@@ -557,8 +557,8 @@ class TestTimeoutMsDoesNotLeak:
     def test_next_action_keeps_the_locator_timeout(self, monkeypatch):
         """A per-action timeout_ms applies to that action only.
 
-        Recorded off the resolve-time wait, which is where the locator's
-        timeout is actually spent.
+        Each candidate is probed once; the locator timeout belongs to the
+        shared resolution loop and must not leak into the next action.
         """
         from dolphin_desktop import _locator
 
@@ -568,7 +568,7 @@ class TestTimeoutMsDoesNotLeak:
         )
         loc = self._loc(MagicMock())
         loc.click(timeout_ms=500).type_text("x")
-        assert seen == [pytest.approx(0.5), pytest.approx(4.0)]
+        assert seen == [0, 0]
 
 
 # select_item must not discard the error that made it fall through

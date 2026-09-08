@@ -154,10 +154,32 @@ class MenuItem(Locator):
         """Return a locator for a nested submenu item by its visible text."""
         return MenuItem(self, title=text, control_type="MenuItem")
 
-    def _resolve(self) -> Any:
+    def _resolve(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        inherited_deadline = deadline is not None
+        single_attempt = single_attempt or self._timeout <= 0
+        from ._locator import (
+            _deadline_expired,
+            _effective_deadline,
+            _wait_until_visible,
+        )
+
+        deadline, enforce_deadline = _effective_deadline(
+            self._timeout,
+            deadline,
+            single_attempt=single_attempt,
+        )
+        bounded = inherited_deadline or single_attempt
         if isinstance(self._parent, (Menu, MenuItem)):
             # Open the parent menu by clicking it.
-            parent_el = self._parent._resolve()
+            parent_el = self._parent._resolve(
+                deadline=deadline,
+                single_attempt=single_attempt,
+            )
             try:
                 parent_el.click_input()
             except Exception:
@@ -167,21 +189,35 @@ class MenuItem(Locator):
                     parent_el.invoke()
                 except Exception:
                     pass
-            time.sleep(0.2)
+            if not single_attempt:
+                remaining = max(0.0, deadline - time.monotonic())
+                if enforce_deadline and remaining <= 0:
+                    raise ElementNotFoundError("menu item resolution deadline expired")
+                time.sleep(min(0.2, remaining) if enforce_deadline else 0.2)
+                if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
+                    raise ElementNotFoundError("menu item resolution deadline expired")
             # First, try to find the item as a direct child of the parent element
             # (covers Win32 menus and UIA in-tree menus).
             try:
                 spec = parent_el.child_window(**self._criteria)
-                spec.wait("exists visible", timeout=max(self._timeout * 0.4, 0.5))
-                return spec
+                if bounded:
+                    _wait_until_visible(spec, 0)
+                else:
+                    spec.wait("exists visible", timeout=max(self._timeout * 0.4, 0.5))
+                if not _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
+                    return spec
             except Exception:
                 pass
             # Second: search the root main window scope.
             root = self._root_window_spec()
             try:
                 spec = root.child_window(**self._criteria)
-                spec.wait("exists visible", timeout=max(self._timeout * 0.3, 0.5))
-                return spec
+                if bounded:
+                    _wait_until_visible(spec, 0)
+                else:
+                    spec.wait("exists visible", timeout=max(self._timeout * 0.3, 0.5))
+                if not _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
+                    return spec
             except Exception:
                 pass
             # Third (Qt-aware fallback): Qt opens popup menus as top-level
@@ -189,8 +225,12 @@ class MenuItem(Locator):
             # visible top-level window of the same process and search for the
             # MenuItem there. Same approach used by ``_select_combo_popup``.
             try:
-                spec = self._find_in_popup_windows()
-                if spec is not None:
+                spec = self._find_in_popup_windows(timeout=0 if bounded else None)
+                if spec is not None and not _deadline_expired(
+                    deadline,
+                    self._timeout,
+                    enforce=enforce_deadline,
+                ):
                     return spec
             except Exception:
                 pass
@@ -202,7 +242,7 @@ class MenuItem(Locator):
                 "submenu may not have opened (parent click failed) or its name "
                 "is localised differently."
             )
-        return super()._resolve()
+        return super()._resolve(deadline=deadline, single_attempt=single_attempt)
 
     def _resolve_readonly(self) -> Any:
         """Locate the item without clicking the parent menu open.

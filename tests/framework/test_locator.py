@@ -416,6 +416,48 @@ def test_presence_resolution_uses_presence_for_an_unresolved_hidden_parent():
     hidden_parent.child_window.assert_called_once_with(title="hidden child")
 
 
+def test_fallback_is_retried_before_a_positive_deadline():
+    primary = FakeSpec(wrapper=FakeElement(visible=False))
+    fallback = FakeSpec(wrapper=FakeElement(visible=True))
+    fallback.wrapper.is_visible = Mock(side_effect=[False, True])
+    parent = FakeSpec()
+
+    def child_window(**criteria):
+        return primary if criteria == {"title": "primary"} else fallback
+
+    parent.child_window = Mock(side_effect=child_window)
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="primary",
+        fallback=[{"title": "fallback"}],
+    ).timeout(0.25)
+
+    with patch.object(locator_module.time, "sleep"):
+        assert loc._resolve() is fallback
+
+    assert parent.child_window.call_args_list == [
+        call(title="primary"),
+        call(title="fallback"),
+        call(title="primary"),
+        call(title="fallback"),
+    ]
+
+
+def test_child_resolution_passes_its_deadline_to_a_locator_parent():
+    parent = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=FakeSpec())),
+        title="parent",
+    ).timeout(2)
+    child = parent.locator(title="child").timeout(0.25)
+
+    with patch.object(parent, "_resolve", side_effect=ElementNotFoundError("parent")) as resolve:
+        with pytest.raises(ElementNotFoundError):
+            child._resolve()
+
+    resolve.assert_called_once()
+    assert resolve.call_args.kwargs["deadline"] < time.monotonic() + 0.5
+
+
 def test_locator_resolve_direct_wrapper_and_window_spec_paths():
     raw = FakeElement()
     with patch.object(locator_module, "_find_under_wrapper", return_value="found") as finder:
@@ -424,14 +466,15 @@ def test_locator_resolve_direct_wrapper_and_window_spec_paths():
         finder.assert_called_once()
         args, kwargs = finder.call_args
         assert args == (raw, {"title": "x"}, loc._timeout)
-        assert kwargs.keys() == {"deadline"}
+        assert kwargs.keys() == {"deadline", "enforce_deadline"}
         assert kwargs["deadline"] > time.monotonic()
+        assert kwargs["enforce_deadline"] is True
 
     spec = FakeSpec()
     with patch.object(locator_module, "_wait_until_visible") as waiter:
         loc = locator_module.Locator(SimpleNamespace(_get_spec=Mock(return_value=spec)), name="x")
         assert loc._resolve() is spec
-    waiter.assert_called_once_with(spec, loc._timeout)
+    waiter.assert_called_once_with(spec, 0)
     assert spec.child_window_calls == [{"title": "x"}]
 
 
@@ -590,6 +633,7 @@ def test_locator_resolve_ambiguity_fallback_image_tree_and_not_found():
 
     primary = FakeSpec()
     fb_spec = FakeSpec()
+    fb_spec.wrapper = FakeElement(visible=False)
     fb_spec.wait = Mock(side_effect=RuntimeError("fallback miss"))
 
     def child_window(**criteria):
@@ -1539,10 +1583,10 @@ def test_qt_object_name_locator_resolves_suffix_index_and_times_out():
     window = SimpleNamespace(_get_spec=Mock(return_value=parent))
     qt = locator_module._QtObjectNameLocator(window, "target")
     qt._timeout = 1
-    with monotonic_values(0):
+    with monotonic_values(*([0] * 5)):
         assert qt._resolve().element_info.automation_id == "target"
     qt._criteria["found_index"] = 1
-    with monotonic_values(0):
+    with monotonic_values(*([0] * 5)):
         assert qt._resolve().element_info.automation_id == "root.target"
 
     class BadAutomationId:
@@ -1557,7 +1601,7 @@ def test_qt_object_name_locator_resolves_suffix_index_and_times_out():
             qt._resolve()
 
     parent.descendants = Mock(side_effect=RuntimeError("descendants"))
-    with monotonic_values(0, 2), patch.object(locator_module.time, "sleep"):
+    with monotonic_values(0, 0, 2), patch.object(locator_module.time, "sleep"):
         with pytest.raises(ElementNotFoundError) as exc_info:
             qt._resolve()
     assert isinstance(exc_info.value.__cause__, RuntimeError)
