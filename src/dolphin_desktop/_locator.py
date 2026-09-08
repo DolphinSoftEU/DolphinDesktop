@@ -227,6 +227,18 @@ def _wrapper_object_until(spec: Any, deadline: float, timeout: float) -> Any:
     return controls[-1]
 
 
+def _deadline_expired(deadline: float, timeout: float) -> bool:
+    """Return whether a positive timeout's absolute deadline has passed."""
+    return timeout > 0 and time.monotonic() >= deadline
+
+
+def _remaining_timeout(deadline: float, timeout: float) -> float:
+    """Return the time left in *deadline*, preserving zero-timeout semantics."""
+    if timeout <= 0:
+        return 0.0
+    return max(0.0, deadline - time.monotonic())
+
+
 def _wait_until_visible(spec: Any, timeout: float) -> None:
     """Block until *spec* resolves to a visible element, else raise.
 
@@ -460,13 +472,26 @@ class Locator:
 
     def _resolve(self) -> Any:
         """Find and wait for the element, raise on timeout."""
+        deadline = time.monotonic() + self._timeout
         parent_spec = self._get_parent_spec()
+        if _deadline_expired(deadline, self._timeout):
+            raise ElementNotFoundError(_NotFoundMessage(self._criteria, self._timeout, parent_spec))
 
         # A parent that already resolved to a raw wrapper (a chained
         # _ResolvedLocator / _QtObjectNameLocator, a fallback or tree-walk
         # match) has no child_window — that lives on WindowSpecification only.
         if not hasattr(parent_spec, "child_window"):
-            return _find_under_wrapper(parent_spec, self._criteria, self._timeout)
+            remaining = _remaining_timeout(deadline, self._timeout)
+            if self._timeout > 0 and remaining <= 0:
+                raise ElementNotFoundError(
+                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                )
+            return _find_under_wrapper(
+                parent_spec,
+                self._criteria,
+                remaining,
+                deadline=deadline,
+            )
 
         from pywinauto.findwindows import (  # type: ignore[import-untyped]
             ElementAmbiguousError as _PwAmbiguousError,
@@ -476,13 +501,41 @@ class Locator:
         criteria = self._criteria
         try:
             if _is_negative_found_index(criteria):
-                resolved = _resolve_negative_found_index(parent_spec, criteria, self._timeout)
+                remaining = _remaining_timeout(deadline, self._timeout)
+                if self._timeout > 0 and remaining <= 0:
+                    raise ElementNotFoundError(
+                        _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                    )
+                resolved = _resolve_negative_found_index(
+                    parent_spec,
+                    criteria,
+                    remaining,
+                    deadline=deadline,
+                )
                 if isinstance(resolved, dict):
                     criteria = resolved
                 else:
+                    if _deadline_expired(deadline, self._timeout):
+                        raise ElementNotFoundError(
+                            _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                        )
                     return resolved
+            remaining = _remaining_timeout(deadline, self._timeout)
+            if self._timeout > 0 and remaining <= 0:
+                raise ElementNotFoundError(
+                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                )
             spec = parent_spec.child_window(**criteria)
-            _wait_until_visible(spec, self._timeout)
+            remaining = _remaining_timeout(deadline, self._timeout)
+            if self._timeout > 0 and remaining <= 0:
+                raise ElementNotFoundError(
+                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                )
+            _wait_until_visible(spec, remaining)
+            if _deadline_expired(deadline, self._timeout):
+                raise ElementNotFoundError(
+                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                )
             return spec
         except _PwAmbiguousError as exc:
             # More than one element matched. Falling through to fallbacks
@@ -497,23 +550,33 @@ class Locator:
         except Exception as exc:
             primary_exc = exc
 
-        # Try fallbacks in definition order (immediate check — primary already timed out)
+        # Try fallbacks in definition order, but never after the shared deadline.
         from . import _selfheal
 
         for fb in self._fallback:
+            remaining = _remaining_timeout(deadline, self._timeout)
+            if self._timeout > 0 and remaining <= 0:
+                break
             try:
                 fb_spec = parent_spec.child_window(**fb)
-                fb_spec.wait("visible", timeout=0)
+                remaining = _remaining_timeout(deadline, self._timeout)
+                if self._timeout > 0 and remaining <= 0:
+                    break
+                fb_spec.wait("visible", timeout=remaining)
+                if _deadline_expired(deadline, self._timeout):
+                    break
                 _selfheal.record_fallback(self._criteria, fb)
+                if _deadline_expired(deadline, self._timeout):
+                    break
                 return fb_spec
             except Exception:
                 continue
 
         # Last resort: image-based fallback
-        if self._image_fallback is not None:
+        if self._image_fallback is not None and not _deadline_expired(deadline, self._timeout):
             try:
                 result = self._image_fallback.find_with_size()
-                if result is not None:
+                if result is not None and not _deadline_expired(deadline, self._timeout):
                     cx, cy, tw, th = result
                     from ._image import _ImageElement
 
@@ -521,14 +584,17 @@ class Locator:
                         self._criteria,
                         {"image": str(self._image_fallback._template_path)},
                     )
-                    return _ImageElement(cx, cy, tw, th)
+                    if not _deadline_expired(deadline, self._timeout):
+                        return _ImageElement(cx, cy, tw, th)
             except Exception:
                 pass
 
         # TreeWalker fallback: IUIAutomation::FindAll misses some elements exposed
         # via TreeWalker (e.g. ToolbarWindow32 button children in Notepad++).
-        tree_result = _tree_walk_find(parent_spec, self._criteria)
-        if tree_result is not None:
+        tree_result = None
+        if not _deadline_expired(deadline, self._timeout):
+            tree_result = _tree_walk_find(parent_spec, self._criteria)
+        if tree_result is not None and not _deadline_expired(deadline, self._timeout):
             return tree_result
 
         raise ElementNotFoundError(
@@ -1176,12 +1242,21 @@ class Locator:
 
     def _resolve_presence(self) -> Any:
         """Resolve an element without requiring it to be visible."""
+        deadline = time.monotonic() + self._timeout
         parent_spec = self._get_parent_presence_spec()
+        if _deadline_expired(deadline, self._timeout):
+            raise ElementNotFoundError(_NotFoundMessage(self._criteria, self._timeout, parent_spec))
         if not hasattr(parent_spec, "child_window"):
+            remaining = _remaining_timeout(deadline, self._timeout)
+            if self._timeout > 0 and remaining <= 0:
+                raise ElementNotFoundError(
+                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                )
             return _find_under_wrapper(
                 parent_spec,
                 self._criteria,
-                self._timeout,
+                remaining,
+                deadline=deadline,
                 visible_only=False,
             )
 
@@ -1193,13 +1268,41 @@ class Locator:
         try:
             criteria = self._criteria
             if _is_negative_found_index(criteria):
-                resolved = _resolve_negative_found_index(parent_spec, criteria, self._timeout)
+                remaining = _remaining_timeout(deadline, self._timeout)
+                if self._timeout > 0 and remaining <= 0:
+                    raise ElementNotFoundError(
+                        _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                    )
+                resolved = _resolve_negative_found_index(
+                    parent_spec,
+                    criteria,
+                    remaining,
+                    deadline=deadline,
+                )
                 if isinstance(resolved, dict):
                     criteria = resolved
                 else:
+                    if _deadline_expired(deadline, self._timeout):
+                        raise ElementNotFoundError(
+                            _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                        )
                     return resolved
+            remaining = _remaining_timeout(deadline, self._timeout)
+            if self._timeout > 0 and remaining <= 0:
+                raise ElementNotFoundError(
+                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                )
             spec = parent_spec.child_window(**criteria)
-            _wait_until_present(spec, self._timeout)
+            remaining = _remaining_timeout(deadline, self._timeout)
+            if self._timeout > 0 and remaining <= 0:
+                raise ElementNotFoundError(
+                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                )
+            _wait_until_present(spec, remaining)
+            if _deadline_expired(deadline, self._timeout):
+                raise ElementNotFoundError(
+                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+                )
             return spec
         except _PwAmbiguousError as exc:
             from ._exceptions import AmbiguousMatchError
@@ -1217,10 +1320,20 @@ class Locator:
         from . import _selfheal
 
         for fb in self._fallback:
+            remaining = _remaining_timeout(deadline, self._timeout)
+            if self._timeout > 0 and remaining <= 0:
+                break
             try:
                 fb_spec = parent_spec.child_window(**fb)
-                _wait_until_present(fb_spec, 0)
+                remaining = _remaining_timeout(deadline, self._timeout)
+                if self._timeout > 0 and remaining <= 0:
+                    break
+                _wait_until_present(fb_spec, remaining)
+                if _deadline_expired(deadline, self._timeout):
+                    break
                 _selfheal.record_fallback(self._criteria, fb)
+                if _deadline_expired(deadline, self._timeout):
+                    break
                 return fb_spec
             except _PwAmbiguousError as exc:
                 from ._exceptions import AmbiguousMatchError
@@ -1232,10 +1345,10 @@ class Locator:
             except Exception:
                 continue
 
-        if self._image_fallback is not None:
+        if self._image_fallback is not None and not _deadline_expired(deadline, self._timeout):
             try:
                 result = self._image_fallback.find_with_size()
-                if result is not None:
+                if result is not None and not _deadline_expired(deadline, self._timeout):
                     cx, cy, tw, th = result
                     from ._image import _ImageElement
 
@@ -1243,12 +1356,15 @@ class Locator:
                         self._criteria,
                         {"image": str(self._image_fallback._template_path)},
                     )
-                    return _ImageElement(cx, cy, tw, th)
+                    if not _deadline_expired(deadline, self._timeout):
+                        return _ImageElement(cx, cy, tw, th)
             except Exception:
                 pass
 
-        tree_result = _tree_walk_find(parent_spec, self._criteria)
-        if tree_result is not None:
+        tree_result = None
+        if not _deadline_expired(deadline, self._timeout):
+            tree_result = _tree_walk_find(parent_spec, self._criteria)
+        if tree_result is not None and not _deadline_expired(deadline, self._timeout):
             return tree_result
 
         raise ElementNotFoundError(
@@ -1961,6 +2077,8 @@ def _resolve_negative_found_index(
     parent_spec: Any,
     criteria: dict[str, Any],
     timeout: float,
+    *,
+    deadline: float | None = None,
 ) -> dict[str, Any] | Any:
     """Resolve a negative index against the complete match set.
 
@@ -1976,26 +2094,28 @@ def _resolve_negative_found_index(
 
     index = int(criteria["found_index"])
     match_criteria = {key: value for key, value in criteria.items() if key != "found_index"}
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout if deadline is None else deadline
     last_exc: Exception | None = None
 
     from pywinauto.timings import TimeoutError as _PwTimeoutError
 
     while True:
         try:
-            matches = parent_spec.wrapper_object().descendants(**match_criteria)
+            matches = _wrapper_object_until(parent_spec, deadline, timeout).descendants(
+                **match_criteria
+            )
             resolved_index = len(matches) + index
             if 0 <= resolved_index < len(matches):
                 return {**criteria, "found_index": resolved_index}
         except Exception as exc:
             last_exc = exc
 
-        if set(match_criteria) <= _TREE_WALK_KEYS:
+        if set(match_criteria) <= _TREE_WALK_KEYS and not _deadline_expired(deadline, timeout):
             tree_result = _tree_walk_find(parent_spec, criteria)
-            if tree_result is not None:
+            if tree_result is not None and not _deadline_expired(deadline, timeout):
                 return tree_result
 
-        if time.monotonic() >= deadline:
+        if timeout <= 0 or _deadline_expired(deadline, timeout):
             break
         time.sleep(_get_poll_interval())
 
@@ -2009,6 +2129,7 @@ def _find_under_wrapper(
     criteria: dict[str, Any],
     timeout: float,
     *,
+    deadline: float | None = None,
     visible_only: bool = True,
 ) -> Any:
     """Find a descendant of an already-resolved pywinauto *wrapper*.
@@ -2027,7 +2148,7 @@ def _find_under_wrapper(
             f"{type(parent).__name__!r}: it is not a pywinauto wrapper",
             hint="chain .locator() off a Window or an unresolved Locator instead",
         )
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout if deadline is None else deadline
     last_exc: Exception | None = None
     negative_index = int(criteria["found_index"]) if _is_negative_found_index(criteria) else None
     search_criteria = (
@@ -2036,6 +2157,8 @@ def _find_under_wrapper(
         else criteria
     )
     while True:
+        if timeout > 0 and time.monotonic() >= deadline:
+            break
         try:
             found = find_elements(
                 parent=parent,
@@ -2047,9 +2170,11 @@ def _find_under_wrapper(
             )
             if negative_index is not None:
                 resolved_index = len(found) + negative_index
-                if 0 <= resolved_index < len(found):
+                if 0 <= resolved_index < len(found) and (
+                    timeout <= 0 or time.monotonic() < deadline
+                ):
                     return wrapper_cls(found[resolved_index])
-            elif found:
+            elif found and (timeout <= 0 or time.monotonic() < deadline):
                 return wrapper_cls(found[0])
         except Exception as exc:
             last_exc = exc

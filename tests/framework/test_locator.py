@@ -421,7 +421,11 @@ def test_locator_resolve_direct_wrapper_and_window_spec_paths():
     with patch.object(locator_module, "_find_under_wrapper", return_value="found") as finder:
         loc = locator_module.Locator(SimpleNamespace(_get_spec=Mock(return_value=raw)), title="x")
         assert loc._resolve() == "found"
-        finder.assert_called_once_with(raw, {"title": "x"}, loc._timeout)
+        finder.assert_called_once()
+        args, kwargs = finder.call_args
+        assert args == (raw, {"title": "x"}, loc._timeout)
+        assert kwargs.keys() == {"deadline"}
+        assert kwargs["deadline"] > time.monotonic()
 
     spec = FakeSpec()
     with patch.object(locator_module, "_wait_until_visible") as waiter:
@@ -552,7 +556,7 @@ def test_locator_negative_nth_polls_until_delayed_match_is_available():
     ).nth(-2)
     loc._timeout = 1
 
-    with monotonic_values(0, 0), patch.object(locator_module.time, "sleep"):
+    with monotonic_values(*([0] * 20 + [2])), patch.object(locator_module.time, "sleep"):
         with patch.object(locator_module, "_wait_until_visible"):
             assert loc._resolve() is parent
 
@@ -640,6 +644,57 @@ def test_locator_resolve_ambiguity_fallback_image_tree_and_not_found():
         with pytest.raises(ElementNotFoundError) as exc_info:
             loc._resolve()
     assert "Last seen tree" in str(exc_info.value)
+
+
+def test_action_fallback_is_not_used_after_the_primary_deadline():
+    from pywinauto.timings import TimeoutError as PyTimeoutError
+
+    primary = FakeSpec()
+    fallback = FakeSpec()
+    fallback.click_input = Mock()
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=[primary, fallback])
+    window = SimpleNamespace(_get_spec=Mock(return_value=parent))
+    loc = locator_module.Locator(
+        window,
+        title="primary",
+        fallback=[{"auto_id": "fallback"}],
+    ).timeout(0.01)
+
+    def late_primary(*args, **kwargs):
+        time.sleep(0.03)
+        raise PyTimeoutError("primary timed out")
+
+    with patch.object(locator_module, "_wait_until_visible", side_effect=late_primary):
+        with pytest.raises(ElementNotFoundError):
+            loc.click()
+
+    parent.child_window.assert_called_once_with(title="primary")
+    fallback.click_input.assert_not_called()
+
+
+def test_presence_fallback_is_not_used_after_the_primary_deadline():
+    from pywinauto.timings import TimeoutError as PyTimeoutError
+
+    primary = FakeSpec()
+    fallback = FakeSpec()
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=[primary, fallback])
+    window = SimpleNamespace(_get_spec=Mock(return_value=parent))
+    loc = locator_module.Locator(
+        window,
+        title="primary",
+        fallback=[{"auto_id": "fallback"}],
+    ).timeout(0.01)
+
+    def late_primary(*args, **kwargs):
+        time.sleep(0.03)
+        raise PyTimeoutError("primary timed out")
+
+    with patch.object(locator_module, "_wait_until_present", side_effect=late_primary):
+        assert loc.exists(timeout=0.01) is False
+
+    parent.child_window.assert_called_once_with(title="primary")
 
 
 def test_focus_for_input_uses_root_or_resolved_element_and_swallows_errors():
