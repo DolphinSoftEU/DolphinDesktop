@@ -849,7 +849,7 @@ class Application:
         except _PyWinElementNotFoundError:
             return []
         wrapper_cls = self._app.backend.generic_wrapper_class
-        return [_ResolvedLocator(wrapper_cls(element)) for element in elements]
+        return [_ResolvedLocator(wrapper_cls(element), application=self) for element in elements]
 
     def press_key(self, keys: str) -> None:
         self.top_window()._get_spec().set_focus()

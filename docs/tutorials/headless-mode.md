@@ -53,6 +53,14 @@ Known limitations:
 - UAC prompts appear on the secure desktop and cannot be automated by Dolphin.
 - Clipboard behavior can be surprising because the window station and desktop focus both matter.
 
+Targeted keyboard shortcuts are supported by ``Locator.press_key(...)``. On a
+hidden desktop Dolphin briefly makes ``DolphinHidden`` the input desktop,
+sends the sequence through the normal Windows keyboard path, and restores the
+previous desktop. If the desktop cannot be switched, Dolphin falls back to
+window-targeted messages for controls that support them. Global
+``Keyboard.press(...)`` still requires an interactive input desktop because it
+has no target window.
+
 If a test uses many physical mouse actions, run it on a visible interactive desktop unless you have verified that the target app and actions work under `dolphin-run`.
 
 ## Headless-Safe API — `invoke()` and Friends

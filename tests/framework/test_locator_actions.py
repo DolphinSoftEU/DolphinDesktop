@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 from pywinauto.uia_defines import NoPatternInterfaceError
 
-from dolphin_desktop import ElementNotFoundError, UnsupportedPatternError, _locator
+from dolphin_desktop import DolphinError, ElementNotFoundError, UnsupportedPatternError, _locator
 from dolphin_desktop._locator import (
     _QtObjectNameLocator,
     _read_text_via_clipboard,
@@ -20,9 +20,9 @@ from dolphin_desktop._locator import (
 from dolphin_desktop._window import Window
 
 
-def _window(spec: MagicMock) -> Window:
+def _window(spec: MagicMock, *, application: object | None = None) -> Window:
     """Return a Window backed by *spec*."""
-    return Window(spec)
+    return Window(spec, application=application)
 
 
 def _spec_with(child: MagicMock) -> MagicMock:
@@ -475,6 +475,81 @@ class TestDragReleasesTheButton:
         child = self._draggable()
         _window(_spec_with(child)).button(name="Src").drag_to((100, 60), duration=0.01)
         assert mouse.release.call_args.kwargs["coords"] == (100, 60)
+
+
+class TestHiddenPhysicalInputErrors:
+    @staticmethod
+    def _application() -> SimpleNamespace:
+        return SimpleNamespace(_desktop=SimpleNamespace(_is_hidden=True))
+
+    @staticmethod
+    def _draggable() -> MagicMock:
+        child = MagicMock()
+        child.rectangle.return_value = SimpleNamespace(left=0, top=0, right=10, bottom=10)
+        return child
+
+    def test_click_wraps_set_cursor_pos_error_and_preserves_cause(self):
+        import pywintypes
+
+        low_level = pywintypes.error(2, "SetCursorPos", "No error message is available")
+        child = MagicMock()
+        child.click_input.side_effect = low_level
+        locator = _window(_spec_with(child), application=self._application()).button(name="OK")
+
+        with patch.object(locator, "_focus_for_input"), pytest.raises(DolphinError) as raised:
+            locator.click()
+
+        assert raised.value.__cause__ is low_level
+        assert "click()" in str(raised.value)
+        assert "hidden desktop" in str(raised.value)
+
+    def test_hover_wraps_no_active_desktop_error_and_preserves_cause(self):
+        import pywinauto.mouse as py_mouse
+
+        low_level = RuntimeError("There is no active desktop")
+        child = self._draggable()
+        locator = _window(_spec_with(child), application=self._application()).button(name="OK")
+
+        with (
+            patch.object(py_mouse, "move", side_effect=low_level),
+            pytest.raises(DolphinError) as raised,
+        ):
+            locator.hover()
+
+        assert raised.value.__cause__ is low_level
+        assert "hover()" in str(raised.value)
+
+    def test_drag_wraps_no_active_desktop_error_and_releases_button(self):
+        import pywinauto.mouse as py_mouse
+
+        low_level = RuntimeError("There is no active desktop")
+        child = self._draggable()
+        locator = _window(_spec_with(child), application=self._application()).button(name="Src")
+
+        with (
+            patch.object(locator, "_focus_for_input"),
+            patch.object(_locator.time, "sleep"),
+            patch.object(py_mouse, "press"),
+            patch.object(py_mouse, "move", side_effect=low_level),
+            patch.object(py_mouse, "release") as release,
+            pytest.raises(DolphinError) as raised,
+        ):
+            locator.drag_to((100, 100), duration=0.01)
+
+        assert raised.value.__cause__ is low_level
+        release.assert_called_once()
+        assert "drag_to()" in str(raised.value)
+
+    def test_unrelated_hidden_mouse_error_is_not_rewritten(self):
+        low_level = RuntimeError("control provider failed")
+        child = MagicMock()
+        child.click_input.side_effect = low_level
+        locator = _window(_spec_with(child), application=self._application()).button(name="OK")
+
+        with patch.object(locator, "_focus_for_input"), pytest.raises(RuntimeError) as raised:
+            locator.click()
+
+        assert raised.value is low_level
 
 
 # Physical-input actions treat focus the same way

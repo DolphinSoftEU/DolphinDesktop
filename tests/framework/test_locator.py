@@ -1090,6 +1090,21 @@ def test_type_set_clear_and_press_key_paths():
         loc.set_text("x")
 
 
+def test_press_key_targets_native_window_on_hidden_desktop():
+    element = FakeElement()
+    element.handle = 4242
+    element.type_keys = Mock()
+    loc = resolved(element)
+    application = SimpleNamespace(_desktop=SimpleNamespace(_is_hidden=True))
+    loc._application = application
+
+    with patch.object(locator_module, "_post_keys_to_hwnd") as post_keys:
+        assert loc.press_key("^s") is loc
+
+    post_keys.assert_called_once_with(4242, "^s")
+    element.type_keys.assert_not_called()
+
+
 def test_select_item_direct_typeerror_valueerror_and_win32_fallbacks():
     element = FakeElement()
     element.select = Mock()
@@ -1342,6 +1357,14 @@ def test_focus_scroll_text_value_and_queries():
     resolved(no_scroll).scroll_into_view()
 
     assert loc.text() == "hello"
+    pattern_element = FakeElement(text="accessible name")
+    pattern_element.iface_text = SimpleNamespace(
+        DocumentRange=SimpleNamespace(
+            GetText=Mock(return_value="pattern text\r\n"),
+        ),
+    )
+    assert resolved(pattern_element).text() == "pattern text"
+    pattern_element.iface_text.DocumentRange.GetText.assert_called_once_with(-1)
     empty = FakeElement(text="", value="value")
     assert resolved(empty).text() == "value"
     no_value = FakeElement(text="", value=RuntimeError("no value"))
