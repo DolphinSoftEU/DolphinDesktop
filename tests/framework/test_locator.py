@@ -68,6 +68,9 @@ class FakeElement:
     def descendants(self, **criteria):
         return list(self.descendants_result)
 
+    def set_focus(self):
+        pass
+
 
 class FakeSpec:
     def __init__(self, *, wrapper=None, children=(), descendants=()):
@@ -1109,6 +1112,30 @@ def test_press_key_targets_native_window_on_hidden_desktop():
     element.type_keys.assert_not_called()
 
 
+def test_hidden_press_key_focuses_after_hidden_desktop_activation():
+    element = FakeElement()
+    loc = resolved(element)
+    loc._application = SimpleNamespace(_desktop=SimpleNamespace(_is_hidden=True))
+    events = []
+    element.set_focus = Mock(side_effect=lambda: events.append("focus"))
+
+    def activate_and_send(keys, *, focus):
+        events.append("switch")
+        focus()
+        events.append(("send", keys))
+        return True
+
+    with patch.object(
+        locator_module,
+        "_send_keys_on_hidden_desktop",
+        side_effect=activate_and_send,
+    ) as send_keys:
+        assert loc.press_key("{ENTER}") is loc
+
+    assert events == ["switch", "focus", ("send", "{ENTER}")]
+    assert send_keys.call_args.kwargs["focus"] is element.set_focus
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="window-message fallback is Windows-only")
 def test_hidden_modifier_fallback_reports_clear_error():
     import ctypes
@@ -1383,7 +1410,7 @@ def test_focus_scroll_text_value_and_queries():
             GetText=Mock(return_value="line 1\r\nline 2\r\n\r\n"),
         ),
     )
-    assert resolved(pattern_element).text() == "line 1\r\nline 2\r\n"
+    assert resolved(pattern_element).text() == "line 1\r\nline 2\r\n\r\n"
     pattern_element.iface_text.DocumentRange.GetText.assert_called_once_with(-1)
     empty = FakeElement(text="", value="value")
     assert resolved(empty).text() == "value"

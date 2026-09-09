@@ -244,10 +244,7 @@ def _read_text_via_pattern(element: Any) -> str | None:
         return ""
     if not isinstance(text, str):
         return None
-    value = text
-    # UIA document-range providers append one terminal CRLF. Remove only that
-    # provider terminator so intentional trailing blank lines are preserved.
-    return value[:-2] if value.endswith("\r\n") else value
+    return text
 
 
 def _element_hwnd(element: Any) -> int | None:
@@ -1219,7 +1216,7 @@ class Locator:
         try:
             element = self._resolve()
             if self._is_hidden_desktop():
-                if _send_keys_on_hidden_desktop(key):
+                if _send_keys_on_hidden_desktop(key, focus=element.set_focus):
                     _trace_step("press_key", self._criteria, element=element)
                     return self
                 hwnd = _element_hwnd(element)

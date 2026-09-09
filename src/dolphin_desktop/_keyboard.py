@@ -1,6 +1,7 @@
 """Global keyboard utilities operating outside any specific window."""
 
 import sys
+from collections.abc import Callable
 
 if sys.platform == "win32":
     from pywinauto.keyboard import CODES as _PYWINAUTO_CODES  # type: ignore[import-untyped]
@@ -113,7 +114,11 @@ def _hotkey_sequence(keys: tuple[str, ...]) -> tuple[str, bool]:
     return prefix + "".join(combo), win
 
 
-def _send_keys_on_hidden_desktop(keys: str) -> bool:
+def _send_keys_on_hidden_desktop(
+    keys: str,
+    *,
+    focus: Callable[[], None] | None = None,
+) -> bool:
     """Use the normal keyboard API while DolphinHidden is input-active.
 
     A hidden desktop normally cannot receive ``SendInput``. Windows does not
@@ -122,8 +127,10 @@ def _send_keys_on_hidden_desktop(keys: str) -> bool:
     make DolphinHidden the input desktop, send the sequence, and restore the
     desktop that was active before the call.
 
-    Returns ``False`` when the desktop handles cannot be opened or switched;
-    callers can then use a window-message fallback or report a clear error.
+    ``focus`` is called after DolphinHidden becomes input-active and before the
+    key sequence is sent. Returns ``False`` when the desktop handles cannot be
+    opened or switched; callers can then use a window-message fallback or
+    report a clear error.
     """
     if sys.platform != "win32":
         return False
@@ -166,6 +173,8 @@ def _send_keys_on_hidden_desktop(keys: str) -> bool:
         close_desktop(original)
         return False
     try:
+        if focus is not None:
+            focus()
         _send_keys(keys)
     finally:
         # Restore first, then close both handles. If restoring fails Windows

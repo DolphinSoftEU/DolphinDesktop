@@ -8,11 +8,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
-* Hidden-desktop `Locator.press_key()` now reports a clear `DolphinError`
-  instead of using system-wide modifier events when the hidden desktop cannot
-  be activated. Hidden physical-input errors are also classified only for
-  `SetCursorPos` failures, and `Locator.text()` preserves intentional trailing
-  blank lines returned by UIA `TextPattern`.
+* Hidden-desktop `Locator.press_key()` now focuses the element after activating
+  `DolphinHidden`, reports a clear `DolphinError` instead of using system-wide
+  modifier events when activation fails, and `Locator.text()` preserves the
+  exact text returned by UIA `TextPattern`.
 
 ## [0.2.0] — 2026-08-05
 
