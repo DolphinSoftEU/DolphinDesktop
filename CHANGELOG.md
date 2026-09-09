@@ -4,6 +4,15 @@ All notable changes to `dolphin-desktop` are documented in this file.
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+* Hidden-desktop `Locator.press_key()` now focuses the element after activating
+  `DolphinHidden`, reports a clear `DolphinError` instead of using system-wide
+  modifier events when activation fails, and `Locator.text()` preserves the
+  exact text returned by UIA `TextPattern`.
+
 ## [0.2.0] — 2026-08-05
 
 ### Added

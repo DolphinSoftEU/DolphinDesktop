@@ -18,6 +18,7 @@ import pytest
 import dolphin_desktop._locator as locator_module
 from dolphin_desktop._exceptions import (
     AmbiguousMatchError,
+    DolphinError,
     ElementNotFoundError,
     UnsupportedPatternError,
     WaitTimeoutError,
@@ -66,6 +67,9 @@ class FakeElement:
 
     def descendants(self, **criteria):
         return list(self.descendants_result)
+
+    def set_focus(self):
+        pass
 
 
 class FakeSpec:
@@ -1090,6 +1094,64 @@ def test_type_set_clear_and_press_key_paths():
         loc.set_text("x")
 
 
+def test_press_key_targets_native_window_on_hidden_desktop():
+    element = FakeElement()
+    element.handle = 4242
+    element.type_keys = Mock()
+    loc = resolved(element)
+    application = SimpleNamespace(_desktop=SimpleNamespace(_is_hidden=True))
+    loc._application = application
+
+    with (
+        patch.object(locator_module, "_send_keys_on_hidden_desktop", return_value=False),
+        patch.object(locator_module, "_post_keys_to_hwnd") as post_keys,
+    ):
+        assert loc.press_key("^s") is loc
+
+    post_keys.assert_called_once_with(4242, "^s")
+    element.type_keys.assert_not_called()
+
+
+def test_hidden_press_key_focuses_after_hidden_desktop_activation():
+    element = FakeElement()
+    loc = resolved(element)
+    loc._application = SimpleNamespace(_desktop=SimpleNamespace(_is_hidden=True))
+    events = []
+    element.set_focus = Mock(side_effect=lambda: events.append("focus"))
+
+    def activate_and_send(keys, *, focus):
+        events.append("switch")
+        focus()
+        events.append(("send", keys))
+        return True
+
+    with patch.object(
+        locator_module,
+        "_send_keys_on_hidden_desktop",
+        side_effect=activate_and_send,
+    ) as send_keys:
+        assert loc.press_key("{ENTER}") is loc
+
+    assert events == ["switch", "focus", ("send", "{ENTER}")]
+    assert send_keys.call_args.kwargs["focus"] is element.set_focus
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="window-message fallback is Windows-only")
+def test_hidden_modifier_fallback_reports_clear_error():
+    import ctypes
+
+    element = FakeElement()
+    element.handle = int(ctypes.windll.user32.GetDesktopWindow())
+    loc = resolved(element)
+    loc._application = SimpleNamespace(_desktop=SimpleNamespace(_is_hidden=True))
+
+    with (
+        patch.object(locator_module, "_send_keys_on_hidden_desktop", return_value=False),
+        pytest.raises(DolphinError, match="modifier"),
+    ):
+        loc.press_key("^s")
+
+
 def test_select_item_direct_typeerror_valueerror_and_win32_fallbacks():
     element = FakeElement()
     element.select = Mock()
@@ -1342,6 +1404,14 @@ def test_focus_scroll_text_value_and_queries():
     resolved(no_scroll).scroll_into_view()
 
     assert loc.text() == "hello"
+    pattern_element = FakeElement(text="accessible name")
+    pattern_element.iface_text = SimpleNamespace(
+        DocumentRange=SimpleNamespace(
+            GetText=Mock(return_value="line 1\r\nline 2\r\n\r\n"),
+        ),
+    )
+    assert resolved(pattern_element).text() == "line 1\r\nline 2\r\n\r\n"
+    pattern_element.iface_text.DocumentRange.GetText.assert_called_once_with(-1)
     empty = FakeElement(text="", value="value")
     assert resolved(empty).text() == "value"
     no_value = FakeElement(text="", value=RuntimeError("no value"))
