@@ -519,6 +519,19 @@ class TestHiddenPhysicalInputErrors:
         assert raised.value.__cause__ is low_level
         assert "hover()" in str(raised.value)
 
+    def test_unrelated_pywintypes_error_is_not_rewritten(self):
+        import pywintypes
+
+        low_level = pywintypes.error(5, "OpenProcess", "Access is denied")
+        child = MagicMock()
+        child.click_input.side_effect = low_level
+        locator = _window(_spec_with(child), application=self._application()).button(name="OK")
+
+        with patch.object(locator, "_focus_for_input"), pytest.raises(pywintypes.error) as raised:
+            locator.click()
+
+        assert raised.value is low_level
+
     def test_drag_wraps_no_active_desktop_error_and_releases_button(self):
         import pywinauto.mouse as py_mouse
 

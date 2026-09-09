@@ -13,6 +13,7 @@ else:
     _CODES = {}
     _send_keys = _unsupported_callable("pywinauto.keyboard.send_keys")
 
+from ._exceptions import DolphinError
 from ._helpers import _escape_keys
 
 _MODIFIERS = {"ctrl": "^", "control": "^", "shift": "+", "alt": "%"}
@@ -39,6 +40,21 @@ _METACHARS = "+^%~(){}"
 # which a hotkey sequence never sets — hotkey("ctrl", "\n") would send a bare
 # Ctrl press.
 _WHITESPACE_KEYS = {" ": "{SPACE}", "\t": "{TAB}", "\n": "{ENTER}", "\r": "{ENTER}"}
+_WINDOW_TARGETED_MODIFIER_VKS = frozenset(
+    {
+        0x10,
+        0x11,
+        0x12,
+        0x5B,
+        0x5C,
+        0xA0,
+        0xA1,
+        0xA2,
+        0xA3,
+        0xA4,
+        0xA5,
+    }
+)
 
 
 def _hotkey_char(char: str) -> str:
@@ -169,10 +185,10 @@ def _post_keys_to_hwnd(hwnd: int, keys: str, *, pause: float = 0.05) -> None:
     ``pywinauto.send_keys`` uses ``SendInput``, which targets the interactive
     input desktop. A window running on DolphinHidden cannot receive those
     events even after UIA has given it keyboard focus. Posting the equivalent
-    ``WM_KEYDOWN``/``WM_KEYUP`` messages to that window keeps targeted
-    ``Locator.press_key`` usable on a hidden desktop. The target thread is
-    temporarily attached so WPF can observe modifier state (a posted Ctrl
-    message alone does not update ``KeyboardDevice.Modifiers``).
+    ``WM_KEYDOWN``/``WM_KEYUP`` messages to that window keeps modifier-free
+    ``Locator.press_key`` usable on a hidden desktop. Modifier shortcuts are
+    rejected because ``keybd_event``/``AttachThreadInput`` cannot safely make
+    their state window-targeted.
 
     This is intentionally a targeted helper. Global :class:`Keyboard` calls
     still use ``SendInput`` because they have no window handle to target.
@@ -186,7 +202,9 @@ def _post_keys_to_hwnd(hwnd: int, keys: str, *, pause: float = 0.05) -> None:
     from pywinauto.keyboard import parse_keys
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_window_thread = user32.GetWindowThreadProcessId
+    get_window_thread.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    get_window_thread.restype = wintypes.DWORD
     send_message = user32.SendMessageW
     send_message.argtypes = [
         wintypes.HWND,
@@ -196,35 +214,10 @@ def _post_keys_to_hwnd(hwnd: int, keys: str, *, pause: float = 0.05) -> None:
     ]
     send_message.restype = ctypes.c_ssize_t
 
-    get_window_thread = user32.GetWindowThreadProcessId
-    get_window_thread.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    get_window_thread.restype = wintypes.DWORD
-    attach_thread_input = user32.AttachThreadInput
-    attach_thread_input.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
-    attach_thread_input.restype = wintypes.BOOL
-    get_keyboard_state = user32.GetKeyboardState
-    get_keyboard_state.argtypes = [ctypes.POINTER(ctypes.c_ubyte)]
-    get_keyboard_state.restype = wintypes.BOOL
-    set_keyboard_state = user32.SetKeyboardState
-    set_keyboard_state.argtypes = [ctypes.POINTER(ctypes.c_ubyte)]
-    set_keyboard_state.restype = wintypes.BOOL
-    keybd_event = user32.keybd_event
-    keybd_event.argtypes = [
-        wintypes.BYTE,
-        wintypes.BYTE,
-        wintypes.DWORD,
-        ctypes.c_size_t,
-    ]
-    keybd_event.restype = None
-    get_current_thread_id = kernel32.GetCurrentThreadId
-    get_current_thread_id.argtypes = []
-    get_current_thread_id.restype = wintypes.DWORD
-
     wm_keydown = 0x0100
     wm_keyup = 0x0101
     wm_char = 0x0102
     keyeventf_extendedkey = 0x0001
-    keyeventf_keyup = 0x0002
     keyeventf_unicode = 0x0004
 
     # Use virtual-key actions for ordinary ASCII characters. The default
@@ -238,91 +231,51 @@ def _post_keys_to_hwnd(hwnd: int, keys: str, *, pause: float = 0.05) -> None:
         vk_packet=False,
     )
     process_id = wintypes.DWORD()
-    target_thread_id = get_window_thread(hwnd, ctypes.byref(process_id))
-    if not target_thread_id:
+    if not get_window_thread(hwnd, ctypes.byref(process_id)):
         error = ctypes.get_last_error()
         raise OSError(error, "GetWindowThreadProcessId failed", error)
-    current_thread_id = get_current_thread_id()
-    attached = False
-    original_state = (ctypes.c_ubyte * 256)()
-    if not get_keyboard_state(original_state):
-        error = ctypes.get_last_error()
-        raise OSError(error, "GetKeyboardState failed", error)
-    if target_thread_id != current_thread_id:
-        if not attach_thread_input(current_thread_id, target_thread_id, True):
-            error = ctypes.get_last_error()
-            raise OSError(error, "AttachThreadInput failed", error)
-        attached = True
+    if any(int(action.get_key_info()[0]) in _WINDOW_TARGETED_MODIFIER_VKS for action in actions):
+        raise DolphinError(
+            "press_key() cannot deliver modifier shortcuts through the hidden-window fallback",
+            hint=(
+                "the DolphinHidden desktop could not be activated; use a visible "
+                "desktop or retry when SwitchDesktop is available"
+            ),
+        )
 
-    state = (ctypes.c_ubyte * 256).from_buffer_copy(original_state)
-    try:
-        for action in actions:
-            vk, scan, flags = action.get_key_info()
-            if not vk:
-                # Unicode input has no WM_KEYDOWN virtual key. WM_CHAR
-                # preserves useful text-entry behaviour for non-ASCII keys.
-                value = getattr(action, "key", None)
-                if (
-                    flags & keyeventf_unicode
-                    and action.down
-                    and action.up
-                    and isinstance(value, str)
-                    and len(value) == 1
-                ):
-                    send_message(hwnd, wm_char, ord(value), 0)
-                    if pause:
-                        import time
+    import time
 
-                        time.sleep(pause)
-                    continue
-                raise ValueError(
-                    f"key sequence contains an unsupported action: {action!r}"
-                )
-
-            lparam = (int(scan) & 0xFF) << 16
-            if flags & keyeventf_extendedkey:
-                lparam |= 1 << 24
-
-            if action.down:
-                state[int(vk)] |= 0x80
-                if not set_keyboard_state(state):
-                    error = ctypes.get_last_error()
-                    raise OSError(error, "SetKeyboardState failed", error)
-                if int(vk) in (0x10, 0x11, 0x12, 0x5B, 0x5C):
-                    # keybd_event updates the keyboard state used by WPF;
-                    # SendMessage alone only delivers a key message and leaves
-                    # KeyboardDevice.Modifiers unchanged.
-                    keybd_event(int(vk), int(scan), 0, 0)
-                else:
-                    send_message(hwnd, wm_keydown, int(vk), lparam)
+    for action in actions:
+        vk, scan, flags = action.get_key_info()
+        if not vk:
+            # Unicode input has no WM_KEYDOWN virtual key. WM_CHAR preserves
+            # useful text-entry behaviour for non-ASCII keys.
+            value = getattr(action, "key", None)
+            if (
+                flags & keyeventf_unicode
+                and action.down
+                and action.up
+                and isinstance(value, str)
+                and len(value) == 1
+            ):
+                send_message(hwnd, wm_char, ord(value), 0)
                 if pause:
-                    import time
-
                     time.sleep(pause)
-            if action.up:
-                if int(vk) in (0x10, 0x11, 0x12, 0x5B, 0x5C):
-                    keybd_event(int(vk), int(scan), keyeventf_keyup, 0)
-                else:
-                    send_message(
-                        hwnd,
-                        wm_keyup,
-                        int(vk),
-                        lparam | (1 << 30) | (1 << 31),
-                    )
-                state[int(vk)] &= 0x7F
-                if not set_keyboard_state(state):
-                    error = ctypes.get_last_error()
-                    raise OSError(error, "SetKeyboardState failed", error)
-                if pause:
-                    import time
+                continue
+            raise ValueError(f"key sequence contains an unsupported action: {action!r}")
 
-                    time.sleep(pause)
-    finally:
-        # Never leave a modifier pressed in either the caller or target input
-        # queue, even if a message conversion or send fails midway through.
-        set_keyboard_state(original_state)
-        if attached:
-            attach_thread_input(current_thread_id, target_thread_id, False)
+        lparam = (int(scan) & 0xFF) << 16
+        if flags & keyeventf_extendedkey:
+            lparam |= 1 << 24
+
+        if action.down:
+            send_message(hwnd, wm_keydown, int(vk), lparam)
+            if pause:
+                time.sleep(pause)
+        if action.up:
+            send_message(hwnd, wm_keyup, int(vk), lparam | (1 << 30) | (1 << 31))
+            if pause:
+                time.sleep(pause)
 
 
 class Keyboard:

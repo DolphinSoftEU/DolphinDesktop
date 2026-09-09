@@ -66,7 +66,10 @@ def _is_hidden_physical_input_error(exc: Exception) -> bool:
         pywintypes_error = pywintypes.error
 
     if isinstance(exc, pywintypes_error):
-        return True
+        function_name = getattr(exc, "funcname", None)
+        if function_name is None and len(exc.args) > 1:
+            function_name = exc.args[1]
+        return str(function_name).casefold() == "setcursorpos"
     if isinstance(exc, RuntimeError):
         message = str(exc).casefold()
         return "active desktop" in message or "desktop is not active" in message
@@ -239,7 +242,12 @@ def _read_text_via_pattern(element: Any) -> str | None:
         return None
     if text is None:
         return ""
-    return str(text).rstrip("\r\n")
+    if not isinstance(text, str):
+        return None
+    value = text
+    # UIA document-range providers append one terminal CRLF. Remove only that
+    # provider terminator so intentional trailing blank lines are preserved.
+    return value[:-2] if value.endswith("\r\n") else value
 
 
 def _element_hwnd(element: Any) -> int | None:
@@ -1217,8 +1225,7 @@ class Locator:
                 hwnd = _element_hwnd(element)
                 if hwnd is None:
                     raise DolphinError(
-                        "press_key() cannot target an element without a native "
-                        "window handle",
+                        "press_key() cannot target an element without a native window handle",
                         hint=(
                             "use a UIA element backed by a native window or run "
                             "on a visible desktop"
