@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import builtins
+import subprocess
 import sys
 import types
 import zipfile
@@ -15,6 +16,9 @@ from types import SimpleNamespace
 import pytest
 
 from dolphin_desktop import pytest_plugin as plugin
+from dolphin_desktop._exceptions import ElementNotFoundError
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestTraceRunDirName:
@@ -454,16 +458,77 @@ class TestBasicHooksAndOptions:
             (SimpleNamespace(failed=False, longrepr="ElementNotFoundError"), False),
             (SimpleNamespace(failed=True, longrepr=None), False),
             (SimpleNamespace(failed=True, longrepr="ordinary failure"), False),
-            (SimpleNamespace(failed=True, longrepr="ElementNotFoundError: gone"), True),
-            (SimpleNamespace(failed=True, longrepr="WaitTimeoutError: timed out"), True),
+            (
+                SimpleNamespace(
+                    failed=True,
+                    longrepr="AssertionError: ElementNotFoundError was expected",
+                    _dolphin_transient_failure=False,
+                ),
+                False,
+            ),
+            (
+                SimpleNamespace(
+                    failed=True,
+                    longrepr="ElementNotFoundError: gone",
+                    _dolphin_transient_failure=True,
+                ),
+                True,
+            ),
+            (
+                SimpleNamespace(
+                    failed=True,
+                    longrepr="WaitTimeoutError: timed out",
+                    _dolphin_transient_failure=True,
+                ),
+                True,
+            ),
         ],
     )
     def test_transient_failure_detection(self, report, expected):
         assert plugin._is_transient_failure(report) is expected
 
+    def test_report_hook_records_only_a_serializable_transient_flag(self, monkeypatch):
+        monkeypatch.setattr(plugin, "_collect_artifacts", lambda *_args: None)
+        item = _Item(Path("."))
+        call = SimpleNamespace(
+            when="call", excinfo=SimpleNamespace(value=ElementNotFoundError("gone"))
+        )
+        hook = plugin.pytest_runtest_makereport(item, call)
+        next(hook)
+        report = SimpleNamespace(failed=True, longrepr="ElementNotFoundError: gone")
+
+        with pytest.raises(StopIteration):
+            hook.send(SimpleNamespace(get_result=lambda: report))
+
+        assert getattr(report, plugin._DOLPHIN_TRANSIENT_ATTR) is True
+        assert isinstance(getattr(report, plugin._DOLPHIN_TRANSIENT_ATTR), bool)
+        assert plugin._is_transient_failure(report) is True
+
+    def test_report_hook_recognises_transient_exception_subclasses(self, monkeypatch):
+        class DerivedElementNotFoundError(ElementNotFoundError):
+            pass
+
+        monkeypatch.setattr(plugin, "_collect_artifacts", lambda *_args: None)
+        item = _Item(Path("."))
+        call = SimpleNamespace(
+            when="call", excinfo=SimpleNamespace(value=DerivedElementNotFoundError("gone"))
+        )
+        hook = plugin.pytest_runtest_makereport(item, call)
+        next(hook)
+        report = SimpleNamespace(failed=True, longrepr="gone")
+
+        with pytest.raises(StopIteration):
+            hook.send(SimpleNamespace(get_result=lambda: report))
+
+        assert getattr(report, plugin._DOLPHIN_TRANSIENT_ATTR) is True
+
     def test_retry_decision_requires_remaining_attempt_and_transient_failure(self):
         item = _Item(Path("."))
-        report = SimpleNamespace(failed=True, longrepr="WaitTimeoutError")
+        report = SimpleNamespace(
+            failed=True,
+            longrepr="WaitTimeoutError",
+            _dolphin_transient_failure=True,
+        )
         assert plugin._attempt_will_retry(item, report) is False
         item.stash[plugin._RETRY_MAX_KEY] = 2
         item.stash[plugin._RETRY_ATTEMPT_KEY] = 0
@@ -513,7 +578,11 @@ class TestBasicHooksAndOptions:
         )
         monkeypatch.setattr(plugin, "_effective_retry_count", lambda _config: 1)
         monkeypatch.setattr(plugin, "_is_transient_failure", lambda _report: next(transient))
-        monkeypatch.setattr(plugin.time, "sleep", lambda _seconds: calls.append(("sleep",)))
+        monkeypatch.setattr(
+            plugin.time,
+            "sleep",
+            lambda _seconds: (_ for _ in ()).throw(AssertionError("retry must not sleep")),
+        )
         run_calls: list[tuple] = []
 
         def run(item_arg, log, nextitem):
@@ -530,7 +599,7 @@ class TestBasicHooksAndOptions:
         assert [entry[0] for entry in calls if entry[0] == "report"] == ["report", "report"]
         assert calls[0][0] == "start"
         assert calls[-1][0] == "finish"
-        assert ("sleep",) in calls
+        assert ("sleep",) not in calls
         assert item.stash[plugin._RETRY_MAX_KEY] == 1
         assert item.stash[plugin._RETRY_ATTEMPT_KEY] == 1
 
@@ -589,7 +658,6 @@ class TestBasicHooksAndOptions:
             "runtestprotocol",
             lambda *_args, **_kwargs: [SimpleNamespace(when="call")],
         )
-        monkeypatch.setattr(plugin.time, "sleep", lambda _seconds: None)
         assert plugin.pytest_runtest_protocol(item, None) is True
         assert len(published) == 1
 
@@ -1120,6 +1188,53 @@ class TestAllureAndVideoHelpers:
 
 
 class TestReportCollection:
+    def test_reports_with_failures_are_serializable_under_xdist(self, tmp_path):
+        test_file = tmp_path / "test_xdist_report_serialization.py"
+        test_file.write_text(
+            """
+from dolphin_desktop import ElementNotFoundError
+
+
+def test_transient_failure_report():
+    raise ElementNotFoundError("element disappeared")
+
+
+def test_regular_failure_report():
+    raise AssertionError("ordinary failure")
+""",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-n",
+                "2",
+                "-q",
+                "-p",
+                "dolphin_desktop.pytest_plugin",
+                "--dolphin-trace=off",
+                "--dolphin-video=off",
+                "--dolphin-html",
+                str(tmp_path / "dolphin-report.html"),
+                "-c",
+                str(REPO_ROOT / "pyproject.toml"),
+                str(test_file),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        output = result.stdout + result.stderr
+
+        assert result.returncode == 1, output
+        assert "2 failed" in output
+        assert "DumpError" not in output
+        assert "can't serialize" not in output
+
     def test_makereport_calls_collector_after_yield(self, monkeypatch):
         seen: list[tuple] = []
         monkeypatch.setattr(plugin, "_collect_artifacts", lambda *args: seen.append(args))
