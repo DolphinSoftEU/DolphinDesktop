@@ -57,11 +57,7 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
 def _is_transient_failure(report: pytest.TestReport | None) -> bool:
     """True when ``report`` is a failed report caused by a transient dolphin error."""
-    return bool(
-        report
-        and report.failed
-        and getattr(report, _DOLPHIN_TRANSIENT_ATTR, False)
-    )
+    return bool(report and report.failed and getattr(report, _DOLPHIN_TRANSIENT_ATTR, False))
 
 
 def _attempt_will_retry(item: pytest.Item, report: pytest.TestReport | None) -> bool:
@@ -690,9 +686,8 @@ def pytest_runtest_makereport(  # type: ignore[misc]
         from ._exceptions import ElementNotFoundError, WaitTimeoutError
 
         excinfo = getattr(call, "excinfo", None)
-        is_transient = (
-            excinfo is not None
-            and isinstance(excinfo.value, (ElementNotFoundError, WaitTimeoutError))
+        is_transient = excinfo is not None and isinstance(
+            excinfo.value, (ElementNotFoundError, WaitTimeoutError)
         )
         setattr(report, _DOLPHIN_TRANSIENT_ATTR, is_transient)
     try:
