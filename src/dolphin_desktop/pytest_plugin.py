@@ -22,7 +22,7 @@ _TRACE_SESSION_KEY: pytest.StashKey[Any] = pytest.StashKey()
 _VIDEO_RECORDER_KEY: pytest.StashKey[Any] = pytest.StashKey()
 _RETRY_ATTEMPT_KEY: pytest.StashKey[int] = pytest.StashKey()
 _RETRY_MAX_KEY: pytest.StashKey[int] = pytest.StashKey()
-_EXCEPTION_TYPE_ATTR = "_dolphin_exception_type"
+_DOLPHIN_TRANSIENT_ATTR = "_dolphin_transient_failure"
 
 _session_reports: list[dict[str, Any]] = []
 
@@ -57,15 +57,11 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
 def _is_transient_failure(report: pytest.TestReport | None) -> bool:
     """True when ``report`` is a failed report caused by a transient dolphin error."""
-    if report is None or not report.failed:
-        return False
-
-    from ._exceptions import ElementNotFoundError, WaitTimeoutError
-
-    exception_type = getattr(report, _EXCEPTION_TYPE_ATTR, None)
-    if not isinstance(exception_type, type):
-        return False
-    return issubclass(exception_type, (ElementNotFoundError, WaitTimeoutError))
+    return bool(
+        report
+        and report.failed
+        and getattr(report, _DOLPHIN_TRANSIENT_ATTR, False)
+    )
 
 
 def _attempt_will_retry(item: pytest.Item, report: pytest.TestReport | None) -> bool:
@@ -691,8 +687,14 @@ def pytest_runtest_makereport(  # type: ignore[misc]
     outcome = yield
     report = outcome.get_result()
     if call.when == "call":
+        from ._exceptions import ElementNotFoundError, WaitTimeoutError
+
         excinfo = getattr(call, "excinfo", None)
-        setattr(report, _EXCEPTION_TYPE_ATTR, getattr(excinfo, "type", None))
+        is_transient = (
+            excinfo is not None
+            and isinstance(excinfo.value, (ElementNotFoundError, WaitTimeoutError))
+        )
+        setattr(report, _DOLPHIN_TRANSIENT_ATTR, is_transient)
     try:
         _collect_artifacts(item, call, report)
     except Exception as exc:
