@@ -125,8 +125,11 @@ class _PlaywrightPage:
         return self._select().current_url()
 
     def goto(self, url: str, *, timeout: float | None = None) -> None:
-        native_timeout = None if timeout is None else _seconds(timeout)
-        self._select().page.goto(url, timeout=native_timeout)
+        # ``_select().page`` is the raw Playwright Page returned by
+        # BrowserContext.pages, so its timeout is already expressed in
+        # milliseconds.  The seconds conversion belongs to calls entering
+        # the Dolphin API, not to this native Playwright delegation.
+        self._select().page.goto(url, timeout=timeout)
 
     def locator(self, selector: str) -> _PlaywrightLocator:
         return _PlaywrightLocator(self, self._select().locator(selector))

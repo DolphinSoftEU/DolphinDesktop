@@ -1011,6 +1011,12 @@ def pick(backend: str = "uia") -> dict[str, Any]:
 
             try:
                 info = _element_info_from_point(x, y)
+                # ElementFromPoint can return Desktop, the taskbar, or another
+                # window after the AUT closes.  Check the previously picked
+                # element before allowing that result to replace it.
+                if current_info is not None and not _element_owner_is_alive(current_info):
+                    print("Cancelled.")
+                    return _pick_result("cancelled", [])
                 if info is not None:
                     current_info = info
                     try:
@@ -1019,9 +1025,6 @@ def pick(backend: str = "uia") -> dict[str, Any]:
                             highlighter.update(bbox)
                     except Exception:
                         pass
-                elif current_info is not None and not _element_owner_is_alive(current_info):
-                    print("Cancelled.")
-                    return _pick_result("cancelled", [])
             except Exception:
                 pass
 

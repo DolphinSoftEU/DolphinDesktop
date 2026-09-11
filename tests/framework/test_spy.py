@@ -537,11 +537,13 @@ class TestHighlighter:
         )
         info = _Info()
         info.handle = 123
-        points = iter([info, None])
+        desktop_root = _Info(name="Desktop Root", control_type="Pane")
+        points = iter([info, desktop_root])
+        point_calls = []
         monkeypatch.setattr(
             _spy,
             "_element_info_from_point",
-            lambda x, y: next(points),
+            lambda x, y: point_calls.append((x, y)) or next(points),
         )
         highlighter = SimpleNamespace(update=Mock(), clear=Mock())
         monkeypatch.setattr(_spy, "_Highlighter", lambda: highlighter)
@@ -550,6 +552,7 @@ class TestHighlighter:
         result = _spy.pick()
 
         assert result["status"] == "cancelled"
+        assert len(point_calls) == 2
         highlighter.clear.assert_called_once_with()
 
     def test_owner_liveness_stops_at_window_before_uia_desktop_root(self, monkeypatch):

@@ -262,10 +262,10 @@ class TestPageBinding:
 
 
 class TestTimeoutUnits:
-    def test_goto_converts_milliseconds_to_seconds(self, two_page_context):
+    def test_goto_passes_milliseconds_to_native_playwright(self, two_page_context):
         session, context = two_page_context
         context.pages[0].goto("https://example.test/", timeout=60_000)
-        assert session.pages()[0].goto_calls == [("https://example.test/", 60.0)]
+        assert session.pages()[0].goto_calls == [("https://example.test/", 60_000)]
 
     @pytest.mark.parametrize(
         "method, kwargs",
