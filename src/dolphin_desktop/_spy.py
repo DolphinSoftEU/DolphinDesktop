@@ -222,13 +222,36 @@ def _element_info_from_point(x: int, y: int) -> Any | None:
 
 def _element_owner_is_alive(info: Any) -> bool:
     """Return whether the top-level window behind a picked element still exists."""
+    # Some pywinauto backends expose the already-normalised top-level owner
+    # directly.  Prefer it because walking ``parent`` on UIAElementInfo can
+    # continue into the desktop/root element after the AUT has disappeared.
     owner = info
+    try:
+        top_level_parent = getattr(info, "top_level_parent", None)
+        if top_level_parent is not None:
+            candidate = top_level_parent() if callable(top_level_parent) else top_level_parent
+            if candidate is not None:
+                owner = candidate
+    except Exception:
+        pass
+
     visited: set[int] = set()
     for _ in range(64):
         marker = id(owner)
         if marker in visited:
             break
         visited.add(marker)
+
+        # UIAElementInfo.parent reaches the Desktop Root.  A picked control
+        # belongs to the first Window on that path, so never replace that
+        # owner with the root just because the root itself is still alive.
+        try:
+            is_window = str(getattr(owner, "control_type", "") or "").casefold() == "window"
+        except Exception:
+            is_window = False
+        if is_window:
+            break
+
         try:
             parent = owner.parent
         except Exception:

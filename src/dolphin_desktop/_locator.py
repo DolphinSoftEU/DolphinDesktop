@@ -2133,20 +2133,23 @@ class Locator:
                     if depth is None:
                         candidates = parent_spec.children(**backend_criteria)
                     else:
-                        candidates = parent_spec.descendants(
-                            depth=depth, **backend_criteria
-                        )
+                        candidates = parent_spec.descendants(depth=depth, **backend_criteria)
                 except Exception:
                     elements = []
                 else:
-                    elements = [
-                        element
-                        for element in candidates
-                        if getattr(
-                            getattr(element, "element_info", None), "automation_id", None
-                        )
-                        == auto_id
-                    ]
+                    elements = []
+                    for element in candidates:
+                        info = getattr(element, "element_info", None)
+                        # ``auto_id`` is the public UIAElementInfo spelling in
+                        # current pywinauto.  Older releases exposed the same
+                        # value as ``automation_id``; keep that alias here so
+                        # this backend-level fallback works across supported
+                        # pywinauto versions.
+                        if (
+                            getattr(info, "auto_id", None) == auto_id
+                            or getattr(info, "automation_id", None) == auto_id
+                        ):
+                            elements.append(element)
         except Exception:
             elements = []
         return [_ResolvedLocator(el, application=self._application_context()) for el in elements]

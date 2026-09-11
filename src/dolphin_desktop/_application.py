@@ -584,6 +584,9 @@ class Application:
             if auto_id is not None:
                 criteria["auto_id"] = auto_id
 
+        # The primary search gets the complete public timeout.  Fallbacks
+        # below receive only the time left from this same absolute deadline.
+        deadline = time.monotonic() + timeout if timeout > 0 else None
         try:
             win = self._find_window(criteria, timeout)
         except WindowNotFoundError as primary_error:
@@ -593,8 +596,13 @@ class Application:
             from . import _selfheal
 
             for fallback_selector in fallback:
+                fallback_timeout = (
+                    max(0.0, deadline - time.monotonic()) if deadline is not None else timeout
+                )
+                if deadline is not None and fallback_timeout <= 0:
+                    raise primary_error
                 try:
-                    win = self._find_window(fallback_selector, timeout)
+                    win = self._find_window(fallback_selector, fallback_timeout)
                 except WindowNotFoundError:
                     continue
                 _selfheal.record_fallback(criteria, fallback_selector)

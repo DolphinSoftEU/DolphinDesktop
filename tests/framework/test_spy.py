@@ -552,6 +552,20 @@ class TestHighlighter:
         assert result["status"] == "cancelled"
         highlighter.clear.assert_called_once_with()
 
+    def test_owner_liveness_stops_at_window_before_uia_desktop_root(self, monkeypatch):
+        root = _Info(name="Desktop Root", control_type="Pane")
+        root.handle = 456
+        window = _Info(name="AUT", control_type="Window", parent=root)
+        window.handle = 123
+        child = _Info(control_type="Button", parent=window)
+        monkeypatch.setitem(
+            sys.modules,
+            "win32gui",
+            _module("win32gui", IsWindow=lambda handle: handle == root.handle),
+        )
+
+        assert _spy._element_owner_is_alive(child) is False
+
 
 class TestInspectAndFormatting:
     def test_resolve_element_info_prefers_window_wrapper(self):

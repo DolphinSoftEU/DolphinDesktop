@@ -63,6 +63,24 @@ def test_windows_retry_propagates_persistent_errors_without_retry(monkeypatch) -
     assert attempts == 1
 
 
+def test_windows_retry_stops_after_its_bounded_budget(monkeypatch) -> None:
+    from dolphin_desktop import _selfheal
+
+    monkeypatch.setattr(_selfheal.os, "name", "nt")
+    monkeypatch.setattr(_selfheal, "_WINDOWS_RETRY_TIMEOUT", 0.0)
+    error = OSError(errno.EACCES, "temporarily locked")
+    attempts = 0
+
+    def operation() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise error
+
+    with pytest.raises(OSError, match="temporarily locked"):
+        _selfheal._retry_windows_contention(operation)
+    assert attempts == 1
+
+
 def _record_selfheal_events(
     path: str,
     worker_id: int,

@@ -195,6 +195,33 @@ class TestTelemetry:
         # _DOLPHIN_DSN is empty so still not initialized
         assert not is_enabled()
 
+    def test_opt_in_uses_configured_sentry_dsn(self):
+        import sys
+
+        import dolphin_desktop._telemetry as tel
+
+        self._reset()
+        fake = MagicMock()
+        with (
+            patch.dict(
+                sys.modules,
+                {"sentry_sdk": fake},
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "DOLPHIN_TELEMETRY": "on",
+                    "SENTRY_DSN": "http://desktop-187@127.0.0.1:9/1",
+                },
+            ),
+            patch.object(tel, "_DOLPHIN_DSN", ""),
+        ):
+            tel.init()
+
+        assert fake.init.call_args.kwargs["dsn"] == ("http://desktop-187@127.0.0.1:9/1")
+        assert tel.is_enabled()
+        self._reset()
+
     def test_before_send_drops_non_dolphin_exception(self):
         from dolphin_desktop._telemetry import _before_send
 

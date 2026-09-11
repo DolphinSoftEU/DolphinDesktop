@@ -26,13 +26,40 @@ from dolphin_desktop._exceptions import (
 
 
 class FakeInfo:
-    def __init__(self, *, name="", control_type="", automation_id="", process_id=1, **extra):
+    def __init__(
+        self,
+        *,
+        name="",
+        control_type="",
+        automation_id="",
+        auto_id=None,
+        process_id=1,
+        **extra,
+    ):
         self.name = name
         self.control_type = control_type
-        self.automation_id = automation_id
+        self._auto_id = automation_id if auto_id is None else auto_id
         self.process_id = process_id
         for key, value in extra.items():
             setattr(self, key, value)
+
+    @property
+    def auto_id(self):
+        return self._auto_id
+
+    @auto_id.setter
+    def auto_id(self, value):
+        self._auto_id = value
+
+    @property
+    def automation_id(self):
+        # Compatibility alias used by older pywinauto releases and existing
+        # tests; UIA's canonical property is auto_id.
+        return self._auto_id
+
+    @automation_id.setter
+    def automation_id(self, value):
+        self._auto_id = value
 
 
 class FakeElement:
@@ -1820,8 +1847,8 @@ def test_attributes_selection_collections_repr_and_dump_tree():
 
 
 def test_all_filters_auto_id_when_uia_backend_rejects_it_in_descendants():
-    target = FakeElement(control_type="Button", automation_id="target")
-    unrelated = FakeElement(control_type="Button", automation_id="other")
+    target = FakeElement(control_type="Button", auto_id="target")
+    unrelated = FakeElement(control_type="Button", auto_id="other")
     parent = FakeSpec(descendants=[unrelated, target])
     parent.descendants = Mock(
         side_effect=[TypeError("auto_id is unsupported"), [unrelated, target]]

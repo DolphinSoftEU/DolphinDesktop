@@ -25,6 +25,8 @@ _WINDOWS_CONTENTION_ERRNOS = frozenset(
 )
 _WINDOWS_CONTENTION_WINERRORS = frozenset({32, 33})
 _WINDOWS_RETRY_DELAY = 0.01
+_WINDOWS_RETRY_TIMEOUT = 1.0
+_WINDOWS_RETRY_MAX_ATTEMPTS = 100
 
 
 def _stats_file() -> Path:
@@ -54,18 +56,24 @@ def _is_windows_contention(error: OSError) -> bool:
     return error.errno in _WINDOWS_CONTENTION_ERRNOS
 
 
-def _retry_windows_contention(operation: Callable[[], Any]) -> Any:
-    """Retry recognized Windows sharing or lock failures until they clear."""
+def _retry_windows_contention(operation: Callable[[], Any], *, timeout: float | None = None) -> Any:
+    """Retry Windows contention for a bounded period, then re-raise."""
+    retry_timeout = _WINDOWS_RETRY_TIMEOUT if timeout is None else max(0.0, timeout)
+    deadline = time.monotonic() + retry_timeout
+    attempts = 0
     while True:
         try:
             return operation()
         except OSError as error:
             if os.name != "nt" or not _is_windows_contention(error):
                 raise
-            # A lock held by another process can legitimately outlast any
-            # fixed retry budget; poll only while Windows identifies this as
-            # sharing/lock contention so the eventual write is not dropped.
-            time.sleep(_WINDOWS_RETRY_DELAY)
+            # Telemetry is best effort.  A stuck worker must not make every
+            # selector fallback wait forever on its sidecar lock.
+            attempts += 1
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or attempts >= _WINDOWS_RETRY_MAX_ATTEMPTS:
+                raise
+            time.sleep(min(_WINDOWS_RETRY_DELAY, remaining))
 
 
 @contextmanager
@@ -101,11 +109,11 @@ def _stats_lock(path: Path) -> Iterator[None]:
         else:
             import fcntl
 
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
             try:
                 yield
             finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
     finally:
         lock_file.close()
 
