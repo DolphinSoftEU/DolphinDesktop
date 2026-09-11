@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 import zipfile
+from argparse import ArgumentTypeError
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,30 @@ _RETRY_MAX_KEY: pytest.StashKey[int] = pytest.StashKey()
 _DOLPHIN_TRANSIENT_ATTR = "_dolphin_transient_failure"
 
 _session_reports: list[dict[str, Any]] = []
+
+
+def _cli_timeout(value: str) -> float:
+    """Parse a finite, non-negative timeout for pytest's CLI parser."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ArgumentTypeError(
+            f"timeout must be a finite non-negative number; got {value!r}"
+        ) from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ArgumentTypeError(f"timeout must be a finite non-negative number; got {value!r}")
+    return parsed
+
+
+def _cli_retry(value: str) -> int:
+    """Parse a non-negative retry count for pytest's CLI parser."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ArgumentTypeError(f"retry must be a non-negative integer; got {value!r}") from exc
+    if parsed < 0:
+        raise ArgumentTypeError(f"retry must be a non-negative integer; got {value!r}")
+    return parsed
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -156,7 +181,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     group.addoption(
         "--dolphin-timeout",
-        type=float,
+        type=_cli_timeout,
         default=None,
         help="Default element wait timeout in seconds (default: 10; also: DOLPHIN_TIMEOUT env var)",
     )
@@ -229,7 +254,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     group.addoption(
         "--dolphin-retry",
-        type=int,
+        type=_cli_retry,
         default=None,
         metavar="N",
         help=(
@@ -334,8 +359,33 @@ def _dolphin_marker_config(request: pytest.FixtureRequest) -> Iterator[None]:
 
     from . import _config as _cfg
 
+    marker_kwargs = marker.kwargs
+    timeout = marker_kwargs.get("timeout")
+    if timeout is not None:
+        try:
+            timeout = _cli_timeout(str(timeout))
+        except ArgumentTypeError as exc:
+            raise pytest.UsageError(
+                f"Invalid @pytest.mark.dolphin timeout={marker_kwargs['timeout']!r}: {exc}"
+            ) from exc
+
+    video_mode = marker_kwargs.get("video_mode")
+    if video_mode is not None:
+        valid_video_modes = _cfg._video_modes()
+        if not isinstance(video_mode, str) or video_mode not in valid_video_modes:
+            raise pytest.UsageError(
+                "Invalid @pytest.mark.dolphin "
+                f"video_mode={video_mode!r}: expected one of {valid_video_modes}."
+            )
+
+    if "headless" in marker_kwargs and not isinstance(marker_kwargs["headless"], bool):
+        raise pytest.UsageError(
+            "Invalid @pytest.mark.dolphin "
+            f"headless={marker_kwargs['headless']!r}: expected a boolean."
+        )
+
     # headless guard — evaluated before any state mutation so nothing to restore on skip
-    headless = marker.kwargs.get("headless")
+    headless = marker_kwargs.get("headless")
     if headless is True:
         is_headless = bool(
             request.config.getoption("--dolphin-headless", default=False)
@@ -347,11 +397,9 @@ def _dolphin_marker_config(request: pytest.FixtureRequest) -> Iterator[None]:
     old_timeout = _cfg._defaults.get("timeout")
     old_video_mode = _cfg._defaults.get("video_mode")
 
-    timeout = marker.kwargs.get("timeout")
     if timeout is not None:
-        _cfg._defaults["timeout"] = float(timeout)
+        _cfg._defaults["timeout"] = timeout
 
-    video_mode = marker.kwargs.get("video_mode")
     if video_mode is not None:
         _cfg._defaults["video_mode"] = video_mode
 

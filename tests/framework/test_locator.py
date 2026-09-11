@@ -404,6 +404,19 @@ def test_normalize_criteria_aliases_and_conflicts():
         locator_module._normalize_criteria({"name": "one", "title": "two"})
 
 
+def test_invalid_fallback_entry_reports_its_index_before_resolution():
+    parent = SimpleNamespace(_get_spec=Mock())
+
+    with pytest.raises(ValueError, match=r"fallback\[1\].*mapping"):
+        locator_module.Locator(
+            parent,
+            title="primary",
+            fallback=[{"title": "valid"}, "not-a-selector"],
+        )
+
+    parent._get_spec.assert_not_called()
+
+
 def test_locator_configuration_and_parent_resolution():
     spec = FakeSpec()
     parent = SimpleNamespace(_get_spec=Mock(return_value=spec))
@@ -899,6 +912,48 @@ def test_locator_resolve_ambiguity_fallback_image_tree_and_not_found():
         with pytest.raises(ElementNotFoundError) as exc_info:
             loc._resolve()
     assert "Last seen tree" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("resolve_method", ("_resolve", "_resolve_presence"))
+@pytest.mark.parametrize(
+    "template_error",
+    (
+        FileNotFoundError("Template image not found: missing.png"),
+        ValueError("Template image could not be decoded: broken.png"),
+    ),
+)
+def test_image_template_errors_keep_type_and_add_fallback_context(
+    resolve_method: str,
+    template_error: Exception,
+):
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=RuntimeError("primary missing"))
+    image = SimpleNamespace(
+        find_with_size=Mock(side_effect=template_error), _template_path="missing.png"
+    )
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="primary",
+        image_fallback=image,
+    ).timeout(0)
+
+    with pytest.raises(type(template_error), match=r"image_fallback.*missing\.png"):
+        getattr(loc, resolve_method)()
+
+
+def test_image_fallback_not_found_on_screen_remains_element_not_found():
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=RuntimeError("primary missing"))
+    image = SimpleNamespace(find_with_size=Mock(return_value=None), _template_path="button.png")
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="primary",
+        image_fallback=image,
+    ).timeout(0)
+
+    with patch.object(locator_module, "_tree_walk_find", return_value=None):
+        with pytest.raises(ElementNotFoundError):
+            loc._resolve()
 
 
 def test_action_fallback_is_not_used_after_the_primary_deadline():
@@ -1762,6 +1817,23 @@ def test_attributes_selection_collections_repr_and_dump_tree():
     message = locator_module._NotFoundMessage({"title": "x"}, 0.5, root)
     assert "not found" in str(message)
     assert repr(message) == str(message)
+
+
+def test_all_filters_auto_id_when_uia_backend_rejects_it_in_descendants():
+    target = FakeElement(control_type="Button", automation_id="target")
+    unrelated = FakeElement(control_type="Button", automation_id="other")
+    parent = FakeSpec(descendants=[unrelated, target])
+    parent.descendants = Mock(
+        side_effect=[TypeError("auto_id is unsupported"), [unrelated, target]]
+    )
+    locator = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), auto_id="target"
+    )
+
+    matches = locator.all(depth=5)
+
+    assert [match._element for match in matches] == [target]
+    assert parent.descendants.call_args_list == [call(depth=5, auto_id="target"), call(depth=5)]
 
 
 def test_select_popup_helper_string_index_and_timeout():

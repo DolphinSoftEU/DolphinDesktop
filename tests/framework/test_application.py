@@ -490,6 +490,43 @@ def test_window_accessors_build_criteria_and_apply_repository_alias(monkeypatch)
     assert finder.call_args.args == (entry.selector, 2)
 
 
+def test_window_accessor_uses_repository_window_fallback_and_records_self_healing(
+    monkeypatch,
+) -> None:
+    import dolphin_desktop._application as application
+    from dolphin_desktop._exceptions import WindowNotFoundError
+    from dolphin_desktop._window import Window
+    from dolphin_desktop.objects import ObjectEntry
+
+    app, _raw = _bare_application(application)
+    fallback_window = Window(Mock(), application=app)
+    finder = Mock(
+        side_effect=[
+            WindowNotFoundError("primary window missing"),
+            fallback_window,
+        ]
+    )
+    monkeypatch.setattr(app, "_find_window", finder)
+    entry = ObjectEntry(
+        {"title": "Missing window"},
+        fallback=[{"title": "Fallback window"}],
+    )
+    monkeypatch.setattr("dolphin_desktop.objects._repository.resolve", Mock(return_value=entry))
+
+    with monkeypatch.context() as context:
+        record = Mock()
+        context.setattr("dolphin_desktop._selfheal.record_fallback", record)
+        result = app.window("window_alias", timeout=0.25)
+
+    assert result is fallback_window
+    assert result._alias == "window_alias"
+    assert finder.call_args_list == [
+        call(entry.selector, 0.25),
+        call(entry.fallback[0], 0.25),
+    ]
+    record.assert_called_once_with(entry.selector, entry.fallback[0])
+
+
 def test_find_window_uses_own_process_before_desktop_fallback(monkeypatch) -> None:
     import dolphin_desktop._application as application
 

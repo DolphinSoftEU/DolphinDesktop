@@ -7,7 +7,7 @@ import inspect
 import math
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
@@ -508,6 +508,38 @@ def _normalize_criteria(criteria: dict[str, Any]) -> dict[str, Any]:
     return criteria
 
 
+def _normalize_fallbacks(value: Any) -> list[dict[str, Any]]:
+    """Validate and normalize the selector fallback list with its index."""
+    if value is None:
+        return []
+    try:
+        fallback_items = iter(value)
+    except TypeError as exc:
+        raise ValueError("fallback must be an iterable of selector mappings") from exc
+
+    normalized: list[dict[str, Any]] = []
+    for index, fallback in enumerate(fallback_items):
+        if not isinstance(fallback, Mapping):
+            raise ValueError(
+                f"fallback[{index}] must be a mapping of selector criteria, "
+                f"got {type(fallback).__name__}"
+            )
+        try:
+            normalized.append(_normalize_criteria(dict(fallback)))
+        except ValueError as exc:
+            raise ValueError(f"invalid fallback[{index}]: {exc}") from exc
+    return normalized
+
+
+def _raise_image_template_error(image_fallback: Any, cause: Exception) -> None:
+    """Re-raise a template loading error with the image-fallback context."""
+    template = getattr(image_fallback, "_template_path", "<unknown>")
+    message = f"image_fallback template {template!s} could not be loaded: {cause}"
+    if isinstance(cause, FileNotFoundError):
+        raise FileNotFoundError(message) from cause
+    raise ValueError(message) from cause
+
+
 class Locator:
     """Represents a way to find one or more UI elements.
 
@@ -535,12 +567,42 @@ class Locator:
         **criteria: Any,
     ) -> None:
         self._parent = parent
-        self._fallback: list[dict[str, Any]] = [
-            _normalize_criteria(dict(fb)) for fb in (criteria.pop("fallback", None) or [])
-        ]
+        # Window.element() attaches these fields after constructing the locator.
+        # Keeping the repository reference on the lazy locator lets a watched
+        # alias refresh immediately before its next resolution.
+        self._object_repository: Any | None = None
+        self._object_alias: str | None = None
+        self._object_parent_alias: str | None = None
+        self._object_selector_keys: set[str] = set()
+        self._fallback = _normalize_fallbacks(criteria.pop("fallback", None))
         self._image_fallback: Any = criteria.pop("image_fallback", None)
         self._criteria = _normalize_criteria(criteria)
         self._timeout: float = _get_timeout()
+
+    def _refresh_object_repository(self) -> None:
+        """Refresh criteria for a locator created from a watched alias.
+
+        Only selector metadata is refreshed here; no UI element is resolved or
+        materialized. Derived criteria such as ``nth()`` remain on the locator.
+        """
+        repository = self._object_repository
+        alias = self._object_alias
+        if repository is None or alias is None:
+            return
+
+        if self._object_parent_alias is None:
+            entry = repository.resolve(alias)
+        else:
+            entry = repository.resolve_child(self._object_parent_alias, alias)
+
+        derived_criteria = {
+            key: value
+            for key, value in self._criteria.items()
+            if key not in self._object_selector_keys
+        }
+        self._criteria = {**entry.selector, **derived_criteria}
+        self._object_selector_keys = set(entry.selector)
+        self._fallback = _normalize_fallbacks(entry.fallback or None)
 
     # Configuration
 
@@ -646,6 +708,7 @@ class Locator:
         single_attempt: bool = False,
     ) -> Any:
         """Find and wait for the element, raise on timeout."""
+        self._refresh_object_repository()
         single_attempt = single_attempt or self._timeout <= 0
         deadline, enforce_deadline = _effective_deadline(
             self._timeout,
@@ -749,6 +812,13 @@ class Locator:
                         enforce=enforce_deadline,
                     ):
                         return fb_spec
+                except _PwAmbiguousError as exc:
+                    from ._exceptions import AmbiguousMatchError
+
+                    raise AmbiguousMatchError(
+                        f"{fb!r} matched more than one element — "
+                        f"narrow the criteria or pick one with found_index=N"
+                    ) from exc
                 except Exception:
                     continue
 
@@ -777,6 +847,8 @@ class Locator:
                             enforce=enforce_deadline,
                         ):
                             return _ImageElement(cx, cy, tw, th)
+                except (FileNotFoundError, ValueError) as exc:
+                    _raise_image_template_error(self._image_fallback, exc)
                 except Exception:
                     pass
 
@@ -1497,6 +1569,7 @@ class Locator:
         single_attempt: bool = False,
     ) -> Any:
         """Resolve an element without requiring it to be visible."""
+        self._refresh_object_repository()
         single_attempt = single_attempt or self._timeout <= 0
         deadline, enforce_deadline = _effective_deadline(
             self._timeout,
@@ -1629,6 +1702,8 @@ class Locator:
                             enforce=enforce_deadline,
                         ):
                             return _ImageElement(cx, cy, tw, th)
+                except (FileNotFoundError, ValueError) as exc:
+                    _raise_image_template_error(self._image_fallback, exc)
                 except Exception:
                     pass
 
@@ -2034,12 +2109,44 @@ class Locator:
         If *depth* is None, only direct children are returned.
         If *depth* is given (including 0), descendants up to that depth are returned.
         """
+        self._refresh_object_repository()
         parent_spec = self._get_parent_spec()
         try:
             if depth is None:
                 elements = parent_spec.children(**self._criteria)
             else:
                 elements = parent_spec.descendants(depth=depth, **self._criteria)
+        except TypeError:
+            # UIAElementInfo.build_condition() in some pywinauto versions
+            # does not accept ``auto_id``.  Search with the criteria that the
+            # backend can express and apply AutomationId to the returned
+            # wrappers instead of silently turning a valid selector into an
+            # empty collection.
+            auto_id = self._criteria.get("auto_id")
+            if auto_id is None:
+                elements = []
+            else:
+                backend_criteria = {
+                    key: value for key, value in self._criteria.items() if key != "auto_id"
+                }
+                try:
+                    if depth is None:
+                        candidates = parent_spec.children(**backend_criteria)
+                    else:
+                        candidates = parent_spec.descendants(
+                            depth=depth, **backend_criteria
+                        )
+                except Exception:
+                    elements = []
+                else:
+                    elements = [
+                        element
+                        for element in candidates
+                        if getattr(
+                            getattr(element, "element_info", None), "automation_id", None
+                        )
+                        == auto_id
+                    ]
         except Exception:
             elements = []
         return [_ResolvedLocator(el, application=self._application_context()) for el in elements]

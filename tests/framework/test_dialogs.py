@@ -583,6 +583,20 @@ def test_file_dialog_preserves_absolute_path(monkeypatch) -> None:
     edit.set_edit_text.assert_called_once_with(absolute_path)
 
 
+def test_file_dialog_normalizes_posix_spelling_of_absolute_windows_path() -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    edit = Mock()
+    edit.class_name.return_value = "Edit"
+    window = Mock()
+    window.children.return_value = [edit]
+    absolute_path = "C:/reports/April report.txt"
+
+    dialogs.FileDialog(window).set_path(absolute_path)
+
+    edit.set_edit_text.assert_called_once_with(str(Path(absolute_path)))
+
+
 def test_dialog_discovery_filters_class_title_and_foreground(monkeypatch) -> None:
     import dolphin_desktop._dialogs as dialogs
 

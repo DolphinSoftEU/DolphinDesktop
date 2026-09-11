@@ -27,13 +27,13 @@ Commands:
 ## `dolphin init`
 
 ```text
-dolphin init [NAME] [--template {minimal,standard,enterprise}] [--yes] [--install] [--git]
+dolphin init [NAME] [--template {minimal,standard,enterprise,sap,qt,electron,mainframe,oracle-forms,delphi}] [--yes] [--install] [--git]
 ```
 
 | Option | Description |
 | --- | --- |
 | `NAME` | Project directory to create. If omitted, Dolphin prompts for a name. |
-| `--template {minimal,standard,enterprise}` | Choose the scaffold template. |
+| `--template {minimal,standard,enterprise,sap,qt,electron,mainframe,oracle-forms,delphi}` | Choose the scaffold template. |
 | `--yes`, `-y` | Non-interactive defaults: `my-dolphin-tests` and `standard`. |
 | `--install` | Run `pip install` for scaffold dependencies after creation. |
 | `--git` | Run `git init` in the new project directory. |

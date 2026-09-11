@@ -488,6 +488,70 @@ class TestHighlighter:
         highlighter.clear()
         assert highlighter._last is None
 
+    def test_clear_destroys_overlay_windows_and_stops_worker(self, monkeypatch):
+        calls = []
+
+        class FakeThread:
+            native_id = 42
+            ident = 42
+
+            def join(self, timeout):
+                calls.append(("join", timeout))
+
+        monkeypatch.setitem(
+            sys.modules,
+            "win32gui",
+            _module(
+                "win32gui",
+                PostMessage=lambda *args: calls.append(("close", args)),
+            ),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            _module(
+                "win32api",
+                PostThreadMessage=lambda *args: calls.append(("quit", args)),
+            ),
+        )
+        monkeypatch.setitem(sys.modules, "win32con", _module("win32con", WM_QUIT=18))
+        highlighter = _spy._Highlighter()
+        highlighter._strips = [1, 2, 3, 4]
+        highlighter._last = (1, 2, 3, 4)
+        highlighter._thread = FakeThread()
+
+        highlighter.clear()
+
+        assert [call[0] for call in calls] == ["close"] * 4 + ["quit", "join"]
+        assert all(call[1][0] in {1, 2, 3, 4} for call in calls[:4])
+        assert highlighter._strips == []
+        assert highlighter._thread is None
+
+    def test_pick_cancels_when_current_owner_window_disappears(self, monkeypatch):
+        tick = {"value": -1}
+        _install_input_modules(monkeypatch, tick=tick)
+        monkeypatch.setitem(
+            sys.modules,
+            "win32gui",
+            _module("win32gui", IsWindow=lambda handle: False),
+        )
+        info = _Info()
+        info.handle = 123
+        points = iter([info, None])
+        monkeypatch.setattr(
+            _spy,
+            "_element_info_from_point",
+            lambda x, y: next(points),
+        )
+        highlighter = SimpleNamespace(update=Mock(), clear=Mock())
+        monkeypatch.setattr(_spy, "_Highlighter", lambda: highlighter)
+        monkeypatch.setattr(_spy, "_PICK_POLL", 0)
+
+        result = _spy.pick()
+
+        assert result["status"] == "cancelled"
+        highlighter.clear.assert_called_once_with()
+
 
 class TestInspectAndFormatting:
     def test_resolve_element_info_prefers_window_wrapper(self):

@@ -262,10 +262,10 @@ class TestPageBinding:
 
 
 class TestTimeoutUnits:
-    def test_goto_forwards_milliseconds_unchanged(self, two_page_context):
+    def test_goto_converts_milliseconds_to_seconds(self, two_page_context):
         session, context = two_page_context
         context.pages[0].goto("https://example.test/", timeout=60_000)
-        assert session.pages()[0].goto_calls == [("https://example.test/", 60_000)]
+        assert session.pages()[0].goto_calls == [("https://example.test/", 60.0)]
 
     @pytest.mark.parametrize(
         "method, kwargs",
@@ -398,3 +398,35 @@ def test_playwright_compat_converts_timeout_to_milliseconds() -> None:
     assert _seconds(1500) == 1.5
     assert _timeout_s(2.5) == {"timeout": 0.0025}
     assert _ms_kwargs({"timeout": 1.25, "x": 1}) == {"timeout": 0.00125, "x": 1}
+
+
+# Unsupported surfaces must fail explicitly rather than leaking ImportError or AttributeError.
+
+
+def test_unsupported_playwright_surfaces_raise_not_implemented() -> None:
+    from dolphin_desktop.playwright_compat import async_playwright, sync_playwright
+
+    with pytest.raises(NotImplementedError, match="sync-only"):
+        async_playwright()
+
+    with sync_playwright() as playwright:
+        with pytest.raises(NotImplementedError, match="Chromium"):
+            _ = playwright.firefox
+        with pytest.raises(NotImplementedError, match="Chromium"):
+            _ = playwright.webkit
+        with pytest.raises(NotImplementedError, match=r"chromium\.launch"):
+            playwright.chromium.launch()
+
+
+def test_unsupported_browser_context_and_page_surfaces_raise_not_implemented() -> None:
+    browser = pwc._PlaywrightBrowser(Mock())
+    context = pwc._PlaywrightContext(Mock())
+
+    with pytest.raises(NotImplementedError, match="new contexts"):
+        browser.new_context()
+    with pytest.raises(NotImplementedError, match="new pages"):
+        context.new_page()
+    with pytest.raises(NotImplementedError, match="storage state"):
+        context.storage_state()
+    with pytest.raises(NotImplementedError, match="tracing"):
+        _ = context.tracing

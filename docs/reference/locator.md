@@ -28,6 +28,13 @@ loc.select_text()               # Ctrl+A on the element
 loc.scroll_into_view()
 ```
 
+For UIA, `get_by_automation_id()` maps to the provider's AutomationId and
+`control_type` maps to the UIA role. Prefer both when the application publishes
+them; do not replace them with screen coordinates or an element index. WPF,
+WinForms, and WinUI/UWP controls can expose different subsets of UIA
+properties, so a missing provider property is an application accessibility
+boundary rather than a locator that should silently broaden its search.
+
 ## Mouse actions
 
 ```python
@@ -68,6 +75,21 @@ loc.wait_for(state="enabled", timeout=10)
 loc.wait_until_hidden(timeout=10)
 loc.wait_until_enabled(timeout=10)
 ```
+
+Wait after an action for the visible result instead of using a fixed sleep:
+
+```python
+status = win.locator(auto_id="status", control_type="Text")
+save = win.locator(auto_id="btnSave", control_type="Button")
+save.wait_for(state="enabled")
+save.click()
+status.wait_for_text("Saved", contains=False)
+assert status.text() == "Saved"
+```
+
+`exists()` is an immediate probe unless a timeout is passed; it is not a
+replacement for `wait_for()` when the test requires a visible or enabled
+control.
 
 ## Collections
 
@@ -112,3 +134,7 @@ loc = win.locator(
 img = loc.screenshot()              # PIL.Image of this element
 img = loc.screenshot("elem.png")    # save to file
 ```
+
+The optional path is written by the caller's process and is not a managed
+artifact. Keep it under the test's temporary directory and unlink it in
+`finally`; this applies on both successful and failed UIA flows.

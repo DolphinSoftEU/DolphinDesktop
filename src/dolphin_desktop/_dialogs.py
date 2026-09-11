@@ -252,7 +252,12 @@ class FileDialog:
         # before handing them to the dialog.
         path_object = Path(path).expanduser()
         is_absolute = path_object.is_absolute() or PureWindowsPath(path).is_absolute()
-        dialog_path = path if is_absolute else str(path_object.resolve())
+        # Normalize even absolute Windows paths.  A caller may pass a
+        # POSIX-style absolute spelling (for example ``C:/reports/a.txt``)
+        # from ``Path.as_posix()``; the native picker does not reliably accept
+        # that spelling in its filename field, especially on localized
+        # OpenFileDialog variants.
+        dialog_path = str(path_object) if is_absolute else str(path_object.resolve())
 
         # Try to find an Edit control named 'File name' or similar
         edit = None

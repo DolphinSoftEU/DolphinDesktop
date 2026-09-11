@@ -811,6 +811,13 @@ class OracleFormsApp:
             for w in candidates:
                 if re.search(self._title_re, w.window_text() or ""):
                     return w.handle
+            raise OracleFormsError(
+                f"no top-level window matched title_re={self._title_re!r}",
+                hint=(
+                    "verify the Oracle Forms title selector and wait for the "
+                    "client window to finish starting"
+                ),
+            )
         if candidates:
             return candidates[0].handle
         raise OracleFormsError(

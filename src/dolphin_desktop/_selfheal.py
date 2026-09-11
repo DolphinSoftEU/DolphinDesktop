@@ -5,9 +5,12 @@ Records fallback activations to a JSONL file and provides stats access.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,11 @@ logger = get_logger("selfheal")
 
 _DEFAULT_STATS_FILE = ".dolphin-selfheal.jsonl"
 _MAX_BYTES = 1_048_576
+_WINDOWS_CONTENTION_ERRNOS = frozenset(
+    {errno.EACCES, errno.EAGAIN, errno.EDEADLK},
+)
+_WINDOWS_CONTENTION_WINERRORS = frozenset({32, 33})
+_WINDOWS_RETRY_DELAY = 0.01
 
 
 def _stats_file() -> Path:
@@ -37,6 +45,69 @@ def _rotate(path: Path) -> None:
         os.replace(path, path.with_name(path.name + ".1"))
     except OSError:
         pass
+
+
+def _is_windows_contention(error: OSError) -> bool:
+    winerror = getattr(error, "winerror", None)
+    if winerror is not None:
+        return winerror in _WINDOWS_CONTENTION_WINERRORS
+    return error.errno in _WINDOWS_CONTENTION_ERRNOS
+
+
+def _retry_windows_contention(operation: Callable[[], Any]) -> Any:
+    """Retry recognized Windows sharing or lock failures until they clear."""
+    while True:
+        try:
+            return operation()
+        except OSError as error:
+            if os.name != "nt" or not _is_windows_contention(error):
+                raise
+            # A lock held by another process can legitimately outlast any
+            # fixed retry budget; poll only while Windows identifies this as
+            # sharing/lock contention so the eventual write is not dropped.
+            time.sleep(_WINDOWS_RETRY_DELAY)
+
+
+@contextmanager
+def _stats_lock(path: Path) -> Iterator[None]:
+    """Serialise journal rotation and reads across independent processes.
+
+    The lock is deliberately a sidecar file: rotating the journal itself
+    while another process has it open would not protect the other process's
+    append on Windows.  ``fcntl`` and ``msvcrt`` are both standard-library
+    platform primitives, so this does not add a runtime dependency.
+    """
+    lock_path = path.with_name(path.name + ".lock")
+    lock_file = _retry_windows_contention(lambda: lock_path.open("a+b"))
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                _retry_windows_contention(lambda: lock_file.write(b"\0"))
+                _retry_windows_contention(lock_file.flush)
+
+            def acquire_lock() -> None:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+
+            _retry_windows_contention(acquire_lock)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_file.close()
 
 
 def _redact_values(value: Any) -> Any:
@@ -82,9 +153,17 @@ def record_fallback(
     entry = _redact_values(entry)
     path = _stats_file()
     try:
-        _rotate(path)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        with _stats_lock(path):
+            _rotate(path)
+            serialized_entry = json.dumps(entry) + "\n"
+            stats_file = _retry_windows_contention(
+                lambda: path.open("a", encoding="utf-8"),
+            )
+            try:
+                _retry_windows_contention(lambda: stats_file.write(serialized_entry))
+                _retry_windows_contention(stats_file.flush)
+            finally:
+                stats_file.close()
     except OSError:
         pass
 
@@ -112,10 +191,14 @@ def selfheal_stats(n: int = 10, file: Path | None = None) -> list[dict[str, Any]
         return []
     records: list[dict[str, Any]] = []
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
+        with _stats_lock(path):
+            if not path.exists():
+                return []
+            text = _retry_windows_contention(lambda: path.read_text(encoding="utf-8"))
+            for line in text.splitlines():
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
     except (OSError, json.JSONDecodeError):
         pass
     return records[-n:]

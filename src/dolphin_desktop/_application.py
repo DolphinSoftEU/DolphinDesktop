@@ -572,6 +572,7 @@ class Application:
 
             entry = _repository.resolve(alias)
             criteria: dict[str, Any] = dict(entry.selector)
+            fallback = entry.fallback
         else:
             criteria = {"found_index": found_index}
             if title is not None:
@@ -583,7 +584,24 @@ class Application:
             if auto_id is not None:
                 criteria["auto_id"] = auto_id
 
-        win = self._find_window(criteria, timeout)
+        try:
+            win = self._find_window(criteria, timeout)
+        except WindowNotFoundError as primary_error:
+            if alias is None:
+                raise
+
+            from . import _selfheal
+
+            for fallback_selector in fallback:
+                try:
+                    win = self._find_window(fallback_selector, timeout)
+                except WindowNotFoundError:
+                    continue
+                _selfheal.record_fallback(criteria, fallback_selector)
+                break
+            else:
+                raise primary_error
+
         if alias is not None:
             win._alias = alias  # type: ignore[attr-defined]
         return win
