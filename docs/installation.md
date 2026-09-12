@@ -3,7 +3,7 @@
 ## Requirements
 
 - Windows 10 or Windows 11.
-- Python 3.11 or newer.
+- Python 3.11, 3.12, or 3.13 for the 0.2.0 release.
 - A terminal running as the same Windows user as the application under test.
 
 Dolphin uses Microsoft UI Automation, Win32 APIs, pywin32, and COM. macOS and Linux are not supported runtime targets for the documented desktop automation flow.

@@ -322,6 +322,24 @@ class TestHtmlReportEscaping:
 
 
 class TestMakereportIsolation:
+    def test_makereport_redacts_longrepr_before_reporters_serialize_it(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(plugin, "_collect_artifacts", lambda *_args: None)
+        report = SimpleNamespace(
+            failed=True,
+            longrepr='login="DESKTOP_LOGIN_2c4b"',
+        )
+        hook = plugin.pytest_runtest_makereport(
+            SimpleNamespace(nodeid="tests/test_x.py::test_y"),
+            SimpleNamespace(when="call"),
+        )
+        next(hook)
+        with pytest.raises(StopIteration):
+            hook.send(SimpleNamespace(get_result=lambda: report))
+
+        assert report.longrepr == 'login="***"'
+
     def test_collection_error_does_not_escape(self, monkeypatch, caplog):
         def _boom(item, call, report):
             raise RuntimeError("artifact backend exploded")
@@ -450,6 +468,77 @@ class TestBasicHooksAndOptions:
         plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
 
         assert live == set()
+
+    def test_runtest_teardown_uses_anchored_handle_and_keeps_it_on_failure(
+        self, monkeypatch
+    ):
+        from dolphin_desktop import _application
+
+        calls: list[tuple] = []
+        api = types.SimpleNamespace(
+            OpenProcess=lambda *_args: pytest.fail("PID must not be reopened"),
+            TerminateProcess=lambda *args: calls.append(("terminate", *args))
+            or (_ for _ in ()).throw(OSError("access denied")),
+            CloseHandle=lambda *args: calls.append(("close", *args)),
+        )
+        monkeypatch.setitem(sys.modules, "win32api", api)
+        live = {505}
+        handles = {505: "original-process-handle"}
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
+
+        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="reuse"), None)
+
+        assert calls == [("terminate", "original-process-handle", 1)]
+        assert live == {505}
+        assert handles == {505: "original-process-handle"}
+
+    def test_runtest_teardown_terminates_original_process_handle_after_pid_reuse(
+        self, monkeypatch
+    ):
+        from dolphin_desktop import _application
+
+        calls: list[tuple] = []
+        api = types.SimpleNamespace(
+            OpenProcess=lambda *_args: pytest.fail("PID must not be reopened"),
+            TerminateProcess=lambda *args: calls.append(("terminate", *args)),
+            CloseHandle=lambda *args: calls.append(("close", *args)),
+        )
+        monkeypatch.setitem(sys.modules, "win32api", api)
+        live = {506}
+        handles = {506: "original-process-handle"}
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
+
+        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="reuse"), None)
+
+        assert calls == [
+            ("terminate", "original-process-handle", 1),
+            ("close", "original-process-handle"),
+        ]
+        assert live == set()
+        assert handles == {}
+
+    def test_runtest_teardown_fails_closed_when_anchor_could_not_be_opened(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            types.SimpleNamespace(
+                OpenProcess=lambda *_args: pytest.fail("must not fall back to PID cleanup"),
+                TerminateProcess=lambda *_args: pytest.fail("must not terminate by PID"),
+            ),
+        )
+        live = {508}
+        unanchored = {508}
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_unanchored_pids", unanchored)
+
+        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="unanchored"), None)
+
+        assert live == {508}
+        assert unanchored == {508}
 
     @pytest.mark.parametrize(
         ("report", "expected"),
@@ -1556,6 +1645,37 @@ class TestSessionReports:
         plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
         assert pids == set()
         assert live == set()
+
+    def test_sessionfinish_uses_anchored_handle_after_pid_reuse(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        calls: list[tuple] = []
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            types.SimpleNamespace(
+                OpenProcess=lambda *_args: pytest.fail("PID must not be reopened"),
+                TerminateProcess=lambda *args: calls.append(("terminate", *args)),
+                CloseHandle=lambda *args: calls.append(("close", *args)),
+            ),
+        )
+        pids = {507}
+        live = {507}
+        handles = {507: "original-process-handle"}
+        monkeypatch.setattr(_application, "_session_pids", pids)
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
+        plugin._session_reports.clear()
+
+        plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
+
+        assert calls == [
+            ("terminate", "original-process-handle", 1),
+            ("close", "original-process-handle"),
+        ]
+        assert pids == set()
+        assert live == set()
+        assert handles == {}
 
 
 class TestHtmlReport:

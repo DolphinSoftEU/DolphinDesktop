@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -58,6 +59,46 @@ class TestRecordStepIsNonFatal:
         db = sqlite3.connect(str(tmp_path / "run" / "trace.db"))
         assert db.execute("SELECT COUNT(*) FROM steps").fetchone()[0] == 1
         db.close()
+
+    def test_secret_values_are_redacted_before_storage_and_rendering(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(_trace, "_capture_screenshot", lambda _path: None)
+        secret = "DESKTOP_TRACE_LOGIN_2c4b"
+        session = _trace.TraceSession(
+            test_nodeid=f"tests/test.py::test_login[login={secret}]",
+            run_dir=tmp_path / "run",
+            mode="always",
+        )
+        session.record_step(
+            "type_text",
+            f'login="{secret}"',
+            error=f'clipboard="{secret}"',
+        )
+        session.finish(
+            "failed",
+            error_message=f'connection_string="Password={secret}"',
+            error_traceback=f'login="{secret}"',
+        )
+
+        db = sqlite3.connect(str(tmp_path / "run" / "trace.db"))
+        stored = " ".join(
+            str(row)
+            for row in db.execute(
+                "SELECT test_nodeid, error_message, error_traceback FROM runs"
+            )
+        )
+        stored += " " + " ".join(
+            str(row)
+            for row in db.execute("SELECT action, selector, error FROM steps")
+        )
+        db.close()
+        html = _trace.generate_html(tmp_path / "run").read_text(encoding="utf-8")
+
+        assert secret not in stored
+        assert secret not in html
+        assert "***" in stored
+        assert "***" in html
 
     def test_closed_connection_does_not_raise(self, tmp_path):
         session = self._session(tmp_path)
@@ -311,6 +352,33 @@ class TestRunSelection:
         self._db_with_two_runs(tmp_path / "run")
         runs = _trace.list_runs(tmp_path)
         assert [r["id"] for r in runs] == ["newer"]
+
+    def test_list_runs_orders_directories_by_trace_start_time(self, tmp_path):
+        def write_run(directory: Path, run_id: str, started_at: float) -> None:
+            directory.mkdir()
+            db = sqlite3.connect(str(directory / "trace.db"))
+            db.executescript(_trace._DDL)
+            db.execute("INSERT INTO schema_version VALUES (?)", (_trace.SCHEMA_VERSION,))
+            db.execute(
+                "INSERT INTO runs (id, test_nodeid, started_at, finished_at, status) "
+                "VALUES (?, ?, ?, ?, 'passed')",
+                (run_id, "tests/t.py::test_x", started_at, started_at + 1),
+            )
+            db.commit()
+            db.close()
+
+        older = tmp_path / "older"
+        newer = tmp_path / "newer"
+        write_run(older, "older", 100.0)
+        write_run(newer, "newer", 200.0)
+        # Simulate a later viewer write touching the older directory.  The
+        # public --last contract must follow trace start time, not filesystem mtime.
+        os.utime(older, (5000.0, 5000.0))
+        os.utime(newer, (1000.0, 1000.0))
+
+        runs = _trace.list_runs(tmp_path)
+
+        assert [run["id"] for run in runs] == ["newer", "older"]
 
     def test_generate_html_on_empty_db_raises(self, tmp_path):
         run_dir = tmp_path / "run"

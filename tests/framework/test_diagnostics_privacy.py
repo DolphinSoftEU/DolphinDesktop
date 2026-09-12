@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dolphin_desktop import config
-from dolphin_desktop._config import get_log_level
+from dolphin_desktop import _config, config
+from dolphin_desktop._config import VALID_LOG_LEVELS, get_log_level
 from dolphin_desktop._logging import ROOT_LOGGER, get_logger, setup_logging
 
 _PYTHON = sys.executable
@@ -75,6 +75,32 @@ class TestConfigAppliesLogLevel:
         dolphin_logger.addHandler(handler)
         config(log_level="DEBUG")
         assert handler.level == logging.DEBUG
+
+    @pytest.mark.parametrize("value", ["TRACE", "WARNING", ""])
+    def test_invalid_runtime_log_level_does_not_leak(self, dolphin_logger: logging.Logger, value):
+        config(log_level="ERROR")
+        before_defaults = _config._defaults.copy()
+        before_logger = (
+            dolphin_logger.level,
+            tuple(dolphin_logger.handlers),
+            dolphin_logger.propagate,
+        )
+
+        with pytest.raises(ValueError, match="Invalid log_level"):
+            config(log_level=value)
+
+        assert _config._defaults == before_defaults
+        assert (
+            dolphin_logger.level,
+            tuple(dolphin_logger.handlers),
+            dolphin_logger.propagate,
+        ) == before_logger
+
+    @pytest.mark.parametrize("value", VALID_LOG_LEVELS)
+    def test_supported_runtime_log_levels_apply(self, dolphin_logger: logging.Logger, value):
+        config(log_level=value.lower())
+        assert get_log_level() == value
+        assert dolphin_logger.level == getattr(logging, value)
 
 
 # Redaction must survive handlers dolphin does not own
@@ -328,6 +354,31 @@ class TestTelemetryStripsUserSource:
         event["exception"]["values"][0]["stacktrace"]["frames"].reverse()
         hint = {"exc_info": (ValueError, ValueError("oops"), None)}
         assert _before_send(event, hint) is None
+
+    def test_exception_values_are_redacted(self):
+        event = {
+            "exception": {
+                "values": [
+                    {
+                        "type": "ElementNotFoundError",
+                        "value": (
+                            'login="DESKTOP_LOGIN_2c4b" '
+                            'clipboard="DESKTOP_CLIPBOARD_4a6e"'
+                        ),
+                    }
+                ]
+            }
+        }
+
+        sent = self._send(event)
+
+        assert sent is event
+        serialized = json.dumps(sent)
+        assert "DESKTOP_LOGIN_2c4b" not in serialized
+        assert "DESKTOP_CLIPBOARD_4a6e" not in serialized
+        assert sent["exception"]["values"][0]["value"] == (
+            'login="***" clipboard="***"'
+        )
 
 
 # Self-healing telemetry file
@@ -596,6 +647,17 @@ class TestRedactionShapesThatLeakedBefore:
             ("API_KEY=SK-ABCDEF", "SK-ABCDEF"),
             ("apiKey: abcd1234", "abcd1234"),
             ("api-key=abcd1234", "abcd1234"),
+            ('login="DESKTOP_LOGIN_2c4b"', "DESKTOP_LOGIN_2c4b"),
+            ('clipboard="DESKTOP_CLIPBOARD_4a6e"', "DESKTOP_CLIPBOARD_4a6e"),
+            (
+                'connection_string="Server=127.0.0.1;Password=DESKTOP_PASSWORD"',
+                "Server=127.0.0.1;Password=DESKTOP_PASSWORD",
+            ),
+            (
+                "connection_string=Server=127.0.0.1;User Id=DESKTOP_LOGIN;"
+                "Password=DESKTOP_PASSWORD",
+                "Server=127.0.0.1;User Id=DESKTOP_LOGIN;Password=DESKTOP_PASSWORD",
+            ),
             ("password:\thunter2tab", "hunter2tab"),
             ("password: hunter2\n  next: line", "hunter2"),
         ],
@@ -628,6 +690,28 @@ class TestRedactionShapesThatLeakedBefore:
         from dolphin_desktop._logging import _redact
 
         assert _redact("?token=abcd1234&next=1") == "?token=***&next=1"
+
+    def test_unquoted_connection_string_preserves_following_diagnostic_text(self) -> None:
+        from dolphin_desktop._logging import _redact
+
+        text = (
+            "connection_string=Server=127.0.0.1;User Id=DESKTOP_LOGIN;"
+            "Password=DESKTOP_PASSWORD, action=connect"
+        )
+
+        redacted = _redact(text)
+
+        assert redacted == "connection_string=***, action=connect"
+
+    def test_unquoted_connection_string_preserves_closing_parenthesis(self) -> None:
+        from dolphin_desktop._logging import _redact
+
+        text = (
+            "connect(connection_string=Server=127.0.0.1;"
+            "Password=DESKTOP_PASSWORD)"
+        )
+
+        assert _redact(text) == "connect(connection_string=***)"
 
 
 class TestRedactionAdversarialCorpus:

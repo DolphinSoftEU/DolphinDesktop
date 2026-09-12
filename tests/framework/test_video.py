@@ -163,12 +163,20 @@ def test_close_stderr_clears_a_handle_even_when_close_raises() -> None:
     assert recorder._errhandle is None
 
 
-def test_video_recorder_reports_missing_capture_and_clamps_frame_rate() -> None:
+def test_video_recorder_reports_missing_capture_and_rejects_frame_rate() -> None:
     from dolphin_desktop._video import VideoRecorder
 
-    assert VideoRecorder(fps=100)._fps == 30
+    with pytest.raises(ValueError, match="fps"):
+        VideoRecorder(fps=100)
     with pytest.raises(RuntimeError, match="No frames captured"):
         VideoRecorder().encode(Path("missing.mp4"))
+
+
+@pytest.mark.parametrize("fps", [0, 31])
+def test_video_recorder_rejects_fps_outside_configured_range(fps: int) -> None:
+    """Direct recorder construction must match config's 1..30 FPS contract."""
+    with pytest.raises(ValueError, match="fps"):
+        VideoRecorder(fps=fps)
 
 
 def test_video_moov_probe_rejects_truncated_and_accepts_valid_file(tmp_path: Path) -> None:
