@@ -55,16 +55,17 @@ Playwright. These differ and will not be silently papered over:
   ``path`` argument is positional.
 * Not implemented at all: ``locator.all()``, ``check()``/``uncheck()``,
   ``select_option()``, ``set_input_files()``, ``page.go_back()`` /
-  ``go_forward()``, ``context.new_page()``, and the ``expect()``
-  assertion library. Use the native :class:`CDPLocator` surface for
-  these — it reaches everything the shim does not.
+  ``go_forward()``, ``context.new_page()``, ``context.storage_state()``,
+  ``context.tracing``, ``page.video``, and the ``expect()`` assertion
+  library. Use the native :class:`CDPLocator` surface or Dolphin's own
+  trace/video facilities for these — it reaches everything the shim does not.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, NoReturn
 
 from ._cdp import CDPLocator, CDPSession, CDPStalePageError
 
@@ -124,6 +125,10 @@ class _PlaywrightPage:
         return self._select().current_url()
 
     def goto(self, url: str, *, timeout: float | None = None) -> None:
+        # ``_select().page`` is the raw Playwright Page returned by
+        # BrowserContext.pages, so its timeout is already expressed in
+        # milliseconds.  The seconds conversion belongs to calls entering
+        # the Dolphin API, not to this native Playwright delegation.
         self._select().page.goto(url, timeout=timeout)
 
     def locator(self, selector: str) -> _PlaywrightLocator:
@@ -172,6 +177,14 @@ class _PlaywrightPage:
 
     def close(self) -> None:
         self._page.close()
+
+    @property
+    def video(self) -> NoReturn:
+        """Reject Playwright video access in favour of Dolphin video capture."""
+        raise NotImplementedError(
+            "dolphin.playwright_compat does not expose Playwright video — use "
+            "Dolphin's pytest video capture instead."
+        )
 
     def on(self, event: str, handler: Any) -> None:
         self._page.on(event, handler)
@@ -301,6 +314,28 @@ class _PlaywrightContext:
         # binds to its own page and selects it lazily, when used.
         return [_PlaywrightPage(self._session, page) for page in self._session.pages()]
 
+    def new_page(self, **_: Any) -> NoReturn:
+        """Reject creating a page through a new Playwright context."""
+        raise NotImplementedError(
+            "dolphin's CDP compatibility layer does not create new pages — "
+            "open a page in the Electron application instead."
+        )
+
+    def storage_state(self, **_: Any) -> NoReturn:
+        """Reject Playwright persistent storage-state snapshots."""
+        raise NotImplementedError(
+            "dolphin.playwright_compat does not support Playwright storage state — "
+            "use Dolphin CDP storage helpers instead."
+        )
+
+    @property
+    def tracing(self) -> NoReturn:
+        """Reject Playwright tracing in favour of Dolphin trace capture."""
+        raise NotImplementedError(
+            "dolphin.playwright_compat does not expose Playwright tracing — use "
+            "Dolphin's TraceSession instead."
+        )
+
 
 class _PlaywrightBrowser:
     """Playwright ``Browser`` view. Only ``contexts`` and ``close`` are wired."""
@@ -381,4 +416,16 @@ def sync_playwright() -> Iterator[_Playwright]:
         pass
 
 
-__all__ = ["sync_playwright"]
+def async_playwright() -> NoReturn:
+    """Reject Playwright's asynchronous API explicitly.
+
+    Dolphin's compatibility layer is synchronous.  Raising here gives users
+    a deterministic migration hint instead of an import-time ``ImportError``.
+    """
+    raise NotImplementedError(
+        "dolphin.playwright_compat is sync-only; use sync_playwright() or "
+        "use Playwright's async API directly without this compatibility layer."
+    )
+
+
+__all__ = ["async_playwright", "sync_playwright"]

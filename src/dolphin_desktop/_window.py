@@ -367,7 +367,12 @@ class Window:
         else:
             entry = _repository.resolve(alias)
 
-        return Locator(self, fallback=entry.fallback or None, **entry.selector)
+        locator = Locator(self, fallback=entry.fallback or None, **entry.selector)
+        locator._object_repository = _repository
+        locator._object_alias = alias
+        locator._object_parent_alias = parent_alias
+        locator._object_selector_keys = set(entry.selector)
+        return locator
 
     def image(
         self,

@@ -41,13 +41,14 @@ def init() -> None:
         return
     if os.environ.get("DOLPHIN_TELEMETRY", "").lower() != "on":
         return
-    if not _DOLPHIN_DSN:
+    dsn = os.environ.get("SENTRY_DSN", "").strip() or _DOLPHIN_DSN
+    if not dsn:
         return
     try:
         import sentry_sdk  # type: ignore[import]
 
         sentry_sdk.init(
-            dsn=_DOLPHIN_DSN,
+            dsn=dsn,
             traces_sample_rate=0.0,
             default_integrations=False,
             auto_enabling_integrations=False,

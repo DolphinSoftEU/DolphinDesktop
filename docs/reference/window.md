@@ -75,6 +75,20 @@ win.locator(title_re=".*Save.*")
 win.locator(auto_id="btnSave", found_index=0)
 ```
 
+For WPF, WinForms, and WinUI/UWP controls, the most durable UIA contract is
+the provider-published AutomationId combined with the UIA control type:
+
+```python
+save = win.locator(auto_id="btnSave", control_type="Button")
+save.wait_for(state="visible")
+save.wait_for(state="enabled")
+```
+
+`auto_id` is the UIA AutomationId, not a screen coordinate. A control that is
+custom-rendered or does not publish an accessibility provider cannot be made
+discoverable by changing the locator syntax; use the application's accessible
+surface or an explicitly configured image fallback.
+
 ## Window actions
 
 ```python
@@ -88,9 +102,20 @@ win.focus()
 win.wait_for_close(timeout=10)
 ```
 
+`Application.window(...)` already waits for the window to become visible. Call
+`wait_until_ready()` when startup work can leave the window busy, and use
+`wait_for_close()` when the scenario asserts that the window has gone away.
+Window lookup does not change process ownership: an application obtained with
+`Desktop.connect()` remains external and must not be killed by test cleanup.
+
 ## Screenshots
 
 ```python
 img = win.screenshot()                  # PIL.Image
 img = win.screenshot("output.png")      # save to file
 ```
+
+Screenshot files are caller-owned artifacts. For a test, write them below
+`tmp_path` and remove them from a `finally` block so pass, failure, and skip
+paths leave no screenshot behind. A screenshot requires a capturable visible
+desktop; hidden/headless execution is a separate contract.

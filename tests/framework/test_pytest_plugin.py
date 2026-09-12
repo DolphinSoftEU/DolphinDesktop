@@ -710,10 +710,33 @@ class TestBasicHooksAndOptions:
             "--dolphin-retry",
         ]
         assert added[0][1]["default"] == "uia"
+        assert added[1][1]["type"] is plugin._cli_timeout
         assert added[6][1]["choices"] == ["off", "keepfailedonly", "keepall"]
+        assert added[10][1]["type"] is plugin._cli_retry
 
 
 class TestFixtures:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        (("0", 0.0), ("1.5", 1.5), ("-0", -0.0)),
+    )
+    def test_cli_timeout_parser_accepts_finite_non_negative_values(self, value, expected):
+        assert plugin._cli_timeout(value) == expected
+
+    @pytest.mark.parametrize("value", ("nan", "inf", "-inf", "-1", "not-a-number"))
+    def test_cli_timeout_parser_rejects_invalid_values(self, value):
+        with pytest.raises(plugin.ArgumentTypeError, match="timeout"):
+            plugin._cli_timeout(value)
+
+    @pytest.mark.parametrize(("value", "expected"), (("0", 0), ("3", 3)))
+    def test_cli_retry_parser_accepts_non_negative_integers(self, value, expected):
+        assert plugin._cli_retry(value) == expected
+
+    @pytest.mark.parametrize("value", ("-1", "1.5", "not-an-integer"))
+    def test_cli_retry_parser_rejects_invalid_values(self, value):
+        with pytest.raises(plugin.ArgumentTypeError, match="retry"):
+            plugin._cli_retry(value)
+
     def test_session_fixtures_resolve_cli_env_and_defaults(self, monkeypatch, tmp_path):
         request = SimpleNamespace(
             config=_Options(tmp_path, **{"--dolphin-backend": "win32", "--dolphin-timeout": 2.5})
@@ -816,6 +839,28 @@ class TestFixtures:
         generator.close()
         assert _config._defaults["timeout"] == 10.0
         assert _config._defaults["video_mode"] == "off"
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        (
+            ({"timeout": "not-a-number"}, "timeout"),
+            ({"timeout": "nan"}, "timeout"),
+            ({"timeout": -1}, "timeout"),
+            ({"video_mode": "invalid-video"}, "video_mode"),
+            ({"headless": "yes"}, "headless"),
+        ),
+    )
+    def test_marker_config_rejects_invalid_values_before_mutation(
+        self, monkeypatch, tmp_path, kwargs, message
+    ):
+        from dolphin_desktop import _config
+
+        monkeypatch.setattr(_config, "_defaults", {"timeout": 10.0, "video_mode": "off"})
+        request = _request(tmp_path, **{"--dolphin-headless": False})
+        request.node.get_closest_marker = lambda _name: SimpleNamespace(kwargs=kwargs)
+        with pytest.raises(pytest.UsageError, match=message):
+            next(plugin._dolphin_marker_config.__wrapped__(request))
+        assert _config._defaults == {"timeout": 10.0, "video_mode": "off"}
 
     def test_marker_config_covers_active_headless_and_absent_marker_options(
         self, monkeypatch, tmp_path

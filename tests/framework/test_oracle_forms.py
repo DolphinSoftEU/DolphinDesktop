@@ -480,12 +480,16 @@ def test_primary_hwnd_prefers_matching_java_window() -> None:
     assert app._primary_hwnd() == 2
 
 
-def test_primary_hwnd_falls_back_to_the_first_candidate_when_title_does_not_match() -> None:
-    wins = [_FakeWindow("SunAwtFrame", "Oracle Forms", 2), _FakeWindow("SunAwtDialog", "Dialog", 3)]
+def test_primary_hwnd_rejects_candidates_when_title_does_not_match() -> None:
+    wins = [
+        _FakeWindow("SunAwtFrame", "Oracle Forms", 2),
+        _FakeWindow("SunAwtDialog", "Dialog", 3),
+    ]
     application = SimpleNamespace(_app=SimpleNamespace(windows=Mock(return_value=wins)))
     app = forms.OracleFormsApp(application, title_re="Missing")
 
-    assert app._primary_hwnd() == 2
+    with pytest.raises(forms.OracleFormsError, match="title_re"):
+        app._primary_hwnd()
 
 
 def test_primary_hwnd_uses_non_java_windows_when_no_java_window_exists() -> None:

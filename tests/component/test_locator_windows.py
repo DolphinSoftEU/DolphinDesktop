@@ -44,6 +44,12 @@ def test_real_locator_uses_a_fallback_selector(real_window) -> None:
     assert locator.text() == "Cancel"
 
 
+def test_real_locator_collection_filters_uia_auto_id_after_backend_fallback(real_window) -> None:
+    matches = real_window.locator(auto_id=str(ID_CANCEL)).all(depth=5)
+
+    assert [match.text() for match in matches] == ["Cancel"]
+
+
 def test_real_locator_get_attribute_default_is_used_for_missing_attribute(real_window) -> None:
     locator = real_window.locator(auto_id=str(ID_OK))
 
