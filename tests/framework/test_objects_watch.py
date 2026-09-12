@@ -377,3 +377,11 @@ class TestWatchReload:
         path.write_text("btn: {selector: {name: Fixed}}\n", encoding="utf-8")
         _touch_future(path)
         assert repo.resolve("btn").selector == {"title": "Fixed"}
+
+    def test_changed_empty_file_removes_its_aliases(self, tmp_path):
+        repo, path = self._watching(tmp_path, "btn: {selector: {name: Old}}\n")
+        path.write_text("", encoding="utf-8")
+        _touch_future(path)
+
+        with pytest.raises(AliasNotFoundError):
+            repo.resolve("btn")

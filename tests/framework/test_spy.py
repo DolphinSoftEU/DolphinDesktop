@@ -320,6 +320,7 @@ class TestHighlighter:
             GetClientRect=lambda hwnd: (0, 0, 20, 3),
             FillRect=lambda *args: calls.append(("fill", args)),
             EndPaint=lambda *args: calls.append(("end", args)),
+            DestroyWindow=lambda hwnd: calls.append(("destroy", hwnd)),
             PumpMessages=lambda: calls.append(("pump",)),
         )
         monkeypatch.setitem(sys.modules, "win32gui", gui)
@@ -348,7 +349,9 @@ class TestHighlighter:
         highlighter._strip_thread()
         assert highlighter._strips == [101, 102, 103, 104]
         assert paint_callback["proc"]["paint"]("hwnd", "paint", 0, 0) == 0
+        assert paint_callback["proc"][_spy._HIGHLIGHT_CLOSE_MESSAGE]("hwnd", "close", 0, 0) == 0
         assert any(call[0] == "fill" for call in calls)
+        assert ("destroy", "hwnd") in calls
         assert any(call[0] == "pump" for call in calls)
 
     def test_strip_thread_ignores_already_registered_class_and_pump_error(self, monkeypatch):
@@ -568,6 +571,74 @@ class TestHighlighter:
         )
 
         assert _spy._element_owner_is_alive(child) is False
+
+    def test_owner_liveness_uses_callable_top_level_parent(self, monkeypatch):
+        owner = _Info(name="AUT", control_type="Window")
+        owner.handle = 123
+        child = _Info(control_type="Button", parent=owner)
+        child.top_level_parent = lambda: owner
+        monkeypatch.setitem(
+            sys.modules,
+            "win32gui",
+            _module("win32gui", IsWindow=lambda handle: handle == 123),
+        )
+
+        assert _spy._element_owner_is_alive(child) is True
+
+    def test_owner_liveness_survives_broken_top_level_parent_probe(self):
+        class BrokenTopLevel(_Info):
+            @property
+            def top_level_parent(self):
+                raise RuntimeError("provider unavailable")
+
+        assert _spy._element_owner_is_alive(BrokenTopLevel()) is True
+
+    def test_owner_liveness_stops_on_cycles_and_handles_broken_properties(self):
+        cyclic = _Info()
+        cyclic.parent = cyclic
+        assert _spy._element_owner_is_alive(cyclic) is True
+
+        class BrokenControlType:
+            parent = None
+            rectangle = _Rect()
+
+            @property
+            def control_type(self):
+                raise RuntimeError("control type unavailable")
+
+        assert _spy._element_owner_is_alive(BrokenControlType()) is True
+
+        class BrokenParent:
+            control_type = "Button"
+
+            @property
+            def parent(self):
+                raise RuntimeError("parent unavailable")
+
+        assert _spy._element_owner_is_alive(BrokenParent()) is False
+
+    def test_owner_liveness_treats_win32_and_rectangle_probe_errors_as_dead_or_live(
+        self, monkeypatch
+    ):
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setitem(
+                sys.modules,
+                "win32gui",
+                _module("win32gui", IsWindow=lambda _handle: (_ for _ in ()).throw(RuntimeError())),
+            )
+            info = _Info()
+            info.handle = 123
+            assert _spy._element_owner_is_alive(info) is True
+
+        class BrokenRectangle:
+            control_type = "Button"
+            parent = None
+
+            @property
+            def rectangle(self):
+                raise RuntimeError("rectangle unavailable")
+
+        assert _spy._element_owner_is_alive(BrokenRectangle()) is False
 
 
 class TestInspectAndFormatting:

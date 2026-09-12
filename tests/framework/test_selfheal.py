@@ -6,7 +6,10 @@ import errno
 import math
 import multiprocessing
 import os
+import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -79,6 +82,40 @@ def test_windows_retry_stops_after_its_bounded_budget(monkeypatch) -> None:
     with pytest.raises(OSError, match="temporarily locked"):
         _selfheal._retry_windows_contention(operation)
     assert attempts == 1
+
+
+def test_posix_stats_lock_acquires_and_releases_fcntl_lock(tmp_path, monkeypatch):
+    from dolphin_desktop import _selfheal
+
+    calls = []
+    fcntl = SimpleNamespace(
+        LOCK_EX=1,
+        LOCK_UN=2,
+        flock=lambda fd, operation: calls.append((fd, operation)),
+    )
+    monkeypatch.setattr(_selfheal.os, "name", "posix")
+    monkeypatch.setitem(sys.modules, "fcntl", fcntl)
+
+    path = tmp_path / "events.jsonl"
+    with _selfheal._stats_lock(path):
+        assert path.with_name(path.name + ".lock").exists()
+
+    assert [operation for _fd, operation in calls] == [fcntl.LOCK_EX, fcntl.LOCK_UN]
+
+
+def test_stats_returns_empty_if_journal_disappears_after_initial_probe(tmp_path, monkeypatch):
+    from dolphin_desktop import _selfheal
+
+    path = tmp_path / "events.jsonl"
+    path.write_text('{"test":"event"}\n', encoding="utf-8")
+
+    @contextmanager
+    def lock_and_remove(_path):
+        path.unlink()
+        yield
+
+    monkeypatch.setattr(_selfheal, "_stats_lock", lock_and_remove)
+    assert _selfheal.selfheal_stats(file=path) == []
 
 
 def _record_selfheal_events(

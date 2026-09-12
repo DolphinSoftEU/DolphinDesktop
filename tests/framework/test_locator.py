@@ -431,6 +431,299 @@ def test_normalize_criteria_aliases_and_conflicts():
         locator_module._normalize_criteria({"name": "one", "title": "two"})
 
 
+def test_hidden_input_error_predicate_handles_missing_modules_and_unrelated_errors(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pywintypes", None)
+    assert locator_module._is_hidden_physical_input_error(RuntimeError("other failure")) is False
+
+    class FakeWin32Error(Exception):
+        funcname = None
+
+    monkeypatch.setitem(sys.modules, "pywintypes", SimpleNamespace(error=FakeWin32Error))
+    error = FakeWin32Error("code", "SetCursorPos")
+    assert locator_module._is_hidden_physical_input_error(error) is True
+    assert locator_module._is_hidden_physical_input_error(ValueError("other")) is False
+
+
+def test_text_pattern_and_native_handle_helpers_cover_edge_cases():
+    empty_pattern = SimpleNamespace(DocumentRange=SimpleNamespace(GetText=Mock(return_value=None)))
+    assert locator_module._read_text_via_pattern(SimpleNamespace(iface_text=empty_pattern)) == ""
+
+    non_text_pattern = SimpleNamespace(DocumentRange=SimpleNamespace(GetText=Mock(return_value=42)))
+    assert (
+        locator_module._read_text_via_pattern(SimpleNamespace(iface_text=non_text_pattern)) is None
+    )
+
+    direct = SimpleNamespace(handle=lambda: 42, element_info=None)
+    assert locator_module._element_hwnd(direct) == 42
+
+    class BrokenHandle:
+        element_info = None
+
+        @property
+        def handle(self):
+            raise RuntimeError("handle unavailable")
+
+    assert locator_module._element_hwnd(BrokenHandle()) is None
+
+    ancestor = SimpleNamespace(handle="not-an-int", parent=SimpleNamespace(handle=77, parent=None))
+    assert locator_module._element_hwnd(SimpleNamespace(handle=0, element_info=ancestor)) == 77
+
+    assert (
+        locator_module._element_hwnd(SimpleNamespace(handle="not-an-int", element_info=None))
+        is None
+    )
+
+    class BrokenInfoHandle:
+        @property
+        def handle(self):
+            raise RuntimeError("UIA handle unavailable")
+
+        parent = None
+
+    assert (
+        locator_module._element_hwnd(SimpleNamespace(handle=0, element_info=BrokenInfoHandle()))
+        is None
+    )
+
+    cyclic = SimpleNamespace(handle=0)
+    cyclic.parent = cyclic
+    assert locator_module._element_hwnd(SimpleNamespace(handle=0, element_info=cyclic)) is None
+
+    class BrokenParent:
+        handle = 0
+
+        @property
+        def parent(self):
+            raise RuntimeError("parent unavailable")
+
+    assert (
+        locator_module._element_hwnd(SimpleNamespace(handle=0, element_info=BrokenParent())) is None
+    )
+
+
+def test_fallback_normalization_reports_non_iterable_and_invalid_criteria():
+    with pytest.raises(ValueError, match="fallback must be an iterable"):
+        locator_module._normalize_fallbacks(1)
+    with pytest.raises(ValueError, match=r"invalid fallback\[0\].*conflicting criteria"):
+        locator_module._normalize_fallbacks([{"name": "one", "title": "two"}])
+
+
+def test_locator_all_filters_auto_id_after_a_backend_type_error_for_children_and_descendants():
+    matching = FakeElement(auto_id="target")
+    other = FakeElement(auto_id="other")
+
+    class AutoIdUnsupportedSpec(FakeSpec):
+        def children(self, **criteria):
+            if "auto_id" in criteria:
+                raise TypeError("auto_id is not supported by this UIA provider")
+            return [other, matching]
+
+        def descendants(self, **criteria):
+            if "auto_id" in criteria:
+                raise TypeError("auto_id is not supported by this UIA provider")
+            return [other, matching]
+
+    parent = AutoIdUnsupportedSpec()
+    window = SimpleNamespace(_get_spec=Mock(return_value=parent))
+    locator = locator_module.Locator(window, auto_id="target")
+
+    assert [item._element for item in locator.all()] == [matching]
+    assert [item._element for item in locator.all(depth=5)] == [matching]
+
+
+def test_locator_all_discards_type_error_fallback_without_auto_id():
+    parent = FakeSpec()
+    parent.children = Mock(side_effect=TypeError("unsupported criteria"))
+    locator = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), title="x"
+    )
+    assert locator.all() == []
+
+
+def test_locator_all_discards_backend_error_during_auto_id_fallback():
+    class BrokenAutoIdSpec(FakeSpec):
+        def descendants(self, **criteria):
+            if "auto_id" in criteria:
+                raise TypeError("auto_id unsupported")
+            raise RuntimeError("backend search failed")
+
+    parent = BrokenAutoIdSpec()
+    locator = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), auto_id="target"
+    )
+    assert locator.all(depth=5) == []
+
+
+def test_locator_refreshes_a_child_alias_from_its_repository():
+    entry = SimpleNamespace(selector={"auto_id": "new"}, fallback=[])
+    repository = SimpleNamespace(resolve_child=Mock(return_value=entry))
+    locator = locator_module.Locator(SimpleNamespace(_get_spec=Mock()), title="old")
+    locator._object_repository = repository
+    locator._object_alias = "save_button"
+    locator._object_parent_alias = "main_window"
+    locator._object_selector_keys = {"title"}
+
+    locator._refresh_object_repository()
+
+    repository.resolve_child.assert_called_once_with("main_window", "save_button")
+    assert locator._criteria == {"auto_id": "new"}
+
+
+def test_hidden_hover_preserves_unrelated_errors():
+    import pywinauto.mouse as py_mouse
+
+    element = FakeElement()
+    locator = resolved(element)
+    locator._application = SimpleNamespace(_desktop=SimpleNamespace(_is_hidden=True))
+    error = RuntimeError("control provider failed")
+    with patch.object(py_mouse, "move", side_effect=error), pytest.raises(RuntimeError) as raised:
+        locator.hover()
+    assert raised.value is error
+
+
+def test_hidden_press_key_reports_an_element_without_a_native_handle():
+    locator = resolved(FakeElement())
+    locator._application = SimpleNamespace(_desktop=SimpleNamespace(_is_hidden=True))
+    with (
+        patch.object(locator_module, "_send_keys_on_hidden_desktop", return_value=False),
+        pytest.raises(DolphinError, match="without a native window handle"),
+    ):
+        locator.press_key("{ENTER}")
+
+
+def test_locator_stops_a_fallback_that_is_resolved_after_its_deadline():
+    parent = FakeSpec()
+    fallback = FakeSpec()
+    parent.child_window = Mock(side_effect=[RuntimeError("primary"), fallback])
+    locator = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="primary",
+        fallback=[{"title": "fallback"}],
+    ).timeout(1)
+    clock = {"value": 0}
+
+    with (
+        patch.object(locator_module.time, "monotonic", side_effect=lambda: clock["value"]),
+        patch.object(
+            locator_module,
+            "_wait_until_visible",
+            side_effect=lambda *_args: clock.update(value=2),
+        ),
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        pytest.raises(ElementNotFoundError),
+    ):
+        locator._resolve()
+
+
+def test_presence_resolution_uses_a_normalized_negative_index_and_reports_fallback_errors():
+    parent = FakeSpec()
+    child = FakeSpec()
+    parent.child_window = Mock(return_value=child)
+    locator = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), title="target"
+    ).nth(-1)
+    with (
+        patch.object(
+            locator_module,
+            "_resolve_negative_found_index",
+            return_value={"title": "target", "found_index": 0},
+        ),
+        patch.object(locator_module, "_wait_until_present"),
+    ):
+        assert locator._resolve_presence() is child
+    parent.child_window.assert_called_once_with(title="target", found_index=0)
+
+    failing_parent = FakeSpec()
+    failing_parent.child_window = Mock(side_effect=[RuntimeError("primary"), child])
+    failing = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=failing_parent)),
+        title="primary",
+        fallback=[{"title": "fallback"}],
+    )
+    with (
+        patch.object(locator_module, "_wait_until_present", side_effect=RuntimeError("fallback")),
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        pytest.raises(ElementNotFoundError),
+    ):
+        failing._resolve_presence()
+
+
+def test_presence_resolution_discards_a_fallback_that_is_late():
+    parent = FakeSpec()
+    fallback = FakeSpec()
+    parent.child_window = Mock(side_effect=[RuntimeError("primary"), fallback])
+    locator = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="primary",
+        fallback=[{"title": "fallback"}],
+    ).timeout(1)
+    clock = {"value": 0}
+
+    with (
+        patch.object(locator_module.time, "monotonic", side_effect=lambda: clock["value"]),
+        patch.object(
+            locator_module,
+            "_wait_until_present",
+            side_effect=lambda *_args: clock.update(value=2),
+        ),
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        pytest.raises(ElementNotFoundError),
+    ):
+        locator._resolve_presence()
+
+
+def test_presence_image_fallback_swallows_unexpected_errors():
+    parent = FakeSpec()
+    parent.child_window = Mock(side_effect=RuntimeError("primary"))
+    image = SimpleNamespace(
+        find_with_size=Mock(side_effect=RuntimeError("screen capture failed")),
+        _template_path="button.png",
+    )
+    locator = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)),
+        title="primary",
+        image_fallback=image,
+    )
+    with patch.object(locator_module, "_tree_walk_find", return_value=None):
+        with pytest.raises(ElementNotFoundError):
+            locator._resolve_presence()
+
+
+def test_negative_index_helper_handles_non_negative_expiry_and_search_errors():
+    parent = FakeSpec()
+    criteria = {"title": "target", "found_index": 0}
+    assert locator_module._resolve_negative_found_index(parent, criteria, timeout=0) is criteria
+
+    with monotonic_values(1):
+        with pytest.raises(Exception, match="negative index"):
+            locator_module._resolve_negative_found_index(
+                parent, {"title": "target", "found_index": -1}, timeout=1, deadline=0.5
+            )
+
+    parent.wrapper.descendants = Mock(side_effect=RuntimeError("search failed"))
+    with (
+        monotonic_values(0, 0, 0, 0, 2),
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        patch.object(locator_module.time, "sleep") as sleep,
+        pytest.raises(Exception, match="negative index"),
+    ):
+        locator_module._resolve_negative_found_index(
+            parent, {"title": "target", "found_index": -1}, timeout=1
+        )
+    sleep.assert_called_once()
+
+
+def test_qt_object_name_match_is_rejected_when_the_deadline_passes_during_scan():
+    match = SimpleNamespace(element_info=SimpleNamespace(automation_id="target"))
+    parent = FakeSpec(descendants=[match])
+    locator = locator_module._QtObjectNameLocator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), "target"
+    ).timeout(1)
+
+    with monotonic_values(0, 0, 1, 1), pytest.raises(ElementNotFoundError):
+        locator._resolve()
+
+
 def test_invalid_fallback_entry_reports_its_index_before_resolution():
     parent = SimpleNamespace(_get_spec=Mock())
 

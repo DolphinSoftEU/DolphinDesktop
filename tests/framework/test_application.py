@@ -590,6 +590,48 @@ def test_window_accessor_reraises_primary_when_fallback_budget_is_exhausted(monk
     finder.assert_called_once_with(entry.selector, 10)
 
 
+def test_window_accessor_reraises_primary_without_alias(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+    from dolphin_desktop._exceptions import WindowNotFoundError
+
+    app, _raw = _bare_application(application)
+    primary_error = WindowNotFoundError("window missing")
+    finder = Mock(side_effect=primary_error)
+    monkeypatch.setattr(app, "_find_window", finder)
+
+    with pytest.raises(WindowNotFoundError) as exc_info:
+        app.window(title="Main", timeout=0)
+
+    assert exc_info.value is primary_error
+    finder.assert_called_once_with({"found_index": 0, "title": "Main"}, 0)
+
+
+def test_window_accessor_reraises_primary_when_all_fallbacks_miss(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+    from dolphin_desktop._exceptions import WindowNotFoundError
+    from dolphin_desktop.objects import ObjectEntry
+
+    app, _raw = _bare_application(application)
+    primary_error = WindowNotFoundError("primary missing")
+    finder = Mock(side_effect=primary_error)
+    monkeypatch.setattr(app, "_find_window", finder)
+    entry = ObjectEntry(
+        {"title": "Primary"},
+        fallback=[{"title": "Fallback 1"}, {"title": "Fallback 2"}],
+    )
+    monkeypatch.setattr("dolphin_desktop.objects._repository.resolve", Mock(return_value=entry))
+
+    with pytest.raises(WindowNotFoundError) as exc_info:
+        app.window("window_alias", timeout=0)
+
+    assert exc_info.value is primary_error
+    assert finder.call_args_list == [
+        call(entry.selector, 0),
+        call(entry.fallback[0], 0),
+        call(entry.fallback[1], 0),
+    ]
+
+
 def test_find_window_uses_own_process_before_desktop_fallback(monkeypatch) -> None:
     import dolphin_desktop._application as application
 
