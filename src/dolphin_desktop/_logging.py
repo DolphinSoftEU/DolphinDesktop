@@ -97,6 +97,37 @@ _SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CONNECTION_STRING_RE = re.compile(
+    r"((?<![A-Za-z0-9_])connection[_\-]?string[ \t]*[:=][ \t]*)"
+    r"(?:"
+    r'"(?P<dq>[^"\n]+)"'
+    r"|'(?P<sq>[^'\n]+)'"
+    r"|(?P<bare>(?:(?!,[ \t])(?![}\]])(?!\))[^\r\n]){2,})"
+    r")",
+    re.IGNORECASE,
+)
+
+_ADDITIONAL_SECRET_RE = re.compile(
+    r"((?<![A-Za-z0-9_])(?:login|username|user[_\-]?id|"
+    r"connection[_\-]?string|clipboard)[ \t]*[:=][ \t]*)"
+    r"(?:"
+    r'"(?P<dq>[^"\n]+)"'
+    r"|'(?P<sq>[^'\n]+)'"
+    r"|(?P<bare>(?!(?:True|False|None|self|str|int|bool|float)(?![A-Za-z0-9_])"
+    r"|[\s,;)}\]&])"
+    r"(?:(?!,[ \t])[^\s;)}\]&\"'\n]){2,})"
+    r")",
+    re.IGNORECASE,
+)
+
+# Mainframe command payloads are sensitive even when the caller did not label
+# them as ``password=...``.  A terminal String/SendKey value can be a login,
+# password, or free-form user input, so redact the payload structurally.
+_MAINFRAME_PAYLOAD_RE = re.compile(
+    r"((?:String|SendKey)\(\s*[\"'])([^\"'\r\n]*)([\"']\s*\))",
+    re.IGNORECASE,
+)
+
 
 def _mask(match: re.Match[str]) -> str:
     """Replace the value while preserving the quotes that delimited it."""
@@ -109,7 +140,10 @@ def _mask(match: re.Match[str]) -> str:
 
 
 def _redact(text: str) -> str:
-    return _SECRET_RE.sub(_mask, text)
+    text = _CONNECTION_STRING_RE.sub(_mask, text)
+    text = _SECRET_RE.sub(_mask, text)
+    text = _ADDITIONAL_SECRET_RE.sub(_mask, text)
+    return _MAINFRAME_PAYLOAD_RE.sub(r"\1***\3", text)
 
 
 class _RedactingFormatter(logging.Formatter):
@@ -194,11 +228,18 @@ def install_redaction(logger: logging.Logger | None = None) -> None:
 
 
 def _level_int(level: str | None) -> int:
+    from ._config import VALID_LOG_LEVELS
+
     if level is None:
         from ._config import get_log_level
 
         level = get_log_level()
-    return getattr(logging, level.upper(), logging.INFO)
+    normalized = level.upper()
+    if normalized not in VALID_LOG_LEVELS:
+        raise ValueError(
+            f"Invalid log_level: {level!r}; expected one of {', '.join(VALID_LOG_LEVELS)}"
+        )
+    return getattr(logging, normalized)
 
 
 def apply_log_level(level: str | None = None) -> None:

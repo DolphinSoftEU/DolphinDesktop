@@ -6,7 +6,8 @@ No. The documented runtime target is Windows desktop automation. The package has
 
 ## Which Python versions are supported?
 
-Python 3.11 or newer. The package metadata currently allows Python 3.11+.
+For the 0.2.0 release, the supported range is Python 3.11–3.13. The package
+metadata rejects Python 3.14 and newer until a release explicitly adds support.
 
 ## Do I have to use pytest?
 

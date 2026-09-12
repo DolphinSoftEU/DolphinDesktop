@@ -30,6 +30,14 @@ dolphin trace view --last
 dolphin trace view RUN_ID
 ```
 
+`RUN_ID` is the name of a trace-run directory under the trace directory, or a
+path to that directory; it is not the SQLite `runs.id` value. `--last` selects
+the run with the newest recorded start time. A run with status `RUNNING` is an
+incomplete trace (for example, after an interrupted test) and its viewer shows
+an unknown duration. Directories without a readable `trace.db`, including a
+corrupted trace copy, are skipped by `trace list`; `trace view` reports an
+error and does not create a viewer for them.
+
 Use `--dir PATH` if your project writes traces somewhere else:
 
 ```bash
@@ -37,7 +45,15 @@ dolphin trace list --dir artifacts/traces
 dolphin trace view --last --dir artifacts/traces
 ```
 
-## Video Recording
+## 9.2 — Nagrywanie wideo
+
+Video recording supports the `off`, `keepfailedonly` and `keepall` modes. The
+requested frame rate is controlled with `config(video_fps=...)` or
+`DOLPHIN_VIDEO_FPS` and must be an integer from 1 through 30. In
+`keepfailedonly`, a successful test's recording is removed while a failed
+test's recording is retained; `keepall` retains both, and `off` creates no
+recording. Encoding requires the external `ffmpeg` binary (and `ffprobe` for
+validation); it is not installed by a Python extra.
 
 Video recording is on by default (`keepfailedonly`) and is controlled
 with `--dolphin-video` or `DOLPHIN_VIDEO`. It requires an external

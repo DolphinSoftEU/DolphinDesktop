@@ -14,6 +14,7 @@ import pytest
 from dolphin_desktop import _config
 from dolphin_desktop._config import (
     MAX_VIDEO_FPS,
+    VALID_LOG_LEVELS,
     VALID_TRACE_MODES,
     _env_choice,
     _env_number,
@@ -66,6 +67,28 @@ class TestEnumEnvValues:
     def test_surrounding_whitespace_is_tolerated(self, monkeypatch):
         monkeypatch.setenv("DOLPHIN_TRACE", " Always ")
         assert _env_choice("DOLPHIN_TRACE", "on-failure", VALID_TRACE_MODES) == "always"
+
+    @pytest.mark.parametrize("value", VALID_LOG_LEVELS)
+    def test_supported_log_level_environment_values_are_accepted(self, monkeypatch, value):
+        monkeypatch.setenv("DOLPHIN_DESKTOP_LOG_LEVEL", value.lower())
+        from dolphin_desktop._config import _env_log_level
+
+        assert _env_log_level() == value
+
+    def test_invalid_log_level_environment_value_warns_and_defaults_to_info(self, monkeypatch):
+        monkeypatch.setenv("DOLPHIN_DESKTOP_LOG_LEVEL", "TRACE")
+        monkeypatch.setenv("DOLPHIN_LOG_LEVEL", "ERROR")
+        from dolphin_desktop._config import _env_log_level
+
+        with pytest.warns(UserWarning, match="DOLPHIN_DESKTOP_LOG_LEVEL"):
+            assert _env_log_level() == "INFO"
+
+    def test_prefixed_log_level_environment_value_wins(self, monkeypatch):
+        monkeypatch.setenv("DOLPHIN_DESKTOP_LOG_LEVEL", "ERROR")
+        monkeypatch.setenv("DOLPHIN_LOG_LEVEL", "DEBUG")
+        from dolphin_desktop._config import _env_log_level
+
+        assert _env_log_level() == "ERROR"
 
 
 class TestDefaultsAreBuiltThroughTheValidators:

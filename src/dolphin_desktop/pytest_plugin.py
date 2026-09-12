@@ -66,6 +66,37 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
     log = _get_logger("plugin")
     for pid in pids:
+        anchored_handle = getattr(_application, "_owned_process_handles", {}).get(pid)
+        if anchored_handle is not None:
+            try:
+                import win32api  # type: ignore[import]
+
+                # The handle is bound to the original kernel process object;
+                # never reopen the numeric PID, which may have been reused.
+                win32api.TerminateProcess(anchored_handle, 1)
+                win32api.CloseHandle(anchored_handle)
+                getattr(_application, "_owned_process_handles", {}).pop(pid, None)
+                getattr(_application, "_unanchored_pids", set()).discard(pid)
+                _application._live_pids.discard(pid)
+                log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
+            except Exception as exc:
+                # Keep both the handle and PID registered. The session
+                # finalizer or a later explicit cleanup can retry and the
+                # failure remains visible in diagnostics.
+                log.warning(
+                    "Could not clean up anchored process PID=%d after test %s: %s",
+                    pid,
+                    item.nodeid,
+                    exc,
+                )
+            continue
+        if pid in getattr(_application, "_unanchored_pids", set()):
+            log.warning(
+                "Skipping PID-only cleanup for unanchored process PID=%d after test %s",
+                pid,
+                item.nodeid,
+            )
+            continue
         try:
             import win32api  # type: ignore[import]
             import win32con  # type: ignore[import]
@@ -730,6 +761,11 @@ def pytest_runtest_makereport(  # type: ignore[misc]
 ) -> None:
     outcome = yield
     report = outcome.get_result()
+    if report.failed and getattr(report, "longrepr", None):
+        # JUnit and terminal reporters consume the same TestReport after this
+        # hook.  Sanitise the report itself so those sinks cannot serialize the
+        # original exception text before the trace-specific copy is redacted.
+        report.longrepr = _redact(str(report.longrepr))
     if call.when == "call":
         from ._exceptions import ElementNotFoundError, WaitTimeoutError
 
@@ -892,6 +928,33 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if orphans:
         log = _get_logger("plugin")
         for pid in orphans:
+            anchored_handle = getattr(_application, "_owned_process_handles", {}).get(pid)
+            if anchored_handle is not None:
+                try:
+                    import win32api  # type: ignore[import]
+
+                    # Reuse the anchored handle from launch; opening PID here
+                    # would make session cleanup vulnerable to PID reuse.
+                    win32api.TerminateProcess(anchored_handle, 1)
+                    win32api.CloseHandle(anchored_handle)
+                    getattr(_application, "_owned_process_handles", {}).pop(pid, None)
+                    getattr(_application, "_unanchored_pids", set()).discard(pid)
+                    _application._session_pids.discard(pid)
+                    _application._live_pids.discard(pid)
+                    log.info("Killed orphan AUT PID=%d at session end", pid)
+                except Exception as exc:
+                    log.warning(
+                        "Could not clean up anchored orphan AUT PID=%d at session end: %s",
+                        pid,
+                        exc,
+                    )
+                continue
+            if pid in getattr(_application, "_unanchored_pids", set()):
+                log.warning(
+                    "Skipping PID-only session cleanup for unanchored process PID=%d",
+                    pid,
+                )
+                continue
             try:
                 import win32api  # type: ignore[import]
                 import win32con  # type: ignore[import]

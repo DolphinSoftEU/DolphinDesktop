@@ -99,7 +99,11 @@ class VideoRecorder:
     """
 
     def __init__(self, fps: int = 10) -> None:
-        self._fps = max(1, min(fps, 30))
+        if isinstance(fps, bool) or not isinstance(fps, int):
+            raise ValueError("fps must be an integer between 1 and 30")
+        if not 1 <= fps <= 30:
+            raise ValueError("fps must be between 1 and 30")
+        self._fps = fps
         self._tmpdir: Path | None = None
         self._outfile: Path | None = None
         self._errfile: Path | None = None
