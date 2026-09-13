@@ -1035,6 +1035,8 @@ class Application:
                 f"Cannot safely terminate owned process PID={self.process_id}: "
                 "the process identity handle was not captured"
             )
+        if soft:
+            self._request_soft_close()
         import win32api
 
         # A handle remains bound to the original kernel process object even if
@@ -1053,6 +1055,38 @@ class Application:
         _discard_owned_process_handle(pid, handle)
         _unanchored_pids.discard(pid)
         self._owned_process_handle = None
+
+    def _request_soft_close(self) -> None:
+        """Send the same best-effort window close requests as pywinauto.
+
+        ``pywinauto.Application.kill(soft=True)`` sends ``WM_CLOSE`` and then
+        reopens ``self.process`` by numeric PID for the forced termination.
+        Reusing that method would reintroduce the PID-reuse race, so only its
+        window-close portion is reproduced here; the final termination is
+        performed by :meth:`_terminate_owned_process` through the anchored
+        process handle.
+        """
+        try:
+            windows = list(self._app.windows(visible_only=True))
+        except Exception as exc:
+            _log.debug("Could not enumerate windows for soft close: %s", exc)
+            return
+
+        for window in windows:
+            try:
+                if hasattr(window, "close"):
+                    window.close()
+                    continue
+            except TimeoutError:
+                _log.debug("Timed out sending WM_CLOSE during soft close")
+            except Exception as exc:
+                _log.debug("Window close request failed: %s", exc)
+
+            try:
+                if hasattr(window, "force_close"):
+                    window.force_close()
+            except Exception as exc:
+                _log.debug("Window force-close request failed: %s", exc)
 
     def close(self, timeout: float = 5.0) -> None:
         """Shut the application down, asking first.

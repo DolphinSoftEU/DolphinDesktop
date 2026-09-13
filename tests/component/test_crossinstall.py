@@ -103,7 +103,6 @@ def test_project_metadata_docs_and_extras_stay_consistent(tmp_path: Path) -> Non
                 "pip",
                 "install",
                 "--quiet",
-                "--no-deps",
                 f"{wheel}[{extra}]",
             ],
             capture_output=True,
