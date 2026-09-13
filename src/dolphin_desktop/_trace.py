@@ -266,12 +266,8 @@ class TraceSession:
 
         Never raises — see :meth:`record_step`.
         """
-        error_message = (
-            _redact(error_message) if error_message is not None else None
-        )
-        error_traceback = (
-            _redact(error_traceback) if error_traceback is not None else None
-        )
+        error_message = _redact(error_message) if error_message is not None else None
+        error_traceback = _redact(error_traceback) if error_traceback is not None else None
         with self._lock:
             if self._closed:
                 return

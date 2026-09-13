@@ -60,9 +60,7 @@ class TestRecordStepIsNonFatal:
         assert db.execute("SELECT COUNT(*) FROM steps").fetchone()[0] == 1
         db.close()
 
-    def test_secret_values_are_redacted_before_storage_and_rendering(
-        self, tmp_path, monkeypatch
-    ):
+    def test_secret_values_are_redacted_before_storage_and_rendering(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_trace, "_capture_screenshot", lambda _path: None)
         secret = "DESKTOP_TRACE_LOGIN_2c4b"
         session = _trace.TraceSession(
@@ -84,13 +82,10 @@ class TestRecordStepIsNonFatal:
         db = sqlite3.connect(str(tmp_path / "run" / "trace.db"))
         stored = " ".join(
             str(row)
-            for row in db.execute(
-                "SELECT test_nodeid, error_message, error_traceback FROM runs"
-            )
+            for row in db.execute("SELECT test_nodeid, error_message, error_traceback FROM runs")
         )
         stored += " " + " ".join(
-            str(row)
-            for row in db.execute("SELECT action, selector, error FROM steps")
+            str(row) for row in db.execute("SELECT action, selector, error FROM steps")
         )
         db.close()
         html = _trace.generate_html(tmp_path / "run").read_text(encoding="utf-8")

@@ -322,9 +322,7 @@ class TestHtmlReportEscaping:
 
 
 class TestMakereportIsolation:
-    def test_makereport_redacts_longrepr_before_reporters_serialize_it(
-        self, monkeypatch
-    ):
+    def test_makereport_redacts_longrepr_before_reporters_serialize_it(self, monkeypatch):
         monkeypatch.setattr(plugin, "_collect_artifacts", lambda *_args: None)
         report = SimpleNamespace(
             failed=True,
@@ -431,27 +429,28 @@ class TestBasicHooksAndOptions:
         monkeypatch.setattr(_application, "_live_pids", set())
         plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
 
-    def test_runtest_teardown_kills_processes_and_always_discards_them(self, monkeypatch):
+    def test_runtest_teardown_kills_anchored_processes_and_discards_them(self, monkeypatch):
         from dolphin_desktop import _application
 
         api_calls: list[tuple] = []
         api = types.SimpleNamespace(
-            OpenProcess=lambda *args: api_calls.append(("open", *args)) or "handle",
             TerminateProcess=lambda *args: api_calls.append(("terminate", *args)),
             CloseHandle=lambda *args: api_calls.append(("close", *args)),
         )
-        con = types.SimpleNamespace(PROCESS_TERMINATE=7)
         monkeypatch.setitem(sys.modules, "win32api", api)
-        monkeypatch.setitem(sys.modules, "win32con", con)
         live = {101, 102}
+        handles = {101: "handle-101", 102: "handle-102"}
         monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
 
         plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
 
         assert live == set()
-        assert ("terminate", "handle", 1) in api_calls
+        assert ("terminate", "handle-101", 1) in api_calls
+        assert ("terminate", "handle-102", 1) in api_calls
+        assert handles == {}
 
-    def test_runtest_teardown_discards_pid_when_win32_cleanup_fails(self, monkeypatch):
+    def test_runtest_teardown_keeps_unknown_pid_registered(self, monkeypatch):
         from dolphin_desktop import _application
 
         monkeypatch.setitem(
@@ -461,24 +460,23 @@ class TestBasicHooksAndOptions:
                 OpenProcess=lambda *_args: (_ for _ in ()).throw(OSError("gone"))
             ),
         )
-        monkeypatch.setitem(sys.modules, "win32con", types.SimpleNamespace(PROCESS_TERMINATE=7))
         live = {404}
         monkeypatch.setattr(_application, "_live_pids", live)
 
         plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
 
-        assert live == set()
+        assert live == {404}
 
-    def test_runtest_teardown_uses_anchored_handle_and_keeps_it_on_failure(
-        self, monkeypatch
-    ):
+    def test_runtest_teardown_uses_anchored_handle_and_keeps_it_on_failure(self, monkeypatch):
         from dolphin_desktop import _application
 
         calls: list[tuple] = []
         api = types.SimpleNamespace(
             OpenProcess=lambda *_args: pytest.fail("PID must not be reopened"),
-            TerminateProcess=lambda *args: calls.append(("terminate", *args))
-            or (_ for _ in ()).throw(OSError("access denied")),
+            TerminateProcess=lambda *args: (
+                calls.append(("terminate", *args))
+                or (_ for _ in ()).throw(OSError("access denied"))
+            ),
             CloseHandle=lambda *args: calls.append(("close", *args)),
         )
         monkeypatch.setitem(sys.modules, "win32api", api)
@@ -493,9 +491,7 @@ class TestBasicHooksAndOptions:
         assert live == {505}
         assert handles == {505: "original-process-handle"}
 
-    def test_runtest_teardown_terminates_original_process_handle_after_pid_reuse(
-        self, monkeypatch
-    ):
+    def test_runtest_teardown_terminates_original_process_handle_after_pid_reuse(self, monkeypatch):
         from dolphin_desktop import _application
 
         calls: list[tuple] = []
@@ -1563,8 +1559,10 @@ class TestSessionReports:
         monkeypatch.setitem(sys.modules, "win32con", types.SimpleNamespace(PROCESS_TERMINATE=9))
         session_pids = {88}
         live_pids = {88, 99}
+        handles = {88: "h"}
         monkeypatch.setattr(_application, "_session_pids", session_pids)
         monkeypatch.setattr(_application, "_live_pids", live_pids)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
         output_paths: list[Path] = []
         monkeypatch.setattr(plugin, "_generate_html_report", output_paths.append)
         monkeypatch.setattr(
@@ -1576,7 +1574,8 @@ class TestSessionReports:
         plugin.pytest_sessionfinish(SimpleNamespace(config=config), 0)
         assert session_pids == set()
         assert live_pids == {99}
-        assert api_calls[1] == ("terminate", "h", 1)
+        assert ("terminate", "h", 1) in api_calls
+        assert handles == {}
         assert output_paths == [tmp_path / "reports" / "summary-gw7.html"]
         plugin._session_reports.clear()
 
@@ -1636,15 +1635,14 @@ class TestSessionReports:
                 OpenProcess=lambda *_args: (_ for _ in ()).throw(OSError("gone"))
             ),
         )
-        monkeypatch.setitem(sys.modules, "win32con", types.SimpleNamespace(PROCESS_TERMINATE=9))
         pids = {77}
         live = {77}
         monkeypatch.setattr(_application, "_session_pids", pids)
         monkeypatch.setattr(_application, "_live_pids", live)
         plugin._session_reports.clear()
         plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
-        assert pids == set()
-        assert live == set()
+        assert pids == {77}
+        assert live == {77}
 
     def test_sessionfinish_uses_anchored_handle_after_pid_reuse(self, monkeypatch):
         from dolphin_desktop import _application
