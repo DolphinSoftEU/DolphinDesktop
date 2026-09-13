@@ -149,3 +149,8 @@ my_backend = "my_backend_pkg.my_backend:MyBackend"
 ```
 
 Installed entry points are discovered by `list_backends()` and `resolve_backend()`.
+
+Backend IDs are unique within a process. Registering the same class twice is
+idempotent; attempting to register a different class under an existing ID
+raises `ValueError` and leaves the original backend unchanged. The class-level
+`platform` value must be one of `windows`, `macos`, `linux`, or `any`.
