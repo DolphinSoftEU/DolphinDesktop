@@ -311,14 +311,17 @@ def launch_cmd_on_desktop(
     desktop_name: str | None = DESKTOP_NAME,
     *,
     timeout: float = 10.0,
+    wait_for_idle: bool = False,
     work_dir: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> tuple[int, int]:
     """Launch a command string on *desktop_name* without inheriting stdio.
 
-    ``CreateProcessW`` reports process creation synchronously.  For GUI
-    children, *timeout* bounds the subsequent input-idle readiness wait.  The
-    returned process handle remains open; the caller must close it via
+    ``CreateProcessW`` reports process creation synchronously.  When
+    *wait_for_idle* is true, *timeout* bounds the subsequent input-idle
+    readiness wait.  The default is false, matching pywinauto's former
+    ``Application.start(..., wait_for_idle=False)`` behaviour. The returned
+    process handle remains open; the caller must close it via
     :func:`close_process_handle`.
 
     When *env* is provided, it is merged with the parent's environment into a
@@ -351,7 +354,8 @@ def launch_cmd_on_desktop(
     if not ok:
         raise OSError(f"CreateProcessW({cmd!r}) failed: error {ctypes.get_last_error()}")
     _kernel32.CloseHandle(pi.hThread)
-    _wait_for_process_start(pi.hProcess, timeout)
+    if wait_for_idle:
+        _wait_for_process_start(pi.hProcess, timeout)
     return pi.dwProcessId, pi.hProcess
 
 

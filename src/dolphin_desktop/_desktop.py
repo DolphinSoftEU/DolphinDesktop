@@ -214,6 +214,7 @@ class Desktop:
         *,
         backend: str,
         timeout: float = 10.0,
+        wait_for_idle: bool = False,
         work_dir: str | None,
         env: Mapping[str, str] | None,
     ) -> tuple[_PyWinApp, str | None, int]:
@@ -232,6 +233,7 @@ class Desktop:
             cmd,
             None,
             timeout=timeout,
+            wait_for_idle=wait_for_idle,
             work_dir=work_dir,
             env=env,
         )
@@ -268,6 +270,7 @@ class Desktop:
         work_dir: str | None = None,
         startup_delay: float = 0.5,
         env: Mapping[str, str] | None = None,
+        wait_for_idle: bool = False,
     ) -> Application:
         """Start a new process and return an :class:`Application`.
 
@@ -278,8 +281,7 @@ class Desktop:
             ``r"C:\\Windows\\notepad.exe my_file.txt"``).
         timeout:
             Maximum seconds to wait for a GUI process to become input-idle
-            after creation. Console processes, which have no GUI input queue,
-            return as soon as ``CreateProcessW`` succeeds.
+            after creation when *wait_for_idle* is true.
         work_dir:
             Optional working directory for the new process.
         startup_delay:
@@ -291,6 +293,10 @@ class Desktop:
             Optional environment overlay for the child process. Values are
             merged into a private environment block for this spawn only;
             the caller's environment is never modified.
+        wait_for_idle:
+            Opt in to waiting for GUI input-idle readiness. The default
+            preserves the former ``wait_for_idle=False`` launch behaviour;
+            console processes return as soon as ``CreateProcessW`` succeeds.
         """
         if self._is_hidden:
             return self._launch_hidden(
@@ -299,6 +305,7 @@ class Desktop:
                 work_dir=work_dir,
                 startup_delay=startup_delay,
                 env=env,
+                wait_for_idle=wait_for_idle,
             )
 
         from ._runner import close_process_handle, terminate_process_handle
@@ -313,6 +320,7 @@ class Desktop:
                 cmd,
                 backend=self._backend,
                 timeout=timeout,
+                wait_for_idle=wait_for_idle,
                 work_dir=work_dir,
                 env=env,
             )
@@ -354,6 +362,7 @@ class Desktop:
         work_dir: str | None = None,
         startup_delay: float = 0.5,
         env: Mapping[str, str] | None = None,
+        wait_for_idle: bool = False,
     ) -> Application:
         """Launch a process on an explicit backend, bypassing ``self._backend``.
 
@@ -373,6 +382,7 @@ class Desktop:
                 work_dir=work_dir,
                 startup_delay=startup_delay,
                 env=env,
+                wait_for_idle=wait_for_idle,
             )
 
         from ._runner import close_process_handle, terminate_process_handle
@@ -383,6 +393,7 @@ class Desktop:
                 cmd,
                 backend=backend,
                 timeout=timeout,
+                wait_for_idle=wait_for_idle,
                 work_dir=work_dir,
                 env=env,
             )
@@ -485,6 +496,7 @@ class Desktop:
         work_dir: str | None,
         startup_delay: float,
         env: Mapping[str, str] | None = None,
+        wait_for_idle: bool = False,
     ) -> Application:
         """Launch *cmd* on the hidden desktop and connect pywinauto by PID."""
         from ._runner import close_process_handle, launch_cmd_on_desktop, terminate_process_handle
@@ -494,6 +506,7 @@ class Desktop:
             pid, h_process = launch_cmd_on_desktop(
                 cmd,
                 timeout=timeout,
+                wait_for_idle=wait_for_idle,
                 work_dir=work_dir,
                 env=env,
             )

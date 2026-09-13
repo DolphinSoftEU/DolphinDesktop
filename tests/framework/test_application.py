@@ -525,6 +525,11 @@ def test_owned_process_handle_is_registered_and_released_by_kill(monkeypatch) ->
             CloseHandle=lambda *args: api_calls.append(("close", *args)),
         ),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32process",
+        SimpleNamespace(GetExitCodeProcess=Mock(return_value=application._PROCESS_STILL_ACTIVE)),
+    )
     monkeypatch.setattr(application, "_process_image_path", lambda _pid: None)
     monkeypatch.setattr(application, "_open_owned_process_handle", lambda _pid: "anchor")
     raw = Mock(process=1237)
@@ -586,6 +591,11 @@ def test_close_requests_window_close_before_anchored_termination(monkeypatch) ->
             CloseHandle=lambda *args: api_calls.append(("close", *args)),
         ),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32process",
+        SimpleNamespace(GetExitCodeProcess=Mock(return_value=application._PROCESS_STILL_ACTIVE)),
+    )
     monkeypatch.setattr(application, "_process_image_path", lambda _pid: None)
     monkeypatch.setattr(application, "_open_owned_process_handle", lambda _pid: "anchor")
     first_window = Mock()
@@ -606,6 +616,75 @@ def test_close_requests_window_close_before_anchored_termination(monkeypatch) ->
         application._session_pids.discard(1240)
         application._unanchored_pids.discard(1240)
         application._discard_owned_process_handle(1240, "anchor")
+
+
+def test_close_skips_soft_window_close_when_anchored_process_exited(monkeypatch) -> None:
+    """An exited launcher PID must never target a process that reused its PID."""
+    import dolphin_desktop._application as application
+
+    api_calls: list[tuple] = []
+    monkeypatch.setitem(
+        sys.modules,
+        "win32api",
+        SimpleNamespace(
+            TerminateProcess=lambda *args: api_calls.append(("terminate", *args)),
+            CloseHandle=lambda *args: api_calls.append(("close", *args)),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32process",
+        SimpleNamespace(GetExitCodeProcess=Mock(return_value=0)),
+    )
+    monkeypatch.setattr(application, "_process_image_path", lambda _pid: None)
+    raw = Mock(process=1246)
+    raw.windows.side_effect = AssertionError("a reused PID must not receive WM_CLOSE")
+    app = application.Application(raw, "uia", owned_process_handle="anchor")
+    try:
+        app.close()
+        raw.windows.assert_not_called()
+        assert ("terminate", "anchor", 1) not in api_calls
+        assert ("close", "anchor") in api_calls
+        assert 1246 not in application._owned_process_handles
+        assert 1246 not in application._live_pids
+        assert 1246 not in application._session_pids
+    finally:
+        application._live_pids.discard(1246)
+        application._session_pids.discard(1246)
+        application._unanchored_pids.discard(1246)
+        application._discard_owned_process_handle(1246, "anchor")
+
+
+def test_close_skips_soft_window_close_when_anchored_status_probe_fails(monkeypatch) -> None:
+    """Unknown liveness must not turn a PID-based window lookup into a soft close."""
+    import dolphin_desktop._application as application
+
+    terminate = Mock()
+    close = Mock()
+    monkeypatch.setitem(
+        sys.modules,
+        "win32api",
+        SimpleNamespace(TerminateProcess=terminate, CloseHandle=close),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32process",
+        SimpleNamespace(GetExitCodeProcess=Mock(side_effect=OSError("probe failed"))),
+    )
+    monkeypatch.setattr(application, "_process_image_path", lambda _pid: None)
+    raw = Mock(process=1247)
+    raw.windows.side_effect = AssertionError("unknown liveness must fail closed for soft close")
+    app = application.Application(raw, "uia", owned_process_handle="anchor")
+    try:
+        app.close()
+        raw.windows.assert_not_called()
+        terminate.assert_called_once_with("anchor", 1)
+        close.assert_called_once_with("anchor")
+    finally:
+        application._live_pids.discard(1247)
+        application._session_pids.discard(1247)
+        application._unanchored_pids.discard(1247)
+        application._discard_owned_process_handle(1247, "anchor")
 
 
 def test_owned_process_without_anchor_fails_closed(monkeypatch) -> None:

@@ -302,6 +302,20 @@ class TestTelemetryIntegrations:
             tel._initialized = False
         assert fake.init.call_args.kwargs["integrations"] == [sentinel]
 
+    def test_init_is_silent_when_sentry_is_not_installed(self):
+        import dolphin_desktop._telemetry as tel
+
+        tel._initialized = False
+        try:
+            with (
+                patch.dict(sys.modules, {"sentry_sdk": None}),
+                patch.dict(os.environ, {"DOLPHIN_TELEMETRY": "on"}),
+                patch.object(tel, "_DOLPHIN_DSN", "https://key@example.invalid/1"),
+            ):
+                tel.init()
+        finally:
+            tel._initialized = False
+
 
 class TestTelemetryStripsUserSource:
     def _event(self) -> dict:

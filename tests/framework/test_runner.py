@@ -206,7 +206,9 @@ def test_launch_on_desktop_reports_create_process_failure(monkeypatch) -> None:
 
 def test_launch_cmd_on_desktop_forwards_command_work_dir_and_no_stdio(monkeypatch) -> None:
     kernel32 = _FakeLauncher(pid=111, process=222, thread=333)
+    wait_for_idle = Mock()
     monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(_runner._user32, "WaitForInputIdle", wait_for_idle)
 
     assert _runner.launch_cmd_on_desktop("tool.exe --flag", "Desk", work_dir=r"C:\work") == (
         111,
@@ -222,6 +224,7 @@ def test_launch_cmd_on_desktop_forwards_command_work_dir_and_no_stdio(monkeypatc
     startup_info = args[8]._obj
     assert startup_info.cb == ctypes.sizeof(_runner._StartupInfoW)
     assert startup_info.lpDesktop == "Desk"
+    wait_for_idle.assert_not_called()
 
 
 def test_launch_cmd_on_desktop_passes_private_environment_block(monkeypatch) -> None:
@@ -283,6 +286,46 @@ def test_launch_cmd_on_desktop_reports_create_process_failure(monkeypatch) -> No
     with pytest.raises(OSError, match=r"CreateProcessW\('tool.exe'\) failed: error 87"):
         _runner.launch_cmd_on_desktop("tool.exe")
     assert kernel32.closed_handles == []
+
+
+def test_launch_cmd_on_desktop_waits_for_gui_readiness_with_timeout(monkeypatch) -> None:
+    kernel32 = _FakeLauncher(pid=111, process=222, thread=333)
+    wait_for_idle = Mock(return_value=0)
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(_runner._user32, "WaitForInputIdle", wait_for_idle)
+
+    assert _runner.launch_cmd_on_desktop("tool.exe", timeout=2.5, wait_for_idle=True) == (
+        111,
+        222,
+    )
+
+    wait_for_idle.assert_called_once_with(222, 2500)
+
+
+def test_launch_cmd_on_desktop_cleans_up_when_gui_readiness_times_out(monkeypatch) -> None:
+    kernel32 = _FakeLauncher(pid=111, process=222, thread=333)
+    terminate = Mock(return_value=True)
+    kernel32.TerminateProcess = terminate  # type: ignore[attr-defined]
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(
+        _runner._user32, "WaitForInputIdle", Mock(return_value=_runner._WAIT_TIMEOUT)
+    )
+
+    with pytest.raises(TimeoutError, match="did not become ready"):
+        _runner.launch_cmd_on_desktop("tool.exe", timeout=2, wait_for_idle=True)
+
+    terminate.assert_called_once_with(222, 1)
+    assert kernel32.closed_handles == [333, 222]
+
+
+def test_launch_cmd_on_desktop_rejects_negative_timeout_before_spawning(monkeypatch) -> None:
+    kernel32 = _FakeLauncher()
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+
+    with pytest.raises(ValueError, match="timeout must be a finite non-negative number"):
+        _runner.launch_cmd_on_desktop("tool.exe", timeout=-1)
+
+    assert kernel32.create_process_args is None
 
 
 def test_run_hidden_executes_directly_when_already_on_hidden_desktop(monkeypatch) -> None:

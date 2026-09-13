@@ -248,7 +248,9 @@ def test_launch_visible_success_and_application_failure(monkeypatch) -> None:
         "wrapped"
     )
     pywin_app.assert_called_once_with(backend="win32")
-    launcher.assert_called_once_with("demo.exe", None, work_dir="C:\\tmp", env=None)
+    launcher.assert_called_once_with(
+        "demo.exe", None, timeout=2, wait_for_idle=False, work_dir="C:\\tmp", env=None
+    )
     process_app.start.assert_not_called()
     sleep.assert_called_once_with(0.25)
     assert events == ["launch", "sleep", "application"]
@@ -273,9 +275,11 @@ def test_launch_passes_env_to_child_without_mutating_parent(monkeypatch) -> None
     observed: dict[str, object] = {}
     process_app.connect.side_effect = RuntimeError("launcher PID already handed off")
 
-    def launch(command, desktop_name, *, work_dir, env):
+    def launch(command, desktop_name, *, timeout, wait_for_idle, work_dir, env):
         observed["command"] = command
         observed["desktop_name"] = desktop_name
+        observed["timeout"] = timeout
+        observed["wait_for_idle"] = wait_for_idle
         observed["work_dir"] = work_dir
         observed["env"] = dict(env)
         observed["parent_value"] = os.environ.get("DOLPHIN_TEST_ENV")
@@ -305,6 +309,8 @@ def test_launch_passes_env_to_child_without_mutating_parent(monkeypatch) -> None
     assert observed == {
         "command": "probe.exe",
         "desktop_name": None,
+        "timeout": 10.0,
+        "wait_for_idle": False,
         "work_dir": None,
         "env": {"DOLPHIN_TEST_ENV": "expected-value"},
         "parent_value": None,
@@ -312,6 +318,8 @@ def test_launch_passes_env_to_child_without_mutating_parent(monkeypatch) -> None
     launcher.assert_called_once_with(
         "probe.exe",
         None,
+        timeout=10.0,
+        wait_for_idle=False,
         work_dir=None,
         env={"DOLPHIN_TEST_ENV": "expected-value"},
     )
@@ -446,6 +454,8 @@ def test_raw_launch_passes_env_to_private_child(monkeypatch) -> None:
     launch_with_environment.assert_called_once_with(
         "probe.exe",
         backend="win32",
+        timeout=3,
+        wait_for_idle=False,
         work_dir="C:\\tmp",
         env={"DOLPHIN_TEST_ENV": "expected-value"},
     )
@@ -471,7 +481,7 @@ def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) 
         desktop.launch("hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1) is hidden_result
     )
     hidden.assert_called_once_with(
-        "hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1, env=None
+        "hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1, env=None, wait_for_idle=False
     )
     hidden.reset_mock()
     assert (
@@ -481,7 +491,7 @@ def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) 
         is hidden_result
     )
     hidden.assert_called_once_with(
-        "raw-hidden.exe", timeout=4, work_dir="raw", startup_delay=0, env=None
+        "raw-hidden.exe", timeout=4, work_dir="raw", startup_delay=0, env=None, wait_for_idle=False
     )
 
 
@@ -502,7 +512,9 @@ def test_raw_launch_and_connect_success_and_errors(monkeypatch) -> None:
     desktop = desktop_module.Desktop(hidden=False, default_timeout_ms=55)
 
     assert desktop._launch_raw("raw.exe", backend="uia", startup_delay=0.1) == "raw"
-    launcher.assert_called_once_with("raw.exe", None, work_dir=None, env=None)
+    launcher.assert_called_once_with(
+        "raw.exe", None, timeout=10.0, wait_for_idle=False, work_dir=None, env=None
+    )
     process_app.start.assert_not_called()
     application.assert_called_with(
         process_app,
@@ -574,6 +586,8 @@ def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
     def launch(
         command: str,
         *,
+        timeout: float,
+        wait_for_idle: bool,
         work_dir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> tuple[int, int]:
@@ -609,6 +623,8 @@ def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
     ensure.assert_called_once_with()
     launcher.assert_called_once_with(
         "hidden.exe",
+        timeout=4,
+        wait_for_idle=False,
         work_dir="wd",
         env={"DOLPHIN_TEST_ENV": "expected-value"},
     )
