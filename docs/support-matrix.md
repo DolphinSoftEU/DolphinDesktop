@@ -110,7 +110,7 @@ the headline **capabilities** it exposes (against the
 | ------------- | ------------------------------------------------------------------ |
 | Primary       | `java` (marker → `JavaAccessBridge` / `OracleFormsApp`)            |
 | Alt           | `uia` — JavaFX 8+ apps that set `-Djavafx.accessible=true` register in UIA |
-| Modes         | Requires JAB enabled (`jabswitch /enable` — Windows switch style) and `WindowsAccessBridge-64.dll` reachable on PATH |
+| Modes         | Requires JAB enabled (`jabswitch /enable` — Windows switch style) and a trusted absolute `JAVA_HOME` containing `bin\WindowsAccessBridge-64.dll` and `bin\jabswitch.exe` |
 | Capabilities  | Full accessibility set + SCREENSHOT + SCROLL                       |
 | Limitations   | JAB does not expose a native drag pattern (DRAG omitted from `java` cap set). Oracle Forms applet in a browser needs `-Djavafx.accessible=true` on the JRE and the browser applet plugin. |
 

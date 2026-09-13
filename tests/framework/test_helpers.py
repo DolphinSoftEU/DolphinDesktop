@@ -46,9 +46,10 @@ def test_helpers_parse_processes_and_find_pid_without_tasklist(monkeypatch) -> N
 def test_helpers_file_context_and_path_wrappers(tmp_path: Path) -> None:
     from dolphin_desktop import _helpers
 
-    text_path = Path(_helpers.temp_file(prefix="unit_", suffix=".txt", content="hello"))
+    text_value = "Zażółć gęślą jaźń 🐬"
+    text_path = Path(_helpers.temp_file(prefix="unit_", suffix=".txt", content=text_value))
     binary_path = Path(_helpers.temp_file(prefix="unit_", suffix=".bin", content=b"\x00\x01"))
-    assert text_path.read_text() == "hello"
+    assert text_path.read_bytes().decode("utf-8") == text_value
     assert binary_path.read_bytes() == b"\x00\x01"
     assert _helpers.path_exists(str(text_path))
     assert _helpers.path_basename(str(text_path)) == text_path.name
@@ -81,6 +82,9 @@ def test_helpers_network_probes_return_boolean_results(monkeypatch) -> None:
     class Response:
         status = 200
 
+        def geturl(self):
+            return "http://example.test"
+
         def __enter__(self):
             return self
 
@@ -88,9 +92,90 @@ def test_helpers_network_probes_return_boolean_results(monkeypatch) -> None:
             return None
 
     response = Response()
-    monkeypatch.setattr(urllib.request, "urlopen", Mock(return_value=response))
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        Mock(return_value=Mock(open=Mock(return_value=response))),
+    )
     assert _helpers.http_ok("http://example.test") is True
-    monkeypatch.setattr(urllib.request, "urlopen", Mock(side_effect=TimeoutError()))
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        Mock(return_value=Mock(open=Mock(side_effect=TimeoutError()))),
+    )
+    assert _helpers.http_ok("http://example.test") is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///C:/canary.txt",
+        "ftp://127.0.0.1/file",
+        "http:///missing-host",
+        "not a URL",
+        "http://example.test:not-a-port/",
+    ],
+)
+def test_http_ok_rejects_non_http_or_malformed_urls_before_open(monkeypatch, url: str) -> None:
+    """DESKTOP-200 / KAN-468: probes never open non-HTTP(S) resources."""
+    import urllib.request
+
+    from dolphin_desktop import _helpers
+
+    opener = Mock()
+    monkeypatch.setattr(urllib.request, "build_opener", Mock(return_value=opener))
+
+    assert _helpers.http_ok(url) is False
+    opener.open.assert_not_called()
+
+
+def test_http_ok_rejects_redirect_to_non_http_resource(monkeypatch) -> None:
+    import urllib.request
+
+    from dolphin_desktop import _helpers
+
+    class Response:
+        status = 200
+
+        def geturl(self):
+            return "file:///C:/canary.txt"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        Mock(return_value=Mock(open=Mock(return_value=Response()))),
+    )
+    assert _helpers.http_ok("http://127.0.0.1:1234/redirect") is False
+
+
+def test_http_ok_rejects_malformed_final_url(monkeypatch) -> None:
+    import urllib.request
+
+    from dolphin_desktop import _helpers
+
+    class Response:
+        status = 200
+
+        def geturl(self):
+            return "http://example.test:not-a-port/"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        Mock(return_value=Mock(open=Mock(return_value=Response()))),
+    )
     assert _helpers.http_ok("http://example.test") is False
 
 

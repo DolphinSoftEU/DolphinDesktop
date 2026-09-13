@@ -5,7 +5,10 @@ Dolphin includes Java Access Bridge helpers for Swing and AWT applications on Wi
 ## Requirements
 
 - A JRE or JDK with Java Access Bridge tools.
-- `jabswitch.exe` available through `JAVA_HOME` or `PATH`, or Java Access Bridge already enabled.
+- `JAVA_HOME` must be a trusted absolute JRE/JDK path containing
+  `bin\jabswitch.exe` and `bin\windowsaccessbridge-64.dll`, or Java Access
+  Bridge must already be enabled. Dolphin does not execute a bare
+  `jabswitch.exe` from `PATH`.
 - A 64-bit Java runtime is recommended.
 
 ## Launch
@@ -56,6 +59,7 @@ JavaAccessBridge.ensure_enabled()
 
 ## Troubleshooting
 
-- If `jabswitch.exe` is missing, set `JAVA_HOME` or install a JDK that includes Java Access Bridge.
+- If `jabswitch.exe` or `windowsaccessbridge-64.dll` is missing, set
+  `JAVA_HOME` to a trusted absolute JDK path that includes both files.
 - If the tree is empty immediately after launch, increase the app startup delay or wait for idle.
 - If roles differ from the table, inspect the app and use the exact role/name exposed by Java Access Bridge.

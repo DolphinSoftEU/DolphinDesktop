@@ -85,6 +85,31 @@ credentials in scope without reading them first; `--dolphin-trace=off`
 disables trace capture entirely, and the surest option remains not putting a
 production credential in a test run.
 
+## Security regression register
+
+The following acceptance tests are the executable checks for the security
+work items. They are intentionally kept next to the affected code so a
+future refactor cannot preserve a prose claim while dropping the regression:
+
+| Work item | Regression | Test location | Invariant covered |
+| --- | --- | --- | --- |
+| KAN-467 | DESKTOP-199 | `test_backend.py::TestRegistryAndPluginLoading::test_plugin_discovery...` | Invalid backend metadata is rejected and a plugin cannot replace an existing backend ID. |
+| KAN-468 | DESKTOP-200 | `test_helpers.py::test_http_ok_rejects_non_http...` | `http_ok()` opens only HTTP(S) URLs and refuses malformed or non-HTTP(S) redirect targets. |
+| KAN-472 | DESKTOP-203 | `test_java.py::test_session_is_singleton...` | JAB loads `windowsaccessbridge-64.dll` and runs `jabswitch.exe` only from a trusted absolute JDK path; relative/PATH fallback is refused. |
+| KAN-473 | DESKTOP-204 | `test_qt_agent_rpc.py::TestRequestLimits` | Qt agent requests are bounded for bytes, depth, node count, and standard JSON serialization before pipe I/O. |
+| KAN-475 | DESKTOP-205 | `test_mainframe.py::test_s3270_rejects_unsafe_host...` | s3270 host/text/port input cannot add an action; TLS selection is explicit and verification failures send no TN5250 data. |
+
+Run the focused set with:
+
+```powershell
+uv run pytest `
+  tests/framework/test_backend.py `
+  tests/framework/test_helpers.py `
+  tests/framework/test_java.py `
+  tests/framework/test_qt_agent_rpc.py `
+  tests/framework/test_mainframe.py -q
+```
+
 ## Reporting a Vulnerability
 
 Please report suspected vulnerabilities privately by emailing kontakt@dolphinsoft.pl.

@@ -380,13 +380,21 @@ def _validate_s3270_text(value: str, *, field: str) -> None:
 
 def _validate_s3270_host(host: str) -> None:
     _validate_s3270_text(host, field="host")
-    if any(char in host for char in "()"):
+    if any(char in host for char in "();,= "):
         raise MainframeError("s3270 host contains action-syntax characters")
 
 
 def _validate_s3270_integer(value: object, *, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise MainframeError(f"s3270 {field} must be an integer")
+    return value
+
+
+def _validate_port(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MainframeError("port must be an integer")
+    if not 1 <= value <= 65535:
+        raise MainframeError("port must be between 1 and 65535")
     return value
 
 
@@ -496,12 +504,17 @@ class _S3270Backend(_TerminalBackend):
                 ),
             )
         _validate_s3270_host(host)
-        port = _validate_s3270_integer(port, field="port")
+        port = _validate_port(port)
         tls = getattr(self, "_tls", False)
         insecure_tls = getattr(self, "_insecure_tls", False)
         tls_ca_file = getattr(self, "_tls_ca_file", None)
         server_hostname = getattr(self, "_server_hostname", None)
-        if not tls and not insecure_tls:
+        # Keep the traditional plaintext 3270 default on its normal port.
+        # Port 992 is conventionally the TLS port, so using it without an
+        # explicit transport choice must be an opt-in rather than a silent
+        # downgrade. ``tls=True`` still requires ``insecure_tls=True`` here
+        # because s3270 does not expose certificate verification to us.
+        if not tls and port == 992 and not insecure_tls:
             raise MainframeError(
                 "s3270 plaintext transport requires insecure_tls=True; use "
                 "tls=True for the L: transport"
@@ -1253,7 +1266,11 @@ class _Tn5250Backend(_TerminalBackend):
     # ---- lifecycle ------------------------------------------------------ #
 
     def connect(self, host: str, port: int, *, session_type: str) -> None:
-        if not self._tls and not self._insecure_tls:
+        port = _validate_port(port)
+        # Port 23 remains the compatible plaintext default. Refuse an
+        # accidental plaintext connection on the conventional TLS port until
+        # the caller explicitly acknowledges it with insecure_tls=True.
+        if not self._tls and port == 992 and not self._insecure_tls:
             raise MainframeError(
                 "TN5250 plaintext transport requires insecure_tls=True; use "
                 "tls=True for verified TLS"
