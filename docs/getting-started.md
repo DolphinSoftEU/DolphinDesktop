@@ -13,7 +13,7 @@ for **your** application stack.
 Requirements:
 
 * Windows 10 (build 19041+) or Windows 11
-* Python **3.11 or newer** (`python --version`)
+* Python **3.11, 3.12, or 3.13** (`python --version`)
 * A shell running as the same Windows user as the app under test
 
 Recommended: create a dedicated virtual environment so dolphin's
