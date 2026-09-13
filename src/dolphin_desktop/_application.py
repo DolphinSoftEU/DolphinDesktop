@@ -42,6 +42,17 @@ _live_pids: set[int] = set()
 # session finalizer can still tear it down.
 _session_pids: set[int] = set()
 
+# Process handles opened immediately after a Dolphin-owned process is created.
+# A Windows process handle refers to the original process object, not to a
+# future process that happens to receive the same numeric PID.  The pytest
+# cleanup hooks use these handles so PID reuse can never make cleanup terminate
+# an unrelated process.
+_owned_process_handles: dict[int, Any] = {}
+
+# Owned PIDs for which opening the identity anchor failed.  These must remain
+# visible for diagnostics but are never eligible for PID-only termination.
+_unanchored_pids: set[int] = set()
+
 # PIDs dolphin attached to but does not own. Never drained by the pytest
 # plugin's kill loops — that is the point of owns_process=False — but needed so
 # crash dumps can scope their UIA capture to the application under test, which
@@ -76,6 +87,65 @@ _PROCESS_NOT_FOUND_ERRORS = frozenset({87, 1168})
 # ``EnumProcessModulesEx`` filter: 0x03 = LIST_MODULES_ALL — needed for
 # 64-bit hosts loading Qt DLLs that a plain EnumProcessModules misses.
 _ENUM_MODULES_ALL = 0x03
+_NO_PROCESS_HANDLE = object()
+
+
+def _open_owned_process_handle(pid: int) -> Any | None:
+    """Open a terminate-capable handle anchored to the current process object."""
+    try:
+        import win32api
+        import win32con
+
+        access = win32con.PROCESS_TERMINATE | getattr(
+            win32con, "PROCESS_QUERY_LIMITED_INFORMATION", 0x1000
+        )
+        handle = win32api.OpenProcess(access, False, int(pid))
+        return handle or None
+    except Exception:
+        # Cleanup must fail closed when the identity cannot be anchored.  The
+        # caller still tracks the PID for diagnostics, but must not reopen it
+        # later and guess which process it represents.
+        return None
+
+
+def _close_owned_process_handle(handle: Any) -> None:
+    """Close a handle previously returned by :func:`_open_owned_process_handle`."""
+    try:
+        import win32api
+
+        win32api.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def _register_owned_process_handle(pid: int, handle: Any) -> bool:
+    """Publish *handle* for plugin cleanup unless the PID is already tracked.
+
+    A second live wrapper with the same numeric PID is a possible PID-reuse
+    edge case.  Never replace the first anchor in the shared PID map: doing so
+    would make the session reaper lose the original process object.  The
+    second wrapper still retains its own handle and can terminate it directly,
+    but its PID is marked unanchored for the shared reaper.
+    """
+    existing = _owned_process_handles.get(int(pid))
+    if existing is not None and existing != handle:
+        return False
+    _owned_process_handles[int(pid)] = handle
+    return True
+
+
+def _discard_owned_process_handle(pid: int, handle: Any = _NO_PROCESS_HANDLE) -> None:
+    """Remove and close the anchor for *pid*, optionally only if it matches."""
+    key = int(pid)
+    stored = _owned_process_handles.get(key)
+    if handle is not _NO_PROCESS_HANDLE and handle is None:
+        return
+    if handle is not _NO_PROCESS_HANDLE and stored != handle:
+        _close_owned_process_handle(handle)
+        return
+    stored = _owned_process_handles.pop(key, None)
+    if stored is not None:
+        _close_owned_process_handle(stored)
 
 
 def _list_modules(pid: int, *, use_extended: bool = False) -> list[str]:
@@ -503,6 +573,7 @@ class Application:
         desktop: Any | None = None,
         owns_process: bool = True,
         image_path: str | None = None,
+        owned_process_handle: Any = _NO_PROCESS_HANDLE,
     ) -> None:
         if default_timeout_ms < 0:
             raise ValueError("default_timeout_ms must be non-negative")
@@ -532,17 +603,33 @@ class Application:
                 self._image_path = _process_image_path(self.process_id)
             except Exception:
                 self._image_path = None
+        self._owned_process_handle: Any | None = None
+        try:
+            pid = self.process_id
+        except Exception:
+            return
         if owns_process:
-            try:
-                _live_pids.add(self.process_id)
-                _session_pids.add(self.process_id)
-            except Exception:
-                pass
+            handle = (
+                _open_owned_process_handle(pid)
+                if owned_process_handle is _NO_PROCESS_HANDLE
+                else owned_process_handle
+            )
+            if handle == 0:
+                handle = None
+            self._owned_process_handle = handle
+            _live_pids.add(pid)
+            _session_pids.add(pid)
+            if handle is not None and _register_owned_process_handle(pid, handle):
+                _unanchored_pids.discard(pid)
+            else:
+                _unanchored_pids.add(pid)
+                _log.warning(
+                    "Could not anchor cleanup handle for owned process PID=%s; "
+                    "automatic cleanup will fail closed",
+                    pid,
+                )
         else:
-            try:
-                _attached_pids.add(self.process_id)
-            except Exception:
-                pass
+            _attached_pids.add(pid)
 
     # Window accessors
 
@@ -694,10 +781,24 @@ class Application:
             new_app.connect(process=actual_pid)
             self._app = new_app
             if self._owns_process:
+                _discard_owned_process_handle(old_pid, getattr(self, "_owned_process_handle", None))
+                _unanchored_pids.discard(old_pid)
+                self._owned_process_handle = _open_owned_process_handle(actual_pid)
                 _live_pids.discard(old_pid)
                 _live_pids.add(actual_pid)
                 _session_pids.discard(old_pid)
                 _session_pids.add(actual_pid)
+                if self._owned_process_handle is not None and _register_owned_process_handle(
+                    actual_pid, self._owned_process_handle
+                ):
+                    _unanchored_pids.discard(actual_pid)
+                else:
+                    _unanchored_pids.add(actual_pid)
+                    _log.warning(
+                        "Could not anchor cleanup handle after process hand-off PID=%s; "
+                        "automatic cleanup will fail closed",
+                        actual_pid,
+                    )
             else:
                 _attached_pids.discard(old_pid)
                 _attached_pids.add(actual_pid)
@@ -916,6 +1017,43 @@ class Application:
                 pass
             self._qt_agent = None
 
+    def _terminate_owned_process(self, *, soft: bool) -> None:
+        """Terminate the process represented by this wrapper's anchored handle.
+
+        Objects built by older callers/tests without ``_owned_process_handle``
+        retain the legacy pywinauto path.  Real ``Application`` instances are
+        fail-closed: a missing anchor is an error, never a reason to reopen a
+        PID that may already belong to somebody else.
+        """
+        missing = object()
+        handle = getattr(self, "_owned_process_handle", missing)
+        if handle is missing:
+            self._app.kill(soft=soft)
+            return
+        if handle is None:
+            raise RuntimeError(
+                f"Cannot safely terminate owned process PID={self.process_id}: "
+                "the process identity handle was not captured"
+            )
+        import win32api
+
+        # A handle remains bound to the original kernel process object even if
+        # its numeric PID is reused, so this operation cannot kill the reuse.
+        pid = self.process_id
+        try:
+            import win32process
+
+            running = win32process.GetExitCodeProcess(handle) == _PROCESS_STILL_ACTIVE
+        except Exception:
+            # If the status probe is unavailable, terminating through the
+            # anchor is still safe.  Do not fall back to a PID-based probe.
+            running = True
+        if running:
+            win32api.TerminateProcess(handle, 1)
+        _discard_owned_process_handle(pid, handle)
+        _unanchored_pids.discard(pid)
+        self._owned_process_handle = None
+
     def close(self, timeout: float = 5.0) -> None:
         """Shut the application down, asking first.
 
@@ -953,10 +1091,22 @@ class Application:
         # reaper's set. Removing before kill would leave the process
         # as a zombie if kill() fails (e.g. permissions, transient COM
         # error) — the reaper would no longer know to clean it up.
+        legacy_registration = not hasattr(self, "_owned_process_handle")
         try:
-            self._app.kill(soft=True)
-        except Exception:
-            pass
+            self._terminate_owned_process(soft=True)
+        except Exception as exc:
+            if legacy_registration:
+                # Keep compatibility for synthetic wrappers created before
+                # anchored handles existed. Real wrappers stay registered so
+                # the session safety-net can retry and report the failure.
+                try:
+                    _live_pids.discard(self.process_id)
+                    _session_pids.discard(self.process_id)
+                except Exception:
+                    pass
+            else:
+                _log.warning("Could not clean up owned process: %s", exc)
+            return
         try:
             _live_pids.discard(self.process_id)
             _session_pids.discard(self.process_id)
@@ -998,17 +1148,25 @@ class Application:
         # Same order as close(): kill first, forget the PID second, so
         # a failed kill still leaves the session-end reaper with a
         # PID to retry against.
+        legacy_registration = not hasattr(self, "_owned_process_handle")
+        main_process_terminated = False
         try:
-            if self._app.is_process_running():
-                self._app.kill(soft=False)
+            if legacy_registration:
+                if self._app.is_process_running():
+                    self._terminate_owned_process(soft=False)
+                    main_process_terminated = True
+            else:
+                self._terminate_owned_process(soft=False)
+                main_process_terminated = True
         except Exception as exc:
             first_error = first_error or exc
         finally:
-            try:
-                _live_pids.discard(self.process_id)
-                _session_pids.discard(self.process_id)
-            except Exception:
-                pass
+            if legacy_registration or main_process_terminated:
+                try:
+                    _live_pids.discard(self.process_id)
+                    _session_pids.discard(self.process_id)
+                except Exception:
+                    pass
         if first_error is not None:
             raise first_error
 
@@ -1254,6 +1412,11 @@ class Application:
             _live_pids.discard(self.process_id)
             if session:
                 _session_pids.discard(self.process_id)
+                if self._owns_process:
+                    handle = getattr(self, "_owned_process_handle", None)
+                    _discard_owned_process_handle(self.process_id, handle)
+                _unanchored_pids.discard(self.process_id)
+                self._owned_process_handle = None
                 # "dolphin will not touch that process" extends to the crash
                 # dump's capture scope.
                 _attached_pids.discard(self.process_id)

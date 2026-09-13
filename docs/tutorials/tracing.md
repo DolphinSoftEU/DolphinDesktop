@@ -82,6 +82,20 @@ pytest tests/ -v --dolphin-screenshot-on-fail
 
 Screenshots are written to `dolphin-screenshots/` and attached to the pytest report.
 
+## 9.3 — Warstwa stabilności
+
+Diagnostic collection is best-effort. A failure in
+`--dolphin-screenshot-on-fail` — for example because the desktop is locked or
+screen capture is unavailable — is logged as a warning and cannot replace the
+original test exception, change its exit status, or create a pytest
+`INTERNALERROR`.
+
+The same rule applies to trace, video, Allure, and fallback HTML collection.
+The original failure remains available in the terminal and JUnit/XML report;
+captured stdout/stderr and diagnostic logs remain available after secret
+redaction. A failed screenshot capture does not leave a partial PNG or a
+misleading artifact link.
+
 ## Fallback HTML Report
 
 When `allure-pytest` is not installed, Dolphin writes `dolphin-report.html` at session finish. Set a custom path with:

@@ -361,10 +361,7 @@ class TestTelemetryStripsUserSource:
                 "values": [
                     {
                         "type": "ElementNotFoundError",
-                        "value": (
-                            'login="DESKTOP_LOGIN_2c4b" '
-                            'clipboard="DESKTOP_CLIPBOARD_4a6e"'
-                        ),
+                        "value": ('login="DESKTOP_LOGIN_2c4b" clipboard="DESKTOP_CLIPBOARD_4a6e"'),
                     }
                 ]
             }
@@ -376,9 +373,7 @@ class TestTelemetryStripsUserSource:
         serialized = json.dumps(sent)
         assert "DESKTOP_LOGIN_2c4b" not in serialized
         assert "DESKTOP_CLIPBOARD_4a6e" not in serialized
-        assert sent["exception"]["values"][0]["value"] == (
-            'login="***" clipboard="***"'
-        )
+        assert sent["exception"]["values"][0]["value"] == ('login="***" clipboard="***"')
 
 
 # Self-healing telemetry file
@@ -583,6 +578,55 @@ class TestRedactionCoversFailureText:
         source = inspect.getsource(pytest_plugin)
         assert "_redact(str(report.longrepr))" in source
 
+    def test_real_pytest_junit_and_captured_streams_are_redacted(self, tmp_path: Path) -> None:
+        """A child pytest run must not leak captured secrets through any reporter."""
+        password = "DESKTOP_E2E_PASSWORD_7f3a"
+        token = "DESKTOP_E2E_TOKEN_9b1c"
+        login = "DESKTOP_E2E_LOGIN_4d2e"
+        test_file = tmp_path / "test_secret_output.py"
+        test_file.write_text(
+            "import sys\n"
+            "\n"
+            "def test_secret_output():\n"
+            f"    print('password={password}')\n"
+            f"    print('token={token}', file=sys.stderr)\n"
+            f"    assert False, 'login={login}'\n",
+            encoding="utf-8",
+        )
+        junit = tmp_path / "junit.xml"
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(Path(__file__).resolve().parents[2] / "src"), env.get("PYTHONPATH", "")]
+        )
+        env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+        result = subprocess.run(
+            [
+                _PYTHON,
+                "-m",
+                "pytest",
+                str(test_file),
+                "-q",
+                "-p",
+                "dolphin_desktop.pytest_plugin",
+                "--dolphin-trace=off",
+                "--dolphin-video=off",
+                f"--junitxml={junit}",
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        assert result.returncode != 0
+        assert junit.is_file()
+        output = result.stdout + result.stderr + junit.read_text(encoding="utf-8")
+        for secret in (password, token, login):
+            assert secret not in output
+        assert "AssertionError" in output
+        assert "1 failed" in output
+
 
 class TestRedactionDoesNotEatOrdinaryText:
     """The pattern runs over pytest's longrepr, where prose is common.
@@ -706,10 +750,7 @@ class TestRedactionShapesThatLeakedBefore:
     def test_unquoted_connection_string_preserves_closing_parenthesis(self) -> None:
         from dolphin_desktop._logging import _redact
 
-        text = (
-            "connect(connection_string=Server=127.0.0.1;"
-            "Password=DESKTOP_PASSWORD)"
-        )
+        text = "connect(connection_string=Server=127.0.0.1;Password=DESKTOP_PASSWORD)"
 
         assert _redact(text) == "connect(connection_string=***)"
 

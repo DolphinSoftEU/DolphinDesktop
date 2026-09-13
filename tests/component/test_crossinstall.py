@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -55,6 +57,61 @@ def _build_wheel(project: Path, output: Path) -> Path:
 
 def _venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def test_project_metadata_docs_and_extras_stay_consistent(tmp_path: Path) -> None:
+    """DESKTOP-197: package metadata and documented isolated extra installs agree."""
+    project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project["requires-python"] == ">=3.11,<3.14"
+
+    documented = (_REPO_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+    declared_extras = set(project["optional-dependencies"])
+    extra_section = documented.split("## Optional Extras", 1)[1].split("## Stacks", 1)[0]
+    documented_extras = set(re.findall(r"^\| `([^`]+)` \|", extra_section, re.MULTILINE))
+    assert documented_extras == declared_extras
+
+    for relative_path in (
+        "README.md",
+        "docs/faq.md",
+        "docs/getting-started.md",
+        "docs/installation.md",
+        "docs/index.md",
+        "docs/ci/index.md",
+        "docs/ci/jenkins.md",
+    ):
+        text = (_REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        assert "3.11" in text and "3.13" in text
+        assert "3.11+" not in text and "3.11 or newer" not in text
+
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    wheel = _build_wheel(_REPO_ROOT, wheels)
+    for extra in sorted(declared_extras):
+        venv = tmp_path / f"venv-{extra}"
+        created = subprocess.run(
+            [sys.executable, "-m", "venv", str(venv)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=_env(),
+        )
+        assert created.returncode == 0, created.stderr
+        install = subprocess.run(
+            [
+                str(_venv_python(venv)),
+                "-m",
+                "pip",
+                "install",
+                "--quiet",
+                "--no-deps",
+                f"{wheel}[{extra}]",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=_env(),
+        )
+        assert install.returncode == 0, f"extra {extra!r} failed: {install.stderr}"
 
 
 def test_installed_plugins_expose_dolphin_options(tmp_path: Path) -> None:
