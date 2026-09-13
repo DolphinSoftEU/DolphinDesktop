@@ -213,6 +213,7 @@ class Desktop:
         cmd: str,
         *,
         backend: str,
+        timeout: float = 10.0,
         work_dir: str | None,
         env: Mapping[str, str] | None,
     ) -> tuple[_PyWinApp, str | None, int]:
@@ -230,6 +231,7 @@ class Desktop:
         pid, h_process = launch_cmd_on_desktop(
             cmd,
             None,
+            timeout=timeout,
             work_dir=work_dir,
             env=env,
         )
@@ -275,7 +277,9 @@ class Desktop:
             Command line to execute (e.g. ``"notepad.exe"`` or
             ``r"C:\\Windows\\notepad.exe my_file.txt"``).
         timeout:
-            Maximum seconds to wait for the process to start.
+            Maximum seconds to wait for a GUI process to become input-idle
+            after creation. Console processes, which have no GUI input queue,
+            return as soon as ``CreateProcessW`` succeeds.
         work_dir:
             Optional working directory for the new process.
         startup_delay:
@@ -308,6 +312,7 @@ class Desktop:
             app, image_path, process_handle = self._launch_with_environment(
                 cmd,
                 backend=self._backend,
+                timeout=timeout,
                 work_dir=work_dir,
                 env=env,
             )
@@ -377,6 +382,7 @@ class Desktop:
             pw, image_path, process_handle = self._launch_with_environment(
                 cmd,
                 backend=backend,
+                timeout=timeout,
                 work_dir=work_dir,
                 env=env,
             )
@@ -485,7 +491,12 @@ class Desktop:
 
         self._ensure_hidden_mode()
         try:
-            pid, h_process = launch_cmd_on_desktop(cmd, work_dir=work_dir, env=env)
+            pid, h_process = launch_cmd_on_desktop(
+                cmd,
+                timeout=timeout,
+                work_dir=work_dir,
+                env=env,
+            )
         except OSError as exc:
             raise ApplicationError(f"Failed to launch {cmd!r} on hidden desktop: {exc}") from exc
 

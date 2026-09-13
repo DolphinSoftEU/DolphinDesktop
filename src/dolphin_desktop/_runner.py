@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import math
 import os
 import sys
 from collections.abc import Mapping
@@ -69,6 +70,9 @@ _user32.GetUserObjectInformationW.argtypes = [
 ]
 _user32.GetUserObjectInformationW.restype = _wt.BOOL
 
+_user32.WaitForInputIdle.argtypes = [_wt.HANDLE, _wt.DWORD]
+_user32.WaitForInputIdle.restype = _wt.DWORD
+
 _kernel32.GetStdHandle.argtypes = [_wt.DWORD]
 _kernel32.GetStdHandle.restype = _wt.HANDLE
 
@@ -106,6 +110,8 @@ _DESKTOP_ACCESS = 0x10000000  # GENERIC_ALL
 
 _INFINITE = 0xFFFFFFFF
 _WAIT_OBJECT_0 = 0x00000000
+_WAIT_TIMEOUT = 0x00000102
+_WAIT_FAILED = 0xFFFFFFFF
 _STARTF_USESTDHANDLES = 0x00000100
 _CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _UOI_FLAGS = 1
@@ -182,6 +188,25 @@ def terminate_process_handle(handle: int, exit_code: int = 1) -> None:
     """Terminate a just-launched process through its original process handle."""
     if not _kernel32.TerminateProcess(handle, exit_code):
         raise OSError(f"TerminateProcess failed: error {ctypes.get_last_error()}")
+
+
+def _wait_for_process_start(handle: int, timeout: float) -> None:
+    """Wait for a GUI child to become input-idle without reopening its PID."""
+    if timeout == 0:
+        return
+    result = _user32.WaitForInputIdle(handle, int(timeout * 1000))
+    if result == _WAIT_TIMEOUT:
+        try:
+            terminate_process_handle(handle)
+        finally:
+            close_process_handle(handle)
+        raise TimeoutError(f"process did not become ready within {timeout:g} seconds")
+    # WAIT_FAILED is expected for console processes and applications that do
+    # not create a GUI message queue. CreateProcessW already established that
+    # the process exists, so those children are ready for the caller's next
+    # operation even though input-idle cannot be observed.
+    if result == _WAIT_FAILED:
+        return
 
 
 def switch_thread_to_desktop(handle: int) -> None:
@@ -285,18 +310,23 @@ def launch_cmd_on_desktop(
     cmd: str,
     desktop_name: str | None = DESKTOP_NAME,
     *,
+    timeout: float = 10.0,
     work_dir: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> tuple[int, int]:
     """Launch a command string on *desktop_name* without inheriting stdio.
 
-    Returns ``(pid, h_process)``.  The caller must close *h_process* via
+    ``CreateProcessW`` reports process creation synchronously.  For GUI
+    children, *timeout* bounds the subsequent input-idle readiness wait.  The
+    returned process handle remains open; the caller must close it via
     :func:`close_process_handle`.
 
     When *env* is provided, it is merged with the parent's environment into a
     private Unicode environment block.  The parent ``os.environ`` is never
     modified.  Passing ``desktop_name=None`` launches on the caller's desktop.
     """
+    if timeout < 0 or not math.isfinite(timeout):
+        raise ValueError("timeout must be a finite non-negative number")
     si = _StartupInfoW()
     si.cb = ctypes.sizeof(_StartupInfoW)
     si.lpDesktop = desktop_name
@@ -321,6 +351,7 @@ def launch_cmd_on_desktop(
     if not ok:
         raise OSError(f"CreateProcessW({cmd!r}) failed: error {ctypes.get_last_error()}")
     _kernel32.CloseHandle(pi.hThread)
+    _wait_for_process_start(pi.hProcess, timeout)
     return pi.dwProcessId, pi.hProcess
 
 

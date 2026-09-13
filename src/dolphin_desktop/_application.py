@@ -1035,21 +1035,31 @@ class Application:
                 f"Cannot safely terminate owned process PID={self.process_id}: "
                 "the process identity handle was not captured"
             )
-        if soft:
-            self._request_soft_close()
         import win32api
 
         # A handle remains bound to the original kernel process object even if
         # its numeric PID is reused, so this operation cannot kill the reuse.
         pid = self.process_id
+        status_known = True
         try:
             import win32process
 
             running = win32process.GetExitCodeProcess(handle) == _PROCESS_STILL_ACTIVE
         except Exception:
             # If the status probe is unavailable, terminating through the
-            # anchor is still safe.  Do not fall back to a PID-based probe.
+            # anchor is still safe, but a PID-based window lookup is not. Do
+            # not fall back to either PID-based probe or soft-close in this
+            # uncertain state.
             running = True
+            status_known = False
+        # The window lookup is also a process-targeting operation: pywinauto
+        # enumerates windows by the wrapper's numeric PID.  Never perform it
+        # after the anchored process has exited, because that PID may already
+        # identify a different process.  If the probe itself fails, retaining
+        # the conservative ``running=True`` result keeps the forced terminate
+        # safe, while ``status_known`` prevents a PID-based soft close.
+        if running and status_known and soft:
+            self._request_soft_close()
         if running:
             win32api.TerminateProcess(handle, 1)
         _discard_owned_process_handle(pid, handle)
