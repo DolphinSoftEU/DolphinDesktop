@@ -42,6 +42,7 @@ import enum
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import time
@@ -52,6 +53,14 @@ from ._exceptions import DolphinError
 from ._logging import get_logger
 
 _LOG = get_logger("mainframe")
+
+
+def _safe_s3270_command(command: str) -> str:
+    """Return an s3270 command suitable for diagnostics without payloads."""
+    if command.startswith("String("):
+        return 'String("<redacted>")'
+    return command
+
 
 __all__ = [
     "AID",
@@ -352,6 +361,35 @@ _S3270_CANDIDATES = (
 )
 
 
+def _validate_s3270_text(value: str, *, field: str) -> None:
+    """Reject values that could change the line-oriented s3270 protocol.
+
+    s3270 reads exactly one action from each stdin line.  Newlines and other
+    non-printing characters must therefore never be copied from public API
+    arguments into an action.  ``String(...)`` quoting protects printable
+    payloads, but it cannot make a record separator safe.
+    """
+    if not isinstance(value, str):
+        raise MainframeError(f"s3270 {field} must be a string")
+    for index, char in enumerate(value):
+        if not char.isprintable():
+            raise MainframeError(
+                f"s3270 {field} contains a control character at offset {index} (U+{ord(char):04X})"
+            )
+
+
+def _validate_s3270_host(host: str) -> None:
+    _validate_s3270_text(host, field="host")
+    if any(char in host for char in "()"):
+        raise MainframeError("s3270 host contains action-syntax characters")
+
+
+def _validate_s3270_integer(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MainframeError(f"s3270 {field} must be an integer")
+    return value
+
+
 def _find_s3270() -> str | None:
     """Return the path to the first available s3270-family binary, or None."""
     for name in _S3270_CANDIDATES:
@@ -391,6 +429,10 @@ class _S3270Backend(_TerminalBackend):
         codepage: str | None = None,
         extra_args: Sequence[str] | None = None,
         trace: bool = False,
+        tls: bool = False,
+        tls_ca_file: str | None = None,
+        server_hostname: str | None = None,
+        insecure_tls: bool = False,
     ) -> None:
         binary_path = binary or _find_s3270()
         if binary_path is None:
@@ -405,6 +447,10 @@ class _S3270Backend(_TerminalBackend):
         self._codepage = codepage
         self._extra_args = list(extra_args or ())
         self._trace = trace
+        self._tls = tls
+        self._tls_ca_file = tls_ca_file
+        self._server_hostname = server_hostname
+        self._insecure_tls = insecure_tls
         self._proc: subprocess.Popen[bytes] | None = None
         self._connected = False
 
@@ -449,8 +495,33 @@ class _S3270Backend(_TerminalBackend):
                     'session_type="3270" if this host really is a 3270 host'
                 ),
             )
+        _validate_s3270_host(host)
+        port = _validate_s3270_integer(port, field="port")
+        tls = getattr(self, "_tls", False)
+        insecure_tls = getattr(self, "_insecure_tls", False)
+        tls_ca_file = getattr(self, "_tls_ca_file", None)
+        server_hostname = getattr(self, "_server_hostname", None)
+        if not tls and not insecure_tls:
+            raise MainframeError(
+                "s3270 plaintext transport requires insecure_tls=True; use "
+                "tls=True for the L: transport"
+            )
+        if tls and not insecure_tls:
+            raise MainframeError(
+                "s3270 TLS certificate verification cannot be guaranteed by "
+                "this backend; pass insecure_tls=True explicitly or use "
+                'backend="tn5250" for verified TLS'
+            )
+        if tls and tls_ca_file:
+            raise MainframeError(
+                "s3270 does not accept tls_ca_file because its certificate "
+                "verification is not controlled by dolphin_desktop"
+            )
+        if tls and server_hostname and server_hostname != host:
+            raise MainframeError("s3270 TLS server_hostname cannot be verified by this backend")
         self._spawn()
-        self._exec(f"Connect({host}:{port})")
+        target = f"L:{host}:{port}" if tls else f"{host}:{port}"
+        self._exec(f"Connect({target})")
         self._connected = True
         # Wait for the initial screen to draw.
         self._exec("Wait(15,InputField)", raise_on_error=False)
@@ -615,6 +686,7 @@ class _S3270Backend(_TerminalBackend):
     def send_string(self, text: str) -> None:
         # s3270 String() takes a double-quoted argument; escape inner quotes
         # and backslashes so passwords with special characters survive.
+        _validate_s3270_text(text, field="text")
         esc = text.replace("\\", "\\\\").replace('"', '\\"')
         self._exec(f'String("{esc}")')
 
@@ -641,6 +713,8 @@ class _S3270Backend(_TerminalBackend):
 
     def move_cursor(self, row: int, col: int) -> None:
         # s3270 MoveCursor uses 0-indexed by default.
+        row = _validate_s3270_integer(row, field="row")
+        col = _validate_s3270_integer(col, field="col")
         self._exec(f"MoveCursor({row - 1},{col - 1})")
 
     # ---- waits ----------------------------------------------------------- #
@@ -667,8 +741,9 @@ class _S3270Backend(_TerminalBackend):
         """
         if self._proc is None or self._proc.stdin is None or self._proc.stdout is None:
             raise MainframeError("s3270 subprocess is not running")
+        safe_command = _safe_s3270_command(command)
         if self._trace:
-            _LOG.info("s3270 → %s", command)
+            _LOG.info("s3270 → %s", safe_command)
         try:
             self._proc.stdin.write(command.encode("utf-8") + b"\n")
             self._proc.stdin.flush()
@@ -684,14 +759,14 @@ class _S3270Backend(_TerminalBackend):
             text = line.rstrip(b"\r\n").decode("utf-8", errors="replace")
             if text == "ok":
                 if self._trace:
-                    self._trace_response(command, "ok", data, status)
+                    self._trace_response(safe_command, "ok", data, status)
                 return (data, status)
             if text == "error":
                 if self._trace:
-                    self._trace_response(command, "error", data, status)
+                    self._trace_response(safe_command, "error", data, status)
                 if raise_on_error:
-                    joined = "\n".join(data) or "unknown"
-                    raise MainframeError(f"s3270 {command!r} failed: {joined}")
+                    action = command.split("(", 1)[0]
+                    raise MainframeError(f"s3270 {action} failed")
                 return (data, status)
             if text.startswith("data: "):
                 data.append(text[6:])
@@ -700,11 +775,10 @@ class _S3270Backend(_TerminalBackend):
             status = text
 
     def _trace_response(self, command: str, verdict: str, data: list[str], status: str) -> None:
-        # Truncate huge ReadBuffer responses so trace logs stay readable.
-        for i, line in enumerate(data[:4]):
-            _LOG.info("s3270 ← data[%d]: %s", i, line[:200])
-        if len(data) > 4:
-            _LOG.info("s3270 ← data[…]: (%d more lines)", len(data) - 4)
+        # Never log response bodies: a host can echo a password or a typed
+        # secret in a data line. Keep only shape/count metadata.
+        if data:
+            _LOG.info("s3270 ← data_lines=%d", len(data))
         if status:
             _LOG.info("s3270 ← status: %s", status)
         _LOG.info("s3270 ← %s (%s)", verdict, command)
@@ -773,13 +847,18 @@ _HLLAPI_DLL_CANDIDATES = (
 
 
 def _resolve_hllapi_dll(explicit: str | None) -> tuple[Any, Any]:
-    """Load the first available HLLAPI DLL. Returns ``(dll, hllapi_fn)``."""
+    """Load a HLLAPI DLL from an explicitly trusted absolute path."""
+    if not explicit or not os.path.isabs(explicit):
+        raise MainframeError(
+            "hllapi_dll_path must be an existing absolute path to a trusted "
+            "HLLAPI DLL; implicit CWD/PATH DLL search is disabled"
+        )
+
     tried: list[str] = []
-    candidates: list[tuple[str, str]] = []
-    if explicit:
-        candidates.append((explicit, "hllapi"))
-        candidates.append((explicit, "HLLAPI"))
-    candidates.extend(_HLLAPI_DLL_CANDIDATES)
+    candidates: list[tuple[str, str]] = [
+        (explicit, "hllapi"),
+        (explicit, "HLLAPI"),
+    ]
 
     for dll_name, fn_name in candidates:
         tried.append(f"{dll_name}!{fn_name}")
@@ -864,9 +943,9 @@ class _HLLAPIBackend(_TerminalBackend):
         if self._trace:
             fn_label = func.name if isinstance(func, HllapiFn) else f"#{func}"
             _LOG.info(
-                "HLLAPI → func=%s data=%r len=%s ps=%s",
+                "HLLAPI → func=%s payload_bytes=%d len=%s ps=%s",
                 fn_label,
-                data[:32] + b"..." if len(data) > 32 else data,
+                len(data),
                 length,
                 ps_pos,
             )
@@ -952,7 +1031,7 @@ class _HLLAPIBackend(_TerminalBackend):
         data = text.replace("@", "@@").encode("cp1252", errors="replace")
         rc, _, _ = self._call(_EHLLAPI_SENDKEY, data, len(data))
         if rc != 0:
-            raise MainframeError(f"EHLLAPI SendKey('{text[:16]}…') failed rc={rc}")
+            raise MainframeError(f"EHLLAPI SendKey failed rc={rc}")
 
     def send_aid(self, aid: str) -> None:
         # HLLAPI uses @ escape sequences for AID keys. See EHLLAPI docs.
@@ -1144,6 +1223,10 @@ class _Tn5250Backend(_TerminalBackend):
         trace: bool = False,
         rows: int = 24,
         cols: int = 80,
+        tls: bool = False,
+        tls_ca_file: str | None = None,
+        server_hostname: str | None = None,
+        insecure_tls: bool = False,
     ) -> None:
         import socket as _socket
 
@@ -1151,6 +1234,10 @@ class _Tn5250Backend(_TerminalBackend):
         self._sock: Any = None
         self._trace = trace
         self._codepage = codepage
+        self._tls = tls
+        self._tls_ca_file = tls_ca_file
+        self._server_hostname = server_hostname
+        self._insecure_tls = insecure_tls
         self._rows = rows
         self._cols = cols
         self._screen: list[list[str]] = [[" "] * cols for _ in range(rows)]
@@ -1166,15 +1253,58 @@ class _Tn5250Backend(_TerminalBackend):
     # ---- lifecycle ------------------------------------------------------ #
 
     def connect(self, host: str, port: int, *, session_type: str) -> None:
-        self._sock = self._socket.create_connection((host, port), timeout=15)
-        self._sock.settimeout(5.0)
-        self._negotiate()
-        self._connected = True
+        if not self._tls and not self._insecure_tls:
+            raise MainframeError(
+                "TN5250 plaintext transport requires insecure_tls=True; use "
+                "tls=True for verified TLS"
+            )
         # Read the initial WTD burst so the buffer is populated.
         try:
-            self._read_records(timeout=8.0)
-        except (self._socket.timeout, OSError):
-            pass
+            raw_sock = self._socket.create_connection((host, port), timeout=15)
+            self._sock = raw_sock
+            if self._tls:
+                context = self._make_tls_context()
+                self._sock = context.wrap_socket(
+                    raw_sock,
+                    server_hostname=self._server_hostname or host,
+                )
+            self._sock.settimeout(5.0)
+            # wrap_socket() completes the TLS handshake before TN5250
+            # negotiation or application data is sent.
+            self._negotiate()
+            self._connected = True
+            try:
+                self._read_records(timeout=8.0)
+            except (self._socket.timeout, OSError):
+                pass
+        except MainframeError:
+            self.disconnect()
+            raise
+        except (ssl.SSLError, OSError, ValueError) as exc:
+            self.disconnect()
+            if self._tls:
+                raise MainframeError(
+                    f"TN5250 TLS connection to {host}:{port} failed: {exc}"
+                ) from exc
+            raise
+
+    def _make_tls_context(self) -> ssl.SSLContext:
+        try:
+            if self._insecure_tls:
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+            elif self._tls_ca_file:
+                context = ssl.create_default_context(cafile=self._tls_ca_file)
+            else:
+                context = ssl.create_default_context()
+        except (OSError, ssl.SSLError, ValueError) as exc:
+            raise MainframeError(f"cannot configure TN5250 TLS verification: {exc}") from exc
+        if not self._insecure_tls and (
+            context.verify_mode != ssl.CERT_REQUIRED or not context.check_hostname
+        ):
+            raise MainframeError("TN5250 TLS context does not provide CA and hostname verification")
+        return context
 
     def disconnect(self) -> None:
         if self._sock is None:
@@ -1293,7 +1423,7 @@ class _Tn5250Backend(_TerminalBackend):
 
     def _send_raw(self, data: bytes) -> None:
         if self._trace:
-            _LOG.info("tn5250 → raw %s", data[:32].hex())
+            _LOG.info("tn5250 → raw payload_bytes=%d", len(data))
         self._sock.sendall(data)
 
     def _read_records(self, timeout: float) -> list[bytes]:
@@ -1371,7 +1501,7 @@ class _Tn5250Backend(_TerminalBackend):
         if len(data) < 10:
             return
         if self._trace:
-            _LOG.info("tn5250 ← record %s", data[:80].hex())
+            _LOG.info("tn5250 ← record payload_bytes=%d", len(data))
         cursor = 10
         while cursor < len(data):
             b = data[cursor]
@@ -2200,7 +2330,26 @@ def _build_terminal(
     hllapi_dll_path: str | None,
     extra_args: Sequence[str] | None,
     trace: bool = False,
+    tls: bool = False,
+    tls_ca_file: str | None = None,
+    server_hostname: str | None = None,
+    insecure_tls: bool = False,
 ) -> MainframeTerminal:
+    if not tls and (tls_ca_file or server_hostname):
+        raise MainframeError("tls_ca_file and server_hostname require tls=True")
+    if backend == "hllapi" and (tls or tls_ca_file or server_hostname or insecure_tls):
+        raise MainframeError(
+            "TLS options are not supported by backend='hllapi'; the attached "
+            "emulator owns its network connection"
+        )
+    tls_kwargs: dict[str, Any] = {}
+    if tls or tls_ca_file or server_hostname or insecure_tls:
+        tls_kwargs = {
+            "tls": tls,
+            "tls_ca_file": tls_ca_file,
+            "server_hostname": server_hostname,
+            "insecure_tls": insecure_tls,
+        }
     if backend == "s3270":
         impl: _TerminalBackend = _S3270Backend(
             binary=ws3270_path,
@@ -2208,11 +2357,16 @@ def _build_terminal(
             codepage=codepage,
             extra_args=extra_args,
             trace=trace,
+            **tls_kwargs,
         )
     elif backend == "hllapi":
         impl = _HLLAPIBackend(session_id=session_id, dll_path=hllapi_dll_path, trace=trace)
     elif backend == "tn5250":
-        impl = _Tn5250Backend(codepage=codepage or "cp037", trace=trace)
+        impl = _Tn5250Backend(
+            codepage=codepage or "cp037",
+            trace=trace,
+            **tls_kwargs,
+        )
     else:
         raise MainframeError(
             f"unknown mainframe backend {backend!r}",
