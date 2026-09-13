@@ -117,7 +117,7 @@ def test_helpers_network_probes_return_boolean_results(monkeypatch) -> None:
     ],
 )
 def test_http_ok_rejects_non_http_or_malformed_urls_before_open(monkeypatch, url: str) -> None:
-    """DESKTOP-200 / KAN-468: probes never open non-HTTP(S) resources."""
+    """Probes never open non-HTTP(S) resources."""
     import urllib.request
 
     from dolphin_desktop import _helpers

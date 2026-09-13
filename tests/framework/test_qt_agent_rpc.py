@@ -147,7 +147,7 @@ class TestResponseSizeCap:
 
 
 class TestRequestLimits:
-    """DESKTOP-204 / KAN-473: untrusted Qt RPC input is bounded before I/O."""
+    """Untrusted Qt RPC input is bounded before I/O."""
 
     def test_oversized_request_is_rejected_before_pipe_write(self, monkeypatch):
         monkeypatch.setattr(_qt_inject, "MAX_REQUEST_BYTES", 64)

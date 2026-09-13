@@ -128,6 +128,12 @@ Certificate errors (including an untrusted CA or hostname mismatch) raise
 `insecure_tls=True` explicitly enables an unverified/clear transport for
 controlled test endpoints only. It is never implied by port 992.
 
+Port 23 remains a plaintext compatibility default. Do not send credentials
+over that channel; callers that need transport protection must opt into a
+verified TLS connection on a TLS endpoint. This documents the current API
+behavior and is not a claim that every credential-bearing connection is
+blocked by default.
+
 The `s3270` backend expresses TLS using the documented `L:` host prefix, but
 the library cannot control whether a particular emulator verifies its server
 certificate. Therefore `tls=True` on `s3270` requires the explicit

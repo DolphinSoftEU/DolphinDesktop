@@ -739,6 +739,7 @@ def test_cdp_public_launchers_forward_their_runtime_specific_options(monkeypatch
 
 
 def test_cdp_rejects_http_endpoint_owned_by_foreign_pid(monkeypatch) -> None:
+    """DESKTOP-205 / KAN-475: CDP cannot bind to a foreign listener."""
     import dolphin_desktop._cdp as cdp
 
     desktop = desktop_module.Desktop(hidden=False)

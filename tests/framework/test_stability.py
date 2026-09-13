@@ -731,6 +731,7 @@ class TestLaunchCapturesImagePath:
     """
 
     def test_image_path_survives_a_launcher_that_exits_during_startup_delay(self, monkeypatch):
+        """DESKTOP-203 / KAN-472: launch identity survives PID reuse timing."""
         from dolphin_desktop import _application, _desktop, _runner
 
         pw = MagicMock()
@@ -752,6 +753,8 @@ class TestLaunchCapturesImagePath:
         app = _desktop.Desktop().launch("stub.exe", startup_delay=0.5)
         try:
             assert app._image_path == r"c:\apps\stub.exe"
+            assert app._owned_process_handle == 777
+            assert _application._owned_process_handles[31313] == 777
         finally:
             _application._live_pids.discard(31313)
             _application._session_pids.discard(31313)

@@ -411,7 +411,7 @@ def test_s3270_read_fields_keyboard_and_input(monkeypatch: pytest.MonkeyPatch) -
     ],
 )
 def test_s3270_rejects_unsafe_host_before_spawn_or_stdin(value: str) -> None:
-    """DESKTOP-205 / KAN-475: host input cannot inject another s3270 action."""
+    """DESKTOP-199 / KAN-467: host input cannot inject another s3270 action."""
     backend = mf._S3270Backend.__new__(mf._S3270Backend)
     backend._proc = None
     backend._connected = False
@@ -469,6 +469,7 @@ def test_s3270_rejects_invalid_ports_before_spawn(port: object) -> None:
 def test_tn5250_tls_uses_verified_context_before_negotiation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """DESKTOP-200 / KAN-468: explicit TLS verifies before TN5250 data."""
     sock = _Socket()
     context = Mock()
     context.verify_mode = ssl.CERT_REQUIRED

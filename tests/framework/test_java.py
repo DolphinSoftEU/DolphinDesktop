@@ -423,7 +423,7 @@ def test_ensure_enabled_calls_enable_only_when_probe_is_false(monkeypatch) -> No
 def test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path(
     monkeypatch, tmp_path
 ) -> None:
-    """DESKTOP-203 / KAN-472: JAB DLL loading is anchored to an absolute JDK."""
+    """DESKTOP-204 / KAN-473: JAB DLL loading cannot use search-order fallback."""
     wab = _MinimalWab()
     java_home = tmp_path / "jdk"
     java_home.mkdir()

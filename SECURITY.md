@@ -85,29 +85,37 @@ credentials in scope without reading them first; `--dolphin-trace=off`
 disables trace capture entirely, and the surest option remains not putting a
 production credential in a test run.
 
-## Security regression register
+## Security regression mapping
 
-The following acceptance tests are the executable checks for the security
-work items. They are intentionally kept next to the affected code so a
+The table below maps each Jira item to its corresponding regression test; it
+is not a claim that every item is closed by this change. The issue-to-test
+pairs use the actual security scope of each item. Adjacent hardening that is
+not one of these items is kept in the codebase but is not claimed as coverage
+for them. The tests are intentionally kept next to the affected code so a
 future refactor cannot preserve a prose claim while dropping the regression:
 
-| Work item | Regression | Test location | Invariant covered |
+| Work item | Regression | Test location | Status / invariant covered |
 | --- | --- | --- | --- |
-| KAN-467 | DESKTOP-199 | `test_backend.py::TestRegistryAndPluginLoading::test_plugin_discovery...` | Invalid backend metadata is rejected and a plugin cannot replace an existing backend ID. |
-| KAN-468 | DESKTOP-200 | `test_helpers.py::test_http_ok_rejects_non_http...` | `http_ok()` opens only HTTP(S) URLs and refuses malformed or non-HTTP(S) redirect targets. |
-| KAN-472 | DESKTOP-203 | `test_java.py::test_session_is_singleton...` | JAB loads `windowsaccessbridge-64.dll` and runs `jabswitch.exe` only from a trusted absolute JDK path; relative/PATH fallback is refused. |
-| KAN-473 | DESKTOP-204 | `test_qt_agent_rpc.py::TestRequestLimits` | Qt agent requests are bounded for bytes, depth, node count, and standard JSON serialization before pipe I/O. |
-| KAN-475 | DESKTOP-205 | `test_mainframe.py::test_s3270_rejects_unsafe_host...` | s3270 host/text/port input cannot add an action; TLS selection is explicit and verification failures send no TN5250 data. |
+| KAN-467 | DESKTOP-199 | `tests/framework/test_mainframe.py::test_s3270_rejects_unsafe_host_before_spawn_or_stdin` | s3270 host input cannot inject another emulator action; the process is not spawned. |
+| KAN-468 | DESKTOP-200 | `tests/framework/test_mainframe.py::test_tn5250_tls_uses_verified_context_before_negotiation` | Partial / not claimed complete: explicit native TLS verifies before TN5250 negotiation, but plaintext on port 23 remains the compatibility default. |
+| KAN-472 | DESKTOP-203 | `tests/framework/test_stability.py::TestLaunchCapturesImagePath::test_image_path_survives_a_launcher_that_exits_during_startup_delay` | The launch identity is captured before `startup_delay`, so a fast launcher cannot turn PID reuse into an unrelated cleanup target. |
+| KAN-473 | DESKTOP-204 | `tests/framework/test_java.py::test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path` | JAB DLL loading uses only the absolute JDK path; relative and DLL search-order/PATH fallback is refused. |
+| KAN-475 | DESKTOP-205 | `tests/framework/test_desktop.py::test_cdp_rejects_http_endpoint_owned_by_foreign_pid` | A live CDP endpoint is accepted only when its listener PID belongs to the launched process tree. |
+
+KAN-468 is intentionally not marked as fully delivered by this change. The
+native TLS path is verified when explicitly requested, but `port=23` still
+means plaintext for backwards compatibility. Callers must not send
+credentials over that channel; a complete block-or-explicit-opt-in policy
+for all credential-bearing connections requires a separate change.
 
 Run the focused set with:
 
 ```powershell
 uv run pytest `
-  tests/framework/test_backend.py `
-  tests/framework/test_helpers.py `
+  tests/framework/test_mainframe.py `
+  tests/framework/test_stability.py `
   tests/framework/test_java.py `
-  tests/framework/test_qt_agent_rpc.py `
-  tests/framework/test_mainframe.py -q
+  tests/framework/test_desktop.py -q
 ```
 
 ## Reporting a Vulnerability

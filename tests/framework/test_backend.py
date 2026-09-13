@@ -1157,7 +1157,7 @@ class TestRegistryAndPluginLoading:
         loader.assert_called_once_with()
 
     def test_plugin_discovery_registers_valid_plugins_and_skips_invalid_ones(self, monkeypatch):
-        """DESKTOP-199 / KAN-467: hostile plugin metadata cannot alter registry state."""
+        """Hostile plugin metadata cannot alter registry state."""
         valid = _backend_class("_ep_valid")
         same = _backend_class("_ep_same")
         invalid_id = _backend_class("")
