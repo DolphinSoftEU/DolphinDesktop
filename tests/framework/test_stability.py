@@ -867,10 +867,11 @@ class TestStackLauncherWiring:
     def test_launch_hidden_binds_desktop_and_default_timeout(self, monkeypatch):
         from dolphin_desktop import _application, _desktop, _runner
 
+        launcher = MagicMock(return_value=(50505, 1))
         monkeypatch.setattr(
             _runner,
             "launch_cmd_on_desktop",
-            lambda cmd, work_dir=None, env=None: (50505, 1),
+            launcher,
         )
         monkeypatch.setattr(_runner, "close_process_handle", lambda _h: None)
         pw = MagicMock()
@@ -882,12 +883,21 @@ class TestStackLauncherWiring:
         desktop._hidden_initialized = True
         app = desktop._launch_hidden("app.exe", timeout=1.0, work_dir=None, startup_delay=0)
         try:
+            launcher.assert_called_once_with(
+                "app.exe",
+                timeout=1.0,
+                wait_for_idle=False,
+                work_dir=None,
+                env=None,
+            )
             assert app.default_timeout_ms == 3300
             assert app._desktop is desktop
             assert app._image_path == r"c:\h\app.exe"
         finally:
             _application._live_pids.discard(50505)
             _application._session_pids.discard(50505)
+            _application._unanchored_pids.discard(50505)
+            _application._discard_owned_process_handle(50505, 1)
 
 
 class TestTempFile:
