@@ -92,6 +92,9 @@ _kernel32.CreateProcessW.restype = _wt.BOOL
 _kernel32.CloseHandle.argtypes = [_wt.HANDLE]
 _kernel32.CloseHandle.restype = _wt.BOOL
 
+_kernel32.TerminateProcess.argtypes = [_wt.HANDLE, _wt.UINT]
+_kernel32.TerminateProcess.restype = _wt.BOOL
+
 _kernel32.WaitForSingleObject.argtypes = [_wt.HANDLE, _wt.DWORD]
 _kernel32.WaitForSingleObject.restype = _wt.DWORD
 
@@ -173,6 +176,12 @@ def close_process_handle(handle: int) -> None:
     """Close a process handle returned by :func:`launch_on_desktop` or
     :func:`launch_cmd_on_desktop`."""
     _kernel32.CloseHandle(handle)
+
+
+def terminate_process_handle(handle: int, exit_code: int = 1) -> None:
+    """Terminate a just-launched process through its original process handle."""
+    if not _kernel32.TerminateProcess(handle, exit_code):
+        raise OSError(f"TerminateProcess failed: error {ctypes.get_last_error()}")
 
 
 def switch_thread_to_desktop(handle: int) -> None:

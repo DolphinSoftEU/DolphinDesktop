@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import zipfile
 from unittest.mock import MagicMock, patch
 
@@ -429,7 +430,7 @@ class TestConfigRoundTrip:
     def test_log_level_default(self):
         from dolphin_desktop._config import _defaults
 
-        assert _defaults["log_level"] in ("DEBUG", "INFO", "ERROR", "WARNING")
+        assert _defaults["log_level"] in ("DEBUG", "INFO", "ERROR")
 
     def test_log_level_set_via_config(self):
         from dolphin_desktop import config
@@ -466,6 +467,13 @@ class TestConfigRoundTrip:
 
 
 class TestZombieRegistry:
+    @pytest.fixture(autouse=True)
+    def _fake_process_anchors(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        monkeypatch.setattr(_application, "_open_owned_process_handle", lambda pid: f"handle-{pid}")
+        monkeypatch.setitem(sys.modules, "win32api", MagicMock())
+
     def test_pid_registered_on_application_init(self):
 
         from dolphin_desktop import _application
@@ -479,6 +487,8 @@ class TestZombieRegistry:
 
         # cleanup
         _application._live_pids.discard(99999)
+        _application._session_pids.discard(99999)
+        _application._discard_owned_process_handle(99999)
         assert _application._live_pids == prev
 
     def test_kill_removes_the_pid_from_the_live_registry(self):
@@ -721,11 +731,13 @@ class TestLaunchCapturesImagePath:
     """
 
     def test_image_path_survives_a_launcher_that_exits_during_startup_delay(self, monkeypatch):
-        from dolphin_desktop import _application, _desktop
+        from dolphin_desktop import _application, _desktop, _runner
 
         pw = MagicMock()
         pw.process = 31313
         monkeypatch.setattr(_desktop, "_PyWinApp", MagicMock(return_value=pw))
+        monkeypatch.setattr(_runner, "launch_cmd_on_desktop", lambda *args, **kwargs: (31313, 777))
+        monkeypatch.setitem(sys.modules, "win32api", MagicMock())
 
         alive = {"value": True}
 
@@ -743,10 +755,19 @@ class TestLaunchCapturesImagePath:
         finally:
             _application._live_pids.discard(31313)
             _application._session_pids.discard(31313)
+            _application._unanchored_pids.discard(31313)
+            _application._discard_owned_process_handle(31313, 777)
 
 
 class TestProcessOwnership:
     """``close()`` and ``kill()`` must apply the same ownership rule."""
+
+    @pytest.fixture(autouse=True)
+    def _fake_process_anchors(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        monkeypatch.setattr(_application, "_open_owned_process_handle", lambda pid: f"handle-{pid}")
+        monkeypatch.setitem(sys.modules, "win32api", MagicMock())
 
     def _app(self, pid: int, *, owns: bool):
         from dolphin_desktop import _application
@@ -761,6 +782,8 @@ class TestProcessOwnership:
         _application._live_pids.discard(pid)
         _application._session_pids.discard(pid)
         _application._attached_pids.discard(pid)
+        _application._unanchored_pids.discard(pid)
+        _application._discard_owned_process_handle(pid)
 
     def test_close_leaves_an_attached_process_running(self):
         app = self._app(55555, owns=False)
@@ -773,7 +796,7 @@ class TestProcessOwnership:
             app.close()
         finally:
             self._discard(55556)
-        app._app.kill.assert_called_once_with(soft=True)
+        app._app.kill.assert_not_called()
 
     def test_kill_leaves_an_attached_process_running(self):
         app = self._app(55557, owns=False)
@@ -789,7 +812,7 @@ class TestProcessOwnership:
             app.kill()
         finally:
             self._discard(55558)
-        app._app.kill.assert_called_once_with(soft=False)
+        app._app.kill.assert_not_called()
 
     def test_kill_still_terminates_children_of_an_attached_app(self):
         parent = self._app(55559, owns=False)
@@ -800,7 +823,7 @@ class TestProcessOwnership:
         finally:
             self._discard(55559)
             self._discard(55560)
-        child._app.kill.assert_called_once_with(soft=False)
+        child._app.kill.assert_not_called()
         parent._app.kill.assert_not_called()
 
     def test_docstrings_do_not_promise_termination_of_attached_processes(self):
@@ -815,12 +838,14 @@ class TestStackLauncherWiring:
     """``_launch_raw`` / ``_launch_hidden`` must produce fully-wired Applications."""
 
     def test_launch_raw_binds_desktop_and_default_timeout(self, monkeypatch):
-        from dolphin_desktop import _application, _desktop
+        from dolphin_desktop import _application, _desktop, _runner
 
         pw = MagicMock()
         pw.process = 40404
         monkeypatch.setattr(_desktop, "_PyWinApp", MagicMock(return_value=pw))
         monkeypatch.setattr(_desktop, "_process_image_path", lambda _pid: None)
+        monkeypatch.setattr(_runner, "launch_cmd_on_desktop", lambda *args, **kwargs: (40404, 1))
+        monkeypatch.setitem(sys.modules, "win32api", MagicMock())
 
         desktop = _desktop.Desktop(default_timeout_ms=2500)
         app = desktop._launch_raw("app.exe", backend="uia", startup_delay=0)
@@ -833,6 +858,8 @@ class TestStackLauncherWiring:
             for pid in (40404,):
                 _application._live_pids.discard(pid)
                 _application._session_pids.discard(pid)
+                _application._unanchored_pids.discard(pid)
+                _application._discard_owned_process_handle(pid)
 
     def test_launch_hidden_binds_desktop_and_default_timeout(self, monkeypatch):
         from dolphin_desktop import _application, _desktop, _runner

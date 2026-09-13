@@ -77,6 +77,19 @@ def test_close_desktop_and_process_handle_delegate_to_win32(monkeypatch) -> None
     close_handle.assert_called_once_with(202)
 
 
+def test_terminate_process_handle_delegates_and_reports_win32_failure(monkeypatch) -> None:
+    terminate = Mock(side_effect=[True, False])
+    monkeypatch.setattr(_runner._kernel32, "TerminateProcess", terminate)
+
+    assert _runner.terminate_process_handle(303, exit_code=7) is None
+    terminate.assert_called_once_with(303, 7)
+
+    monkeypatch.setattr(_runner.ctypes, "get_last_error", lambda: 5)
+    with pytest.raises(OSError, match="TerminateProcess failed: error 5"):
+        _runner.terminate_process_handle(404)
+    assert terminate.call_args_list[-1].args == (404, 1)
+
+
 def test_switch_thread_to_desktop_success_and_failure(monkeypatch) -> None:
     switch = Mock(return_value=True)
     monkeypatch.setattr(_runner._user32, "SetThreadDesktop", switch)
