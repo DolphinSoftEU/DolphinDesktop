@@ -50,7 +50,7 @@ silently and `dolphin-videos/**` archives nothing. The `fast` extra installs
 ## Agent Checklist
 
 - Windows Server 2019/2022 or Windows 10/11.
-- Python 3.11+ in `PATH`.
+- Python 3.11, 3.12, or 3.13 in `PATH`.
 - Agent process runs as the same Windows user that owns the desktop.
 - Test process has the same elevation level as the application under test.
 

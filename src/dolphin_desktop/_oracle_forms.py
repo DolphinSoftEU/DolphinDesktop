@@ -824,7 +824,7 @@ class OracleFormsApp:
             "no top-level window found for Oracle Forms app",
             hint=(
                 "the JVM window may not be surfaced to JAB yet — increase launch "
-                "startup_delay=, or check that windowsaccessbridge-64.dll is on PATH"
+                "startup_delay=, or check JAVA_HOME for the trusted JAB DLL"
             ),
         )
 

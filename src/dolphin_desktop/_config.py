@@ -8,6 +8,7 @@ import warnings
 
 MAX_VIDEO_FPS = 30
 VALID_TRACE_MODES = ("off", "on-failure", "always")
+VALID_LOG_LEVELS = ("DEBUG", "INFO", "ERROR")
 
 
 def _video_modes() -> tuple[str, ...]:
@@ -80,15 +81,29 @@ def _env_choice(name: str, default: str, choices: tuple[str, ...]) -> str:
     return value
 
 
+def _env_log_level() -> str:
+    """Read the preferred logging environment variable and validate it.
+
+    The product-prefixed variable owns precedence when both variables exist.
+    That choice is made before validation so an invalid preferred value safely
+    falls back to INFO rather than unexpectedly using the fallback variable.
+    """
+    name = (
+        "DOLPHIN_DESKTOP_LOG_LEVEL"
+        if "DOLPHIN_DESKTOP_LOG_LEVEL" in os.environ
+        else "DOLPHIN_LOG_LEVEL"
+    )
+    choices = tuple(level.lower() for level in VALID_LOG_LEVELS)
+    return _env_choice(name, "info", choices).upper()
+
+
 _defaults: dict[str, float | int | str] = {
     "timeout": _env_number("DOLPHIN_TIMEOUT", 10.0, float, minimum=0),
     "poll_interval": 0.1,
     "trace_mode": _env_choice("DOLPHIN_TRACE", "on-failure", VALID_TRACE_MODES),
     "video_mode": _env_choice("DOLPHIN_VIDEO", "keepfailedonly", _video_modes()),
     "video_fps": int(_env_number("DOLPHIN_VIDEO_FPS", 10, int, minimum=1, maximum=MAX_VIDEO_FPS)),
-    "log_level": os.environ.get(
-        "DOLPHIN_DESKTOP_LOG_LEVEL", os.environ.get("DOLPHIN_LOG_LEVEL", "INFO")
-    ).upper(),
+    "log_level": _env_log_level(),
     "retry_count": int(_env_number("DOLPHIN_RETRY", 0, int, minimum=0)),
 }
 
@@ -152,10 +167,15 @@ def config(
             raise ValueError(f"video_fps must be between 1 and {MAX_VIDEO_FPS}")
         _defaults["video_fps"] = int(video_fps)
     if log_level is not None:
+        normalized_log_level = log_level.upper() if isinstance(log_level, str) else None
+        if normalized_log_level not in VALID_LOG_LEVELS:
+            raise ValueError(
+                f"Invalid log_level: {log_level!r}; expected one of {', '.join(VALID_LOG_LEVELS)}"
+            )
         from ._logging import apply_log_level
 
-        _defaults["log_level"] = log_level.upper()
-        apply_log_level(log_level)
+        _defaults["log_level"] = normalized_log_level
+        apply_log_level(normalized_log_level)
     if retry_count is not None:
         if retry_count < 0:
             raise ValueError("retry_count must be non-negative")

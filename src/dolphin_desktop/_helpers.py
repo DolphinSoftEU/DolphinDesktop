@@ -145,7 +145,8 @@ def temp_file(
             _os.close(fd)
         else:
             try:
-                handle = _os.fdopen(fd, mode)
+                encoding = "utf-8" if mode == "w" else None
+                handle = _os.fdopen(fd, mode, encoding=encoding)
             except Exception:
                 _os.close(fd)
                 raise
@@ -296,11 +297,54 @@ def http_ok(url: str, *, timeout: float = 1.0) -> bool:
     """
     import urllib.error
     import urllib.request
+    from urllib.parse import urlsplit
+
+    def _http_url(value: str):
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return None
+        # Force validation of malformed ports before urlopen gets a chance to
+        # interpret the input in a platform-specific way.
+        _ = parsed.port
+        return parsed
 
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+        parsed = _http_url(url)
+        if parsed is None:
+            return False
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+    try:
+
+        class _HttpOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                try:
+                    redirected = _http_url(newurl)
+                except (AttributeError, TypeError, ValueError):
+                    return None
+                if redirected is None:
+                    return None
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+        opener = urllib.request.build_opener(_HttpOnlyRedirectHandler)
+        with opener.open(url, timeout=timeout) as resp:
+            try:
+                final = _http_url(resp.geturl())
+            except (AttributeError, TypeError, ValueError):
+                return False
+            if final is None:
+                return False
+            return getattr(resp, "status", None) == 200
+    except (
+        urllib.error.URLError,
+        ConnectionError,
+        TimeoutError,
+        OSError,
+        TypeError,
+        ValueError,
+        AttributeError,
+    ):
         return False
 
 

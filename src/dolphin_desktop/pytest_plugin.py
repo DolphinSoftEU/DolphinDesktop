@@ -66,18 +66,35 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
     log = _get_logger("plugin")
     for pid in pids:
-        try:
-            import win32api  # type: ignore[import]
-            import win32con  # type: ignore[import]
+        handles = getattr(_application, "_owned_process_handles", {})
+        anchored_handle = handles.get(pid)
+        if anchored_handle is not None:
+            try:
+                import win32api  # type: ignore[import]
 
-            handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
-            win32api.TerminateProcess(handle, 1)
-            win32api.CloseHandle(handle)
-            log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
-        except Exception:
-            pass
-        finally:
-            _application._live_pids.discard(pid)
+                # The handle is bound to the original kernel process object;
+                # never reopen the numeric PID, which may have been reused.
+                win32api.TerminateProcess(anchored_handle, 1)
+                _application._discard_owned_process_handle(pid, anchored_handle)
+                getattr(_application, "_unanchored_pids", set()).discard(pid)
+                _application._live_pids.discard(pid)
+                log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
+            except Exception as exc:
+                # Keep both the handle and PID registered. The session
+                # finalizer or a later explicit cleanup can retry and the
+                # failure remains visible in diagnostics.
+                log.warning(
+                    "Could not clean up anchored process PID=%d after test %s: %s",
+                    pid,
+                    item.nodeid,
+                    exc,
+                )
+            continue
+        log.warning(
+            "Skipping PID-only cleanup for unanchored or unknown process PID=%d after test %s",
+            pid,
+            item.nodeid,
+        )
 
 
 def _is_transient_failure(report: pytest.TestReport | None) -> bool:
@@ -724,12 +741,40 @@ def _capture_failure_screenshot(item: pytest.Item, phase: str = "call") -> Path 
 # Main report hook
 
 
+def _redact_report(report: pytest.TestReport) -> None:
+    """Sanitise every text sink before pytest reporters serialize a report."""
+    if getattr(report, "longrepr", None) is not None:
+        redacted = _redact(str(report.longrepr))
+        report.longrepr = redacted
+
+    sections = getattr(report, "sections", None)
+    if sections is not None:
+        for index, section in enumerate(list(sections)):
+            try:
+                heading, content = section
+            except (TypeError, ValueError):
+                continue
+            sections[index] = (heading, _redact(str(content)))
+
+    # TestReport exposes capstdout/capstderr as read-only properties derived
+    # from ``sections``.  Lightweight report doubles used by callers may store
+    # plain attributes instead, so update those too when they are writable.
+    values = getattr(report, "__dict__", {})
+    for name in ("capstdout", "capstderr"):
+        if name in values:
+            values[name] = _redact(str(values[name]))
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(  # type: ignore[misc]
     item: pytest.Item, call: pytest.CallInfo
 ) -> None:
     outcome = yield
     report = outcome.get_result()
+    # JUnit and terminal reporters consume the same TestReport after this hook.
+    # Sanitise the report itself so neither the failure nor captured output can
+    # serialize the original secret before artifact-specific copies are made.
+    _redact_report(report)
     if call.when == "call":
         from ._exceptions import ElementNotFoundError, WaitTimeoutError
 
@@ -892,19 +937,31 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if orphans:
         log = _get_logger("plugin")
         for pid in orphans:
-            try:
-                import win32api  # type: ignore[import]
-                import win32con  # type: ignore[import]
+            handles = getattr(_application, "_owned_process_handles", {})
+            anchored_handle = handles.get(pid)
+            if anchored_handle is not None:
+                try:
+                    import win32api  # type: ignore[import]
 
-                handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
-                win32api.TerminateProcess(handle, 1)
-                win32api.CloseHandle(handle)
-                log.info("Killed orphan AUT PID=%d at session end", pid)
-            except Exception:
-                pass
-            finally:
-                _application._session_pids.discard(pid)
-                _application._live_pids.discard(pid)
+                    # Reuse the anchored handle from launch; opening PID here
+                    # would make session cleanup vulnerable to PID reuse.
+                    win32api.TerminateProcess(anchored_handle, 1)
+                    _application._discard_owned_process_handle(pid, anchored_handle)
+                    getattr(_application, "_unanchored_pids", set()).discard(pid)
+                    _application._session_pids.discard(pid)
+                    _application._live_pids.discard(pid)
+                    log.info("Killed orphan AUT PID=%d at session end", pid)
+                except Exception as exc:
+                    log.warning(
+                        "Could not clean up anchored orphan AUT PID=%d at session end: %s",
+                        pid,
+                        exc,
+                    )
+                continue
+            log.warning(
+                "Skipping PID-only session cleanup for unanchored or unknown process PID=%d",
+                pid,
+            )
 
     # ---- 2. HTML fallback report (unchanged) ----
     if not _session_reports:

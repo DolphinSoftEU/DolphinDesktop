@@ -26,6 +26,8 @@ from __future__ import annotations
 import os
 from typing import Any, cast
 
+from ._logging import _redact
+
 _initialized = False
 
 # Set to dolphin's own Sentry DSN once a project is created.
@@ -112,6 +114,21 @@ def _strip_user_source(event: dict) -> dict:  # type: ignore[type-arg]
     return event
 
 
+def _redact_event(value: Any) -> Any:
+    """Redact secret-shaped strings throughout a Sentry event in place."""
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            value[key] = _redact_event(nested)
+        return value
+    if isinstance(value, list):
+        for index, nested in enumerate(value):
+            value[index] = _redact_event(nested)
+        return value
+    if isinstance(value, str):
+        return _redact(value)
+    return value
+
+
 def _before_send(event: dict, hint: dict) -> dict | None:  # type: ignore[type-arg]
     """Drop events that are not dolphin-internal, and strip user source lines.
 
@@ -126,8 +143,8 @@ def _before_send(event: dict, hint: dict) -> dict | None:  # type: ignore[type-a
         return None
     module = getattr(exc_info[0], "__module__", "") or ""
     if _is_dolphin_module(module):
-        return _strip_user_source(event)
-    return _strip_user_source(event) if _raised_in_dolphin(event) else None
+        return _redact_event(_strip_user_source(event))
+    return _redact_event(_strip_user_source(event)) if _raised_in_dolphin(event) else None
 
 
 def capture_exception(exc: BaseException) -> None:

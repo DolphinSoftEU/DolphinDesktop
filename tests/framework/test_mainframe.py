@@ -7,6 +7,7 @@ and exercise the protocol parsers and the public facade directly.
 
 from __future__ import annotations
 
+import ssl
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock, call
@@ -319,6 +320,8 @@ def test_s3270_lifecycle_and_status_operations(monkeypatch: pytest.MonkeyPatch) 
     backend = mf._S3270Backend.__new__(mf._S3270Backend)
     backend._proc = _Process()
     backend._connected = False
+    backend._tls = False
+    backend._insecure_tls = True
     backend._spawn = Mock()  # type: ignore[method-assign]
     backend._exec = Mock(return_value=([], ""))  # type: ignore[method-assign]
     backend.connect("host", 23, session_type="3270")
@@ -396,6 +399,257 @@ def test_s3270_read_fields_keyboard_and_input(monkeypatch: pytest.MonkeyPatch) -
         backend.wait_output(1)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "host\r",
+        "host\nQuit()",
+        "host\r\nScript(boom)",
+        "host\x00",
+        "host;Quit()",
+        "host=evil",
+    ],
+)
+def test_s3270_rejects_unsafe_host_before_spawn_or_stdin(value: str) -> None:
+    """DESKTOP-199 / KAN-467: host input cannot inject another s3270 action."""
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._proc = None
+    backend._connected = False
+    backend._spawn = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="s3270 host"):
+        backend.connect(value, 23, session_type="3270")
+
+    backend._spawn.assert_not_called()
+
+
+def test_s3270_rejects_non_string_hosts_before_protocol_access() -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._proc = None
+    backend._connected = False
+    backend._spawn = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="host must be a string"):
+        backend.connect(123, 23, session_type="3270")  # type: ignore[arg-type]
+
+    backend._spawn.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["line\r", "line\n", "line\r\n", "line\x00", "line\x1b[2J"])
+def test_s3270_rejects_unsafe_text_before_stdin(value: str) -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._exec = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="s3270 text"):
+        backend.send_string(value)
+
+    backend._exec.assert_not_called()
+
+
+def test_s3270_keeps_printable_payload_in_one_string_action() -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._exec = Mock()  # type: ignore[method-assign]
+
+    backend.send_string("literal Quit() and Script(ignored)")
+
+    backend._exec.assert_called_once_with('String("literal Quit() and Script(ignored)")')
+    assert mf._safe_s3270_command('String("secret")') == 'String("<redacted>")'
+    assert mf._safe_s3270_command("Wait(1)") == "Wait(1)"
+
+
+def test_s3270_rejects_non_integer_cursor_arguments_before_stdin() -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._exec = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="s3270 row"):
+        backend.move_cursor("1);Quit()", 2)  # type: ignore[arg-type]
+
+    backend._exec.assert_not_called()
+
+
+@pytest.mark.parametrize("port", [0, 65536, True, "992"])
+def test_s3270_rejects_invalid_ports_before_spawn(port: object) -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._proc = None
+    backend._connected = False
+    backend._spawn = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="port"):
+        backend.connect("host.example.test", port, session_type="3270")  # type: ignore[arg-type]
+
+    backend._spawn.assert_not_called()
+
+
+def test_tn5250_tls_uses_verified_context_before_negotiation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DESKTOP-200 / KAN-468: explicit TLS verifies before TN5250 data."""
+    sock = _Socket()
+    context = Mock()
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+    context.wrap_socket.return_value = sock
+    create_context = Mock(return_value=context)
+    monkeypatch.setattr(mf.ssl, "create_default_context", create_context)
+
+    backend = mf._Tn5250Backend(
+        tls=True,
+        tls_ca_file="company-root.pem",
+        server_hostname="ibmi.example.test",
+    )
+    monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=sock))
+    backend._negotiate = Mock()  # type: ignore[method-assign]
+    backend._read_records = Mock()  # type: ignore[method-assign]
+
+    backend.connect("10.0.0.5", 992, session_type="5250")
+
+    create_context.assert_called_once_with(cafile="company-root.pem")
+    context.wrap_socket.assert_called_once_with(sock, server_hostname="ibmi.example.test")
+    backend._negotiate.assert_called_once_with()
+    assert sock.sent == []
+    backend.disconnect()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ssl.SSLCertVerificationError("untrusted"), ssl.CertificateError("mismatch")],
+)
+def test_tn5250_tls_verification_failure_sends_no_tn5250_data(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    sock = _Socket()
+    context = Mock()
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+    context.wrap_socket.side_effect = error
+    monkeypatch.setattr(mf.ssl, "create_default_context", Mock(return_value=context))
+    backend_socket = mf._Tn5250Backend(tls=True)._socket
+    monkeypatch.setattr(backend_socket, "create_connection", Mock(return_value=sock))
+
+    backend = mf._Tn5250Backend(tls=True)
+    backend._socket = backend_socket
+    with pytest.raises(mf.MainframeError, match="TLS connection"):
+        backend.connect("wrong.example.test", 992, session_type="5250")
+
+    assert sock.sent == []
+    assert backend._connected is False
+    assert sock.closed is True
+
+
+def test_tn5250_port_992_plaintext_requires_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rejected = mf._Tn5250Backend()
+    rejected_connection = Mock()
+    monkeypatch.setattr(rejected._socket, "create_connection", rejected_connection)
+    with pytest.raises(mf.MainframeError, match="insecure_tls=True"):
+        rejected.connect("plain.example.test", 992, session_type="5250")
+    rejected_connection.assert_not_called()
+
+    sock = _Socket()
+    create_connection = Mock(return_value=sock)
+    monkeypatch.setattr(mf._Tn5250Backend()._socket, "create_connection", create_connection)
+    create_context = Mock()
+    monkeypatch.setattr(mf.ssl, "create_default_context", create_context)
+
+    backend = mf._Tn5250Backend(insecure_tls=True)
+    backend._socket.create_connection = create_connection  # type: ignore[attr-defined]
+    backend._negotiate = Mock()  # type: ignore[method-assign]
+    backend._read_records = Mock()  # type: ignore[method-assign]
+    backend.connect("plain.example.test", 992, session_type="5250")
+
+    create_context.assert_not_called()
+    assert create_connection.call_args.args == (("plain.example.test", 992),)
+    backend.disconnect()
+
+
+def test_tn5250_insecure_tls_requires_explicit_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    sock = _Socket()
+    context = Mock()
+    context.wrap_socket.return_value = sock
+    monkeypatch.setattr(mf.ssl, "create_default_context", Mock(return_value=context))
+    backend = mf._Tn5250Backend(tls=True, insecure_tls=True)
+    monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=sock))
+    backend._negotiate = Mock()  # type: ignore[method-assign]
+    backend._read_records = Mock()  # type: ignore[method-assign]
+
+    backend.connect("test.example.test", 992, session_type="5250")
+
+    assert context.verify_mode == ssl.CERT_NONE
+    assert context.check_hostname is False
+    backend.disconnect()
+
+
+def test_tn5250_plaintext_on_port_23_remains_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sock = _Socket()
+    backend = mf._Tn5250Backend()
+    monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=sock))
+    backend._negotiate = Mock()  # type: ignore[method-assign]
+    backend._read_records = Mock()  # type: ignore[method-assign]
+
+    backend.connect("plain.example.test", 23, session_type="5250")
+
+    backend._negotiate.assert_called_once_with()
+    assert sock.sent == []
+    backend.disconnect()
+
+
+def test_s3270_tls_uses_l_prefix_and_requires_insecure_opt_in() -> None:
+    rejected = mf._S3270Backend(binary="s3270", tls=True)
+    rejected._spawn = Mock()  # type: ignore[method-assign]
+    with pytest.raises(mf.MainframeError, match="certificate verification"):
+        rejected.connect("host.example.test", 992, session_type="3270")
+    rejected._spawn.assert_not_called()
+
+    backend = mf._S3270Backend(binary="s3270", tls=True, insecure_tls=True)
+    backend._spawn = Mock()  # type: ignore[method-assign]
+    backend._exec = Mock()  # type: ignore[method-assign]
+    backend.connect("host.example.test", 992, session_type="3270")
+    assert backend._exec.call_args_list[:2] == [
+        call("Connect(L:host.example.test:992)"),
+        call("Wait(15,InputField)", raise_on_error=False),
+    ]
+
+
+def test_s3270_plaintext_on_port_23_remains_the_default() -> None:
+    backend = mf._S3270Backend(binary="s3270")
+    backend._spawn = Mock()  # type: ignore[method-assign]
+    backend._exec = Mock()  # type: ignore[method-assign]
+
+    backend.connect("host.example.test", 23, session_type="3270")
+
+    assert backend._exec.call_args_list[0] == call("Connect(host.example.test:23)")
+
+
+def test_s3270_port_992_plaintext_requires_explicit_opt_in() -> None:
+    backend = mf._S3270Backend(binary="s3270")
+    backend._spawn = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="insecure_tls=True"):
+        backend.connect("host.example.test", 992, session_type="3270")
+
+    backend._spawn.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"tls_ca_file": "root.pem"},
+        {"server_hostname": "other.example.test"},
+    ],
+)
+def test_s3270_rejects_tls_options_it_cannot_verify(options: dict[str, str]) -> None:
+    backend = mf._S3270Backend(binary="s3270", tls=True, insecure_tls=True, **options)
+    backend._spawn = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match=r"cannot be verified|does not accept"):
+        backend.connect("host.example.test", 992, session_type="3270")
+
+    backend._spawn.assert_not_called()
+
+
 def test_s3270_exec_protocol_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = mf._S3270Backend.__new__(mf._S3270Backend)
     backend._proc = None
@@ -409,7 +663,7 @@ def test_s3270_exec_protocol_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     assert proc.stdin.writes == [b"Ping\n"]
 
     proc.stdout.lines = [b"data: one\n", b"error text\n", b"error\n"]
-    with pytest.raises(mf.MainframeError, match="failed: one"):
+    with pytest.raises(mf.MainframeError, match="Bad failed"):
         backend._exec("Bad")
     proc.stdout.lines = [b"error text\n", b"error\n"]
     assert backend._exec("Bad", raise_on_error=False) == ([], "error text")
@@ -444,11 +698,12 @@ def test_s3270_wait_output_rethrows_non_disconnect_and_connect_guard() -> None:
 
 
 def test_resolve_hllapi_dll_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DESKTOP-204 / KAN-473: HLLAPI cannot use DLL search-order fallback."""
     fn = Mock()
     dll = SimpleNamespace(HLLAPI=fn)
     loader = Mock(side_effect=[OSError("missing"), dll])
     monkeypatch.setattr(mf.ctypes, "WinDLL", loader, raising=False)
-    resolved_dll, resolved_fn = mf._resolve_hllapi_dll("explicit.dll")
+    resolved_dll, resolved_fn = mf._resolve_hllapi_dll(r"C:\trusted\explicit.dll")
     assert resolved_dll is dll
     assert resolved_fn is fn
     assert fn.restype is None
@@ -459,8 +714,11 @@ def test_resolve_hllapi_dll_success_and_failure(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(mf.ctypes, "WinDLL", Mock(return_value=NoFunction()), raising=False)
     with pytest.raises(mf.MainframeError, match="No HLLAPI-compatible DLL") as exc:
-        mf._resolve_hllapi_dll(None)
-    assert "PCSHLL32.DLL!hllapi" in str(exc.value)
+        mf._resolve_hllapi_dll(r"C:\trusted\missing.dll")
+    assert r"C:\trusted\missing.dll!hllapi" in str(exc.value)
+
+    with pytest.raises(mf.MainframeError, match="absolute path"):
+        mf._resolve_hllapi_dll("relative.dll")
 
     resolved = Mock(return_value=(dll, fn))
     monkeypatch.setattr(mf, "_resolve_hllapi_dll", resolved)
@@ -607,7 +865,7 @@ def test_tn5250_connect_disconnect_and_telnet_negotiation(monkeypatch: pytest.Mo
         ]
     )
     sock = _Socket([incoming])
-    backend = mf._Tn5250Backend(trace=True, rows=2, cols=4)
+    backend = mf._Tn5250Backend(trace=True, rows=2, cols=4, insecure_tls=True)
     backend._sock = sock
     backend._negotiate()
     assert backend._rx_backlog == b"\x00"
@@ -685,6 +943,39 @@ def test_tn5250_connect_disconnect_and_telnet_negotiation(monkeypatch: pytest.Mo
     assert sock.timeouts[-1] == 5.0
 
     backend.disconnect()
+
+
+def test_tn5250_connect_cleans_up_protocol_and_plaintext_failures(monkeypatch) -> None:
+    sock = _Socket()
+    backend = mf._Tn5250Backend()
+    monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=sock))
+    backend._negotiate = Mock(side_effect=mf.MainframeError("bad WTD"))  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="bad WTD"):
+        backend.connect("ibmi", 23, session_type="5250")
+    assert sock.closed is True
+    assert backend._sock is None
+
+    failed = mf._Tn5250Backend()
+    monkeypatch.setattr(
+        failed._socket,
+        "create_connection",
+        Mock(side_effect=OSError("connection refused")),
+    )
+    with pytest.raises(OSError, match="connection refused"):
+        failed.connect("ibmi", 23, session_type="5250")
+
+
+def test_tn5250_tls_context_fails_closed_on_factory_and_weak_context(monkeypatch) -> None:
+    backend = mf._Tn5250Backend(tls=True)
+    monkeypatch.setattr(mf.ssl, "create_default_context", Mock(side_effect=OSError("bad CA")))
+    with pytest.raises(mf.MainframeError, match="cannot configure"):
+        backend._make_tls_context()
+
+    weak_context = SimpleNamespace(verify_mode=ssl.CERT_NONE, check_hostname=False)
+    monkeypatch.setattr(mf.ssl, "create_default_context", Mock(return_value=weak_context))
+    with pytest.raises(mf.MainframeError, match="does not provide"):
+        backend._make_tls_context()
     assert backend._sock is None
     assert backend._connected is False
     backend.disconnect()
@@ -1176,6 +1467,11 @@ def test_build_terminal_selects_all_backends_and_rejects_unknown(
     assert tn5250.call_args.kwargs["codepage"] == "cp037"
     with pytest.raises(mf.MainframeError, match="unknown mainframe backend"):
         mf._build_terminal(backend="other", **args)
+
+    with pytest.raises(mf.MainframeError, match="require tls=True"):
+        mf._build_terminal(backend="tn5250", tls_ca_file="root.pem", **args)
+    with pytest.raises(mf.MainframeError, match="not supported by backend"):
+        mf._build_terminal(backend="hllapi", tls=True, **args)
 
 
 def test_mainframe_terminal_delegates_connect_and_screen_reading() -> None:

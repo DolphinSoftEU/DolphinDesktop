@@ -78,11 +78,37 @@ _MACHINE_NAMES = {
 DEFAULT_RPC_TIMEOUT = 30.0
 #: Largest single agent response accepted before the stream is declared corrupt.
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+#: Largest request the Python client will put on the agent pipe.
+MAX_REQUEST_BYTES = 1 * 1024 * 1024
+#: Maximum nesting depth accepted in a request JSON value.
+MAX_REQUEST_DEPTH = 32
+#: Maximum number of dict/list nodes accepted in a request JSON value.
+MAX_REQUEST_NODES = 10_000
 #: How many timed-out request ids stay recoverable; a permanently wedged agent
 #: would otherwise add one per call for the lifetime of the client.
 MAX_ABANDONED_IDS = 256
 _READ_CHUNK = 64 * 1024
 _READ_POLL_S = 0.005
+
+
+def _validate_request_shape(value: Any, *, depth: int = 0) -> int:
+    """Reject pathological JSON before serialization and pipe I/O."""
+    if depth > MAX_REQUEST_DEPTH:
+        raise QtAgentRpcError(f"agent request exceeded maximum JSON depth of {MAX_REQUEST_DEPTH}")
+    nodes = 1
+    if isinstance(value, dict):
+        for key, child in value.items():
+            nodes += _validate_request_shape(key, depth=depth + 1)
+            nodes += _validate_request_shape(child, depth=depth + 1)
+    elif isinstance(value, list):
+        for child in value:
+            nodes += _validate_request_shape(child, depth=depth + 1)
+    if nodes > MAX_REQUEST_NODES:
+        raise QtAgentRpcError(
+            f"agent request exceeded maximum JSON complexity of {MAX_REQUEST_NODES} nodes"
+        )
+    return nodes
+
 
 _kernel32: Any = (
     ctypes.WinDLL("kernel32", use_last_error=True)
@@ -758,7 +784,18 @@ class QtAgentClient:
             self._req_id += 1
             req_id = self._req_id
             req = {"id": req_id, "op": op, **kwargs}
-            self._write_line((json.dumps(req) + "\n").encode("utf-8"))
+            _validate_request_shape(req)
+            try:
+                encoded_request = (json.dumps(req, allow_nan=False) + "\n").encode("utf-8")
+            except (TypeError, ValueError, RecursionError) as exc:
+                raise QtAgentRpcError(
+                    f"cannot serialize agent request for op={op!r}: {exc}"
+                ) from exc
+            if len(encoded_request) > MAX_REQUEST_BYTES:
+                raise QtAgentRpcError(
+                    f"agent request for op={op!r} exceeded {MAX_REQUEST_BYTES} bytes"
+                )
+            self._write_line(encoded_request)
 
             deadline = time.monotonic() + self.rpc_timeout
             while True:

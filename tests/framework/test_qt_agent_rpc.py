@@ -146,6 +146,41 @@ class TestResponseSizeCap:
             client.ping()
 
 
+class TestRequestLimits:
+    """Untrusted Qt RPC input is bounded before I/O."""
+
+    def test_oversized_request_is_rejected_before_pipe_write(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "MAX_REQUEST_BYTES", 64)
+        client = _FakeClient([])
+        with pytest.raises(QtAgentRpcError, match="exceeded 64 bytes"):
+            client._send("invoke", payload="x" * 100)
+        assert client.written == []
+
+    def test_deep_request_is_rejected_before_pipe_write(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "MAX_REQUEST_DEPTH", 3)
+        client = _FakeClient([])
+        nested = value = {}
+        for _ in range(5):
+            value["child"] = {}
+            value = value["child"]
+        with pytest.raises(QtAgentRpcError, match="maximum JSON depth"):
+            client._send("tree", filter=nested)
+        assert client.written == []
+
+    def test_complex_request_is_rejected_before_pipe_write(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "MAX_REQUEST_NODES", 4)
+        client = _FakeClient([])
+        with pytest.raises(QtAgentRpcError, match="maximum JSON complexity"):
+            client._send("find", filter=[{"objectName": str(index)} for index in range(4)])
+        assert client.written == []
+
+    def test_non_standard_json_numbers_are_rejected_before_pipe_write(self):
+        client = _FakeClient([])
+        with pytest.raises(QtAgentRpcError, match="cannot serialize"):
+            client._send("set_property", value=float("nan"))
+        assert client.written == []
+
+
 class _PipeSim:
     """Scripted stand-in for the agent's end of the pipe.
 

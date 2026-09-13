@@ -60,7 +60,9 @@ brew install x3270
 ### HLLAPI backend (enterprise emulators)
 
 The emulator vendor ships an `EHLAPI32.DLL` (or `PCSHLL32.DLL` for IBM
-PCOMM). dolphin_desktop auto-loads any of these:
+PCOMM). For security, dolphin_desktop does not search CWD, the application
+directory, or the ambient `PATH` for these names. Pass the vendor DLL through
+`hllapi_dll_path` as an existing absolute path:
 
 | DLL name | Vendor |
 |---|---|
@@ -69,7 +71,7 @@ PCOMM). dolphin_desktop auto-loads any of these:
 | `WHLAPI32.DLL` | Older Rocket versions |
 | `PCSHLL.DLL` | Legacy 16-bit shims |
 
-If none load, pass `hllapi_dll_path=r"C:\path\to\your\DLL"`. The DLL
+If the configured path cannot be loaded, the backend raises a clear error. The DLL
 must be a **32-bit or 64-bit build matching the Python interpreter**
 (a 64-bit Python cannot load a 32-bit DLL). PCOMM historically ships
 32-bit only — use a 32-bit Python for those installs.
@@ -95,6 +97,59 @@ must be a **32-bit or 64-bit build matching the Python interpreter**
 | `wait_for_text(needle, timeout, row=)` | Poll until `needle` appears. |
 | `is_keyboard_locked()` | True while the host is still writing. |
 | context manager | `with desktop.mainframe(...) as term:` auto-disconnects. |
+
+### TLS transport
+
+TLS is explicit. `port=992` never silently changes transport mode. The
+traditional plaintext default remains available on the normal port 23; using
+plaintext on port 992 requires the explicit `insecure_tls=True` opt-in. Use
+`tls=True` for a verified native TLS session.
+
+The native `tn5250` backend uses Python's `ssl.create_default_context()`.
+With `tls=True` it verifies the server certificate chain and hostname before
+starting TN5250 negotiation or sending application data. Use `tls_ca_file=`
+for a private CA bundle and `server_hostname=` when the certificate name is
+different from the TCP host:
+
+```python
+with Desktop().mainframe(
+    host="ibmi.example.test",
+    port=992,
+    session_type="5250",
+    backend="tn5250",
+    tls=True,
+    tls_ca_file=r"C:\certs\company-root.pem",
+) as term:
+    term.wait_ready()
+```
+
+Certificate errors (including an untrusted CA or hostname mismatch) raise
+`MainframeError`; no TN5250 negotiation or application payload is sent.
+`insecure_tls=True` explicitly enables an unverified/clear transport for
+controlled test endpoints only. It is never implied by port 992.
+
+Port 23 remains a plaintext compatibility default. Do not send credentials
+over that channel; callers that need transport protection must opt into a
+verified TLS connection on a TLS endpoint. This documents the current API
+behavior and is not a claim that every credential-bearing connection is
+blocked by default.
+
+The `s3270` backend expresses TLS using the documented `L:` host prefix, but
+the library cannot control whether a particular emulator verifies its server
+certificate. Therefore `tls=True` on `s3270` requires the explicit
+`insecure_tls=True` opt-in and rejects `tls_ca_file=`. Use `backend="tn5250"`
+when certificate verification is required.
+
+### s3270 input safety
+
+The `s3270` backend sends one action per line to the emulator process.  For
+that reason, `host` and `type_text()` values containing carriage returns,
+line feeds, NULs, or other control characters are rejected with
+`MainframeError` before the process is started or stdin is written. Host
+values containing s3270 action delimiters such as parentheses, semicolons,
+commas, equals signs, or spaces are rejected as well. Printable quotes and
+backslashes in text are escaped and remain a single literal `String(...)`
+action; text such as `Quit()` is not executed as an emulator command.
 
 ### `TerminalScreen`
 
@@ -239,7 +294,11 @@ term = desktop.mainframe(
 # a 24×80 EBCDIC screen buffer with field detection.
 
 # HLLAPI — attach to a running PCOMM session "A"
-term = desktop.mainframe(backend="hllapi", session_id="A")
+term = desktop.mainframe(
+    backend="hllapi",
+    session_id="A",
+    hllapi_dll_path=r"C:\Program Files\IBM\Personal Communications\PCSHLL32.DLL",
+)
 
 # HLLAPI — explicit DLL
 term = desktop.mainframe(

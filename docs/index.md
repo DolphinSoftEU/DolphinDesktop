@@ -63,4 +63,4 @@ limitations, supported modes, out-of-scope decisions
 
 ## Supported Platform
 
-Dolphin Desktop targets Windows 10/11 with Python 3.11 or newer. The package contains placeholder backend classes for other platforms, but the documented and tested product path is Windows desktop automation.
+Dolphin Desktop targets Windows 10/11 with Python 3.11, 3.12, or 3.13. The package contains placeholder backend classes for other platforms, but the documented and tested product path is Windows desktop automation.
