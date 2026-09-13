@@ -38,6 +38,104 @@ def test_image_path_now_returns_path_and_swallows_probe_errors(monkeypatch) -> N
     assert desktop_module._image_path_now(app) is None
 
 
+def test_cdp_listener_pid_reads_the_owner_from_the_windows_tcp_table(monkeypatch) -> None:
+    import ctypes
+
+    class _TcpRow(ctypes.Structure):
+        _fields_ = [
+            ("state", ctypes.c_ulong),
+            ("local_addr", ctypes.c_ulong),
+            ("local_port", ctypes.c_ulong),
+            ("remote_addr", ctypes.c_ulong),
+            ("remote_port", ctypes.c_ulong),
+            ("owning_pid", ctypes.c_ulong),
+        ]
+
+    table_size = ctypes.sizeof(ctypes.c_ulong) + ctypes.sizeof(_TcpRow)
+    calls = []
+
+    def get_table(table, size, *_args):
+        calls.append(table is None)
+        if table is None:
+            size._obj.value = table_size
+            return 122
+        ctypes.c_ulong.from_buffer(table).value = 1
+        row = _TcpRow.from_buffer(table, ctypes.sizeof(ctypes.c_ulong))
+        row.local_port = desktop_module.socket.htons(9222)
+        row.owning_pid = 4321
+        return 0
+
+    api = SimpleNamespace(GetExtendedTcpTable=get_table)
+    monkeypatch.setattr(desktop_module.sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: api)
+
+    assert desktop_module._cdp_listener_pid(9222) == 4321
+    assert calls == [True, False]
+
+
+def test_cdp_listener_pid_fails_closed_when_tcp_table_cannot_be_read(monkeypatch) -> None:
+    import ctypes
+
+    api = SimpleNamespace(GetExtendedTcpTable=lambda *_args: 5)
+    monkeypatch.setattr(desktop_module.sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: api)
+
+    assert desktop_module._cdp_listener_pid(9222) is None
+
+
+def test_cdp_listener_pid_handles_platform_empty_table_and_query_failures(monkeypatch) -> None:
+    import ctypes
+
+    monkeypatch.setattr(desktop_module.sys, "platform", "linux")
+    assert desktop_module._cdp_listener_pid(9222) is None
+
+    monkeypatch.setattr(desktop_module.sys, "platform", "win32")
+    table_size = ctypes.sizeof(ctypes.c_ulong)
+
+    def second_query_fails(table, size, *_args):
+        if table is None:
+            size._obj.value = table_size
+            return 122
+        return 5
+
+    api = SimpleNamespace(GetExtendedTcpTable=second_query_fails)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: api)
+    assert desktop_module._cdp_listener_pid(9222) is None
+
+    def empty_table(table, size, *_args):
+        if table is None:
+            size._obj.value = table_size
+            return 122
+        ctypes.c_ulong.from_buffer(table).value = 0
+        return 0
+
+    monkeypatch.setattr(
+        ctypes, "WinDLL", lambda *_args, **_kwargs: SimpleNamespace(GetExtendedTcpTable=empty_table)
+    )
+    assert desktop_module._cdp_listener_pid(9222) is None
+
+    monkeypatch.setattr(ctypes, "WinDLL", Mock(side_effect=OSError("iphlpapi missing")))
+    assert desktop_module._cdp_listener_pid(9222) is None
+
+
+def test_cdp_listener_belongs_to_requires_a_known_process_or_tree(monkeypatch) -> None:
+    app = Mock(process_id=1234)
+
+    assert desktop_module._cdp_listener_belongs_to(app, None) is False
+    assert desktop_module._cdp_listener_belongs_to(app, 1234) is True
+
+    monkeypatch.setattr(desktop_module, "_enumerate_descendant_pids", lambda _pid: {5678})
+    assert desktop_module._cdp_listener_belongs_to(app, 5678) is True
+    assert desktop_module._cdp_listener_belongs_to(app, 9999) is False
+
+    monkeypatch.setattr(
+        desktop_module,
+        "_enumerate_descendant_pids",
+        Mock(side_effect=RuntimeError("snapshot failed")),
+    )
+    assert desktop_module._cdp_listener_belongs_to(app, 5678) is False
+
+
 def test_constructor_validation_auto_detection_and_repr(monkeypatch) -> None:
     import dolphin_desktop._runner as runner
 
@@ -236,10 +334,10 @@ def test_launch_with_environment_closes_spawn_handle_if_configuration_fails(monk
     import dolphin_desktop._runner as runner
 
     launcher = Mock(return_value=(654, 987))
-    close_handle = Mock()
+    close_handle = Mock(side_effect=OSError("already closed"))
     monkeypatch.setattr(runner, "launch_cmd_on_desktop", launcher)
     monkeypatch.setattr(runner, "close_process_handle", close_handle)
-    monkeypatch.setattr(runner, "terminate_process_handle", Mock())
+    monkeypatch.setattr(runner, "terminate_process_handle", Mock(side_effect=OSError("gone")))
     monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
     monkeypatch.setattr(
         desktop_module,
@@ -255,6 +353,73 @@ def test_launch_with_environment_closes_spawn_handle_if_configuration_fails(monk
         )
 
     close_handle.assert_called_once_with(987)
+
+
+def test_launch_cleans_the_original_handle_when_application_wrapping_fails(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", Mock(return_value=(321, 987)))
+    terminate = Mock()
+    close = Mock()
+    monkeypatch.setattr(runner, "terminate_process_handle", terminate)
+    monkeypatch.setattr(runner, "close_process_handle", close)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda _pid: "demo.exe")
+    monkeypatch.setattr(desktop_module, "_PyWinApp", Mock(return_value=Mock()))
+    monkeypatch.setattr(
+        desktop_module,
+        "Application",
+        Mock(side_effect=RuntimeError("wrapper failed")),
+    )
+
+    with pytest.raises(ApplicationError, match="Failed to launch"):
+        Desktop(hidden=False).launch("demo.exe", startup_delay=0)
+
+    terminate.assert_called_once_with(987)
+    close.assert_called_once_with(987)
+
+
+def test_launch_swallows_cleanup_failures_after_wrapping_fails(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    terminate = Mock(side_effect=OSError("already gone"))
+    close = Mock(side_effect=OSError("already closed"))
+    monkeypatch.setattr(runner, "terminate_process_handle", terminate)
+    monkeypatch.setattr(runner, "close_process_handle", close)
+    desktop = desktop_module.Desktop(hidden=False)
+    monkeypatch.setattr(
+        desktop,
+        "_launch_with_environment",
+        Mock(return_value=(Mock(process=321), "demo.exe", 987)),
+    )
+    monkeypatch.setattr(desktop_module, "Application", Mock(side_effect=RuntimeError("wrapper")))
+
+    with pytest.raises(ApplicationError, match="Failed to launch"):
+        desktop.launch("demo.exe", startup_delay=0)
+
+    terminate.assert_called_once_with(987)
+    close.assert_called_once_with(987)
+
+
+def test_raw_launch_cleans_the_original_handle_when_wrapping_fails(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    terminate = Mock(side_effect=OSError("already gone"))
+    close = Mock(side_effect=OSError("already closed"))
+    monkeypatch.setattr(runner, "terminate_process_handle", terminate)
+    monkeypatch.setattr(runner, "close_process_handle", close)
+    desktop = desktop_module.Desktop(hidden=False)
+    monkeypatch.setattr(
+        desktop,
+        "_launch_with_environment",
+        Mock(return_value=(Mock(process=321), "demo.exe", 987)),
+    )
+    monkeypatch.setattr(desktop_module, "Application", Mock(side_effect=RuntimeError("wrapper")))
+
+    with pytest.raises(ApplicationError, match="Failed to launch"):
+        desktop._launch_raw("demo.exe", backend="uia", startup_delay=0)
+
+    terminate.assert_called_once_with(987)
+    close.assert_called_once_with(987)
 
 
 def test_raw_launch_passes_env_to_private_child(monkeypatch) -> None:
@@ -467,8 +632,13 @@ def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
     launcher.side_effect = None
     launcher.return_value = (555, 666)
     py_app.connect.side_effect = RuntimeError("attach failed")
+    terminate = Mock(side_effect=OSError("gone"))
+    monkeypatch.setattr(runner, "terminate_process_handle", terminate)
+    close_handle.side_effect = OSError("already closed")
     with pytest.raises(ApplicationError, match="pid=555"):
         desktop._launch_hidden("unattachable.exe", timeout=1, work_dir=None, startup_delay=0)
+    terminate.assert_called_once_with(666)
+    close_handle.assert_called_once_with(666)
 
 
 def test_connect_builds_all_criteria_and_handles_failures(monkeypatch) -> None:
@@ -752,6 +922,7 @@ def test_cdp_rejects_http_endpoint_owned_by_foreign_pid(monkeypatch) -> None:
     monkeypatch.setattr("urllib.request.urlopen", Mock(return_value=response_cm))
     monkeypatch.setattr(desktop_module.time, "monotonic", Mock(return_value=0.0))
     monkeypatch.setattr(desktop_module, "_cdp_listener_pid", lambda _port: 9876)
+    app.kill.side_effect = RuntimeError("already gone")
     connect = Mock()
     monkeypatch.setattr(cdp.CDPSession, "connect", connect)
 
@@ -783,6 +954,7 @@ def test_cdp_connect_failure_kills_launched_application(monkeypatch) -> None:
     monkeypatch.setattr("urllib.request.urlopen", Mock(return_value=response_cm))
     monkeypatch.setattr(desktop_module.time, "monotonic", Mock(return_value=0.0))
     monkeypatch.setattr(desktop_module, "_cdp_listener_pid", lambda _port: 1234)
+    app.kill.side_effect = RuntimeError("already gone")
     monkeypatch.setattr(
         cdp.CDPSession,
         "connect",

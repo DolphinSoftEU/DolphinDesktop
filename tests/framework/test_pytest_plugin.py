@@ -338,6 +338,22 @@ class TestMakereportIsolation:
 
         assert report.longrepr == 'login="***"'
 
+    def test_redact_report_skips_malformed_sections_without_leaking_valid_content(self):
+        report = SimpleNamespace(
+            longrepr=None,
+            sections=[
+                ("Captured stdout", "token=DESKTOP_TOKEN_123"),
+                ("malformed",),
+                ("too many fields", "kept", "ignored"),
+            ],
+        )
+
+        plugin._redact_report(report)
+
+        assert report.sections[0] == ("Captured stdout", "token=***")
+        assert report.sections[1] == ("malformed",)
+        assert report.sections[2] == ("too many fields", "kept", "ignored")
+
     def test_collection_error_does_not_escape(self, monkeypatch, caplog):
         def _boom(item, call, report):
             raise RuntimeError("artifact backend exploded")
@@ -834,6 +850,13 @@ class TestFixtures:
         assert plugin.dolphin_timeout.__wrapped__(no_cli) == 3.75
         monkeypatch.delenv("DOLPHIN_TIMEOUT")
         assert plugin.dolphin_timeout.__wrapped__(no_cli) == 10.0
+
+        for invalid in (float("inf"), -1.0):
+            invalid_request = SimpleNamespace(
+                config=_Options(tmp_path, **{"--dolphin-timeout": invalid})
+            )
+            with pytest.raises(ValueError, match="timeout"):
+                plugin.dolphin_timeout.__wrapped__(invalid_request)
 
     def test_session_config_applies_every_cli_override(self, monkeypatch, tmp_path):
         from dolphin_desktop import _config
@@ -1674,6 +1697,30 @@ class TestSessionReports:
         assert pids == set()
         assert live == set()
         assert handles == {}
+
+    def test_sessionfinish_keeps_registries_when_anchored_termination_fails(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            types.SimpleNamespace(
+                TerminateProcess=lambda *_args: (_ for _ in ()).throw(OSError("access denied")),
+            ),
+        )
+        pids = {508}
+        live = {508}
+        handles = {508: "anchor"}
+        monkeypatch.setattr(_application, "_session_pids", pids)
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
+        plugin._session_reports.clear()
+
+        plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
+
+        assert pids == {508}
+        assert live == {508}
+        assert handles == {508: "anchor"}
 
 
 class TestHtmlReport:

@@ -170,6 +170,8 @@ def test_video_recorder_reports_missing_capture_and_rejects_frame_rate() -> None
         VideoRecorder(fps=100)
     with pytest.raises(RuntimeError, match="No frames captured"):
         VideoRecorder().encode(Path("missing.mp4"))
+    with pytest.raises(ValueError, match="fps"):
+        VideoRecorder(fps=True)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("fps", [0, 31])

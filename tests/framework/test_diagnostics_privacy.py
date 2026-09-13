@@ -102,6 +102,12 @@ class TestConfigAppliesLogLevel:
         assert get_log_level() == value
         assert dolphin_logger.level == getattr(logging, value)
 
+    def test_internal_log_level_parser_rejects_unknown_values(self):
+        from dolphin_desktop._logging import _level_int
+
+        with pytest.raises(ValueError, match="Invalid log_level"):
+            _level_int("not-a-log-level")
+
 
 # Redaction must survive handlers dolphin does not own
 

@@ -369,6 +369,24 @@ def test_java_home_skips_an_invalid_registry_home_and_invalid_where_home(
         assert java.JavaAccessBridge.java_home() is None
 
 
+def test_trusted_java_home_fails_closed_when_path_normalization_fails(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(java.os.path, "abspath", Mock(side_effect=OSError("path error")))
+    assert java._trusted_java_home(str(tmp_path)) is None
+
+
+def test_is_enabled_rejects_relative_windows_directory(monkeypatch) -> None:
+    winreg = SimpleNamespace(
+        HKEY_CURRENT_USER=1,
+        OpenKey=lambda *_args: (_ for _ in ()).throw(OSError("missing")),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: None))
+    monkeypatch.setenv("WINDIR", "relative-windows")
+    assert java.JavaAccessBridge.is_enabled() is False
+
+
 def test_enable_prefers_jdk_jabswitch_and_reports_failures(monkeypatch, tmp_path) -> None:
     home = tmp_path / "jdk"
     binary = home / "bin" / "jabswitch.exe"
@@ -460,6 +478,16 @@ def test_session_init_rejects_relative_java_home_without_loading_by_name(monkeyp
     with pytest.raises(RuntimeError, match="trusted absolute JRE/JDK path"):
         java._JABSession()
     loader.assert_not_called()
+
+
+def test_session_init_continues_after_trusted_dll_load_failure(monkeypatch, tmp_path) -> None:
+    java_home = tmp_path / "jdk"
+    java_home.mkdir()
+    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: str(java_home)))
+    monkeypatch.setattr(java.ctypes, "WinDLL", Mock(side_effect=OSError("load failed")))
+
+    with pytest.raises(RuntimeError, match="Could not load windowsaccessbridge"):
+        java._JABSession()
 
 
 def test_setup_prototypes_marks_absent_optional_exports(monkeypatch) -> None:

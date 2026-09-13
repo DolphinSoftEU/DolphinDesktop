@@ -425,6 +425,12 @@ class TestRegistry:
             register(cls)
         assert "_test_platform" not in _REGISTRY
 
+    def test_register_rejects_missing_platform(self):
+        cls = _make_backend("_test_missing_platform")
+        delattr(cls, "platform")
+        with pytest.raises(TypeError, match="platform"):
+            register(cls)
+
 
 # resolve()
 
@@ -741,6 +747,11 @@ class TestCapabilityAndBaseContract:
         cls = _backend_class(f"_bad_{attribute}_{bad_value!r}")
         setattr(cls, attribute, bad_value)
         with pytest.raises(TypeError, match=attribute):
+            cls()
+
+    def test_backend_constructor_rejects_unsupported_platform(self):
+        cls = _backend_class("_bad_platform_value", platform_="solaris")
+        with pytest.raises(ValueError, match="unsupported platform"):
             cls()
 
     def test_default_base_helpers(self):
@@ -1162,6 +1173,8 @@ class TestRegistryAndPluginLoading:
         same = _backend_class("_ep_same")
         invalid_id = _backend_class("")
         invalid_platform = _backend_class("_ep_invalid_platform", platform_="solaris")
+        missing_platform = _backend_class("_ep_missing_platform")
+        delattr(missing_platform, "platform")
         collision = _backend_class("uia")
         registry = dict(backend._REGISTRY)
         registry[same.id] = same
@@ -1173,6 +1186,7 @@ class TestRegistryAndPluginLoading:
                 _EntryPoint("broken", error=ImportError("dependency missing")),
                 _EntryPoint("not-backend", loaded=object()),
                 _EntryPoint("invalid-id", loaded=invalid_id),
+                _EntryPoint("missing-platform", loaded=missing_platform),
                 _EntryPoint("invalid-platform", loaded=invalid_platform),
                 _EntryPoint(valid.id, loaded=valid),
                 _EntryPoint(same.id, loaded=same),
@@ -1190,6 +1204,9 @@ class TestRegistryAndPluginLoading:
         assert any("failed to load" in message for message in messages)
         assert any("does not point at a Backend" in message for message in messages)
         assert any("not a non-empty str" in message for message in messages)
+        assert any(
+            "platform" in message and "not a non-empty str" in message for message in messages
+        )
         assert any("unsupported platform" in message for message in messages)
         assert any("does not match" in message for message in messages)
         assert any("tries to replace" in message for message in messages)

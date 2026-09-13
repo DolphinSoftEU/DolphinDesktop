@@ -125,6 +125,66 @@ def test_process_image_path_covers_all_failure_points(monkeypatch) -> None:
     assert application._process_image_path(12) is None
 
 
+def test_process_state_distinguishes_stopped_running_and_unknown(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    kernel32 = SimpleNamespace(
+        OpenProcess=Mock(return_value=77),
+        GetExitCodeProcess=Mock(),
+        CloseHandle=Mock(),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32)
+
+    kernel32.OpenProcess.return_value = 0
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 87)
+    assert application._process_state(12) == "stopped"
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
+    assert application._process_state(12) == "unknown"
+
+    kernel32.OpenProcess.return_value = 77
+    kernel32.GetExitCodeProcess.return_value = False
+    assert application._process_state(12) == "unknown"
+    kernel32.GetExitCodeProcess.return_value = True
+
+    def fill_exit_code(_handle, pointer) -> bool:
+        pointer._obj.value = application._PROCESS_STILL_ACTIVE
+        return True
+
+    kernel32.GetExitCodeProcess.side_effect = fill_exit_code
+    assert application._process_state(12) == "running"
+    kernel32.GetExitCodeProcess.side_effect = lambda _handle, pointer: (
+        setattr(pointer._obj, "value", 0) or True
+    )
+    assert application._process_state(12) == "stopped"
+
+    kernel32.GetExitCodeProcess.side_effect = OSError("query failed")
+    kernel32.CloseHandle.side_effect = OSError("already closed")
+    assert application._process_state(12) == "unknown"
+
+    kernel32.OpenProcess.side_effect = OSError("access denied")
+    assert application._process_state(12) == "unknown"
+    monkeypatch.setattr(ctypes, "WinDLL", Mock(side_effect=OSError("kernel32 missing")))
+    assert application._process_state(12) == "unknown"
+
+
+def test_owned_handle_helpers_return_none_and_preserve_existing_pid_anchor(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    monkeypatch.setitem(
+        sys.modules,
+        "win32api",
+        SimpleNamespace(OpenProcess=Mock(return_value=0)),
+    )
+    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(PROCESS_TERMINATE=1))
+    assert application._open_owned_process_handle(123) is None
+
+    handles = {123: "first"}
+    monkeypatch.setattr(application, "_owned_process_handles", handles)
+    assert application._register_owned_process_handle(123, "second") is False
+    assert handles == {123: "first"}
+    assert application._register_owned_process_handle(123, "first") is True
+
+
 def test_window_class_probe_handles_callback_and_outer_errors(monkeypatch) -> None:
     import dolphin_desktop._application as application
 
@@ -429,6 +489,7 @@ def test_application_init_validates_and_tracks_ownership(monkeypatch) -> None:
     finally:
         application._live_pids.discard(1234)
         application._session_pids.discard(1234)
+        application._unanchored_pids.discard(1234)
         application._attached_pids.discard(1235)
 
     explicit = application.Application(Mock(process=1236), "uia", image_path="explicit.exe")
@@ -437,6 +498,203 @@ def test_application_init_validates_and_tracks_ownership(monkeypatch) -> None:
     finally:
         application._live_pids.discard(1236)
         application._session_pids.discard(1236)
+        application._unanchored_pids.discard(1236)
+
+    zero_handle = application.Application(
+        Mock(process=1237), "uia", image_path="explicit.exe", owned_process_handle=0
+    )
+    try:
+        assert zero_handle._owned_process_handle is None
+        assert 1237 in application._unanchored_pids
+    finally:
+        application._live_pids.discard(1237)
+        application._session_pids.discard(1237)
+        application._unanchored_pids.discard(1237)
+        application._owned_process_handles.pop(1237, None)
+
+
+def test_owned_process_handle_is_registered_and_released_by_kill(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    api_calls: list[tuple] = []
+    monkeypatch.setitem(
+        sys.modules,
+        "win32api",
+        SimpleNamespace(
+            TerminateProcess=lambda *args: api_calls.append(("terminate", *args)),
+            CloseHandle=lambda *args: api_calls.append(("close", *args)),
+        ),
+    )
+    monkeypatch.setattr(application, "_process_image_path", lambda _pid: None)
+    monkeypatch.setattr(application, "_open_owned_process_handle", lambda _pid: "anchor")
+    raw = Mock(process=1237)
+    app = application.Application(raw, "uia")
+    try:
+        assert app._owned_process_handle == "anchor"
+        assert application._owned_process_handles[1237] == "anchor"
+        app.kill()
+        assert ("terminate", "anchor", 1) in api_calls
+        assert ("close", "anchor") in api_calls
+        assert 1237 not in application._owned_process_handles
+        assert 1237 not in application._live_pids
+        assert 1237 not in application._session_pids
+    finally:
+        application._live_pids.discard(1237)
+        application._session_pids.discard(1237)
+        application._unanchored_pids.discard(1237)
+        application._discard_owned_process_handle(1237, "anchor")
+
+
+def test_owned_process_handle_is_released_by_close(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    api_calls: list[tuple] = []
+    monkeypatch.setitem(
+        sys.modules,
+        "win32api",
+        SimpleNamespace(
+            TerminateProcess=lambda *args: api_calls.append(("terminate", *args)),
+            CloseHandle=lambda *args: api_calls.append(("close", *args)),
+        ),
+    )
+    monkeypatch.setattr(application, "_process_image_path", lambda _pid: None)
+    monkeypatch.setattr(application, "_open_owned_process_handle", lambda _pid: "anchor")
+    app = application.Application(Mock(process=1239), "uia")
+    try:
+        app.close()
+        assert ("terminate", "anchor", 1) in api_calls
+        assert ("close", "anchor") in api_calls
+        assert 1239 not in application._owned_process_handles
+        assert 1239 not in application._live_pids
+        assert 1239 not in application._session_pids
+    finally:
+        application._live_pids.discard(1239)
+        application._session_pids.discard(1239)
+        application._unanchored_pids.discard(1239)
+        application._discard_owned_process_handle(1239, "anchor")
+
+
+def test_close_requests_window_close_before_anchored_termination(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    api_calls: list[tuple] = []
+    monkeypatch.setitem(
+        sys.modules,
+        "win32api",
+        SimpleNamespace(
+            TerminateProcess=lambda *args: api_calls.append(("terminate", *args)),
+            CloseHandle=lambda *args: api_calls.append(("close", *args)),
+        ),
+    )
+    monkeypatch.setattr(application, "_process_image_path", lambda _pid: None)
+    monkeypatch.setattr(application, "_open_owned_process_handle", lambda _pid: "anchor")
+    first_window = Mock()
+    second_window = Mock()
+    second_window.close.side_effect = TimeoutError("window hung")
+    raw = Mock(process=1240)
+    raw.windows.return_value = [first_window, second_window]
+    app = application.Application(raw, "uia")
+    try:
+        app.close()
+        raw.windows.assert_called_once_with(visible_only=True)
+        first_window.close.assert_called_once_with()
+        second_window.close.assert_called_once_with()
+        second_window.force_close.assert_called_once_with()
+        assert ("terminate", "anchor", 1) in api_calls
+    finally:
+        application._live_pids.discard(1240)
+        application._session_pids.discard(1240)
+        application._unanchored_pids.discard(1240)
+        application._discard_owned_process_handle(1240, "anchor")
+
+
+def test_owned_process_without_anchor_fails_closed(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    monkeypatch.setattr(application, "_process_image_path", lambda _pid: None)
+    monkeypatch.setattr(application, "_open_owned_process_handle", lambda _pid: None)
+    raw = Mock(process=1238)
+    app = application.Application(raw, "uia")
+    try:
+        assert 1238 in application._unanchored_pids
+        with pytest.raises(RuntimeError, match="identity handle was not captured"):
+            app.kill()
+        raw.kill.assert_not_called()
+        assert 1238 in application._live_pids
+        assert 1238 in application._session_pids
+    finally:
+        application._live_pids.discard(1238)
+        application._session_pids.discard(1238)
+        application._unanchored_pids.discard(1238)
+
+
+def test_legacy_process_termination_and_soft_close_are_best_effort(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    app, raw = _bare_application(application, pid=1241, owns=True)
+    app._terminate_owned_process(soft=False)
+    raw.kill.assert_called_once_with(soft=False)
+
+    bad_window = Mock()
+    bad_window.close.side_effect = RuntimeError("window disappeared")
+    bad_window.force_close.side_effect = RuntimeError("force close failed")
+    raw.windows.return_value = [bad_window]
+    app._request_soft_close()
+    raw.windows.assert_called_once_with(visible_only=True)
+    bad_window.force_close.assert_called_once_with()
+
+
+def test_legacy_kill_uses_pywinauto_only_for_legacy_wrappers() -> None:
+    import dolphin_desktop._application as application
+
+    app, raw = _bare_application(application, pid=1242, owns=True)
+    raw.is_process_running.return_value = True
+    application._live_pids.add(1242)
+    application._session_pids.add(1242)
+    try:
+        app.kill()
+        raw.kill.assert_called_once_with(soft=False)
+    finally:
+        application._live_pids.discard(1242)
+        application._session_pids.discard(1242)
+
+
+def test_close_and_detach_swallow_registry_cleanup_failures(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    class BrokenRegistry(set):
+        def discard(self, _pid):
+            raise RuntimeError("registry disappeared")
+
+    app, _raw = _bare_application(application, pid=1243, owns=True)
+    app._owned_process_handle = "anchor"
+    app._terminate_owned_process = Mock()  # type: ignore[method-assign]
+    monkeypatch.setattr(application, "_live_pids", BrokenRegistry())
+    monkeypatch.setattr(application, "_session_pids", set())
+    app.close()
+
+    app, _raw = _bare_application(application, pid=1244, owns=True)
+    app._owned_process_handle = "anchor"
+    monkeypatch.setattr(
+        application, "_discard_owned_process_handle", Mock(side_effect=RuntimeError())
+    )
+    monkeypatch.setattr(application, "_live_pids", set())
+    monkeypatch.setattr(application, "_session_pids", set())
+    app.detach(session=True)
+
+
+def test_close_logs_when_an_anchored_termination_fails(caplog) -> None:
+    import dolphin_desktop._application as application
+
+    app, _raw = _bare_application(application, pid=1245, owns=True)
+    app._owned_process_handle = "anchor"
+    app._terminate_owned_process = Mock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("access denied")
+    )
+
+    app.close()
+
+    assert "Could not clean up owned process" in caplog.text
 
 
 def test_application_init_survives_process_lookup_and_registry_failures(monkeypatch) -> None:
@@ -709,6 +967,7 @@ def test_adopt_hand_off_reconnects_and_updates_owned_registry(monkeypatch) -> No
     new_raw = Mock()
     monkeypatch.setattr(app, "_is_hand_off_pid", Mock(return_value=True))
     monkeypatch.setattr(application, "_PyWinApp", Mock(return_value=new_raw))
+    monkeypatch.setattr(application, "_open_owned_process_handle", lambda _pid: "handoff-anchor")
     try:
         app._adopt_hand_off(spec, {"title": "X"})
         assert app._app is new_raw
@@ -717,9 +976,40 @@ def test_adopt_hand_off_reconnects_and_updates_owned_registry(monkeypatch) -> No
         assert 20 in application._live_pids
         assert 10 not in application._session_pids
         assert 20 in application._session_pids
+        assert app._owned_process_handle == "handoff-anchor"
+        assert application._owned_process_handles[20] == "handoff-anchor"
     finally:
         application._live_pids.difference_update({10, 20})
         application._session_pids.difference_update({10, 20})
+        application._unanchored_pids.difference_update({10, 20})
+        application._discard_owned_process_handle(20)
+
+
+def test_adopt_hand_off_marks_pid_unanchored_when_registry_has_a_different_handle(
+    monkeypatch,
+) -> None:
+    import dolphin_desktop._application as application
+
+    app, _raw = _bare_application(application, pid=10, owns=True)
+    application._live_pids.add(10)
+    application._session_pids.add(10)
+    spec = Mock()
+    spec.wrapper_object.return_value.process_id.return_value = 20
+    monkeypatch.setattr(app, "_is_hand_off_pid", Mock(return_value=True))
+    monkeypatch.setattr(application, "_PyWinApp", Mock(return_value=Mock()))
+    monkeypatch.setattr(application, "_open_owned_process_handle", lambda _pid: "new-anchor")
+    handles = {20: "other-anchor"}
+    monkeypatch.setattr(application, "_owned_process_handles", handles)
+
+    try:
+        app._adopt_hand_off(spec, {"title": "X"})
+        assert 20 in application._unanchored_pids
+        assert handles == {20: "other-anchor"}
+    finally:
+        application._live_pids.difference_update({10, 20})
+        application._session_pids.difference_update({10, 20})
+        application._unanchored_pids.difference_update({10, 20})
+        handles.pop(20, None)
 
 
 def test_adopt_hand_off_reconnects_attached_and_preserves_original_on_failure(monkeypatch) -> None:
