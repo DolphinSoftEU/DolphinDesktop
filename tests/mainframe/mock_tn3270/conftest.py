@@ -53,7 +53,6 @@ def mock_term(mock_server):
             host="127.0.0.1",
             port=port,
             session_type="3270",
-            insecure_tls=True,
             ws3270_path=WS3270,
             timeout=10,
         )

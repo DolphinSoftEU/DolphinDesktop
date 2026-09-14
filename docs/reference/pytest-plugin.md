@@ -95,6 +95,7 @@ pytest tests/ -v --dolphin-video=keepfailedonly
 | `DOLPHIN_VIDEO` | `keepfailedonly` | Video mode: `keepall`, `keepfailedonly`, `off` |
 | `DOLPHIN_VIDEO_FPS` | `10` | Video frame rate |
 | `DOLPHIN_HEADLESS` | `0` | Headless desktop flag |
+| `DOLPHIN_DESKTOP_LOG_LEVEL` | `INFO` | Logging level; takes precedence over `DOLPHIN_LOG_LEVEL` |
 | `DOLPHIN_LOG_LEVEL` | `INFO` | Logging level |
 | `DOLPHIN_RETRY` | `0` | Retry count for transient Dolphin errors |
 | `DOLPHIN_TELEMETRY` | `off` | Telemetry opt-in flag |
@@ -123,7 +124,7 @@ def test_slow_flow(launch):
 | Videos | `dolphin-videos/` |
 | Fallback HTML report | `dolphin-report.html` when Allure is not installed |
 
-## 9.3 — Warstwa stabilności
+## Stability and diagnostics
 
 ### Logging
 
