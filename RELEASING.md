@@ -5,14 +5,11 @@ This checklist takes a `master` branch commit to a PyPI release.
 ## 1 — Pre-flight
 
 - [ ] All tests pass on the release commit (`pytest -q`).
-- [ ] `uv lock --check` passes, and the committed `uv.lock` reflects the
-      current `pyproject.toml` metadata and version.
 - [ ] `CHANGELOG.md` has a section for the new version with dates and
       concrete "Added / Changed / Fixed" entries — no `TBD` bullets.
 - [ ] Version is consistent everywhere:
       - `pyproject.toml` `[project] version`
       - `src/dolphin_desktop/__init__.py` `__version__`
-      - `uv.lock` package version
       - `CHANGELOG.md` header
       - `docs/index.md` if it mentions a version explicitly
 
@@ -30,14 +27,9 @@ $new = "0.2.0"
 (Get-Content src/dolphin_desktop/__init__.py) -replace '^__version__ = ".*"', "__version__ = ""$new""" |
     Set-Content src/dolphin_desktop/__init__.py
 
-# 3. Regenerate and validate the lockfile after changing package metadata
-uv lock
-uv lock --check
-
-# 4. Verify
+# 3. Verify
 Select-String -Path pyproject.toml -Pattern "^version"
 Select-String -Path src/dolphin_desktop/__init__.py -Pattern "^__version__"
-Select-String -Path uv.lock -Pattern '^name = "dolphin-desktop"|^version = "0.2.0"'
 
 git diff --stat
 ```
@@ -63,7 +55,7 @@ Both `twine check` lines should print `PASSED`.
 ## 4 — Tag and push
 
 ```powershell
-git add pyproject.toml src/dolphin_desktop/__init__.py uv.lock CHANGELOG.md RELEASING.md
+git add pyproject.toml src/dolphin_desktop/__init__.py CHANGELOG.md
 git commit -m "Release v$new"
 git tag "v$new" -m "Release v$new"
 git push origin master
