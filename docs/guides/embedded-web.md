@@ -68,6 +68,13 @@ app.kill()
   `app.kill()`, `app.detach()`, `app.window(...)` for the native shell.
 * `CDPSession` is your DOM-side entry point.
 
+The launcher verifies that the loopback CDP listener belongs to the launched
+process or its verified child process tree before handing it to Playwright.
+An HTTP 200 response from an unrelated process, a port collision, or an
+unverifiable listener owner fails closed and the launched process is cleaned
+up. Use a separate `debug_port` (and an application-specific isolated profile)
+for parallel sessions.
+
 ## Full API surface
 
 `CDPLocator` mirrors `dolphin_desktop.Locator` so tests port between UIA

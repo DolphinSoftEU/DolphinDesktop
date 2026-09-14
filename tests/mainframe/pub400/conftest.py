@@ -37,6 +37,7 @@ def pub400_term():
             host=_PUB400_HOST,
             port=_PUB400_PORT,
             session_type="3270",
+            insecure_tls=True,
             ws3270_path=WS3270,
             timeout=25,
         )
