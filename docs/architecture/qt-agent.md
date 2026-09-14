@@ -142,7 +142,9 @@ continues. That forgiveness window holds the last 256 abandoned ids —
 beyond it a late reply is indistinguishable from a desync and is treated as
 one.
 
-Replies are read with a bounded per-request timeout
+Requests are bounded before they reach the pipe: the Python client caps each
+serialized request at 1 MiB, JSON nesting at 32 levels, and JSON container
+complexity at 10,000 nodes. Replies are read with a bounded per-request timeout
 (`QtAgentClient.rpc_timeout`, 30 s) and a 16 MiB size cap. Expiry raises
 `QtAgentTimeoutError` and leaves the connection **usable** — a Qt event loop
 blocked behind a native modal dialog is an ordinary, recoverable condition.
@@ -234,9 +236,12 @@ be verified or fixed from this repository.
   dolphin did not launch: the injection is permanent until that app exits.
   Use `QtAgentClient.reattach()` to rebuild a wedged connection instead.
 - **Unauthenticated pipe** — `\\.\pipe\dolphin_qt_<pid>` has a predictable
-  name and the agent's security descriptor is whatever the DLL sets. The
-  client verifies the server's process id, so a squatter cannot impersonate
-  the agent. See `SECURITY.md` for what this means for you in practice.
+  name and the agent's security descriptor is whatever the prebuilt DLL sets.
+  The client verifies the server's process id, so a squatter cannot impersonate
+  the agent, and the Python side bounds request size/depth/complexity. Full
+  client authentication and a restrictive server ACL require rebuilding the
+  Qt5/Qt6 DLLs; their C++ sources are not present in this repository. See
+  `SECURITY.md` for what this means in practice.
 - **Per-Qt-major-version DLL** — Qt 5 and Qt 6 ABIs differ. We ship both,
   named `dolphin_qt5_agent.dll` and `dolphin_qt6_agent.dll`; the loader
   picks based on `Application.qt_version()`.
