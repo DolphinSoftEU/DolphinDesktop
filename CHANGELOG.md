@@ -6,12 +6,49 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ## [Unreleased]
 
+This section summarizes the maintenance and hardening work added after the
+initial 0.2.0 release candidate.
+
+### Added
+
+* A broader CI and regression-test matrix now covers the public helpers,
+  locator and self-healing APIs, Java/JAB, Delphi, Oracle Forms, mainframe,
+  Qt, CDP, tracing, video artifacts, and package-layout contracts. Environment
+  preflights keep optional live-application suites separate from deterministic
+  unit tests.
+* Packaging and installation checks validate the supported Python range
+  (3.11–3.13), optional extras, wheel contents, and metadata before release.
+
+### Changed
+
+* Locator, wait, spy, object-repository, Playwright-compatibility, and
+  self-healing paths now expose more consistent criteria, timeout diagnostics,
+  ambiguity handling, and failure messages across backends.
+* Mainframe and UI interaction layers received more defensive lifecycle,
+  input, dialog, field-wait, and connection handling, with clearer errors for
+  unsupported operations and unavailable external runtimes.
+* CI now separates lint, formatting, type checking, unit tests, component
+  tests, documentation checks, and package smoke checks so failures identify
+  the affected contract directly.
+
 ### Fixed
 
 * Hidden-desktop `Locator.press_key()` now focuses the element after activating
   `DolphinHidden`, reports a clear `DolphinError` instead of using system-wide
   modifier events when activation fails, and `Locator.text()` preserves the
   exact text returned by UIA `TextPattern`.
+* Process cleanup is anchored to the original process handle, including
+  launch-time handle hand-off, fail-closed behavior when identity cannot be
+  established, and PID-reuse-safe soft and forced termination.
+* Trusted absolute paths are enforced for Java/JAB and HLLAPI DLL loading;
+  s3270 command input, CDP endpoint ownership, and native TN5250 TLS
+  verification are validated before data or cleanup actions are performed.
+* Diagnostic logging, traces, screenshots, videos, and pytest failure reports
+  preserve the original test failure while applying best-effort redaction to
+  captured secrets and failure artifacts.
+* Trace database connections close on error paths, file and directory helpers
+  handle edge cases consistently, and package imports remain safe on supported
+  platforms without optional runtime dependencies.
 
 ## [0.2.0] — 2026-08-05
 

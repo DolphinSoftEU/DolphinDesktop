@@ -85,38 +85,20 @@ credentials in scope without reading them first; `--dolphin-trace=off`
 disables trace capture entirely, and the surest option remains not putting a
 production credential in a test run.
 
-## Security regression mapping
+## TLS and credential-bearing connections
 
-The table below maps each Jira item to its corresponding regression test; it
-is not a claim that every item is closed by this change. The issue-to-test
-pairs use the actual security scope of each item. Adjacent hardening that is
-not one of these items is kept in the codebase but is not claimed as coverage
-for them. The tests are intentionally kept next to the affected code so a
-future refactor cannot preserve a prose claim while dropping the regression:
+The native `tn5250` backend supports verified TLS when `tls=True` is selected.
+It validates the certificate chain and hostname before TN5250 negotiation or
+application data is sent. Use `tls_ca_file=` only for a trusted private CA and
+use `server_hostname=` when the certificate name differs from the connection
+address.
 
-| Work item | Regression | Test location | Status / invariant covered |
-| --- | --- | --- | --- |
-| KAN-467 | DESKTOP-199 | `tests/framework/test_mainframe.py::test_s3270_rejects_unsafe_host_before_spawn_or_stdin` | s3270 host input cannot inject another emulator action; the process is not spawned. |
-| KAN-468 | DESKTOP-200 | `tests/framework/test_mainframe.py::test_tn5250_tls_uses_verified_context_before_negotiation` | Partial / not claimed complete: explicit native TLS verifies before TN5250 negotiation, but plaintext on port 23 remains the compatibility default. |
-| KAN-472 | DESKTOP-203 | `tests/framework/test_stability.py::TestLaunchCapturesImagePath::test_image_path_survives_a_launcher_that_exits_during_startup_delay` | The launch identity is captured before `startup_delay`, so a fast launcher cannot turn PID reuse into an unrelated cleanup target. |
-| KAN-473 | DESKTOP-204 | `tests/framework/test_java.py::test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path`; `tests/framework/test_mainframe.py::test_resolve_hllapi_dll_success_and_failure` | JAB and HLLAPI DLL loading use explicit trusted paths; relative and DLL search-order/PATH fallback is refused. |
-| KAN-475 | DESKTOP-205 | `tests/framework/test_desktop.py::test_cdp_rejects_http_endpoint_owned_by_foreign_pid` | A live CDP endpoint is accepted only when its listener PID belongs to the launched process tree. |
-
-KAN-468 is intentionally not marked as fully delivered by this change. The
-native TLS path is verified when explicitly requested, but `port=23` still
-means plaintext for backwards compatibility. Callers must not send
-credentials over that channel; a complete block-or-explicit-opt-in policy
-for all credential-bearing connections requires a separate change.
-
-Run the focused set with:
-
-```powershell
-uv run pytest `
-  tests/framework/test_mainframe.py `
-  tests/framework/test_stability.py `
-  tests/framework/test_java.py `
-  tests/framework/test_desktop.py -q
-```
+Port 23 remains a plaintext compatibility default. Do not send credentials
+over that channel. Plaintext on port 992 requires an explicit
+`insecure_tls=True` opt-in. The `s3270` TLS transport also requires that
+explicit opt-in because the external emulator cannot provide the same
+certificate-verification controls; use native `tn5250` when verified TLS is
+required.
 
 ## Reporting a Vulnerability
 
