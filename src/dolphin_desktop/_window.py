@@ -396,10 +396,10 @@ class Window:
         try:
             bb = self.bounding_box()
             region: tuple[int, int, int, int] | None = (
-                bb["left"],
-                bb["top"],
-                bb["right"],
-                bb["bottom"],
+                bb["x"],
+                bb["y"],
+                bb["x"] + bb["width"],
+                bb["y"] + bb["height"],
             )
         except Exception:
             region = None
@@ -500,12 +500,11 @@ class Window:
         return bool(self._spec.is_active())
 
     def bounding_box(self) -> dict[str, int]:
+        """Return ``{x, y, width, height}`` in absolute screen coordinates."""
         rect = self._spec.rectangle()
         return {
-            "left": rect.left,
-            "top": rect.top,
-            "right": rect.right,
-            "bottom": rect.bottom,
+            "x": rect.left,
+            "y": rect.top,
             "width": rect.right - rect.left,
             "height": rect.bottom - rect.top,
         }

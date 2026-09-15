@@ -134,8 +134,6 @@ def test_button_bounding_box(lcl_app):
     bbox = form.component(cls="TButton", title="Save").bounding_box()
     assert bbox["width"] > 0
     assert bbox["height"] > 0
-    assert bbox["right"] > bbox["left"]
-    assert bbox["bottom"] > bbox["top"]
 
 
 def test_button_focus(lcl_app):
@@ -213,8 +211,8 @@ def test_edit_bounding_box_within_form(lcl_app):
     e = form.component(cls="TEdit", near_label="Name:")
     fbox = form.pywinauto.rectangle()
     ebox = e.bounding_box()
-    assert ebox["left"] >= fbox.left
-    assert ebox["top"] >= fbox.top
+    assert ebox["x"] >= fbox.left
+    assert ebox["y"] >= fbox.top
 
 
 def test_edit_is_visible(lcl_app):
@@ -228,7 +226,7 @@ def test_multiple_edits_by_index_are_distinct(lcl_app):
     e1 = form.component(cls="TEdit", index=1)
     b0 = e0.bounding_box()
     b1 = e1.bounding_box()
-    assert (b0["left"], b0["top"]) != (b1["left"], b1["top"])
+    assert (b0["x"], b0["y"]) != (b1["x"], b1["y"])
 
 
 # =========================================================================== #

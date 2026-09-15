@@ -904,10 +904,8 @@ def test_locator_queries_cover_missing_values_and_states(monkeypatch) -> None:
 
     locator._find.return_value = (1, 2, info)
     assert locator.bounding_box() == {
-        "left": 10,
-        "top": 20,
-        "right": 40,
-        "bottom": 60,
+        "x": 10,
+        "y": 20,
         "width": 30,
         "height": 40,
     }
@@ -1548,10 +1546,8 @@ def test_jab_locator_queries_and_programmatic_actions() -> None:
     assert locator.is_enabled() is True
     assert locator.is_checked() is True
     assert locator.bounding_box() == {
-        "left": 10,
-        "top": 20,
-        "right": 40,
-        "bottom": 60,
+        "x": 10,
+        "y": 20,
         "width": 30,
         "height": 40,
     }

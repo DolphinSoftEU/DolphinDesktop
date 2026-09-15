@@ -27,7 +27,7 @@ def test_item_delegates_actions_and_returns_itself() -> None:
     jab.text.return_value = "SMITH"
     jab.is_visible.return_value = True
     jab.is_enabled.return_value = False
-    jab.bounding_box.return_value = {"left": 1, "top": 2}
+    jab.bounding_box.return_value = {"x": 1, "y": 2, "width": 3, "height": 4}
     app = Mock()
     item = OracleFormsItem(jab, name="EMP.ENAME", app=app)
 
@@ -43,7 +43,7 @@ def test_item_delegates_actions_and_returns_itself() -> None:
     assert item.press_key("F8") is item
     assert item.is_visible() is True
     assert item.is_enabled() is False
-    assert item.bounding_box() == {"left": 1, "top": 2}
+    assert item.bounding_box() == {"x": 1, "y": 2, "width": 3, "height": 4}
     assert repr(item) == "OracleFormsItem(name='EMP.ENAME')"
     jab.set_text.assert_any_call("JONES")
     jab.set_text.assert_called_with("KING")

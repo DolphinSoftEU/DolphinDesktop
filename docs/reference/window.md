@@ -108,6 +108,10 @@ win.wait_for_close(timeout=10)
 Window lookup does not change process ownership: an application obtained with
 `Desktop.connect()` remains external and must not be killed by test cleanup.
 
+`win.bounding_box()` returns exactly `{"x": x, "y": y, "width": width, "height": height}`.
+`x` and `y` are absolute screen coordinates (and may be negative on a
+multi-monitor desktop); `width` and `height` are non-edge dimensions.
+
 ## Screenshots
 
 ```python
