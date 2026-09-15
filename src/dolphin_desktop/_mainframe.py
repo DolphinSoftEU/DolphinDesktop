@@ -518,7 +518,6 @@ class _S3270Backend(_TerminalBackend):
         port = _validate_port(port)
         tls = getattr(self, "_tls", False)
         insecure_tls = getattr(self, "_insecure_tls", False)
-        tls_ca_file = getattr(self, "_tls_ca_file", None)
         server_hostname = getattr(self, "_server_hostname", None)
         # Keep the traditional plaintext 3270 default on its normal port.
         # Port 992 is conventionally the TLS port, so using it without an
