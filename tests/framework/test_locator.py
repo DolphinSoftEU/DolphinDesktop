@@ -1813,10 +1813,8 @@ def test_focus_scroll_text_value_and_queries():
     assert broken.is_visible() is False
     assert broken.is_enabled() is False
     assert loc.bounding_box() == {
-        "left": 10,
-        "top": 20,
-        "right": 110,
-        "bottom": 70,
+        "x": 10,
+        "y": 20,
         "width": 100,
         "height": 50,
     }
@@ -1982,7 +1980,7 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
     with (
         patch.object(py_mouse, "move", mouse.move),
         patch.object(
-            loc, "bounding_box", return_value={"left": 10, "top": 20, "width": 4, "height": 6}
+            loc, "bounding_box", return_value={"x": 10, "y": 20, "width": 4, "height": 6}
         ),
     ):
         assert loc.hover() is loc
@@ -1997,7 +1995,7 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
     with (
         patch.object(loc, "_focus_for_input"),
         patch.object(
-            loc, "bounding_box", return_value={"left": 0, "top": 0, "width": 10, "height": 10}
+            loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}
         ),
         patch.object(locator_module.time, "sleep"),
         patch.object(py_mouse, "press", mouse.press),
@@ -2012,12 +2010,12 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
     with (
         patch.object(loc, "_focus_for_input"),
         patch.object(
-            loc, "bounding_box", return_value={"left": 0, "top": 0, "width": 10, "height": 10}
+            loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}
         ),
         patch.object(
             target,
             "bounding_box",
-            return_value={"left": 100, "top": 100, "width": 10, "height": 10},
+            return_value={"x": 100, "y": 100, "width": 10, "height": 10},
         ),
         patch.object(locator_module.time, "sleep"),
         patch.object(py_mouse, "press", mouse.press),
@@ -2033,7 +2031,7 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
     with (
         patch.object(loc, "_focus_for_input"),
         patch.object(
-            loc, "bounding_box", return_value={"left": 0, "top": 0, "width": 10, "height": 10}
+            loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}
         ),
         patch.object(locator_module.time, "sleep"),
         patch.object(py_mouse, "press", failing_mouse.press),
@@ -2046,7 +2044,7 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
 
     with (
         patch.object(
-            loc, "bounding_box", return_value={"left": 0, "top": 0, "width": 10, "height": 10}
+            loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}
         ),
         patch.object(py_mouse, "move", mouse.move),
         patch.object(py_mouse, "scroll", mouse.scroll),

@@ -168,6 +168,14 @@ def test_window_image_scopes_match_and_handles_missing_bounds(
     assert captured[-1][1]["region"] is None
 
 
+def test_window_bounding_box_returns_absolute_xywh(monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = Mock()
+    spec.rectangle.return_value = SimpleNamespace(left=-20, top=-10, right=11, bottom=22)
+    window = _window(monkeypatch, spec)
+
+    assert window.bounding_box() == {"x": -20, "y": -10, "width": 31, "height": 32}
+
+
 def test_find_by_xpath_is_the_window_facing_xpath_entry_point(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

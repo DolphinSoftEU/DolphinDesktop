@@ -90,10 +90,8 @@ def test_component_state_reads_and_simple_actions_cover_all_fallbacks() -> None:
     assert component.is_visible() is False
     assert component.is_enabled() is True
     assert component.bounding_box() == {
-        "left": 1,
-        "top": 2,
-        "right": 11,
-        "bottom": 22,
+        "x": 1,
+        "y": 2,
         "width": 10,
         "height": 20,
     }

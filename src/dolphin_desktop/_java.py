@@ -951,10 +951,8 @@ class JABLocator:
         vm_id, ac, info = self._wait_find()
         self._release(vm_id, ac)
         return {
-            "left": info.x,
-            "top": info.y,
-            "right": info.x + info.width,
-            "bottom": info.y + info.height,
+            "x": info.x,
+            "y": info.y,
             "width": info.width,
             "height": info.height,
         }

@@ -65,8 +65,8 @@ def test_screen_ocr():
     region = (
         int(bb["x"]),
         int(bb["y"]),
-        int(bb["width"]),
-        int(bb["height"]),
+        int(bb["x"] + bb["width"]),
+        int(bb["y"] + bb["height"]),
     )
 
     text = Screen.text(region=region)
@@ -85,7 +85,12 @@ def test_screen_find_text():
     win = app.window(title_re=".*Calculator.*")
 
     bb = win.bounding_box()
-    region = (int(bb["x"]), int(bb["y"]), int(bb["width"]), int(bb["height"]))
+    region = (
+        int(bb["x"]),
+        int(bb["y"]),
+        int(bb["x"] + bb["width"]),
+        int(bb["y"] + bb["height"]),
+    )
 
     x, y = Screen.find_text("5", region=region) or (None, None)
     if x is not None:

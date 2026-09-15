@@ -443,8 +443,8 @@ def test_window_bounding_box_positive(qt_app):
     _, win = qt_app
     bb = win.bounding_box()
     assert bb["width"] >= 500 and bb["height"] >= 400
-    assert bb["left"] < bb["right"]
-    assert bb["top"] < bb["bottom"]
+    assert bb["x"] + bb["width"] > bb["x"]
+    assert bb["y"] + bb["height"] > bb["y"]
 
 
 @_windows_only
@@ -1074,8 +1074,8 @@ def test_window_bounding_box_positive_qt5(qt5_app):
     _, win = qt5_app
     bb = win.bounding_box()
     assert bb["width"] >= 500 and bb["height"] >= 400
-    assert bb["left"] < bb["right"]
-    assert bb["top"] < bb["bottom"]
+    assert bb["x"] + bb["width"] > bb["x"]
+    assert bb["y"] + bb["height"] > bb["y"]
 
 
 @_windows_only

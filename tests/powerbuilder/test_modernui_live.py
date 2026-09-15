@@ -57,7 +57,7 @@ def modernui():
     sleep(0.4)
     pane = win.locator(class_name="FNUDO3", found_index=0)
     bb = pane.bounding_box()
-    region = (bb["left"], bb["top"], bb["right"], bb["bottom"])
+    region = (bb["x"], bb["y"], bb["x"] + bb["width"], bb["y"] + bb["height"])
     if Screen.find_text("State/Province", region=region) is None:
         pytest.skip("Address window with the Browse tab is not visible")
     return app, win, region

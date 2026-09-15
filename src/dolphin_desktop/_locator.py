@@ -1753,13 +1753,11 @@ class Locator:
             return False
 
     def bounding_box(self) -> dict[str, int]:
-        """Return {left, top, right, bottom, width, height} in screen coords."""
+        """Return ``{x, y, width, height}`` in absolute screen coordinates."""
         rect = self._resolve_readonly().rectangle()
         return {
-            "left": rect.left,
-            "top": rect.top,
-            "right": rect.right,
-            "bottom": rect.bottom,
+            "x": rect.left,
+            "y": rect.top,
             "width": rect.right - rect.left,
             "height": rect.bottom - rect.top,
         }
@@ -1987,8 +1985,8 @@ class Locator:
         import pywinauto.mouse as _mouse  # type: ignore[import-untyped]
 
         bb = self.bounding_box()
-        cx = bb["left"] + bb["width"] // 2
-        cy = bb["top"] + bb["height"] // 2
+        cx = bb["x"] + bb["width"] // 2
+        cy = bb["y"] + bb["height"] // 2
         try:
             _mouse.move(coords=(cx, cy))
         except Exception as exc:
@@ -2008,15 +2006,15 @@ class Locator:
 
         self._focus_for_input()
         bb = self.bounding_box()
-        src_x = bb["left"] + bb["width"] // 2
-        src_y = bb["top"] + bb["height"] // 2
+        src_x = bb["x"] + bb["width"] // 2
+        src_y = bb["y"] + bb["height"] // 2
 
         if isinstance(target, tuple):
             dst_x, dst_y = target
         else:
             tbb = target.bounding_box()
-            dst_x = tbb["left"] + tbb["width"] // 2
-            dst_y = tbb["top"] + tbb["height"] // 2
+            dst_x = tbb["x"] + tbb["width"] // 2
+            dst_y = tbb["y"] + tbb["height"] // 2
 
         steps = 30
         step_sleep = duration / steps
@@ -2055,8 +2053,8 @@ class Locator:
         import pywinauto.mouse as _mouse  # type: ignore[import-untyped]
 
         bb = self.bounding_box()
-        cx = bb["left"] + bb["width"] // 2
-        cy = bb["top"] + bb["height"] // 2
+        cx = bb["x"] + bb["width"] // 2
+        cy = bb["y"] + bb["height"] // 2
 
         if direction == "up":
             wheel_dist = amount
