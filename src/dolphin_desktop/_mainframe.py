@@ -462,6 +462,17 @@ class _S3270Backend(_TerminalBackend):
         self._proc: subprocess.Popen[bytes] | None = None
         self._connected = False
 
+        # x3270 exposes certificate policy as command-line options. Keep the
+        # security decision in DolphinDesktop instead of relying on an
+        # emulator's default, and append our flags after caller-supplied
+        # options so a test cannot accidentally downgrade a verified session.
+        if tls:
+            self._extra_args.extend(
+                ["-noverifycert" if insecure_tls else "-verifycert"]
+            )
+            if tls_ca_file and not insecure_tls:
+                self._extra_args.extend(["-cafile", tls_ca_file])
+
     # ---- lifecycle ------------------------------------------------------- #
 
     def _spawn(self) -> None:
@@ -512,26 +523,18 @@ class _S3270Backend(_TerminalBackend):
         # Keep the traditional plaintext 3270 default on its normal port.
         # Port 992 is conventionally the TLS port, so using it without an
         # explicit transport choice must be an opt-in rather than a silent
-        # downgrade. ``tls=True`` still requires ``insecure_tls=True`` here
-        # because s3270 does not expose certificate verification to us.
+        # downgrade. ``tls=True`` selects x3270's verified L: transport;
+        # ``insecure_tls=True`` is the explicit opt-out.
         if not tls and port == 992 and not insecure_tls:
             raise MainframeError(
                 "s3270 plaintext transport requires insecure_tls=True; use "
                 "tls=True for the L: transport"
             )
-        if tls and not insecure_tls:
-            raise MainframeError(
-                "s3270 TLS certificate verification cannot be guaranteed by "
-                "this backend; pass insecure_tls=True explicitly or use "
-                'backend="tn5250" for verified TLS'
-            )
-        if tls and tls_ca_file:
-            raise MainframeError(
-                "s3270 does not accept tls_ca_file because its certificate "
-                "verification is not controlled by dolphin_desktop"
-            )
         if tls and server_hostname and server_hostname != host:
-            raise MainframeError("s3270 TLS server_hostname cannot be verified by this backend")
+            raise MainframeError(
+                "s3270 TLS server_hostname must match host because x3270 "
+                "verifies the Connect() hostname"
+            )
         self._spawn()
         target = f"L:{host}:{port}" if tls else f"{host}:{port}"
         self._exec(f"Connect({target})")
