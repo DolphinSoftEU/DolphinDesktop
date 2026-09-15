@@ -134,11 +134,12 @@ verified TLS connection on a TLS endpoint. This documents the current API
 behavior and is not a claim that every credential-bearing connection is
 blocked by default.
 
-The `s3270` backend expresses TLS using the documented `L:` host prefix, but
-the library cannot control whether a particular emulator verifies its server
-certificate. Therefore `tls=True` on `s3270` requires the explicit
-`insecure_tls=True` opt-in and rejects `tls_ca_file=`. Use `backend="tn5250"`
-when certificate verification is required.
+The `s3270` backend expresses TLS using the documented `L:` host prefix and
+passes the verification policy explicitly to the emulator. With `tls=True`,
+DolphinDesktop starts s3270 with `-verifycert`; `tls_ca_file=` is passed as
+`-cafile`, and the `host` value is used for certificate hostname validation.
+Use `insecure_tls=True` only when an unverified emulator connection is
+intentional; it passes `-noverifycert`.
 
 ### s3270 input safety
 

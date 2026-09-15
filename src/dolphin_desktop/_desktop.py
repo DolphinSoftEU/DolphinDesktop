@@ -1195,9 +1195,10 @@ class Desktop:
             server_hostname: TLS hostname used for SNI and verification;
                 defaults to host.
             insecure_tls: Explicitly opt into an unverified TLS or plaintext
-                transport for controlled endpoints. It is required for
-                s3270 TLS because dolphin_desktop cannot control the
-                emulator's certificate policy.
+                transport for controlled endpoints. For s3270, ``tls=True``
+                passes the verified ``-verifycert`` policy (and
+                ``tls_ca_file`` as ``-cafile``); set this flag only when an
+                unverified emulator connection is intentional.
             trace: When True, every backend command + response is emitted
                 via ``dolphin_desktop.get_logger("dolphin_desktop.mainframe")``
                 at INFO level — invaluable when debugging why a test

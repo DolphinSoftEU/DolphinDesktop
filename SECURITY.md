@@ -97,16 +97,16 @@ future refactor cannot preserve a prose claim while dropping the regression:
 | Work item | Regression | Test location | Status / invariant covered |
 | --- | --- | --- | --- |
 | KAN-467 | DESKTOP-199 | `tests/framework/test_mainframe.py::test_s3270_rejects_unsafe_host_before_spawn_or_stdin` | s3270 host input cannot inject another emulator action; the process is not spawned. |
-| KAN-468 | DESKTOP-200 | `tests/framework/test_mainframe.py::test_tn5250_tls_uses_verified_context_before_negotiation` | Partial / not claimed complete: explicit native TLS verifies before TN5250 negotiation, but plaintext on port 23 remains the compatibility default. |
+| KAN-468 | DESKTOP-200 | `tests/framework/test_mainframe.py::test_tn5250_tls_uses_verified_context_before_negotiation`; DESKTOP-200 TLS UAT | Verified TLS is enforced for native TN5250 and the s3270 `L:` path when explicitly requested; plaintext compatibility remains opt-in. |
 | KAN-472 | DESKTOP-203 | `tests/framework/test_stability.py::TestLaunchCapturesImagePath::test_image_path_survives_a_launcher_that_exits_during_startup_delay` | The launch identity is captured before `startup_delay`, so a fast launcher cannot turn PID reuse into an unrelated cleanup target. |
 | KAN-473 | DESKTOP-204 | `tests/framework/test_java.py::test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path`; `tests/framework/test_mainframe.py::test_resolve_hllapi_dll_success_and_failure` | JAB and HLLAPI DLL loading use explicit trusted paths; relative and DLL search-order/PATH fallback is refused. |
 | KAN-475 | DESKTOP-205 | `tests/framework/test_desktop.py::test_cdp_rejects_http_endpoint_owned_by_foreign_pid` | A live CDP endpoint is accepted only when its listener PID belongs to the launched process tree. |
 
-KAN-468 is intentionally not marked as fully delivered by this change. The
-native TLS path is verified when explicitly requested, but `port=23` still
-means plaintext for backwards compatibility. Callers must not send
-credentials over that channel; a complete block-or-explicit-opt-in policy
-for all credential-bearing connections requires a separate change.
+KAN-468 uses explicit transport selection. Native TN5250 and s3270 `L:`
+connections verify their configured certificate policy before application
+data is sent, while `port=23` remains a plaintext compatibility mode. Callers
+must not send credentials over that channel; protected flows must opt into a
+verified TLS endpoint.
 
 Run the focused set with:
 
