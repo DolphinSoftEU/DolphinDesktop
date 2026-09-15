@@ -97,6 +97,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 These change the behavior of existing calls; read them before upgrading.
 
+* **`Locator.bounding_box()`, `Window.bounding_box()`, Delphi, and JAB bounds
+  now consistently return `{x, y, width, height}`.** The legacy
+  `left`/`top`/`right`/`bottom` keys were removed.
+
 * **`get_attribute()` raises `AttributeError` for a name the element does
   not publish**, instead of returning `None`. This affects the UIA
   `Locator`, `SapLocator` and `JABLocator`. A misspelled name — including

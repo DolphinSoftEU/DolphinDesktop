@@ -1979,9 +1979,7 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
     mouse = types.SimpleNamespace(move=Mock(), press=Mock(), release=Mock(), scroll=Mock())
     with (
         patch.object(py_mouse, "move", mouse.move),
-        patch.object(
-            loc, "bounding_box", return_value={"x": 10, "y": 20, "width": 4, "height": 6}
-        ),
+        patch.object(loc, "bounding_box", return_value={"x": 10, "y": 20, "width": 4, "height": 6}),
     ):
         assert loc.hover() is loc
         hover_clone = resolved(element)
@@ -1994,9 +1992,7 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
 
     with (
         patch.object(loc, "_focus_for_input"),
-        patch.object(
-            loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}
-        ),
+        patch.object(loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}),
         patch.object(locator_module.time, "sleep"),
         patch.object(py_mouse, "press", mouse.press),
         patch.object(py_mouse, "move", mouse.move),
@@ -2009,9 +2005,7 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
     target = resolved(FakeElement())
     with (
         patch.object(loc, "_focus_for_input"),
-        patch.object(
-            loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}
-        ),
+        patch.object(loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}),
         patch.object(
             target,
             "bounding_box",
@@ -2030,9 +2024,7 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
     )
     with (
         patch.object(loc, "_focus_for_input"),
-        patch.object(
-            loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}
-        ),
+        patch.object(loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}),
         patch.object(locator_module.time, "sleep"),
         patch.object(py_mouse, "press", failing_mouse.press),
         patch.object(py_mouse, "move", failing_mouse.move),
@@ -2043,9 +2035,7 @@ def test_screenshot_fill_hover_scroll_and_mouse_drag(tmp_path):
     failing_mouse.release.assert_called_once()
 
     with (
-        patch.object(
-            loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}
-        ),
+        patch.object(loc, "bounding_box", return_value={"x": 0, "y": 0, "width": 10, "height": 10}),
         patch.object(py_mouse, "move", mouse.move),
         patch.object(py_mouse, "scroll", mouse.scroll),
     ):
