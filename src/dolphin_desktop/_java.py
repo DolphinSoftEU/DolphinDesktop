@@ -249,25 +249,42 @@ class _JABSession:
             cls._instance = cls()
         return cls._instance
 
-    def __init__(self) -> None:
+    #: Where the bridge DLL is looked for, in order: the JRE/JDK that
+    #: ``JAVA_HOME`` / the registry name, then System32. The bare DLL name
+    #: is never handed to the loader — see :mod:`dolphin_desktop._native`.
+    _DLL_NAMES = ("windowsaccessbridge-64.dll", "WindowsAccessBridge-64.dll")
+
+    @classmethod
+    def _trusted_dll_paths(cls) -> list[str]:
+        from ._native import existing_candidates, system32_dir
+
+        directories: list[str] = []
         java_home = JavaAccessBridge.java_home()
-        candidates = ["windowsaccessbridge-64.dll"]
         if java_home:
-            candidates.append(os.path.join(java_home, "bin", "windowsaccessbridge-64.dll"))
+            directories.append(os.path.join(java_home, "bin"))
+        directories.append(system32_dir())
+        return existing_candidates(directories, cls._DLL_NAMES)
+
+    def __init__(self) -> None:
+        from ._native import NativeLibraryError, load_trusted_dll
 
         self._wab: Any = None
-        for path in candidates:
+        tried: list[str] = []
+        for path in self._trusted_dll_paths():
             try:
-                self._wab = ctypes.WinDLL(path)
+                self._wab = load_trusted_dll(path, what="Java Access Bridge DLL")
                 break
-            except OSError:
+            except NativeLibraryError as exc:
+                tried.append(str(exc))
                 continue
 
         if self._wab is None:
             raise RuntimeError(
-                "Could not load windowsaccessbridge-64.dll. "
-                "Copy it from $JAVA_HOME/bin to C:\\Windows\\System32\\ "
-                "or ensure JAVA_HOME is set."
+                "Could not load windowsaccessbridge-64.dll from a trusted location "
+                "(JAVA_HOME\\bin, the registered JRE/JDK, or System32). "
+                "Install a JRE/JDK with Java Access Bridge and set JAVA_HOME; the "
+                "working directory and PATH are deliberately not searched."
+                + (f" Tried: {'; '.join(tried)}" if tried else "")
             )
 
         self._setup_prototypes()

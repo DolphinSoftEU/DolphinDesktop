@@ -41,13 +41,11 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
     log = _get_logger("plugin")
     for pid in pids:
         try:
-            import win32api  # type: ignore[import]
-            import win32con  # type: ignore[import]
-
-            handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
-            win32api.TerminateProcess(handle, 1)
-            win32api.CloseHandle(handle)
-            log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
+            # Verified terminate: a PID whose creation time no longer matches
+            # the process dolphin launched was reused by something unrelated
+            # and is left alone (CWE-367). See _application.terminate_tracked_pid.
+            if _application.terminate_tracked_pid(pid, log):
+                log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
         except Exception:
             pass
         finally:
@@ -573,10 +571,16 @@ def _attach_allure_trace(run_dir: Path) -> None:
 
 
 def _attach_allure_text(content: str, name: str) -> None:
+    """Attach *content* as a text artifact, redacted like every other sink.
+
+    Captured stdout/stderr is whatever the test and the application printed
+    — a ``print(password)`` while debugging, a library echoing its config —
+    and the Allure report is the artifact most likely to be shared.
+    """
     try:
         import allure
 
-        allure.attach(content, name=name, attachment_type=allure.attachment_type.TEXT)
+        allure.attach(_redact(str(content)), name=name, attachment_type=allure.attachment_type.TEXT)
     except Exception:
         pass
 
@@ -749,14 +753,16 @@ def _collect_artifacts(item: pytest.Item, call: pytest.CallInfo, report: pytest.
 
     video_path = _handle_video(item, report, phase)
 
-    # attach captured stdout/stderr to Allure on failure
+    # attach captured stdout/stderr to Allure on failure — redacted at the
+    # attach boundary (see _attach_allure_text), and again here so the
+    # guarantee does not depend on which helper a future caller picks.
     if report.failed:
         capstdout: str = getattr(report, "capstdout", "") or ""
         capstderr: str = getattr(report, "capstderr", "") or ""
         if capstdout:
-            _attach_allure_text(capstdout, "stdout")
+            _attach_allure_text(_redact(capstdout), "stdout")
         if capstderr:
-            _attach_allure_text(capstderr, "stderr")
+            _attach_allure_text(_redact(capstderr), "stderr")
 
     # enrich JUnit XML <properties> with artifact paths
     if screenshot_path:
@@ -846,13 +852,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         log = _get_logger("plugin")
         for pid in orphans:
             try:
-                import win32api  # type: ignore[import]
-                import win32con  # type: ignore[import]
-
-                handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
-                win32api.TerminateProcess(handle, 1)
-                win32api.CloseHandle(handle)
-                log.info("Killed orphan AUT PID=%d at session end", pid)
+                # Same identity check as the per-test reaper: never terminate
+                # a PID that has been reused since dolphin launched the AUT.
+                if _application.terminate_tracked_pid(pid, log):
+                    log.info("Killed orphan AUT PID=%d at session end", pid)
             except Exception:
                 pass
             finally:

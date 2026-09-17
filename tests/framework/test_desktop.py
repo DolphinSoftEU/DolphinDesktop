@@ -815,6 +815,10 @@ def test_mainframe_factory_connects_only_when_requested(monkeypatch) -> None:
         hllapi_dll_path="hllapi.dll",
         extra_args=["-trace"],
         trace=True,
+        tls=False,
+        tls_cafile=None,
+        tls_context=None,
+        allow_plaintext=False,
     )
     term.connect.assert_called_once_with("example.test", 992, session_type="5250", timeout=7)
 

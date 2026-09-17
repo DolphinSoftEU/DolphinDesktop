@@ -4,6 +4,87 @@ All notable changes to `dolphin-desktop` are documented in this file.
 Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+Addresses the findings from the `testpypi-preview` security audit
+(KAN-467 … KAN-477).
+
+* **Mainframe command injection blocked (KAN-467).** A single
+  `MainframeTerminal` call now produces exactly one s3270 protocol
+  action. `CR`, `LF` and `NUL` in typed text or in a host name are
+  rejected rather than escaped, so user data can no longer open a second
+  action line (e.g. a smuggled `Quit()`). Host names are validated to a
+  name / IPv4 / bracketed-IPv6 grammar, ports to `1..65535`, and every
+  s3270 argument is serialised through one shared quoting function.
+* **TLS for TN3270 / TN5250 (KAN-468).** `Desktop.mainframe(tls=True)`
+  negotiates TLS with certificate *and* host-name verification —
+  `ssl.create_default_context()` for the native TN5250 backend, the
+  emulator's `L:` tunnel for s3270. There is no silent fallback to
+  plaintext: a failed handshake raises. A plaintext session to a
+  non-loopback host is refused unless `allow_plaintext=True` is passed,
+  and a port number (992 included) is never treated as a substitute for
+  TLS. New `tls`, `tls_cafile`, `tls_context` and `allow_plaintext`
+  parameters on `Desktop.mainframe()`. `tls_cafile` is passed to s3270
+  only on builds that support `-cafile` (OpenSSL); on a Windows Schannel
+  build, which trusts the Windows certificate store instead, the backend
+  raises a clear error rather than silently ignoring the CA.
+* **Secret redaction at every write boundary (KAN-469).** Trace steps
+  (`trace.db` / `trace.html`), crash-dump ZIPs, Allure stdout/stderr
+  attachments and UIA tree dumps are now redacted structurally before
+  they are stored, so a credential no longer survives on a path that
+  skipped the logging filter. New `Secret` wrapper: wrap a password
+  before typing it (`type_text(Secret("…"))`) and its literal value is
+  masked everywhere, independent of any variable name. The s3270,
+  TN5250 and HLLAPI trace paths no longer log typed text or raw frame
+  bytes — only the action name and payload size.
+* **Qt agent IPC hardening (KAN-470).** The agent's named pipe now
+  carries an unguessable per-attach random token instead of the
+  predictable `dolphin_qt_<pid>`, so a local process can no longer
+  pre-create the pipe and impersonate the agent. `reattach()` refuses a
+  PID whose creation time changed since attach (PID reuse). Bundled
+  agent DLLs are hash-verified against a committed `agent_manifest.json`
+  before injection. The client also caps the size of a single outgoing
+  request (`MAX_REQUEST_BYTES`), refusing to flood the in-process agent.
+  The remaining server-side items (an explicit pipe ACL,
+  `PIPE_REJECT_REMOTE_CLIENTS`, an in-band session secret, and a
+  reproducible build of the DLL) live in the agent's C++ source, which is
+  not part of this repository and is tracked as follow-up work.
+* **Dependency updates (KAN-471).** Pillow `>=12.3.0` (EPS decode DoS),
+  `mkdocs-material 9.7.7`, `cryptography 50.0.1`, `pymdown-extensions
+  11.0.2`. `CDPSession.screenshot()` now accepts only PNG / JPEG
+  payloads (checked by magic bytes, decoded with the format pinned) and
+  bounds the payload size, closing the untrusted-decoder path.
+* **PID-reuse-safe process termination (KAN-472).** Launched processes
+  are pinned by `(PID, creation-time)`. The pytest teardown reaper and
+  the session-end cleanup verify that identity before calling
+  `TerminateProcess`, and skip a PID whose creation time no longer
+  matches — so a reused PID belonging to an unrelated process is never
+  killed.
+* **DLL search-order hijacking removed (KAN-473).** The Java Access
+  Bridge and HLLAPI DLLs load only from absolute, trusted locations
+  (`JAVA_HOME`/registry/vendor dirs, then `System32`) via
+  `LoadLibraryEx` with `LOAD_LIBRARY_SEARCH_*` flags. The working
+  directory and `PATH` are never searched.
+* **CI least privilege and supply chain (KAN-474).** All GitHub Actions
+  are pinned to commit SHAs; `contents: write` and `id-token: write` are
+  granted only to the jobs that need them; a required security gate runs
+  `pip-audit`, `bandit` and `detect-secrets`, and the release build
+  audits the exact locked dependencies before publishing. Added a
+  Dependabot configuration.
+* **CDP endpoint identity (KAN-475).** `launch_electron_cdp()` /
+  `launch_cef_cdp()` refuse to start when the debug port is already in
+  use, and after the port answers they confirm its loopback listener is
+  the launched process or a verified descendant before connecting — a
+  200 from a foreign PID is rejected.
+* **`launch_qt` no longer mutates the global environment (KAN-476).**
+  Qt variables were already passed through a private per-child
+  environment block; a concurrency regression test now locks that in.
+* **`http_ok` scheme restriction (KAN-477).** The helper accepts only
+  `http` / `https` URLs with a host; `file://`, `ftp://` and hostless
+  URLs return `False` without opening anything.
+
 ## [0.2.0] — 2026-08-05
 
 ### Added

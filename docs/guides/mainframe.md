@@ -16,16 +16,61 @@ code is portable between them.
 ## Quick start
 
 ```python
-from dolphin_desktop import Desktop, AID
+from dolphin_desktop import Desktop, AID, Secret
 
-with Desktop().mainframe(host="tso.host.example", session_type="3270") as term:
+with Desktop().mainframe(host="tso.host.example", session_type="3270", tls=True) as term:
     term.wait_ready()
     term.field_after("USERID").type_text("MYUSER")
-    term.field_after("PASSWORD").type_text("s3cret")
+    term.field_after("PASSWORD").type_text(Secret("s3cret"))
     term.press(AID.ENTER)
     term.wait_change()
     assert term.screen().contains("READY")
 ```
+
+Two habits worth adopting from the start:
+
+* **`tls=True`** — a terminal session carries the sign-on in the clear
+  otherwise (see [Transport security](#transport-security)).
+* **`Secret(...)`** around a password — the emulator still receives the
+  real characters, but the value is masked in every log, trace, crash
+  dump and report.
+
+## Transport security
+
+A 3270/5250 session sends the user id and password in the same
+unencrypted byte stream as the rest of the screen; neither EBCDIC nor
+Telnet provides confidentiality. dolphin therefore **refuses a plaintext
+connection to a remote host** and asks you to choose:
+
+```python
+# Verified TLS — certificate chain AND host name are checked. No fallback:
+# a failed handshake raises, it never silently drops to plaintext.
+term = desktop.mainframe(host="mf.example", session_type="3270", tls=True)
+
+# Private CA: trust an extra PEM bundle on top of the system store.
+term = desktop.mainframe(host="mf.example", tls=True, tls_cafile=r"C:\ca\corp-root.pem")
+
+# Native TN5250 with a caller-built context (must still verify the peer).
+import ssl
+ctx = ssl.create_default_context(cafile=r"C:\ca\corp-root.pem")
+term = desktop.mainframe(host="ibmi.example", session_type="5250",
+                         backend="tn5250", tls=True, tls_context=ctx)
+
+# An SSH/stunnel tunnel terminated on localhost is exempt (loopback).
+term = desktop.mainframe(host="127.0.0.1", port=3271, session_type="3270")
+
+# Knowingly unencrypted (logged as a warning) — only through a channel
+# you have secured by other means.
+term = desktop.mainframe(host="mf.example", allow_plaintext=True)
+```
+
+The port number is **never** treated as a substitute for TLS — connecting
+to port 992 without `tls=True` is still refused. For the `s3270` backend,
+`tls=True` opens the emulator's supported `L:` TLS tunnel (you may also
+write `host="L:mf.example"`); switches that disable certificate
+verification (`-noverifycert`, `-noverifyhostcert`) are rejected. The
+`hllapi` backend delegates the network side to the emulator, so configure
+TLS in the emulator's own session profile.
 
 ## Install
 

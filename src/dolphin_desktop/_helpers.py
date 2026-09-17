@@ -279,13 +279,35 @@ def tcp_reachable(host: str, port: int, *, timeout: float = 3.0) -> bool:
     return True
 
 
+_HTTP_SCHEMES = frozenset({"http", "https"})
+
+
+def _is_http_url(url: str) -> bool:
+    """True when *url* is an ``http://`` or ``https://`` URL with a host.
+
+    ``urlopen`` accepts ``file://``, ``ftp://`` and ``data:`` too; a probe
+    that claims to check an HTTP endpoint must not open local files or
+    other schemes on the caller's behalf.
+    """
+    from urllib.parse import urlsplit
+
+    if not isinstance(url, str):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme.lower() in _HTTP_SCHEMES and bool(parts.hostname)
+
+
 def http_ok(url: str, *, timeout: float = 1.0) -> bool:
     """Return True when a plain HTTP GET to *url* returns status 200.
 
     Public probe so tests can check whether a debug endpoint (CDP port,
     devtools port, health-check URL) is live without importing
-    ``urllib`` themselves. Any transport error, timeout, or non-200
-    status returns False — never raises.
+    ``urllib`` themselves. Only ``http://`` and ``https://`` URLs with a
+    host are probed; any other scheme, a URL without a host, a transport
+    error, a timeout or a non-200 status returns False — never raises.
 
     Example::
 
@@ -297,10 +319,17 @@ def http_ok(url: str, *, timeout: float = 1.0) -> bool:
     import urllib.error
     import urllib.request
 
+    if not _is_http_url(url):
+        return False
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        # _is_http_url has already restricted the scheme to http/https and
+        # required a host, so file:// and other schemes the rule warns about
+        # cannot reach urlopen here.
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosec B310
             return resp.status == 200
-    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+    except Exception:
+        # ``urlopen`` can also raise ``ValueError`` / ``http.client``
+        # errors for a malformed response; the contract is "never raises".
         return False
 
 

@@ -188,7 +188,9 @@ class _WireClient(QtAgentClient):
     """Only the write half is stubbed — reads run the production loop."""
 
     def __init__(self, *, rpc_timeout: float = 30.0) -> None:
-        super().__init__(4242, 5, rpc_timeout=rpc_timeout)
+        super().__init__(
+            4242, 5, rpc_timeout=rpc_timeout, pipe_name=r"\\.\pipe\dolphin_qt_4242_test"
+        )
         self.written: list[dict] = []
 
     def _write_line(self, line: bytes) -> None:
@@ -291,6 +293,23 @@ class TestTimeoutIsRecoverable:
         assert client.is_broken is True
 
 
+class TestRequestSizeCap:
+    def test_an_oversize_request_is_refused_without_breaking_the_connection(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "MAX_REQUEST_BYTES", 1024)
+        client = _FakeClient([])
+        with pytest.raises(QtAgentRpcError, match="over the"):
+            client._send("set_property", value="x" * 4096)
+        # Nothing reached the wire and the stream is still usable.
+        assert client.written == []
+        assert client.is_broken is False
+
+    def test_a_request_within_the_cap_is_sent(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "MAX_REQUEST_BYTES", 8 * 1024 * 1024)
+        client = _FakeClient([json.dumps({"id": 1, "ok": True, "result": "pong"}).encode() + b"\n"])
+        assert client._send("ping") == "pong"
+        assert len(client.written) == 1
+
+
 class TestBrokenTransportRecovery:
     def test_fail_closes_the_pipe_handle(self, monkeypatch):
         closed: list[int] = []
@@ -327,7 +346,7 @@ class TestBrokenTransportRecovery:
         monkeypatch.setattr(_qt_inject, "_open_pipe", _boom)
         monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda a, b, c: 555)
         monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: 1)
-        client = QtAgentClient(4242, 5)
+        client = QtAgentClient(4242, 5, pipe_name=r"\\.\pipe\dolphin_qt_4242_test")
         with pytest.raises(QtAgentInjectError, match="timed out connecting"):
             client.reattach()
 
@@ -450,7 +469,7 @@ class TestRecoveryPreemptsABlockedWrite:
     def test_reattach_does_not_queue_behind_the_blocked_write(self, blocked_write, monkeypatch):
         monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda a, b, c: 555)
         monkeypatch.setattr(_qt_inject, "_open_pipe", lambda name, pid, timeout: 9)
-        client = QtAgentClient(4242, 71)
+        client = QtAgentClient(4242, 71, pipe_name=r"\\.\pipe\dolphin_qt_4242_test")
         thread, errors = self._wedged_send(client, blocked_write)
         started = time.monotonic()
         client.reattach()

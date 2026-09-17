@@ -32,17 +32,33 @@ application is terminated when the test finishes.
 
 **Qt agent DLL injection.** `QtAgentClient.attach(pid, ...)` loads a
 bundled DLL into the target process with `CreateRemoteThread` and talks to
-it over a named pipe (`\\.\pipe\dolphin_qt_<pid>`). The pipe name is
-predictable and the server accepts whichever local process connects
-first; anyone able to open it gets full `QObject` introspection, property
-writes and `QMetaObject` invocation in the target. dolphin's own client
-verifies the pipe server's owning process, so a squatter cannot forge
-responses back to your test, and it connects at
+it over a named pipe. The pipe name now carries an unguessable per-attach
+random token (`\\.\pipe\dolphin_qt_<pid>_<random>`), so a local process
+can no longer pre-create the pipe under a predictable name. dolphin's own
+client verifies the pipe server's owning process, so a squatter cannot
+forge responses back to your test, and it connects at
 `SECURITY_IDENTIFICATION` so a squatting server cannot impersonate the
-(possibly elevated) account running the tests. Neither of those protects
-the application itself. Attach only to applications you launched or own. Only 64-bit Qt
-targets are supported; injection into a 32-bit process is refused rather
-than attempted.
+(possibly elevated) account running the tests; `reattach()` additionally
+refuses a PID whose creation time changed since the original attach. The
+bundled agent DLLs are verified against a committed SHA-256 manifest before
+injection. None of this protects the application itself — anyone who can
+open the pipe gets full `QObject` introspection, property writes and
+`QMetaObject` invocation in the target, so attach only to applications you
+launched or own. The pipe's server-side security descriptor is set by the
+prebuilt DLL, whose C++ source is not in this repository; tightening it
+(an explicit ACL, `PIPE_REJECT_REMOTE_CLIENTS`) requires a DLL rebuild.
+Only 64-bit Qt targets are supported; injection into a 32-bit process is
+refused rather than attempted.
+
+**Mainframe transport.** Terminal sessions carry the sign-on credentials
+in the same byte stream as the screen, and neither EBCDIC nor Telnet
+provides confidentiality. `Desktop.mainframe()` therefore refuses a
+plaintext connection to a non-loopback host unless you pass
+`allow_plaintext=True`. Pass `tls=True` for a verified TLS channel
+(certificate chain and host name are checked; there is no fallback to
+plaintext); a port number, 992 included, does not enable TLS on its own.
+Wrap a password in `Secret(...)` before typing it so it is masked in every
+log, trace, crash dump and report.
 
 **The recorder captures all keyboard input.** `dolphin record` installs a
 low-level keyboard hook. Without an application filter it records every
@@ -61,7 +77,18 @@ assigned to a name containing `password`, `passwd`, `passphrase`, `pwd`,
 `secret`, `token`, `api_key`, `private_key`, `credential`, `authorization`,
 `auth`, `signature`, `sessionid` or `sas` is masked, including inside a
 compound name such as `AWS_SECRET_ACCESS_KEY`, and including the credential
-after any HTTP auth scheme.
+after any HTTP auth scheme. The same redaction runs at every artifact
+boundary — trace steps, crash-dump ZIPs, the Allure stdout/stderr
+attachments and UIA tree dumps — and, for structured data such as a
+selector's criteria dict, a sensitive *key* masks its whole value whatever
+its type.
+
+The surest control is not the pattern but `Secret`: wrap a value in
+`dolphin_desktop.Secret("…")` before handing it to `type_text` (UIA, CDP
+and mainframe locators accept it). The action receives the real characters;
+the literal value is then masked wherever it appears in any artifact,
+independent of the pattern and of any variable name. `str(secret)` and
+`repr(secret)` never reveal it.
 
 Redaction is pattern-based and therefore best-effort. It looks for a
 credential *assigned* to a recognised name, so the following are **not**

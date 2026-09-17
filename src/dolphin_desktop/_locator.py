@@ -22,6 +22,7 @@ from ._config import get_poll_interval as _get_poll_interval
 from ._config import get_timeout as _get_timeout
 from ._exceptions import ElementNotFoundError, UnsupportedPatternError, WaitTimeoutError
 from ._helpers import _MISSING, _escape_keys
+from ._logging import Secret, unwrap_secret
 
 
 def _wrapper_of(element: Any) -> Any:
@@ -373,10 +374,15 @@ def _trace_step(
     error: str | None = None,
 ) -> None:
     from . import _trace
+    from ._logging import redact_repr
 
     session = _trace.current_session()
     if session is not None:
-        session.record_step(action, repr(criteria), element, error)
+        # Criteria and error text are user-controlled and end up in
+        # trace.db / trace.html / the Allure ZIP. They are redacted
+        # structurally here (a ``password=`` criterion masks its value
+        # whatever it contains) and again by the trace store itself.
+        session.record_step(action, redact_repr(criteria), element, error)
 
 
 if TYPE_CHECKING:
@@ -971,7 +977,7 @@ class Locator:
 
     def type_text(
         self,
-        text: str,
+        text: str | Secret,
         *,
         with_spaces: bool = True,
         pause: float = 0.05,
@@ -986,13 +992,18 @@ class Locator:
         (``"{ENTER}"``, ``"^c"``) — :meth:`press_key` is the preferred
         spelling for that.
 
+        Pass a :class:`~dolphin_desktop.Secret` to type a password: the real
+        characters are sent, but the value is masked in every trace, log and
+        report.
+
         The default pause of 0.05 s between keystrokes matches pywinauto's own
         default and prevents missed/doubled keys in modern WinUI/XAML controls.
         """
+        raw: str = unwrap_secret(text)
         element = None
         try:
             element = self._resolve()
-            payload = _escape_keys(text) if escape else text
+            payload = _escape_keys(raw) if escape else raw
             # with_tabs / with_newlines are not optional the way with_spaces is:
             # parse_keys silently discards a literal \t or \n when its flag is
             # off, and escaping has already turned pywinauto's "~" newline alias
@@ -1011,17 +1022,19 @@ class Locator:
         _trace_step("type_text", self._criteria, element=element)
         return self
 
-    def set_text(self, text: str) -> Locator:
+    def set_text(self, text: str | Secret) -> Locator:
         """Replace the entire text content of an edit control.
 
         Falls back to select-all + keyboard input for Document/RichEdit controls
         (e.g. Windows 11 Notepad) that do not support IValueProvider.SetValue.
+        Accepts a :class:`~dolphin_desktop.Secret` for password fields.
         """
+        raw: str = unwrap_secret(text)
         element = None
         try:
             element = self._resolve()
             try:
-                element.set_edit_text(text)
+                element.set_edit_text(raw)
                 _trace_step("set_text", self._criteria, element=element)
                 return self
             except Exception:
@@ -1029,7 +1042,7 @@ class Locator:
             element.set_focus()
             time.sleep(0.05)
             _send_keys("^a")
-            if text:
+            if raw:
                 # All three flags, not just with_spaces: parse_keys drops a
                 # literal \t or \n outright when its flag is off, and escaping
                 # turns pywinauto's own "~" newline alias into a literal "{~}",
@@ -1037,7 +1050,7 @@ class Locator:
                 # set_text("line1\nline2") wrote "line1line2" and reported
                 # success.
                 element.type_keys(
-                    _escape_keys(text),
+                    _escape_keys(raw),
                     with_spaces=True,
                     with_tabs=True,
                     with_newlines=True,

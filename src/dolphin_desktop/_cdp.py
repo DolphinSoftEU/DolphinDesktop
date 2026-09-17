@@ -41,6 +41,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from ._exceptions import DolphinError, ElementNotFoundError, WaitTimeoutError
+from ._logging import Secret, unwrap_secret
 
 if TYPE_CHECKING:  # pragma: no cover — types only, never imported at runtime
     from playwright.sync_api import Browser, BrowserContext, Page, Playwright
@@ -54,6 +55,54 @@ _INSTALL_HINT = (
 
 #: Console entries retained per session; older entries are discarded.
 CONSOLE_BUFFER_LIMIT = 1000
+
+#: Largest screenshot payload accepted from the CDP endpoint (bytes). A
+#: 4K page screenshot is a few MiB; anything far beyond that is not a
+#: screenshot.
+MAX_SCREENSHOT_BYTES = 64 * 1024 * 1024
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+def _decode_screenshot(data: Any) -> Any:
+    """Decode screenshot bytes from the CDP endpoint into a PIL image.
+
+    The endpoint is a local process dolphin launched, but it is still a
+    network peer, and Pillow's ``Image.open`` would otherwise sniff *any* of
+    its ~60 formats — including EPS, whose decoder spawns Ghostscript and
+    hung the process on a malformed payload (CVE fixed in Pillow 12.3.0).
+    Only the two formats Chromium's ``Page.captureScreenshot`` can produce
+    are accepted, identified by their magic bytes, decoded with the format
+    list pinned, and bounded in size.
+    """
+    from io import BytesIO
+
+    from PIL import Image as _PILImage
+
+    if not isinstance(data, (bytes, bytearray)):
+        raise DolphinError(f"CDP screenshot returned {type(data).__name__}, expected bytes")
+    if len(data) > MAX_SCREENSHOT_BYTES:
+        raise DolphinError(
+            f"CDP screenshot payload of {len(data)} bytes exceeds the "
+            f"{MAX_SCREENSHOT_BYTES}-byte limit"
+        )
+    if data.startswith(_PNG_MAGIC):
+        formats = ["PNG"]
+    elif data.startswith(_JPEG_MAGIC):
+        formats = ["JPEG"]
+    else:
+        raise DolphinError(
+            "CDP screenshot payload is neither PNG nor JPEG — refusing to hand an "
+            "unexpected format to the image decoder"
+        )
+    try:
+        img = _PILImage.open(BytesIO(bytes(data)), formats=formats)
+        img.load()
+    except Exception as exc:
+        raise DolphinError(f"CDP screenshot could not be decoded as {formats[0]}: {exc}") from exc
+    return img
+
 
 #: Characters Playwright's text normaliser deletes outright before matching.
 #: A literal that carries one can only match if the selector drops it too.
@@ -722,15 +771,10 @@ class CDPSession:
         """Capture the current page as a :class:`PIL.Image`.
 
         The result is a PIL image (dolphin already depends on Pillow).
-        Passing *path* saves the image before returning it.
+        Passing *path* saves the image before returning it. Only PNG and
+        JPEG payloads are decoded — see :func:`_decode_screenshot`.
         """
-        from io import BytesIO
-
-        from PIL import Image as _PILImage
-
-        data = self.page.screenshot()
-        img = _PILImage.open(BytesIO(data))
-        img.load()
+        img = _decode_screenshot(self.page.screenshot())
         if path:
             img.save(path)
         return img
@@ -1417,12 +1461,16 @@ class CDPLocator:
             ) from exc
         return self
 
-    def type_text(self, text: str, *, timeout: float = 10.0, clear: bool = True) -> CDPLocator:
+    def type_text(
+        self, text: str | Secret, *, timeout: float = 10.0, clear: bool = True
+    ) -> CDPLocator:
         """Fill the element with *text*.
 
         By default clears the field first (``fill`` semantics). Pass
         ``clear=False`` to append instead (``type`` semantics — key-by-key).
+        A :class:`~dolphin_desktop.Secret` is accepted for password fields.
         """
+        text = unwrap_secret(text)
         try:
             if clear:
                 self._resolve().fill(text, timeout=timeout * 1000)
@@ -1434,7 +1482,7 @@ class CDPLocator:
             ) from exc
         return self
 
-    def set_text(self, text: str, *, timeout: float = 10.0) -> CDPLocator:
+    def set_text(self, text: str | Secret, *, timeout: float = 10.0) -> CDPLocator:
         """Semantic alias for :meth:`type_text` (clear + fill)."""
         return self.type_text(text, timeout=timeout, clear=True)
 
@@ -1598,18 +1646,13 @@ class CDPLocator:
 
     def screenshot(self, path: str | None = None, *, timeout: float = 10.0) -> Any:
         """Capture the element as a :class:`PIL.Image`; optionally save it."""
-        from io import BytesIO
-
-        from PIL import Image as _PILImage
-
         try:
             data = self._resolve().screenshot(timeout=timeout * 1000)
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP screenshot failed for {self._selector!r}: {exc}"
             ) from exc
-        img = _PILImage.open(BytesIO(data))
-        img.load()
+        img = _decode_screenshot(data)
         if path:
             img.save(path)
         return img

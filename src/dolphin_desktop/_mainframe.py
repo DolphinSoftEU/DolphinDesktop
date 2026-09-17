@@ -42,6 +42,8 @@ import enum
 import os
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -49,7 +51,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from ._exceptions import DolphinError
-from ._logging import get_logger
+from ._logging import Secret, get_logger, unwrap_secret
 
 _LOG = get_logger("mainframe")
 
@@ -65,6 +67,218 @@ __all__ = [
 
 class MainframeError(DolphinError):
     """Raised when a mainframe terminal operation fails."""
+
+
+# --------------------------------------------------------------------------- #
+# Transport policy (shared by the network backends)                            #
+# --------------------------------------------------------------------------- #
+
+#: Hosts that are the local end of a tunnel (stunnel, SSH port forward) or a
+#: mock server in the test suite. Plaintext to these never leaves the machine.
+_LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1"})
+
+#: The conventional TN3270/TN5250-over-TLS port. Reaching it without TLS is
+#: almost always a configuration error, so the refusal spells that out.
+_TLS_CONVENTION_PORT = 992
+
+
+def _is_loopback_host(host: str) -> bool:
+    bare = host.strip().lower()
+    if bare.startswith("[") and bare.endswith("]"):
+        bare = bare[1:-1]
+    return bare in _LOOPBACK_NAMES or bare.startswith("127.")
+
+
+def _require_transport_policy(
+    host: str,
+    port: int,
+    *,
+    tls: bool,
+    allow_plaintext: bool,
+    backend: str,
+) -> None:
+    """Refuse a plaintext session to a remote host unless explicitly allowed.
+
+    Terminal sessions carry sign-on credentials in the same byte stream as
+    everything else, and neither EBCDIC nor Telnet provides confidentiality.
+    A plaintext connection is therefore only made when one of these holds:
+
+    * ``tls=True`` — the backend negotiates TLS and verifies the certificate;
+    * the host is loopback — the local end of a documented tunnel, or a mock;
+    * ``allow_plaintext=True`` — the caller's explicit, logged decision.
+
+    A port number is never taken as a substitute for TLS.
+    """
+    if tls or _is_loopback_host(host):
+        return
+    if allow_plaintext:
+        _LOG.warning(
+            "mainframe(%s): plaintext session to %s:%d — the sign-on credentials and "
+            "every screen are readable and modifiable on the network path "
+            "(allow_plaintext=True)",
+            backend,
+            host,
+            port,
+        )
+        return
+    port_note = (
+        f" Port {_TLS_CONVENTION_PORT} is the conventional TLS port, but a port number does "
+        "not enable TLS by itself."
+        if port == _TLS_CONVENTION_PORT
+        else ""
+    )
+    raise MainframeError(
+        f"refusing a plaintext {backend} session to {host}:{port} — credentials would "
+        f"cross the network unencrypted.{port_note}",
+        hint=(
+            "pass tls=True to Desktop.mainframe() (certificate and host name are verified), "
+            "terminate a TLS/SSH tunnel on 127.0.0.1 and connect to that, or pass "
+            "allow_plaintext=True to accept an unencrypted session knowingly"
+        ),
+    )
+
+
+def _verified_tls_context(
+    context: ssl.SSLContext | None,
+    cafile: str | None,
+) -> ssl.SSLContext:
+    """Return a TLS context that verifies the peer's certificate and host name.
+
+    A caller-supplied context is accepted only if it still verifies: a
+    context with ``check_hostname`` off or ``verify_mode`` below
+    ``CERT_REQUIRED`` would silently turn TLS into an unauthenticated channel.
+    """
+    if context is None:
+        context = ssl.create_default_context(cafile=cafile)
+    elif cafile is not None:
+        context.load_verify_locations(cafile=cafile)
+    if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
+        raise MainframeError(
+            "the TLS context does not verify the server: check_hostname must be True and "
+            "verify_mode must be ssl.CERT_REQUIRED",
+            hint=(
+                "use ssl.create_default_context(cafile=...) for a private CA instead of "
+                "disabling verification"
+            ),
+        )
+    return context
+
+
+# --------------------------------------------------------------------------- #
+# Host / port validation                                                       #
+# --------------------------------------------------------------------------- #
+
+#: Host name, IPv4 literal, or IPv6 literal in brackets. Nothing else — the
+#: value is interpolated into an s3270 action, so the character set is the
+#: injection boundary, not just a sanity check.
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._\-]{0,252})$")
+_IPV6_LITERAL_RE = re.compile(r"^\[[0-9A-Fa-f:.]{2,45}\]$")
+#: The only x3270 host-prefix dolphin passes through: ``L:`` opens a TLS
+#: tunnel. ``Y:`` (skip certificate verification) and the rest are refused.
+_S3270_TLS_PREFIX = "L:"
+
+
+def _validate_host(host: str) -> str:
+    """Return *host* stripped, or raise if it is not a plain host name/IP."""
+    if not isinstance(host, str):
+        raise MainframeError(f"host must be a string, got {type(host).__name__}")
+    bare = host.strip()
+    if not bare:
+        raise MainframeError("host must not be empty")
+    if _HOSTNAME_RE.match(bare) or _IPV6_LITERAL_RE.match(bare):
+        return bare
+    raise MainframeError(
+        f"invalid host {host!r}: only a host name, an IPv4 address or a bracketed IPv6 "
+        "literal is accepted",
+        hint=(
+            "x3270 host prefixes other than L: (TLS) are not passed through; "
+            "use tls=True instead of a prefix"
+        ),
+    )
+
+
+def _validate_port(port: int) -> int:
+    if isinstance(port, bool) or not isinstance(port, int):
+        raise MainframeError(f"port must be an integer, got {port!r}")
+    if not 1 <= port <= 65535:
+        raise MainframeError(f"port must be in 1..65535, got {port}")
+    return port
+
+
+def _split_s3270_host(host: str) -> tuple[bool, str]:
+    """Return ``(tls_requested, bare_host)`` for an s3270 host string.
+
+    Only the ``L:`` prefix is recognised; it maps onto ``tls=True``. Every
+    other prefix form (``Y:``, ``B:``, ``N:``, ``P:``, ``S:``, ``T:``…) is
+    rejected by :func:`_validate_host` because ``:`` is not a host character.
+    """
+    stripped = host.strip()
+    if stripped[:2].upper() == _S3270_TLS_PREFIX:
+        return True, _validate_host(stripped[2:])
+    return False, _validate_host(stripped)
+
+
+# --------------------------------------------------------------------------- #
+# s3270 action serialisation                                                   #
+# --------------------------------------------------------------------------- #
+
+_FRAME_DELIMITERS = (("\r", "carriage return"), ("\n", "line feed"), ("\x00", "NUL"))
+
+
+def _reject_frame_delimiters(value: str, what: str) -> None:
+    """Refuse text that would end the current s3270 line and start another.
+
+    The scripting protocol is one action per line, so a CR/LF inside an
+    argument turns the remainder into a second action (``Quit()`` included);
+    a NUL truncates what the emulator sees. There is no escape sequence for
+    them inside a quoted argument, so they are rejected rather than encoded.
+    """
+    for char, name in _FRAME_DELIMITERS:
+        if char in value:
+            raise MainframeError(
+                f"{what} contains a {name} character, which would start a second s3270 "
+                "action — refusing to send it",
+                hint=(
+                    "type one line at a time and press(AID.ENTER) between them; "
+                    "multi-line text cannot be expressed in one String() action"
+                ),
+            )
+
+
+def _s3270_quote(value: str) -> str:
+    """Serialise *value* as exactly one double-quoted s3270 action argument."""
+    _reject_frame_delimiters(value, "s3270 action argument")
+    esc = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{esc}"'
+
+
+#: Actions whose full text is safe to log — their arguments are numbers,
+#: keywords or nothing. Anything else is logged by action name only, because
+#: ``String("...")`` carries what the user typed, passwords included.
+_S3270_LOGGABLE_ACTIONS = frozenset(
+    {
+        "Ascii",
+        "Clear",
+        "Connect",
+        "Disconnect",
+        "Enter",
+        "MoveCursor",
+        "PA",
+        "PF",
+        "Query",
+        "Quit",
+        "ReadBuffer",
+        "Wait",
+    }
+)
+
+
+def _describe_s3270_action(command: str) -> str:
+    """Return *command* if it carries no user data, else ``Name(…)``."""
+    name, paren, rest = command.partition("(")
+    if not paren or name in _S3270_LOGGABLE_ACTIONS:
+        return command
+    return f"{name}(…{max(len(rest) - 1, 0)} chars)"
 
 
 # --------------------------------------------------------------------------- #
@@ -285,13 +499,15 @@ class TerminalField:
         raw = self._terminal.screen().text_at(self._row, self._col, self._length)
         return raw.rstrip()
 
-    def type_text(self, text: str, *, clear: bool = True) -> None:
+    def type_text(self, text: str | Secret, *, clear: bool = True) -> None:
         """Move the cursor to the field and type *text*.
 
         Args:
             text: Text to type. Mainframe applications typically accept
                 only 7-bit ASCII/EBCDIC-representable characters; use the
-                emulator's translation for accented characters.
+                emulator's translation for accented characters. Wrap a
+                password in :class:`~dolphin_desktop.Secret` so it is masked
+                in every diagnostic.
             clear: When True (default), overwrite the field with spaces
                 before typing so leftover characters do not stay. When
                 False, type at the current cursor position without
@@ -324,7 +540,7 @@ class _TerminalBackend(abc.ABC):
     @abc.abstractmethod
     def read_screen(self) -> tuple[list[str], tuple[int, int]]: ...
     @abc.abstractmethod
-    def send_string(self, text: str) -> None: ...
+    def send_string(self, text: str | Secret) -> None: ...
     @abc.abstractmethod
     def send_aid(self, aid: str) -> None: ...
     @abc.abstractmethod
@@ -371,6 +587,32 @@ def _find_s3270() -> str | None:
     return None
 
 
+#: Cache of ``binary -> whether its --help lists -cafile`` (OpenSSL builds do,
+#: Windows Schannel builds do not). Probing the help output once avoids a
+#: failed spawn when a Schannel build is handed an unsupported option.
+_S3270_CAFILE_SUPPORT: dict[str, bool] = {}
+
+
+def _s3270_supports_cafile(binary: str) -> bool:
+    """Return True when *binary*'s build accepts the ``-cafile`` option."""
+    cached = _S3270_CAFILE_SUPPORT.get(binary)
+    if cached is not None:
+        return cached
+    supported = False
+    try:
+        out = subprocess.run(
+            [binary, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        supported = "-cafile" in (out.stdout + out.stderr)
+    except Exception:
+        supported = False
+    _S3270_CAFILE_SUPPORT[binary] = supported
+    return supported
+
+
 class _S3270Backend(_TerminalBackend):
     """Drive ``ws3270``/``s3270`` through its line-based scripting protocol.
 
@@ -383,6 +625,12 @@ class _S3270Backend(_TerminalBackend):
       state, connection state, cursor row/col, screen size, etc.
     """
 
+    #: Emulator switches that disable certificate or host-name verification.
+    #: With TLS on they would turn ``L:`` into an unauthenticated tunnel.
+    _VERIFICATION_KILL_SWITCHES = frozenset(
+        {"-noverifycert", "+verifycert", "-noverifyhostcert", "+verifyhostcert"}
+    )
+
     def __init__(
         self,
         binary: str | None = None,
@@ -391,6 +639,9 @@ class _S3270Backend(_TerminalBackend):
         codepage: str | None = None,
         extra_args: Sequence[str] | None = None,
         trace: bool = False,
+        tls: bool = False,
+        tls_cafile: str | None = None,
+        allow_plaintext: bool = False,
     ) -> None:
         binary_path = binary or _find_s3270()
         if binary_path is None:
@@ -405,8 +656,20 @@ class _S3270Backend(_TerminalBackend):
         self._codepage = codepage
         self._extra_args = list(extra_args or ())
         self._trace = trace
+        self._tls = tls
+        self._tls_cafile = tls_cafile
+        self._allow_plaintext = allow_plaintext
         self._proc: subprocess.Popen[bytes] | None = None
         self._connected = False
+        disabled = self._VERIFICATION_KILL_SWITCHES.intersection(
+            arg.lower() for arg in self._extra_args
+        )
+        if disabled:
+            raise MainframeError(
+                f"extra_args {sorted(disabled)} disable TLS certificate verification, which "
+                "dolphin does not allow",
+                hint="for a private CA pass tls_cafile=... instead of turning verification off",
+            )
 
     # ---- lifecycle ------------------------------------------------------- #
 
@@ -421,6 +684,27 @@ class _S3270Backend(_TerminalBackend):
         ]
         if self._codepage:
             args += ["-charset", self._codepage]
+        if self._tls_cafile:
+            # ``-cafile`` exists only on OpenSSL-based x3270 builds. The
+            # Windows Schannel build validates against the Windows certificate
+            # store instead and rejects the option outright, refusing to
+            # start. Silently dropping the CA would validate against a
+            # *different* trust store than the caller asked for — a security
+            # footgun — so an unsupported build is a clear error, not a
+            # fallback.
+            if _s3270_supports_cafile(self._binary):
+                args += ["-cafile", self._tls_cafile]
+            else:
+                raise MainframeError(
+                    f"the s3270 binary {self._binary!r} does not support -cafile (it is most "
+                    "likely a Windows Schannel build, which trusts the Windows certificate "
+                    "store instead of a PEM file)",
+                    hint=(
+                        "import the CA certificate into the Windows 'Trusted Root Certification "
+                        "Authorities' store, or use an OpenSSL-based x3270/s3270 build, or drive "
+                        "the host with backend='tn5250' which takes tls_cafile directly"
+                    ),
+                )
         args += list(self._extra_args)
         creationflags = 0
         if sys.platform == "win32":
@@ -449,8 +733,22 @@ class _S3270Backend(_TerminalBackend):
                     'session_type="3270" if this host really is a 3270 host'
                 ),
             )
+        # The host and port are interpolated into a Connect() action, so they
+        # are validated to a character set that cannot carry a second action
+        # (or a second host prefix) before anything reaches the emulator.
+        prefixed_tls, bare_host = _split_s3270_host(host)
+        port = _validate_port(port)
+        tls = self._tls or prefixed_tls
+        _require_transport_policy(
+            bare_host,
+            port,
+            tls=tls,
+            allow_plaintext=self._allow_plaintext,
+            backend="s3270",
+        )
+        target = f"{_S3270_TLS_PREFIX if tls else ''}{bare_host}:{port}"
         self._spawn()
-        self._exec(f"Connect({host}:{port})")
+        self._exec(f"Connect({target})")
         self._connected = True
         # Wait for the initial screen to draw.
         self._exec("Wait(15,InputField)", raise_on_error=False)
@@ -612,11 +910,11 @@ class _S3270Backend(_TerminalBackend):
 
     # ---- keyboard input -------------------------------------------------- #
 
-    def send_string(self, text: str) -> None:
-        # s3270 String() takes a double-quoted argument; escape inner quotes
-        # and backslashes so passwords with special characters survive.
-        esc = text.replace("\\", "\\\\").replace('"', '\\"')
-        self._exec(f'String("{esc}")')
+    def send_string(self, text: str | Secret) -> None:
+        # One public call, one protocol action: the argument is serialised by
+        # _s3270_quote, which escapes quotes and backslashes and refuses the
+        # CR/LF/NUL bytes that would otherwise start a second action.
+        self._exec(f"String({_s3270_quote(unwrap_secret(text))})")
 
     def send_aid(self, aid: str) -> None:
         low = aid.lower()
@@ -667,13 +965,18 @@ class _S3270Backend(_TerminalBackend):
         """
         if self._proc is None or self._proc.stdin is None or self._proc.stdout is None:
             raise MainframeError("s3270 subprocess is not running")
+        # Last line of defence: whatever built *command*, exactly one line
+        # goes to the emulator. Diagnostics name the action, never its
+        # argument — String("...") is the typed text, passwords included.
+        _reject_frame_delimiters(command, "s3270 command")
+        label = _describe_s3270_action(command)
         if self._trace:
-            _LOG.info("s3270 → %s", command)
+            _LOG.info("s3270 → %s", label)
         try:
             self._proc.stdin.write(command.encode("utf-8") + b"\n")
             self._proc.stdin.flush()
         except (BrokenPipeError, OSError) as exc:
-            raise MainframeError(f"s3270 pipe closed while sending {command!r}: {exc}") from exc
+            raise MainframeError(f"s3270 pipe closed while sending {label}: {exc}") from exc
 
         data: list[str] = []
         status = ""
@@ -684,14 +987,14 @@ class _S3270Backend(_TerminalBackend):
             text = line.rstrip(b"\r\n").decode("utf-8", errors="replace")
             if text == "ok":
                 if self._trace:
-                    self._trace_response(command, "ok", data, status)
+                    self._trace_response(label, "ok", data, status)
                 return (data, status)
             if text == "error":
                 if self._trace:
-                    self._trace_response(command, "error", data, status)
+                    self._trace_response(label, "error", data, status)
                 if raise_on_error:
                     joined = "\n".join(data) or "unknown"
-                    raise MainframeError(f"s3270 {command!r} failed: {joined}")
+                    raise MainframeError(f"s3270 {label} failed: {joined}")
                 return (data, status)
             if text.startswith("data: "):
                 data.append(text[6:])
@@ -751,6 +1054,9 @@ _EHLLAPI_COPY_PS_TO_STR = HllapiFn.COPY_PS_TO_STR
 _EHLLAPI_SET_CURSOR = HllapiFn.SET_CURSOR
 _EHLLAPI_QUERY_SESSION_STATUS = HllapiFn.QUERY_SESSION_STATUS
 
+#: Functions whose data buffer is user input (keystrokes / field text).
+_HLLAPI_PAYLOAD_FUNCTIONS = frozenset({int(HllapiFn.SEND_KEY), int(HllapiFn.COPY_STR_TO_PS)})
+
 # EHLLAPI SendKey (function 3) mnemonics for the AID keys. PF1-PF9 are the
 # digits, PF10-PF24 continue through the lowercase alphabet from 'a'; the
 # uppercase letters mean something else entirely, so a computed offset is
@@ -771,25 +1077,70 @@ _HLLAPI_DLL_CANDIDATES = (
     ("PCSHLL.DLL", "HLLAPI"),  # Legacy
 )
 
+#: Vendor install directories, relative to each Program Files root. The DLL
+#: is looked up here and in System32 — never by bare name, which would let
+#: the Windows loader pick a copy planted in the working directory or PATH.
+_HLLAPI_VENDOR_SUBDIRS = (
+    r"IBM\Personal Communications",
+    r"Micro Focus\Reflection",
+    r"Micro Focus\RUMBA",
+    r"Attachmate\Reflection",
+    r"Attachmate\EXTRA!",
+    r"Rocket Software\Reflection",
+)
+
+
+def _trusted_hllapi_paths(explicit: str | None) -> list[str]:
+    """Return absolute DLL paths to try, most specific first.
+
+    An explicit path is the only candidate when given; it must be absolute
+    and exist, otherwise the error says so instead of silently searching.
+    """
+    from ._native import NativeLibraryError, existing_candidates, program_files_dirs, system32_dir
+
+    if explicit:
+        if not os.path.isabs(explicit):
+            raise NativeLibraryError(
+                f"hllapi_dll_path={explicit!r} must be an absolute path — a bare DLL name "
+                "would be resolved through the Windows search order"
+            )
+        if not os.path.isfile(explicit):
+            raise NativeLibraryError(f"hllapi_dll_path={explicit!r} does not exist")
+        return [explicit]
+    directories = [
+        os.path.join(root, sub) for root in program_files_dirs() for sub in _HLLAPI_VENDOR_SUBDIRS
+    ]
+    directories.append(system32_dir())
+    return existing_candidates(directories, (name for name, _ in _HLLAPI_DLL_CANDIDATES))
+
 
 def _resolve_hllapi_dll(explicit: str | None) -> tuple[Any, Any]:
-    """Load the first available HLLAPI DLL. Returns ``(dll, hllapi_fn)``."""
-    tried: list[str] = []
-    candidates: list[tuple[str, str]] = []
-    if explicit:
-        candidates.append((explicit, "hllapi"))
-        candidates.append((explicit, "HLLAPI"))
-    candidates.extend(_HLLAPI_DLL_CANDIDATES)
+    """Load the first available HLLAPI DLL. Returns ``(dll, hllapi_fn)``.
 
-    for dll_name, fn_name in candidates:
-        tried.append(f"{dll_name}!{fn_name}")
+    Only absolute paths in trusted locations are loaded — see
+    :func:`_trusted_hllapi_paths` and :mod:`dolphin_desktop._native`.
+    """
+    from ._native import NativeLibraryError, load_trusted_dll
+
+    tried: list[str] = []
+    try:
+        paths = _trusted_hllapi_paths(explicit)
+    except NativeLibraryError as exc:
+        raise MainframeError(str(exc)) from exc
+    export_names = ("hllapi", "HLLAPI")
+    for path in paths:
         try:
-            dll = ctypes.WinDLL(dll_name)  # type: ignore[attr-defined]
-        except (OSError, AttributeError):
+            dll = load_trusted_dll(path, what="HLLAPI DLL")
+        except (NativeLibraryError, AttributeError) as exc:
+            tried.append(f"{path} ({exc})")
             continue
-        try:
-            fn = getattr(dll, fn_name)
-        except AttributeError:
+        fn = None
+        for fn_name in export_names:
+            fn = getattr(dll, fn_name, None)
+            if fn is not None:
+                break
+        if fn is None:
+            tried.append(f"{path} (no hllapi export)")
             continue
         # int hllapi(unsigned short* func, char* data, unsigned short* length, unsigned short* rc)
         # POINTER(c_ubyte) is a real ctypes pointer at the C level (still
@@ -805,13 +1156,16 @@ def _resolve_hllapi_dll(explicit: str | None) -> tuple[Any, Any]:
         fn.restype = None
         return dll, fn
 
+    names = ", ".join(name for name, _ in _HLLAPI_DLL_CANDIDATES)
     raise MainframeError(
-        "No HLLAPI-compatible DLL found. Tried: "
-        + ", ".join(tried)
+        "No HLLAPI-compatible DLL found in a trusted location. Looked for "
+        f"{names} under the vendor directories in Program Files and in System32"
+        + (f"; tried: {'; '.join(tried)}" if tried else "")
         + ". Install IBM Personal Communications, Attachmate/Rocket "
-        "Reflection, or another EHLLAPI-capable emulator, then pass "
+        "Reflection, or another EHLLAPI-capable emulator, then pass the absolute "
         "hllapi_dll_path='C:\\\\path\\\\to\\\\PCSHLL32.DLL' to "
-        "Desktop.mainframe(backend='hllapi')."
+        "Desktop.mainframe(backend='hllapi'). The working directory and PATH are "
+        "deliberately not searched."
     )
 
 
@@ -863,10 +1217,17 @@ class _HLLAPIBackend(_TerminalBackend):
         """
         if self._trace:
             fn_label = func.name if isinstance(func, HllapiFn) else f"#{func}"
+            # Send Key and Copy String to PS carry what the user typed; only
+            # their size is logged. The other functions carry session ids
+            # and positions, which are safe to show.
+            if int(func) in _HLLAPI_PAYLOAD_FUNCTIONS:
+                shown: Any = f"<{len(data)} bytes>"
+            else:
+                shown = data[:32] + b"..." if len(data) > 32 else data
             _LOG.info(
-                "HLLAPI → func=%s data=%r len=%s ps=%s",
+                "HLLAPI → func=%s data=%s len=%s ps=%s",
                 fn_label,
-                data[:32] + b"..." if len(data) > 32 else data,
+                shown,
                 length,
                 ps_pos,
             )
@@ -945,14 +1306,16 @@ class _HLLAPIBackend(_TerminalBackend):
             cur_row, cur_col = 1, 1
         return lines, (cur_row, cur_col)
 
-    def send_string(self, text: str) -> None:
+    def send_string(self, text: str | Secret) -> None:
         # SendKey reads "@" as the start of a keyboard mnemonic; a literal
         # "@" must be doubled or e-mail addresses and passwords inject
         # keystrokes instead of characters.
-        data = text.replace("@", "@@").encode("cp1252", errors="replace")
+        plain = unwrap_secret(text)
+        data = plain.replace("@", "@@").encode("cp1252", errors="replace")
         rc, _, _ = self._call(_EHLLAPI_SENDKEY, data, len(data))
         if rc != 0:
-            raise MainframeError(f"EHLLAPI SendKey('{text[:16]}…') failed rc={rc}")
+            # The typed text is not repeated in the error: it may be a password.
+            raise MainframeError(f"EHLLAPI SendKey(<{len(plain)} chars>) failed rc={rc}")
 
     def send_aid(self, aid: str) -> None:
         # HLLAPI uses @ escape sequences for AID keys. See EHLLAPI docs.
@@ -1144,13 +1507,23 @@ class _Tn5250Backend(_TerminalBackend):
         trace: bool = False,
         rows: int = 24,
         cols: int = 80,
+        tls: bool = False,
+        tls_cafile: str | None = None,
+        tls_context: ssl.SSLContext | None = None,
+        allow_plaintext: bool = False,
     ) -> None:
-        import socket as _socket
-
-        self._socket = _socket
+        self._socket = socket
         self._sock: Any = None
         self._trace = trace
         self._codepage = codepage
+        self._tls = tls
+        self._tls_cafile = tls_cafile
+        self._tls_context = tls_context
+        self._allow_plaintext = allow_plaintext
+        if tls:
+            # Validated up front so a non-verifying context fails at
+            # construction, not after a plaintext-equivalent handshake.
+            self._tls_context = _verified_tls_context(tls_context, tls_cafile)
         self._rows = rows
         self._cols = cols
         self._screen: list[list[str]] = [[" "] * cols for _ in range(rows)]
@@ -1166,7 +1539,41 @@ class _Tn5250Backend(_TerminalBackend):
     # ---- lifecycle ------------------------------------------------------ #
 
     def connect(self, host: str, port: int, *, session_type: str) -> None:
-        self._sock = self._socket.create_connection((host, port), timeout=15)
+        host = _validate_host(host)
+        port = _validate_port(port)
+        _require_transport_policy(
+            host,
+            port,
+            tls=self._tls,
+            allow_plaintext=self._allow_plaintext,
+            backend="tn5250",
+        )
+        raw = self._socket.create_connection((host, port), timeout=15)
+        if self._tls:
+            # Verified TLS or nothing: a failed handshake closes the TCP
+            # connection and raises. There is deliberately no retry without
+            # TLS — that would send the sign-on in the clear the moment a
+            # network attacker interferes with the handshake.
+            context = self._tls_context or _verified_tls_context(None, self._tls_cafile)
+            server_name = host[1:-1] if host.startswith("[") else host
+            try:
+                self._sock = context.wrap_socket(raw, server_hostname=server_name)
+            except (ssl.SSLError, OSError) as exc:
+                try:
+                    raw.close()
+                except OSError:
+                    pass
+                raise MainframeError(
+                    f"TLS handshake with {host}:{port} failed: {exc}",
+                    hint=(
+                        "the certificate chain and host name must verify; for a private CA "
+                        "pass tls_cafile=... — dolphin never falls back to plaintext"
+                    ),
+                ) from exc
+            if self._trace:
+                _LOG.info("tn5250: TLS %s negotiated with %s:%d", self._sock.version(), host, port)
+        else:
+            self._sock = raw
         self._sock.settimeout(5.0)
         self._negotiate()
         self._connected = True
@@ -1371,7 +1778,10 @@ class _Tn5250Backend(_TerminalBackend):
         if len(data) < 10:
             return
         if self._trace:
-            _LOG.info("tn5250 ← record %s", data[:80].hex())
+            # Length and GDS header only. The body is the host's screen
+            # write, which may carry account data the operator just typed
+            # (echoed fields) — a hex dump of it is not a trace, it is a leak.
+            _LOG.info("tn5250 ← record %d bytes, gds=%s", len(data), data[:10].hex())
         cursor = 10
         while cursor < len(data):
             b = data[cursor]
@@ -1638,12 +2048,13 @@ class _Tn5250Backend(_TerminalBackend):
         # Return copies so callers cannot mutate our state.
         return list(self._fields)
 
-    def send_string(self, text: str) -> None:
+    def send_string(self, text: str | Secret) -> None:
+        plain: str = unwrap_secret(text)
         row, col = self._input_cursor if self._input_cursor != (1, 1) else self._cursor
-        data = text.encode(self._codepage, errors="replace")
+        data = plain.encode(self._codepage, errors="replace")
         self._pending_writes.append((row, col, data))
         # Advance in-memory cursor + local screen preview.
-        for ch in text:
+        for ch in plain:
             r, c = row - 1, col - 1
             if 0 <= r < self._rows and 0 <= c < self._cols:
                 self._screen[r][c] = ch
@@ -1797,6 +2208,16 @@ class _Tn5250Backend(_TerminalBackend):
         record = bytes(header + payload)
         # Escape IAC + trailing IAC EOR.
         wire = record.replace(b"\xff", b"\xff\xff") + bytes([_T_IAC, _T_EOR])
+        if self._trace:
+            # Shape only — the field data is what the user typed.
+            _LOG.info(
+                "tn5250 → input record aid=0x%02x cursor=(%d,%d) fields=%d (%d bytes)",
+                aid_code,
+                row,
+                col,
+                len(self._pending_writes),
+                len(wire),
+            )
         self._sock.sendall(wire)
         # Reset pending state.
         self._pending_writes = []
@@ -2002,8 +2423,13 @@ class MainframeTerminal:
 
     # ---- input ---------------------------------------------------------- #
 
-    def type_text(self, text: str) -> None:
-        """Type *text* at the current cursor position."""
+    def type_text(self, text: str | Secret) -> None:
+        """Type *text* at the current cursor position.
+
+        Pass a :class:`~dolphin_desktop.Secret` for a password: the backend
+        receives the real characters, while every log, trace and report masks
+        the value.
+        """
         self._backend.send_string(text)
 
     def press(self, aid: str) -> None:
@@ -2200,6 +2626,10 @@ def _build_terminal(
     hllapi_dll_path: str | None,
     extra_args: Sequence[str] | None,
     trace: bool = False,
+    tls: bool = False,
+    tls_cafile: str | None = None,
+    tls_context: ssl.SSLContext | None = None,
+    allow_plaintext: bool = False,
 ) -> MainframeTerminal:
     if backend == "s3270":
         impl: _TerminalBackend = _S3270Backend(
@@ -2208,11 +2638,22 @@ def _build_terminal(
             codepage=codepage,
             extra_args=extra_args,
             trace=trace,
+            tls=tls,
+            tls_cafile=tls_cafile,
+            allow_plaintext=allow_plaintext,
         )
     elif backend == "hllapi":
+        # The emulator owns the network side; TLS is configured there.
         impl = _HLLAPIBackend(session_id=session_id, dll_path=hllapi_dll_path, trace=trace)
     elif backend == "tn5250":
-        impl = _Tn5250Backend(codepage=codepage or "cp037", trace=trace)
+        impl = _Tn5250Backend(
+            codepage=codepage or "cp037",
+            trace=trace,
+            tls=tls,
+            tls_cafile=tls_cafile,
+            tls_context=tls_context,
+            allow_plaintext=allow_plaintext,
+        )
     else:
         raise MainframeError(
             f"unknown mainframe backend {backend!r}",

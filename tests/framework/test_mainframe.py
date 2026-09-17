@@ -319,6 +319,10 @@ def test_s3270_lifecycle_and_status_operations(monkeypatch: pytest.MonkeyPatch) 
     backend = mf._S3270Backend.__new__(mf._S3270Backend)
     backend._proc = _Process()
     backend._connected = False
+    # Transport policy is enforced in connect(): a plaintext session to a
+    # non-loopback host is refused unless allow_plaintext is set.
+    backend._tls = False
+    backend._allow_plaintext = True
     backend._spawn = Mock()  # type: ignore[method-assign]
     backend._exec = Mock(return_value=([], ""))  # type: ignore[method-assign]
     backend.connect("host", 23, session_type="3270")
@@ -328,6 +332,35 @@ def test_s3270_lifecycle_and_status_operations(monkeypatch: pytest.MonkeyPatch) 
         (("Wait(15,InputField)",), {"raise_on_error": False}),
     ]
     assert backend._connected is True
+
+    # A plaintext session to a remote host is refused without allow_plaintext.
+    refused = mf._S3270Backend.__new__(mf._S3270Backend)
+    refused._tls = False
+    refused._allow_plaintext = False
+    refused._spawn = Mock()  # type: ignore[method-assign]
+    refused._exec = Mock(return_value=([], ""))  # type: ignore[method-assign]
+    with pytest.raises(mf.MainframeError, match="plaintext"):
+        refused.connect("mainframe.example", 992, session_type="3270")
+    refused._spawn.assert_not_called()
+
+    # The L: host prefix is accepted as a synonym for tls=True and opens a
+    # verified TLS tunnel — the host is validated and re-emitted with the prefix.
+    tls_backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    tls_backend._tls = False
+    tls_backend._allow_plaintext = False
+    tls_backend._spawn = Mock()  # type: ignore[method-assign]
+    tls_backend._exec = Mock(return_value=([], ""))  # type: ignore[method-assign]
+    tls_backend.connect("L:securehost", 992, session_type="3270")
+    assert tls_backend._exec.call_args_list[0] == (("Connect(L:securehost:992)",), {})
+
+    # A CR/LF in the host cannot smuggle a second s3270 action.
+    inject = mf._S3270Backend.__new__(mf._S3270Backend)
+    inject._tls = False
+    inject._allow_plaintext = True
+    inject._spawn = Mock()  # type: ignore[method-assign]
+    inject._exec = Mock(return_value=([], ""))  # type: ignore[method-assign]
+    with pytest.raises(mf.MainframeError, match="invalid host"):
+        inject.connect("host\nQuit()", 23, session_type="3270")
 
 
 def test_s3270_read_fields_keyboard_and_input(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -443,30 +476,51 @@ def test_s3270_wait_output_rethrows_non_disconnect_and_connect_guard() -> None:
         backend.wait_output(1)
 
 
-def test_resolve_hllapi_dll_success_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_hllapi_dll_loads_from_a_trusted_absolute_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from dolphin_desktop import _native
+
     fn = Mock()
-    dll = SimpleNamespace(HLLAPI=fn)
-    loader = Mock(side_effect=[OSError("missing"), dll])
-    monkeypatch.setattr(mf.ctypes, "WinDLL", loader, raising=False)
-    resolved_dll, resolved_fn = mf._resolve_hllapi_dll("explicit.dll")
+    dll = SimpleNamespace(hllapi=fn)
+    # An explicit, existing, absolute path is loaded through the trusted loader.
+    explicit = tmp_path / "PCSHLL32.DLL"
+    explicit.write_bytes(b"MZ")
+    load = Mock(return_value=dll)
+    monkeypatch.setattr(_native, "load_trusted_dll", load)
+    resolved_dll, resolved_fn = mf._resolve_hllapi_dll(str(explicit))
     assert resolved_dll is dll
     assert resolved_fn is fn
     assert fn.restype is None
     assert len(fn.argtypes) == 4
+    load.assert_called_once_with(str(explicit), what="HLLAPI DLL")
 
-    class NoFunction:
-        pass
 
-    monkeypatch.setattr(mf.ctypes, "WinDLL", Mock(return_value=NoFunction()), raising=False)
-    with pytest.raises(mf.MainframeError, match="No HLLAPI-compatible DLL") as exc:
+def test_resolve_hllapi_dll_refuses_a_bare_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A relative / bare DLL name is refused — it would be resolved through the
+    # Windows DLL search order, the search-order-hijacking risk KAN-473 fixes.
+    with pytest.raises(mf.MainframeError, match="absolute path"):
+        mf._resolve_hllapi_dll("PCSHLL32.DLL")
+
+
+def test_resolve_hllapi_dll_reports_when_nothing_trusted_is_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mf, "_trusted_hllapi_paths", lambda explicit: [])
+    with pytest.raises(mf.MainframeError, match="No HLLAPI-compatible DLL found") as exc:
         mf._resolve_hllapi_dll(None)
-    assert "PCSHLL32.DLL!hllapi" in str(exc.value)
+    assert "System32" in str(exc.value)
+    assert "PATH are deliberately not searched" in str(exc.value)
 
+
+def test_hllapi_backend_delegates_to_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    fn = Mock()
+    dll = SimpleNamespace(hllapi=fn)
     resolved = Mock(return_value=(dll, fn))
     monkeypatch.setattr(mf, "_resolve_hllapi_dll", resolved)
-    injected_by_resolve = mf._HLLAPIBackend(dll_path="configured.dll")
+    injected_by_resolve = mf._HLLAPIBackend(dll_path=r"C:\emu\configured.dll")
     assert injected_by_resolve._dll is dll
-    resolved.assert_called_once_with("configured.dll")
+    resolved.assert_called_once_with(r"C:\emu\configured.dll")
 
 
 def _hllapi_backend(call: Mock | None = None) -> mf._HLLAPIBackend:
@@ -680,6 +734,10 @@ def test_tn5250_connect_disconnect_and_telnet_negotiation(monkeypatch: pytest.Mo
     monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=sock))
     backend._negotiate = Mock()  # type: ignore[method-assign]
     backend._read_records = Mock(side_effect=backend._socket.timeout())  # type: ignore[method-assign]
+    # Plaintext to a remote host is refused unless the caller opts in.
+    with pytest.raises(mf.MainframeError, match="plaintext"):
+        backend.connect("ibmi", 992, session_type="5250")
+    backend._allow_plaintext = True
     backend.connect("ibmi", 992, session_type="5250")
     assert backend._connected is True
     assert sock.timeouts[-1] == 5.0
@@ -1165,11 +1223,21 @@ def test_build_terminal_selects_all_backends_and_rejects_unknown(
         codepage="cp500",
         extra_args=["-x"],
         trace=True,
+        tls=False,
+        tls_cafile=None,
+        allow_plaintext=False,
     )
     assert mf._build_terminal(backend="hllapi", **args)._backend is implementations["hllapi"]
     hllapi.assert_called_once_with(session_id="A", dll_path="hllapi.dll", trace=True)
     assert mf._build_terminal(backend="tn5250", **args)._backend is implementations["tn5250"]
-    tn5250.assert_called_once_with(codepage="cp500", trace=True)
+    tn5250.assert_called_once_with(
+        codepage="cp500",
+        trace=True,
+        tls=False,
+        tls_cafile=None,
+        tls_context=None,
+        allow_plaintext=False,
+    )
 
     args["codepage"] = None
     mf._build_terminal(backend="tn5250", **args)

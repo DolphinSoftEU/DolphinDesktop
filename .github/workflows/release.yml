@@ -15,23 +15,27 @@ on:
     tags:
       - "v*.*.*"
 
+# Default to read-only for every job. The OIDC token used by Trusted
+# Publishing (id-token: write) is granted per job, only to the two jobs that
+# actually publish — build and the smoke tests never receive it.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   build:
     name: Build distributions
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
       target: ${{ steps.meta.outputs.target }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
@@ -83,6 +87,16 @@ jobs:
               fh.write(f"target={target}\n")
           PY
 
+      - name: Security gate (CVE audit of the locked dependencies)
+        # A release is blocked if any locked dependency has a known
+        # vulnerability. This runs on the exact commit being published, so the
+        # audited dependency set is the one that ships.
+        run: |
+          python -m pip install --upgrade uv
+          uv export --no-hashes --format requirements-txt --all-extras \
+            --no-emit-project > requirements.audit.txt
+          uvx --from pip-audit pip-audit -r requirements.audit.txt --no-deps --strict
+
       - name: Build wheel and sdist
         run: python -m build
 
@@ -90,7 +104,7 @@ jobs:
         run: twine check dist/*
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dolphin-desktop-dist
           path: dist/
@@ -102,16 +116,19 @@ jobs:
     needs: build
     if: needs.build.outputs.target == 'testpypi'
     environment: testpypi
+    # OIDC token for PyPI Trusted Publishing — only this publishing job.
+    permissions:
+      id-token: write
 
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dolphin-desktop-dist
           path: dist/
 
       - name: Publish distributions
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/
@@ -123,16 +140,19 @@ jobs:
     needs: build
     if: needs.build.outputs.target == 'pypi'
     environment: pypi
+    # OIDC token for PyPI Trusted Publishing — only this publishing job.
+    permissions:
+      id-token: write
 
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dolphin-desktop-dist
           path: dist/
 
       - name: Publish distributions
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: dist/
 
@@ -144,7 +164,7 @@ jobs:
 
     steps:
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
@@ -192,7 +212,7 @@ jobs:
 
     steps:
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
