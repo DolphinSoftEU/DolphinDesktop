@@ -3,8 +3,12 @@
 Zakres: wszystkie 92 zadania epika KAN-513 (13 moich, 66 Kamila, 13
 nieprzypisanych), sprawdzone systemowo przez 20 równoległych agentów
 audytujących kod źródłowy (nie tylko status w Jirze), plus 10 realnych
-poprawek zaimplementowanych i przetestowanych w tej sesji. Wszystko na
-branchu `security-bugfix`.
+poprawek i 5 domkniętych braków testów zaimplementowanych i przetestowanych
+w tej sesji. Wszystko na branchu `security-bugfix`.
+
+**Aktualizacja:** KAN-531/573/595/597/605 (dawna sekcja "brakuje testu") są
+już zamknięte — patrz sekcja 3 niżej. Zostały tylko 3 pozycje wymagające
+decyzji człowieka (sekcja 4) + częściowy KAN-576 (sekcja 1, filtr `--app`).
 
 Osobny plik `JIRA_UPDATE_KAN-467-477.md` pokrywa moje 11 ticketów
 bezpieczeństwa (KAN-467..477) ze szczegółowym opisem — nie duplikuję ich tu,
@@ -139,27 +143,35 @@ Szczegółowe uzasadnienie (plik/linia/test) dla każdego z powyższych jest w
 wynikach workflow audytowego — mogę je wypisać osobno na żądanie, tu
 pominięte dla zwięzłości (61 pozycji z identycznym wzorem "already_fixed").
 
-## 3. Zachowanie poprawne, ale brakuje testu regresyjnego (niski priorytet)
+## 3. Domknięte W TEJ SESJI — brakujące testy regresyjne (5 ticketów)
 
-Kod już działa zgodnie z oczekiwaniem ticketu, ale nikt nie napisał testu
-pilnującego, żeby to nie wróciło. Nie zmieniałem zachowania — tylko
-warto dopisać testy przy okazji:
+Kod już działał zgodnie z oczekiwaniem ticketu (potwierdzone audytem) —
+brakowało tylko testu pilnującego, żeby to nie wróciło. Zachowanie
+produkcyjne **niezmienione**, dopisane testy w `tests/framework/`.
 
-- **KAN-531** — `Locator.click(timeout_ms=...)` poprawnie nadpisuje dłuższy
-  timeout lokatora, ale brak testu end-to-end (element pojawiający się po
-  timeout_ms, ale przed dłuższym timeoutem lokatora).
-- **KAN-573** — mechanizm ładowania pluginu pytest po starcie coverage
-  (`-p no:dolphin-desktop` + lazy-load w `tests/conftest.py`) jest obecny,
-  ale brak testu subprocessowego potwierdzającego rzeczywiste pokrycie
-  import-time linii.
-- **KAN-595** — `OracleFormsApp.item()` poprawnie propaguje błąd z nazwą
-  itemu przy braku okna, ale brak testu przechodzącego przez publiczne
-  `item()` (tylko przez wewnętrzny `_primary_hwnd`).
-- **KAN-597** — `wait_for_text()` poprawnie czyta `poll_interval` z
-  `config()`, ale żaden test nie asercjonuje realnej wartości przekazanej do
-  `time.sleep()`.
-- **KAN-605** — dokumentacja `--template` jest zsynchronizowana z CLI, ale
-  nic nie pilnuje, żeby nie rozjechała się przy dodaniu nowego szablonu.
+**Proponowany status: Gotowe do code review**
+
+- **KAN-531** — dodany test end-to-end:
+  `test_click_timeout_ms_bounds_the_wait_even_with_a_longer_locator_timeout`
+  (`test_auto_wait.py`) — element pojawiający się po 0.5s, `timeout_ms=150`
+  na dłuższym (2s) timeoucie lokatora musi przerwać czekanie w ~150ms.
+- **KAN-573** — dodany test subprocessowy:
+  `test_import_time_lines_are_covered_and_plugin_registers_once`
+  (`test_pytest_plugin.py`) — realnie uruchamia `pytest --cov=dolphin_desktop`
+  tak jak deweloper/CI, sprawdza przez `coverage json`, że linia
+  `class Application` w `_application.py` jest pokryta (dowód, że import
+  nastąpił PO starcie tracingu, nie przed).
+- **KAN-595** — dodany test:
+  `test_item_preserves_the_item_name_and_hint_when_no_window_is_found`
+  (`test_oracle_forms.py`) — przechodzi przez publiczne `item()`, nie tylko
+  wewnętrzny `_primary_hwnd`.
+- **KAN-597** — dodany test:
+  `test_wait_for_text_uses_the_configured_poll_interval_when_omitted`
+  (`test_locator.py`) — asercjonuje realną wartość przekazaną do
+  `time.sleep()`, nie tylko że getter configu został wywołany.
+- **KAN-605** — dodany test:
+  `test_docs_reference_cli_lists_every_init_template` (`test_cli_init.py`) —
+  porównuje `_STACK_TEMPLATES` z treścią `docs/reference/cli.md`.
 
 ## 4. Wymaga decyzji człowieka, nie kodu
 
