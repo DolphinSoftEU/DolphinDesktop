@@ -542,6 +542,16 @@ def _init_cmd(args: argparse.Namespace) -> None:
     py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
     target = Path(name)
 
+    # An absolute name, a ".." segment, or a symlinked intermediate directory
+    # could otherwise scaffold the project outside the current working
+    # directory. Path.resolve() follows symlinks, so this one containment
+    # check catches all three.
+    base = Path.cwd().resolve()
+    resolved = target.resolve()
+    if resolved != base and base not in resolved.parents:
+        print(f"Error: '{name}' resolves outside the current working directory ({base}).")
+        sys.exit(1)
+
     if target.exists():
         print(f"Error: '{name}' already exists.")
         sys.exit(1)

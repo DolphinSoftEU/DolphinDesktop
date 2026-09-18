@@ -132,7 +132,6 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/
-          skip-existing: true
 
   publish-pypi:
     name: Publish to PyPI
@@ -168,12 +167,26 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dolphin-desktop-dist
+          path: dist/
+
       # --pre because a preview may carry a PEP 440 pre-release segment
       # (0.2.0.dev1), which pip otherwise filters out of the candidate list.
       # The retry is for index propagation: the upload above completes before
       # test.pypi.org/simple/ serves the new file, so the first attempt can
       # legitimately report "No matching distribution found".
-      - name: Install from TestPyPI
+      #
+      # --no-deps, single --index-url (no --extra-index-url): this step must
+      # fetch ONLY the dolphin-desktop artifact itself from TestPyPI. Mixing
+      # both indexes on one pip invocation lets pip silently resolve
+      # dolphin-desktop (or a same-named dependency) from whichever index
+      # answers first, which defeats the point of testing "what TestPyPI
+      # actually serves". Dependencies are installed separately, from PyPI,
+      # in the next step.
+      - name: Download dolphin-desktop from TestPyPI
         shell: pwsh
         run: |
           $version = "${{ needs.build.outputs.version }}"
@@ -183,20 +196,42 @@ jobs:
           python --version
           python -m pip --version
           Write-Host "--- what the index offers ---"
-          python -m pip index versions dolphin-desktop --pre `
-            --index-url https://test.pypi.org/simple/ `
-            --extra-index-url https://pypi.org/simple/
+          python -m pip index versions dolphin-desktop --pre --index-url https://test.pypi.org/simple/
+          New-Item -ItemType Directory -Force -Path testpypi-download | Out-Null
           for ($i = 1; $i -le 6; $i++) {
-            python -m pip install --pre `
+            python -m pip download --pre --no-deps `
               --index-url https://test.pypi.org/simple/ `
-              --extra-index-url https://pypi.org/simple/ `
+              --dest testpypi-download `
               "dolphin-desktop==$version"
             if ($LASTEXITCODE -eq 0) { exit 0 }
             Write-Host "attempt $i failed; the index may not have caught up yet, retrying in 20s"
             Start-Sleep -Seconds 20
           }
-          Write-Error "dolphin-desktop==$version did not become installable from TestPyPI"
+          Write-Error "dolphin-desktop==$version did not become downloadable from TestPyPI"
           exit 1
+
+      # The published artifact must be byte-identical to what this workflow
+      # run built and audited above — not a same-version file uploaded by
+      # someone/something else in the window between build and this check.
+      - name: Verify the TestPyPI wheel matches this run's build artifact
+        shell: pwsh
+        run: |
+          $built = Get-ChildItem dist -Filter *.whl | Select-Object -First 1
+          $downloaded = Get-ChildItem testpypi-download -Filter *.whl | Select-Object -First 1
+          $builtHash = (Get-FileHash $built.FullName -Algorithm SHA256).Hash
+          $downloadedHash = (Get-FileHash $downloaded.FullName -Algorithm SHA256).Hash
+          Write-Host "build artifact: $($built.Name) $builtHash"
+          Write-Host "TestPyPI:       $($downloaded.Name) $downloadedHash"
+          if ($builtHash -ne $downloadedHash) {
+            Write-Error "TestPyPI wheel does not match the artifact built in this workflow run"
+            exit 1
+          }
+
+      - name: Install dolphin-desktop and its dependencies
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem testpypi-download -Filter *.whl | Select-Object -First 1).FullName
+          python -m pip install "$wheel"
 
       - name: Import and CLI smoke
         run: |

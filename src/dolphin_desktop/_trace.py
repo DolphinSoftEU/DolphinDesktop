@@ -458,7 +458,12 @@ def _render_steps(steps: list[dict[str, Any]]) -> str:
 
     parts: list[str] = []
     for s in steps:
-        seq = s["seq"]
+        # trace.db is a persisted artifact — a crafted/corrupted row must not
+        # turn into HTML/JS via the un-typed 'seq' column (CWE-79).
+        try:
+            seq = int(s["seq"])
+        except (TypeError, ValueError):
+            seq = "?"
         act = _h.escape(s["action"])
         sel = _h.escape(s.get("selector") or "")
         ts_str = f"{s.get('ts', 0):.3f}s"

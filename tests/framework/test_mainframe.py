@@ -972,6 +972,49 @@ def test_tn5250_read_records_handles_escaping_negotiation_and_timeouts(
     assert backend._read_records(1) == []
 
 
+def test_tn5250_read_records_enforces_deadline_even_with_records_already_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KAN-575: a host that keeps streaming complete records must not keep
+
+    _read_records() alive past its own deadline — only the already-parsed
+    records are returned, and a second, still-available record is left
+    unread rather than fetched.
+    """
+    backend = mf._Tn5250Backend()
+    backend._rx_backlog = b""
+    record1 = b"AAA" + bytes([mf._T_IAC, mf._T_EOR])
+    record2 = b"BBB" + bytes([mf._T_IAC, mf._T_EOR])
+    backend._sock = _Socket([record1, record2])
+    backend._process_record = Mock()  # type: ignore[method-assign]
+
+    # deadline=1.0; monotonic() calls: start, pre-recv deadline check (<1),
+    # settimeout's own read (<1), then past-deadline on the next pass.
+    monkeypatch.setattr(mf.time, "monotonic", Mock(side_effect=[0.0, 0.0, 0.0, 2.0]))
+
+    records = backend._read_records(1.0)
+
+    assert records == [b"AAA"]
+    # record2 was never fetched — recv() was called exactly once.
+    assert backend._sock.chunks == [record2]
+
+
+def test_tn5250_read_records_rejects_unbounded_backlog_without_eor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KAN-575: a stream that never sends IAC EOR must not grow buf forever."""
+    backend = mf._Tn5250Backend()
+    backend._rx_backlog = b""
+    huge_chunk = b"x" * (mf._MAX_RX_BACKLOG + 1)
+    backend._sock = _Socket([huge_chunk])
+    backend.disconnect = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="exceeded the .*-byte limit"):
+        backend._read_records(1.0)
+
+    backend.disconnect.assert_called_once_with()
+
+
 def test_tn5250_record_dispatch_and_wtd_orders() -> None:
     backend = mf._Tn5250Backend(rows=2, cols=5, trace=True)
     backend._process_record(b"short")

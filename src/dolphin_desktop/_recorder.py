@@ -703,9 +703,18 @@ class Recorder:
                 # the side the recorder cannot tell a third-level character
                 # from a genuine Ctrl+Alt shortcut pressed with the left Alt.
                 ralt = bool(_user32.GetAsyncKeyState(_VK_RMENU) & 0x8000)
+                # The foreground window is captured HERE, at the instant the
+                # key fired, not later on the processor thread. The queue can
+                # lag behind real input, and re-reading GetForegroundWindow()
+                # at processing time races a focus change: a keystroke typed
+                # in the scoped app right before an unrelated window steals
+                # focus would otherwise be classified (app filter, password
+                # detection) against that other window instead of the one it
+                # actually landed in.
+                hwnd = _user32.GetForegroundWindow()
                 try:
                     evt_queue.put_nowait(
-                        ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time())
+                        ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time(), hwnd)
                     )
                 except queue.Full:
                     pass
@@ -752,8 +761,8 @@ class Recorder:
                 self._flush_text()
                 self._handle_mouse(kind, x, y, ts)
             elif evt[0] == "key":
-                _, vk, scan, shift, ctrl, alt, ralt, ts = evt
-                self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt)
+                _, vk, scan, shift, ctrl, alt, ralt, ts, hwnd = evt
+                self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt, hwnd=hwnd)
             self._processed += 1
 
     def _handle_mouse(self, kind: str, x: int, y: int, ts: float) -> None:
@@ -815,12 +824,17 @@ class Recorder:
         ts: float,
         *,
         ralt: bool = True,
+        hwnd: int = 0,
     ) -> None:
         try:
             import win32gui
 
-            hwnd = win32gui.GetForegroundWindow()
-            root = _get_root_hwnd(hwnd)
+            # hwnd, when given, was captured on the hook thread at the moment
+            # this key fired — see _kbd_proc. Falling back to a live
+            # GetForegroundWindow() read here would reintroduce the race it
+            # exists to avoid, so 0 (not provided) is the only case that does.
+            fg = hwnd or win32gui.GetForegroundWindow()
+            root = _get_root_hwnd(fg)
             win_title, win_class = _get_window_info(root)
         except Exception:
             win_title, win_class = "", ""

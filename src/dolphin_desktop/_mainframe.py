@@ -1445,6 +1445,13 @@ class _HLLAPIBackend(_TerminalBackend):
 # --------------------------------------------------------------------------- #
 
 
+#: Largest unterminated receive buffer _read_records() will accumulate while
+#: looking for IAC-EOR. A host (or a network attacker) that never sends EOR
+#: would otherwise let this grow without bound — a legitimate 5250 screen
+#: record is a few KB at most, so 1 MiB is generous headroom, not a limit a
+#: real host is expected to hit.
+_MAX_RX_BACKLOG = 1024 * 1024
+
 # Telnet
 _T_IAC = 0xFF
 _T_DONT = 0xFE
@@ -1814,8 +1821,13 @@ class _Tn5250Backend(_TerminalBackend):
                 del buf[: record_end + 2]
                 self._process_record(raw)
                 continue
-            if time.monotonic() >= deadline and not records:
-                # No record yet — bail so caller can keep polling.
+            if time.monotonic() >= deadline:
+                # Past the deadline — return whatever was parsed so far (even
+                # none) so the caller can keep polling instead of blocking
+                # past its own timeout budget. Unconditional: a host that
+                # keeps streaming complete records forever must not be able
+                # to keep this call alive past *timeout* just by never
+                # pausing long enough for the "no record yet" branch below.
                 self._rx_backlog = bytes(buf)
                 return records
             if records:
@@ -1832,6 +1844,14 @@ class _Tn5250Backend(_TerminalBackend):
                 self._rx_backlog = bytes(buf)
                 return records
             buf += chunk
+            if len(buf) > _MAX_RX_BACKLOG:
+                self.disconnect()
+                raise MainframeError(
+                    f"tn5250: {len(buf)} bytes received without a complete record "
+                    f"(IAC EOR) — exceeded the {_MAX_RX_BACKLOG}-byte limit, closing "
+                    "the connection",
+                    hint="the host may be misbehaving or the network path may be corrupting data",
+                )
 
     # ---- 5250 record parsing -------------------------------------------- #
 

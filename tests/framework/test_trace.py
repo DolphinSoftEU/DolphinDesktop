@@ -638,6 +638,25 @@ class TestHtmlRenderingBranches:
         assert "&lt;invalid tree&gt;" in html
         assert "UIA tree (? nodes)" in html
 
+    def test_render_steps_escapes_a_malicious_or_non_numeric_seq_value(self):
+        """KAN-578: 'seq' reaches HTML unescaped from trace.db — CWE-79."""
+        html = _trace._render_steps(
+            [
+                {
+                    "seq": "<img src=x onerror=alert(1)>",
+                    "action": "click",
+                    "selector": "",
+                    "ts": 0.0,
+                    "result": "ok",
+                    "screenshot_file": "shot.jpg",
+                },
+            ]
+        )
+
+        assert "<img src=x onerror=alert(1)>" not in html
+        assert 'alt="step ?"' in html
+        assert '<span class="seq">#?</span>' in html
+
     def test_render_html_handles_unknown_status_missing_finish_and_error(self):
         html = _trace._render_html(
             {
