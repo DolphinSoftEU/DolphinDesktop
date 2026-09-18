@@ -1931,6 +1931,20 @@ def test_wait_until_hidden_checked_and_text_matching():
             resolved(TextSequence(["still text"])).wait_for_text(text_re="", timeout=1)
 
 
+def test_wait_for_text_uses_the_configured_poll_interval_when_omitted(monkeypatch):
+    """KAN-597: an omitted poll_interval must reach time.sleep() from
+
+    config(poll_interval=...), not a hard-coded default — wire the actual
+    value through, not just that _get_poll_interval() gets consulted.
+    """
+    monkeypatch.setattr(locator_module, "_get_poll_interval", lambda: 0.37)
+    text_element = TextSequence(["old", "ready"])
+    loc = resolved(text_element)
+    with monotonic_values(0, 0, 2), patch.object(locator_module.time, "sleep") as sleep:
+        assert loc.wait_for_text("ready", timeout=1) is loc
+    sleep.assert_called_once_with(0.37)
+
+
 class ToggleStateSequence:
     def __init__(self, states):
         self.states = iter(states)

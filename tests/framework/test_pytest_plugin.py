@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 import subprocess
 import sys
 import types
@@ -1544,6 +1545,59 @@ def test_regular_failure_report():
             }
         ]
         plugin._session_reports.clear()
+
+
+class TestLazyPluginLoadCoverage:
+    @pytest.mark.timeout(150)
+    def test_import_time_lines_are_covered_and_plugin_registers_once(self, tmp_path):
+        """KAN-573: pytest-cov must trace dolphin_desktop's import-time code
+
+        (def/class statements execute exactly once per interpreter, at
+        import), which only happens if the plugin's own import is deferred
+        past coverage's own startup — see tests/conftest.py's
+        _load_production_plugin / pytest_collection hook and pyproject.toml's
+        `-p no:dolphin-desktop` addopt that this regresses.
+        """
+        # A landmark import-time statement: unambiguous, and unlike a line
+        # number it survives unrelated edits to _application.py.
+        app_src = (REPO_ROOT / "src" / "dolphin_desktop" / "_application.py").read_text(
+            encoding="utf-8"
+        )
+        landmark_line = next(
+            i for i, line in enumerate(app_src.splitlines(), start=1) if line.startswith("class Application")
+        )
+
+        cov_json = tmp_path / "coverage.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--cov=dolphin_desktop",
+                f"--cov-report=json:{cov_json}",
+                "-q",
+                "tests/framework/test_helpers.py",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        output = result.stdout + result.stderr
+
+        assert result.returncode == 0, output
+        assert "already registered" not in output.lower()
+        assert cov_json.is_file(), output
+
+        data = json.loads(cov_json.read_text(encoding="utf-8"))
+        app_key = next(
+            key for key in data["files"] if key.replace("\\", "/").endswith("_application.py")
+        )
+        executed = set(data["files"][app_key]["executed_lines"])
+        assert landmark_line in executed, (
+            f"line {landmark_line} ('class Application') not covered — "
+            "dolphin_desktop was imported before coverage tracing started"
+        )
 
 
 class TestSessionReports:

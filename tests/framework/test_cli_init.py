@@ -8,12 +8,32 @@ from __future__ import annotations
 import importlib
 import io
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from dolphin_desktop._cli import _doctor_cmd, _scaffold
+
+
+def test_docs_reference_cli_lists_every_init_template() -> None:
+    """KAN-605: docs/reference/cli.md must not drift from the CLI's actual
+
+    `--template` choices — a new stack template added to _STACK_TEMPLATES
+    without a docs update would otherwise go unnoticed.
+    """
+    from dolphin_desktop import _cli
+
+    templates = ["minimal", "standard", "enterprise", *_cli._STACK_TEMPLATES]
+
+    docs_path = (
+        Path(__file__).resolve().parents[2] / "docs" / "reference" / "cli.md"
+    )
+    docs_text = docs_path.read_text(encoding="utf-8")
+
+    missing = [t for t in templates if t not in docs_text]
+    assert not missing, f"docs/reference/cli.md is missing templates: {missing}"
 
 
 def test_minimal_creates_expected_files(tmp_path):

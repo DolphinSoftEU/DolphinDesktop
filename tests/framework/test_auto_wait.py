@@ -296,6 +296,42 @@ class TestAutoWaitRetry:
         # 4.0 s default that would apply if the timeout were dropped.
         assert 0.3 <= elapsed < 2.0
 
+    def test_click_timeout_ms_bounds_the_wait_even_with_a_longer_locator_timeout(self):
+        """KAN-531: timeout_ms must take precedence over the locator's own
+
+        (longer) configured timeout end-to-end — not just be threaded
+        through as a value, but actually bound how long click() waits, even
+        when the element would eventually appear within the locator's own
+        timeout.
+        """
+        ready = threading.Event()
+        spec = MagicMock()
+        child = MagicMock()
+
+        visible = MagicMock()
+        visible.is_visible.return_value = True
+
+        def appears_once_ready():
+            if not ready.is_set():
+                raise RuntimeError("element is not there yet")
+            return visible
+
+        child.wrapper_object.side_effect = appears_once_ready
+        spec.child_window.return_value = child
+        spec.children.return_value = []
+
+        # The element only appears at 0.5s, well within the locator's own
+        # 2.0s timeout — but timeout_ms=150 must still cut the wait short.
+        threading.Timer(0.5, ready.set).start()
+        loc = _window(spec).get_by_role("Button").timeout(2.0)
+
+        start = time.monotonic()
+        with pytest.raises(ElementNotFoundError):
+            loc.click(timeout_ms=150)
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.4
+
     def test_chained_actions_without_explicit_wait(self):
         """Chain of actions uses auto-wait on every step."""
         spec = _succeeding_spec()

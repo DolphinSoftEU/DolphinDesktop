@@ -512,6 +512,26 @@ def test_primary_hwnd_raises_a_forms_error_when_window_enumeration_fails() -> No
         _empty_app_with_application(application)._primary_hwnd()
 
 
+def test_item_preserves_the_item_name_and_hint_when_no_window_is_found() -> None:
+    """KAN-595: item() must not lose the item identifier or the JAB/
+
+    startup_delay hint when the underlying window lookup fails — regression
+    through the public facade, not just _primary_hwnd() directly.
+    """
+    application = SimpleNamespace(
+        _app=SimpleNamespace(windows=Mock(return_value=[]))
+    )
+    app = _empty_app_with_application(application)
+
+    with pytest.raises(forms.OracleFormsError) as excinfo:
+        app.item("EMP.NAME")
+
+    message = str(excinfo.value)
+    assert "EMP.NAME" in message
+    assert "no top-level window found for Oracle Forms app" in message
+    assert "startup_delay" in (excinfo.value.hint or "")
+
+
 def _empty_app_with_application(application) -> forms.OracleFormsApp:
     return forms.OracleFormsApp(application)
 
