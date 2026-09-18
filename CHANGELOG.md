@@ -6,6 +6,13 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ## [Unreleased]
 
+### Fixed
+
+* Hidden-desktop `Locator.press_key()` now focuses the element after activating
+  `DolphinHidden`, reports a clear `DolphinError` instead of using system-wide
+  modifier events when activation fails, and `Locator.text()` preserves the
+  exact text returned by UIA `TextPattern`.
+
 ### Security
 
 Addresses the findings from the `testpypi-preview` security audit
@@ -83,7 +90,9 @@ Addresses the findings from the `testpypi-preview` security audit
   environment block; a concurrency regression test now locks that in.
 * **`http_ok` scheme restriction (KAN-477).** The helper accepts only
   `http` / `https` URLs with a host; `file://`, `ftp://` and hostless
-  URLs return `False` without opening anything.
+  URLs return `False` without opening anything. Every redirect target is
+  re-validated the same way before it is followed, and the request is
+  further guarded against NaN/Infinity payloads.
 
 ## [0.2.0] — 2026-08-05
 
@@ -168,6 +177,10 @@ Addresses the findings from the `testpypi-preview` security audit
 ### Changed — breaking
 
 These change the behavior of existing calls; read them before upgrading.
+
+* **`Locator.bounding_box()`, `Window.bounding_box()`, Delphi, and JAB bounds
+  now consistently return `{x, y, width, height}`.** The legacy
+  `left`/`top`/`right`/`bottom` keys were removed.
 
 * **`get_attribute()` raises `AttributeError` for a name the element does
   not publish**, instead of returning `None`. This affects the UIA

@@ -7,7 +7,7 @@ import inspect
 import math
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
@@ -20,8 +20,14 @@ else:
 
 from ._config import get_poll_interval as _get_poll_interval
 from ._config import get_timeout as _get_timeout
-from ._exceptions import ElementNotFoundError, UnsupportedPatternError, WaitTimeoutError
+from ._exceptions import (
+    DolphinError,
+    ElementNotFoundError,
+    UnsupportedPatternError,
+    WaitTimeoutError,
+)
 from ._helpers import _MISSING, _escape_keys
+from ._keyboard import _post_keys_to_hwnd, _send_keys_on_hidden_desktop
 from ._logging import Secret, unwrap_secret
 
 
@@ -42,6 +48,33 @@ def _wrapper_of(element: Any) -> Any:
         return element.wrapper_object()
     except Exception:
         return element
+
+
+def _is_hidden_physical_input_error(exc: Exception) -> bool:
+    """Return whether *exc* is a known failure of the physical mouse API.
+
+    ``pywinauto`` exposes failed ``SetCursorPos`` calls as
+    ``pywintypes.error`` and its mouse helpers can also report the same
+    condition as ``RuntimeError``.  Keep this predicate deliberately narrow:
+    failures from resolution or from an element's own action must not be
+    rewritten merely because the application lives on a hidden desktop.
+    """
+    try:
+        import pywintypes  # type: ignore[import-untyped]
+    except ImportError:
+        pywintypes_error: type[BaseException] | tuple[type[BaseException], ...] = ()
+    else:
+        pywintypes_error = pywintypes.error
+
+    if isinstance(exc, pywintypes_error):
+        function_name = getattr(exc, "funcname", None)
+        if function_name is None and len(exc.args) > 1:
+            function_name = exc.args[1]
+        return str(function_name).casefold() == "setcursorpos"
+    if isinstance(exc, RuntimeError):
+        message = str(exc).casefold()
+        return "active desktop" in message or "desktop is not active" in message
+    return False
 
 
 def _ensure_element_present(element: Any) -> None:
@@ -189,6 +222,69 @@ def _set_value_via_iface(wrapper: Any, text: str) -> None:
     exclusively through ``iface_value``.
     """
     wrapper.iface_value.SetValue(text)
+
+
+def _read_text_via_pattern(element: Any) -> str | None:
+    """Read UIA ``TextPattern`` content when the provider exposes it.
+
+    ``pywinauto.UIAElementInfo.rich_text`` normally performs this lookup too,
+    but it falls back to the UIA name when the pattern is unavailable. Keep
+    the pattern read explicit here so a stable accessibility name cannot mask
+    the element's actual text when both values are exposed by the provider.
+
+    ``None`` means that the element has no usable TextPattern; an empty string
+    is a valid value returned by a provider and must not trigger another
+    fallback.
+    """
+    try:
+        pattern = element.iface_text
+        text = pattern.DocumentRange.GetText(-1)
+    except Exception:
+        return None
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        return None
+    return text
+
+
+def _element_hwnd(element: Any) -> int | None:
+    """Return a wrapper or UIA ancestor's native window handle."""
+    try:
+        handle = getattr(element, "handle", None)
+        if callable(handle):
+            handle = handle()
+    except Exception:
+        handle = None
+    if handle:
+        try:
+            return int(handle)
+        except (TypeError, ValueError):
+            pass
+
+    # WPF child controls commonly expose CurrentNativeWindowHandle == 0;
+    # their top-level Window ancestor still owns the native HwndSource.
+    element_info = getattr(element, "element_info", None)
+    visited: set[int] = set()
+    while element_info is not None:
+        marker = id(element_info)
+        if marker in visited:
+            break
+        visited.add(marker)
+        try:
+            handle = getattr(element_info, "handle", None)
+        except Exception:
+            handle = None
+        if handle:
+            try:
+                return int(handle)
+            except (TypeError, ValueError):
+                pass
+        try:
+            element_info = getattr(element_info, "parent", None)
+        except Exception:
+            break
+    return None
 
 
 def _toggle_via_iface(wrapper: Any) -> None:
@@ -418,6 +514,38 @@ def _normalize_criteria(criteria: dict[str, Any]) -> dict[str, Any]:
     return criteria
 
 
+def _normalize_fallbacks(value: Any) -> list[dict[str, Any]]:
+    """Validate and normalize the selector fallback list with its index."""
+    if value is None:
+        return []
+    try:
+        fallback_items = iter(value)
+    except TypeError as exc:
+        raise ValueError("fallback must be an iterable of selector mappings") from exc
+
+    normalized: list[dict[str, Any]] = []
+    for index, fallback in enumerate(fallback_items):
+        if not isinstance(fallback, Mapping):
+            raise ValueError(
+                f"fallback[{index}] must be a mapping of selector criteria, "
+                f"got {type(fallback).__name__}"
+            )
+        try:
+            normalized.append(_normalize_criteria(dict(fallback)))
+        except ValueError as exc:
+            raise ValueError(f"invalid fallback[{index}]: {exc}") from exc
+    return normalized
+
+
+def _raise_image_template_error(image_fallback: Any, cause: Exception) -> None:
+    """Re-raise a template loading error with the image-fallback context."""
+    template = getattr(image_fallback, "_template_path", "<unknown>")
+    message = f"image_fallback template {template!s} could not be loaded: {cause}"
+    if isinstance(cause, FileNotFoundError):
+        raise FileNotFoundError(message) from cause
+    raise ValueError(message) from cause
+
+
 class Locator:
     """Represents a way to find one or more UI elements.
 
@@ -445,12 +573,42 @@ class Locator:
         **criteria: Any,
     ) -> None:
         self._parent = parent
-        self._fallback: list[dict[str, Any]] = [
-            _normalize_criteria(dict(fb)) for fb in (criteria.pop("fallback", None) or [])
-        ]
+        # Window.element() attaches these fields after constructing the locator.
+        # Keeping the repository reference on the lazy locator lets a watched
+        # alias refresh immediately before its next resolution.
+        self._object_repository: Any | None = None
+        self._object_alias: str | None = None
+        self._object_parent_alias: str | None = None
+        self._object_selector_keys: set[str] = set()
+        self._fallback = _normalize_fallbacks(criteria.pop("fallback", None))
         self._image_fallback: Any = criteria.pop("image_fallback", None)
         self._criteria = _normalize_criteria(criteria)
         self._timeout: float = _get_timeout()
+
+    def _refresh_object_repository(self) -> None:
+        """Refresh criteria for a locator created from a watched alias.
+
+        Only selector metadata is refreshed here; no UI element is resolved or
+        materialized. Derived criteria such as ``nth()`` remain on the locator.
+        """
+        repository = self._object_repository
+        alias = self._object_alias
+        if repository is None or alias is None:
+            return
+
+        if self._object_parent_alias is None:
+            entry = repository.resolve(alias)
+        else:
+            entry = repository.resolve_child(self._object_parent_alias, alias)
+
+        derived_criteria = {
+            key: value
+            for key, value in self._criteria.items()
+            if key not in self._object_selector_keys
+        }
+        self._criteria = {**entry.selector, **derived_criteria}
+        self._object_selector_keys = set(entry.selector)
+        self._fallback = _normalize_fallbacks(entry.fallback or None)
 
     # Configuration
 
@@ -518,6 +676,37 @@ class Locator:
             )
         return self._parent._get_spec()
 
+    def _application_context(self) -> Any | None:
+        """Return the owning application, including for chained locators."""
+        node: Any = self
+        while isinstance(node, Locator):
+            application = getattr(node, "_application", None)
+            if application is not None:
+                return application
+            node = getattr(node, "_parent", None)
+        return getattr(node, "_application", None)
+
+    def _is_hidden_desktop(self) -> bool:
+        """Return whether this locator belongs to a hidden Dolphin desktop."""
+        application = self._application_context()
+        desktop = getattr(application, "_desktop", None)
+        return bool(getattr(desktop, "_is_hidden", False))
+
+    def _raise_hidden_input_error(self, action: str, exc: Exception) -> None:
+        """Normalize only known physical-input failures in hidden mode."""
+        if not self._is_hidden_desktop() or not _is_hidden_physical_input_error(exc):
+            return
+        hint = (
+            "use invoke()/toggle()/select() for a programmatic action, or run "
+            "this physical action on a visible desktop"
+            if action == "click"
+            else "run this physical action on a visible interactive desktop"
+        )
+        raise DolphinError(
+            f"{action}() cannot perform physical input on a hidden desktop",
+            hint=hint,
+        ) from exc
+
     def _resolve(
         self,
         deadline: float | None = None,
@@ -525,6 +714,7 @@ class Locator:
         single_attempt: bool = False,
     ) -> Any:
         """Find and wait for the element, raise on timeout."""
+        self._refresh_object_repository()
         single_attempt = single_attempt or self._timeout <= 0
         deadline, enforce_deadline = _effective_deadline(
             self._timeout,
@@ -628,6 +818,13 @@ class Locator:
                         enforce=enforce_deadline,
                     ):
                         return fb_spec
+                except _PwAmbiguousError as exc:
+                    from ._exceptions import AmbiguousMatchError
+
+                    raise AmbiguousMatchError(
+                        f"{fb!r} matched more than one element — "
+                        f"narrow the criteria or pick one with found_index=N"
+                    ) from exc
                 except Exception:
                     continue
 
@@ -656,6 +853,8 @@ class Locator:
                             enforce=enforce_deadline,
                         ):
                             return _ImageElement(cx, cy, tw, th)
+                except (FileNotFoundError, ValueError) as exc:
+                    _raise_image_template_error(self._image_fallback, exc)
                 except Exception:
                     pass
 
@@ -761,7 +960,11 @@ class Locator:
         try:
             self._focus_for_input()
             element = self._resolve()
-            element.click_input()
+            try:
+                element.click_input()
+            except Exception as exc:
+                self._raise_hidden_input_error("click", exc)
+                raise
         except Exception as exc:
             _trace_step("click", self._criteria, element=element, error=str(exc))
             raise
@@ -1085,14 +1288,34 @@ class Locator:
         return self
 
     def press_key(self, key: str, timeout_ms: int | None = None) -> Locator:
-        """Send a key sequence to the element using pywinauto key syntax."""
+        """Send a key sequence to the element using pywinauto key syntax.
+
+        On a hidden Dolphin desktop, briefly activate the DolphinHidden input
+        desktop so modifier-aware ``SendInput`` sequences reach the AUT. If
+        activation is unavailable, use the element's native window messages.
+        """
         if timeout_ms is not None:
             self.timeout(timeout_ms / 1000.0).press_key(key)
             return self
         element = None
         try:
             element = self._resolve()
-            element.type_keys(key)
+            if self._is_hidden_desktop():
+                if _send_keys_on_hidden_desktop(key, focus=element.set_focus):
+                    _trace_step("press_key", self._criteria, element=element)
+                    return self
+                hwnd = _element_hwnd(element)
+                if hwnd is None:
+                    raise DolphinError(
+                        "press_key() cannot target an element without a native window handle",
+                        hint=(
+                            "use a UIA element backed by a native window or run "
+                            "on a visible desktop"
+                        ),
+                    )
+                _post_keys_to_hwnd(hwnd, key)
+            else:
+                element.type_keys(key)
         except Exception as exc:
             _trace_step("press_key", self._criteria, element=element, error=str(exc))
             raise
@@ -1298,6 +1521,9 @@ class Locator:
         an empty string, so we fall back to select-all + clipboard.
         """
         element = self._resolve_readonly()
+        pattern_text = _read_text_via_pattern(element)
+        if pattern_text is not None:
+            return pattern_text
         t = element.window_text()
         if t:
             return t
@@ -1356,6 +1582,7 @@ class Locator:
         single_attempt: bool = False,
     ) -> Any:
         """Resolve an element without requiring it to be visible."""
+        self._refresh_object_repository()
         single_attempt = single_attempt or self._timeout <= 0
         deadline, enforce_deadline = _effective_deadline(
             self._timeout,
@@ -1488,6 +1715,8 @@ class Locator:
                             enforce=enforce_deadline,
                         ):
                             return _ImageElement(cx, cy, tw, th)
+                except (FileNotFoundError, ValueError) as exc:
+                    _raise_image_template_error(self._image_fallback, exc)
                 except Exception:
                     pass
 
@@ -1537,13 +1766,11 @@ class Locator:
             return False
 
     def bounding_box(self) -> dict[str, int]:
-        """Return {left, top, right, bottom, width, height} in screen coords."""
+        """Return ``{x, y, width, height}`` in absolute screen coordinates."""
         rect = self._resolve_readonly().rectangle()
         return {
-            "left": rect.left,
-            "top": rect.top,
-            "right": rect.right,
-            "bottom": rect.bottom,
+            "x": rect.left,
+            "y": rect.top,
             "width": rect.right - rect.left,
             "height": rect.bottom - rect.top,
         }
@@ -1771,9 +1998,13 @@ class Locator:
         import pywinauto.mouse as _mouse  # type: ignore[import-untyped]
 
         bb = self.bounding_box()
-        cx = bb["left"] + bb["width"] // 2
-        cy = bb["top"] + bb["height"] // 2
-        _mouse.move(coords=(cx, cy))
+        cx = bb["x"] + bb["width"] // 2
+        cy = bb["y"] + bb["height"] // 2
+        try:
+            _mouse.move(coords=(cx, cy))
+        except Exception as exc:
+            self._raise_hidden_input_error("hover", exc)
+            raise
         return self
 
     def drag_to(
@@ -1788,15 +2019,15 @@ class Locator:
 
         self._focus_for_input()
         bb = self.bounding_box()
-        src_x = bb["left"] + bb["width"] // 2
-        src_y = bb["top"] + bb["height"] // 2
+        src_x = bb["x"] + bb["width"] // 2
+        src_y = bb["y"] + bb["height"] // 2
 
         if isinstance(target, tuple):
             dst_x, dst_y = target
         else:
             tbb = target.bounding_box()
-            dst_x = tbb["left"] + tbb["width"] // 2
-            dst_y = tbb["top"] + tbb["height"] // 2
+            dst_x = tbb["x"] + tbb["width"] // 2
+            dst_y = tbb["y"] + tbb["height"] // 2
 
         steps = 30
         step_sleep = duration / steps
@@ -1805,15 +2036,19 @@ class Locator:
         # release: an exception (or Ctrl-C) inside the move loop must still
         # release it, otherwise every later click on the machine is a drag.
         cur_x, cur_y = src_x, src_y
-        _mouse.press(button=button, coords=(src_x, src_y))
         try:
-            for i in range(1, steps + 1):
-                cur_x = src_x + (dst_x - src_x) * i // steps
-                cur_y = src_y + (dst_y - src_y) * i // steps
-                _mouse.move(coords=(cur_x, cur_y))
-                time.sleep(step_sleep)
-        finally:
-            _mouse.release(button=button, coords=(cur_x, cur_y))
+            _mouse.press(button=button, coords=(src_x, src_y))
+            try:
+                for i in range(1, steps + 1):
+                    cur_x = src_x + (dst_x - src_x) * i // steps
+                    cur_y = src_y + (dst_y - src_y) * i // steps
+                    _mouse.move(coords=(cur_x, cur_y))
+                    time.sleep(step_sleep)
+            finally:
+                _mouse.release(button=button, coords=(cur_x, cur_y))
+        except Exception as exc:
+            self._raise_hidden_input_error("drag_to", exc)
+            raise
         return self
 
     def scroll(
@@ -1831,8 +2066,8 @@ class Locator:
         import pywinauto.mouse as _mouse  # type: ignore[import-untyped]
 
         bb = self.bounding_box()
-        cx = bb["left"] + bb["width"] // 2
-        cy = bb["top"] + bb["height"] // 2
+        cx = bb["x"] + bb["width"] // 2
+        cy = bb["y"] + bb["height"] // 2
 
         if direction == "up":
             wheel_dist = amount
@@ -1885,15 +2120,50 @@ class Locator:
         If *depth* is None, only direct children are returned.
         If *depth* is given (including 0), descendants up to that depth are returned.
         """
+        self._refresh_object_repository()
         parent_spec = self._get_parent_spec()
         try:
             if depth is None:
                 elements = parent_spec.children(**self._criteria)
             else:
                 elements = parent_spec.descendants(depth=depth, **self._criteria)
+        except TypeError:
+            # UIAElementInfo.build_condition() in some pywinauto versions
+            # does not accept ``auto_id``.  Search with the criteria that the
+            # backend can express and apply AutomationId to the returned
+            # wrappers instead of silently turning a valid selector into an
+            # empty collection.
+            auto_id = self._criteria.get("auto_id")
+            if auto_id is None:
+                elements = []
+            else:
+                backend_criteria = {
+                    key: value for key, value in self._criteria.items() if key != "auto_id"
+                }
+                try:
+                    if depth is None:
+                        candidates = parent_spec.children(**backend_criteria)
+                    else:
+                        candidates = parent_spec.descendants(depth=depth, **backend_criteria)
+                except Exception:
+                    elements = []
+                else:
+                    elements = []
+                    for element in candidates:
+                        info = getattr(element, "element_info", None)
+                        # ``auto_id`` is the public UIAElementInfo spelling in
+                        # current pywinauto.  Older releases exposed the same
+                        # value as ``automation_id``; keep that alias here so
+                        # this backend-level fallback works across supported
+                        # pywinauto versions.
+                        if (
+                            getattr(info, "auto_id", None) == auto_id
+                            or getattr(info, "automation_id", None) == auto_id
+                        ):
+                            elements.append(element)
         except Exception:
             elements = []
-        return [_ResolvedLocator(el) for el in elements]
+        return [_ResolvedLocator(el, application=self._application_context()) for el in elements]
 
     def count(self) -> int:
         return len(self.all())
@@ -2486,8 +2756,9 @@ def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
 class _ResolvedLocator(Locator):
     """A Locator wrapping an already-resolved pywinauto element."""
 
-    def __init__(self, element: Any) -> None:
+    def __init__(self, element: Any, *, application: Any | None = None) -> None:
         self._element = element
+        self._application = application
         self._criteria: dict[str, Any] = {}
         self._fallback: list[dict[str, Any]] = []
         self._image_fallback: Any = None

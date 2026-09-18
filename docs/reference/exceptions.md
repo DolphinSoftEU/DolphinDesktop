@@ -1,7 +1,9 @@
 # Exceptions
 
-Every exception the library raises on its own behalf derives from
-`DolphinError`, so one `except DolphinError` catches all of them.
+Except for the built-in `ValueError` raised by Object Repository validation,
+every exception the library raises on its own behalf derives from
+`DolphinError`, so one `except DolphinError` catches all other library
+exceptions.
 
 ---
 
@@ -82,6 +84,21 @@ try:
 except UnsupportedPatternError:
     row.double_click()           # the control does not implement it
 ```
+
+## Object Repository validation
+
+`objects.load()` and `objects.discover()` raise the built-in `ValueError` for
+repository schema errors. This includes a missing `selector`, an unknown
+alias-entry field, an unknown selector key, and duplicate keys in any YAML
+mapping. The message includes the absolute source file and the YAML path.
+
+Malformed YAML is also exposed as `ValueError`; its message includes the
+one-based line and column, and `error.__cause__` is the original PyYAML
+`YAMLError`. Loading is atomic: a failed file does not add aliases or a watch
+entry. In watch mode, a failed reload leaves the previous level unchanged.
+
+This validation error is intentionally not a `DolphinError`. `AliasNotFoundError`
+is reserved for resolving an alias that is absent after successful loading.
 
 ## Exception hierarchy
 

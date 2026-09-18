@@ -7,6 +7,7 @@ and exercise the protocol parsers and the public facade directly.
 
 from __future__ import annotations
 
+import ssl
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock, call
@@ -429,6 +430,94 @@ def test_s3270_read_fields_keyboard_and_input(monkeypatch: pytest.MonkeyPatch) -
         backend.wait_output(1)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        # A bare trailing "\r" with nothing after it is inert once
+        # _validate_host() strips leading/trailing whitespace — it is not
+        # tested here, see test_host_validation_accepts_plain_hosts for that
+        # normalization boundary. Every case below carries an actual payload.
+        "host\nQuit()",
+        "host\r\nScript(boom)",
+        "host\x00",
+        "host;Quit()",
+        "host=evil",
+    ],
+)
+def test_s3270_rejects_unsafe_host_before_spawn_or_stdin(value: str) -> None:
+    """DESKTOP-199 / KAN-467: host input cannot inject another s3270 action."""
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._proc = None
+    backend._connected = False
+    backend._spawn = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="invalid host"):
+        backend.connect(value, 23, session_type="3270")
+
+    backend._spawn.assert_not_called()
+
+
+def test_s3270_rejects_non_string_hosts_before_protocol_access() -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._proc = None
+    backend._connected = False
+    backend._spawn = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="host must be a string"):
+        backend.connect(123, 23, session_type="3270")  # type: ignore[arg-type]
+
+    backend._spawn.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["line\r", "line\n", "line\r\n", "line\x00", "line\x1b[2J"])
+def test_s3270_rejects_unsafe_text_before_stdin(value: str) -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._exec = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="s3270 text"):
+        backend.send_string(value)
+
+    backend._exec.assert_not_called()
+
+
+def test_s3270_keeps_printable_payload_in_one_string_action() -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._exec = Mock()  # type: ignore[method-assign]
+
+    backend.send_string("literal Quit() and Script(ignored)")
+
+    backend._exec.assert_called_once_with('String("literal Quit() and Script(ignored)")')
+    # Diagnostics never carry the typed payload — only the action name and
+    # its length for a String()/SendKey()-style action; a loggable action
+    # (Wait, Connect, PF, ...) is shown in full.
+    redacted = mf._describe_s3270_action('String("secret")')
+    assert redacted.startswith("String(") and "secret" not in redacted
+    assert mf._describe_s3270_action("Wait(1)") == "Wait(1)"
+
+
+def test_s3270_rejects_non_integer_cursor_arguments_before_stdin() -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._exec = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="s3270 row"):
+        backend.move_cursor("1);Quit()", 2)  # type: ignore[arg-type]
+
+    backend._exec.assert_not_called()
+
+
+@pytest.mark.parametrize("port", [0, 65536, True, "992"])
+def test_s3270_rejects_invalid_ports_before_spawn(port: object) -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._proc = None
+    backend._connected = False
+    backend._spawn = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="port"):
+        backend.connect("host.example.test", port, session_type="3270")  # type: ignore[arg-type]
+
+    backend._spawn.assert_not_called()
+
+
 def test_s3270_exec_protocol_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = mf._S3270Backend.__new__(mf._S3270Backend)
     backend._proc = None
@@ -442,7 +531,7 @@ def test_s3270_exec_protocol_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     assert proc.stdin.writes == [b"Ping\n"]
 
     proc.stdout.lines = [b"data: one\n", b"error text\n", b"error\n"]
-    with pytest.raises(mf.MainframeError, match="failed: one"):
+    with pytest.raises(mf.MainframeError, match="Bad failed"):
         backend._exec("Bad")
     proc.stdout.lines = [b"error text\n", b"error\n"]
     assert backend._exec("Bad", raise_on_error=False) == ([], "error text")
@@ -743,9 +832,29 @@ def test_tn5250_connect_disconnect_and_telnet_negotiation(monkeypatch: pytest.Mo
     assert sock.timeouts[-1] == 5.0
 
     backend.disconnect()
+
+
+def test_tn5250_connect_cleans_up_protocol_and_plaintext_failures(monkeypatch) -> None:
+    sock = _Socket()
+    # allow_plaintext=True: this test is about negotiate()/socket-failure
+    # cleanup, not transport policy — that is covered separately.
+    backend = mf._Tn5250Backend(allow_plaintext=True)
+    monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=sock))
+    backend._negotiate = Mock(side_effect=mf.MainframeError("bad WTD"))  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="bad WTD"):
+        backend.connect("ibmi", 23, session_type="5250")
+    assert sock.closed is True
     assert backend._sock is None
-    assert backend._connected is False
-    backend.disconnect()
+
+    failed = mf._Tn5250Backend(allow_plaintext=True)
+    monkeypatch.setattr(
+        failed._socket,
+        "create_connection",
+        Mock(side_effect=OSError("connection refused")),
+    )
+    with pytest.raises(OSError, match="connection refused"):
+        failed.connect("ibmi", 23, session_type="5250")
 
 
 def test_tn5250_negotiation_helpers_and_raw_send(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1244,6 +1353,11 @@ def test_build_terminal_selects_all_backends_and_rejects_unknown(
     assert tn5250.call_args.kwargs["codepage"] == "cp037"
     with pytest.raises(mf.MainframeError, match="unknown mainframe backend"):
         mf._build_terminal(backend="other", **args)
+
+    with pytest.raises(mf.MainframeError, match="require tls=True"):
+        mf._build_terminal(backend="tn5250", tls_cafile="root.pem", **args)
+    with pytest.raises(mf.MainframeError, match="not supported by backend"):
+        mf._build_terminal(backend="hllapi", tls=True, **args)
 
 
 def test_mainframe_terminal_delegates_connect_and_screen_reading() -> None:

@@ -72,6 +72,14 @@ verification (`-noverifycert`, `-noverifyhostcert`) are rejected. The
 `hllapi` backend delegates the network side to the emulator, so configure
 TLS in the emulator's own session profile.
 
+Unlike `tn5250`, where dolphin owns the TLS handshake and verifies it
+directly, `s3270`/`ws3270` is an external process: dolphin can confirm the
+`-cafile` flag was accepted by the build, but the certificate verification
+itself happens inside the emulator, not in Python. Treat `s3270` TLS as
+trustworthy as the installed emulator build, not as independently verified
+by dolphin — use `backend="tn5250"` when that independent verification
+matters.
+
 ## Install
 
 ### s3270 backend (open source, default)
@@ -105,7 +113,9 @@ brew install x3270
 ### HLLAPI backend (enterprise emulators)
 
 The emulator vendor ships an `EHLAPI32.DLL` (or `PCSHLL32.DLL` for IBM
-PCOMM). dolphin_desktop auto-loads any of these:
+PCOMM). For security, dolphin_desktop does not search CWD, the application
+directory, or the ambient `PATH` for these names. Pass the vendor DLL through
+`hllapi_dll_path` as an existing absolute path:
 
 | DLL name | Vendor |
 |---|---|
@@ -114,7 +124,7 @@ PCOMM). dolphin_desktop auto-loads any of these:
 | `WHLAPI32.DLL` | Older Rocket versions |
 | `PCSHLL.DLL` | Legacy 16-bit shims |
 
-If none load, pass `hllapi_dll_path=r"C:\path\to\your\DLL"`. The DLL
+If the configured path cannot be loaded, the backend raises a clear error. The DLL
 must be a **32-bit or 64-bit build matching the Python interpreter**
 (a 64-bit Python cannot load a 32-bit DLL). PCOMM historically ships
 32-bit only — use a 32-bit Python for those installs.
@@ -140,6 +150,17 @@ must be a **32-bit or 64-bit build matching the Python interpreter**
 | `wait_for_text(needle, timeout, row=)` | Poll until `needle` appears. |
 | `is_keyboard_locked()` | True while the host is still writing. |
 | context manager | `with desktop.mainframe(...) as term:` auto-disconnects. |
+
+### s3270 input safety
+
+The `s3270` backend sends one action per line to the emulator process.  For
+that reason, `host` and `type_text()` values containing carriage returns,
+line feeds, NULs, or other control characters are rejected with
+`MainframeError` before the process is started or stdin is written. Host
+values containing s3270 action delimiters such as parentheses, semicolons,
+commas, equals signs, or spaces are rejected as well. Printable quotes and
+backslashes in text are escaped and remain a single literal `String(...)`
+action; text such as `Quit()` is not executed as an emulator command.
 
 ### `TerminalScreen`
 
@@ -284,7 +305,11 @@ term = desktop.mainframe(
 # a 24×80 EBCDIC screen buffer with field detection.
 
 # HLLAPI — attach to a running PCOMM session "A"
-term = desktop.mainframe(backend="hllapi", session_id="A")
+term = desktop.mainframe(
+    backend="hllapi",
+    session_id="A",
+    hllapi_dll_path=r"C:\Program Files\IBM\Personal Communications\PCSHLL32.DLL",
+)
 
 # HLLAPI — explicit DLL
 term = desktop.mainframe(

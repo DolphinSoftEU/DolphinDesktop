@@ -45,9 +45,16 @@ Capture templates with:
 dolphin spy --image-pick --output-dir templates
 ```
 
-## Legacy IE / Trident
+## Legacy IE / Trident (legacy, limited scope)
 
 Older applications may host MSHTML through a WebBrowser control.
+
+IE/Trident is not a separate DolphinDesktop backend or formal capability in
+the 0.2.0 Support Matrix; the Internet Explorer 11 shell is explicitly
+out-of-scope because the technology is end-of-life. The example below is a
+best-effort UIA/Win32 automation recipe for applications that still expose
+their embedded control. `Application.is_legacy_ie()` is a diagnostic detector,
+not a guarantee of supported DOM automation or a positive UAT claim.
 
 ```python
 from dolphin_desktop import Desktop

@@ -7,10 +7,13 @@ import itertools
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from dolphin_desktop import AliasNotFoundError
+from dolphin_desktop import AliasNotFoundError, objects
+from dolphin_desktop._window import Window
 from dolphin_desktop.objects import ObjectRepository
 
 
@@ -131,6 +134,105 @@ class TestWatchReload:
         _touch_future(path)
         assert repo.resolve("btn").selector == {"title": "New"}
 
+    def test_existing_window_element_locator_refreshes_its_alias(self, tmp_path, monkeypatch):
+        """A lazy alias locator must use the watched selector on its next resolve."""
+        repo, path = self._watching(tmp_path, "btn: {selector: {name: Old}}\n")
+        monkeypatch.setattr(objects, "_repository", repo)
+        window = Window(Mock())
+        window._alias = None
+        locator = window.element("btn")
+        assert locator._criteria == {"title": "Old"}
+
+        calls: list[dict[str, str]] = []
+        parent = SimpleNamespace(
+            child_window=lambda **criteria: calls.append(criteria) or SimpleNamespace()
+        )
+        monkeypatch.setattr(
+            locator,
+            "_get_parent_spec",
+            lambda deadline=None, single_attempt=False: parent,
+        )
+        monkeypatch.setattr(
+            "dolphin_desktop._locator._wait_until_visible",
+            lambda spec, timeout: None,
+        )
+
+        locator._resolve(single_attempt=True)
+        path.write_text("btn: {selector: {name: New}}\n", encoding="utf-8")
+        _touch_future(path)
+        locator._resolve(single_attempt=True)
+
+        assert calls == [{"title": "Old"}, {"title": "New"}]
+
+    def test_existing_window_element_locator_refreshes_its_fallback(self, tmp_path, monkeypatch):
+        """A lazy alias locator must use the watched fallback on its next resolve."""
+        repo, path = self._watching(
+            tmp_path,
+            """\
+            btn:
+              selector: {name: Missing primary}
+              fallback:
+                - name: Old
+            """,
+        )
+        monkeypatch.setattr(objects, "_repository", repo)
+        window = Window(Mock())
+        window._alias = None
+        locator = window.element("btn")
+        assert locator._criteria == {"title": "Missing primary"}
+        assert locator._fallback == [{"title": "Old"}]
+
+        old = Mock()
+        old.window_text.return_value = "Old"
+        new = Mock()
+        new.window_text.return_value = "New"
+        calls: list[dict[str, str]] = []
+
+        def child_window(**criteria):
+            calls.append(criteria)
+            if criteria == {"title": "Missing primary"}:
+                raise LookupError("primary selector is intentionally missing")
+            return {"Old": old, "New": new}[criteria["title"]]
+
+        parent = SimpleNamespace(child_window=child_window)
+        monkeypatch.setattr(
+            locator,
+            "_get_parent_spec",
+            lambda deadline=None, single_attempt=False: parent,
+        )
+        monkeypatch.setattr(
+            "dolphin_desktop._locator._wait_until_visible",
+            lambda spec, timeout: None,
+        )
+        monkeypatch.setattr("dolphin_desktop._selfheal.record_fallback", lambda *args: None)
+
+        assert locator.text() == "Old"
+        path.write_text(
+            """\
+            btn:
+              selector: {name: Missing primary}
+              fallback:
+                - name: New
+            """,
+            encoding="utf-8",
+        )
+        _touch_future(path)
+
+        assert locator.text() == "New"
+        assert locator._fallback == [{"title": "New"}]
+        locator.click()
+
+        assert old.click_input.call_count == 0
+        assert new.click_input.call_count == 1
+        assert calls == [
+            {"title": "Missing primary"},
+            {"title": "Old"},
+            {"title": "Missing primary"},
+            {"title": "New"},
+            {"title": "Missing primary"},
+            {"title": "New"},
+        ]
+
     def test_deleted_alias_stops_resolving(self, tmp_path):
         """update() alone can never drop an alias the user removed from the YAML."""
         repo, path = self._watching(
@@ -168,6 +270,20 @@ class TestWatchReload:
         with caplog.at_level("WARNING", logger="dolphin_desktop.objects"):
             assert repo.resolve("btn").selector == {"title": "Old"}
         assert "reload of level" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("content", "type_name"),
+        [("[]\n", "list"), ("false\n", "bool"), ("0\n", "int"), ("''\n", "str")],
+    )
+    def test_falsey_top_level_value_is_rejected_without_dropping_alias(
+        self, tmp_path, caplog, content, type_name
+    ):
+        repo, path = self._watching(tmp_path, "btn: {selector: {name: Old}}\n")
+        path.write_text(content, encoding="utf-8")
+        _touch_future(path)
+        with caplog.at_level("WARNING", logger="dolphin_desktop.objects"):
+            assert repo.resolve("btn").selector == {"title": "Old"}
+        assert f"top-level must be a mapping, got {type_name}" in caplog.text
 
     def _two_files(self, tmp_path) -> tuple[ObjectRepository, Path, Path]:
         a = _yaml_file(tmp_path, "from_a: {selector: {name: A}}\n", "a.yaml")
@@ -261,3 +377,11 @@ class TestWatchReload:
         path.write_text("btn: {selector: {name: Fixed}}\n", encoding="utf-8")
         _touch_future(path)
         assert repo.resolve("btn").selector == {"title": "Fixed"}
+
+    def test_changed_empty_file_removes_its_aliases(self, tmp_path):
+        repo, path = self._watching(tmp_path, "btn: {selector: {name: Old}}\n")
+        path.write_text("", encoding="utf-8")
+        _touch_future(path)
+
+        with pytest.raises(AliasNotFoundError):
+            repo.resolve("btn")

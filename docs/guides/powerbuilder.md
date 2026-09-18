@@ -109,7 +109,7 @@ on a live PB 2025 runtime (older versions use `PBWindow<version>` /
   from dolphin_desktop import Keyboard, Mouse, Screen
 
   bb = win.locator(class_name="pbdw", found_index=1).bounding_box()
-  region = (bb["left"], bb["top"], bb["right"], bb["bottom"])
+  region = (bb["x"], bb["y"], bb["x"] + bb["width"], bb["y"] + bb["height"])
 
   pt = Screen.find_text("Alberta", region=region)   # OCR-locate the cell
   Mouse.double_click(*pt)                           # select its content

@@ -393,19 +393,30 @@ def test_http_ok_still_probes_http_and_https(monkeypatch) -> None:
     class _Resp:
         status = 200
 
+        def __init__(self, url):
+            self._url = url
+
         def __enter__(self):
             return self
 
         def __exit__(self, *a):
             return None
 
+        def geturl(self):
+            return self._url
+
     calls: list[str] = []
 
-    def _urlopen(url, timeout=None):
+    def _open(self, url, timeout=None):
         calls.append(url)
-        return _Resp()
+        return _Resp(url)
 
-    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+    # http_ok routes every request (and redirect) through a custom opener
+    # so it can validate the scheme of a redirect target too — see
+    # test_http_ok_rejects_redirect_to_non_http_resource in test_helpers.py.
+    # Patching OpenerDirector.open (rather than urllib.request.urlopen)
+    # matches that actual call path.
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", _open)
     assert _helpers.http_ok("http://127.0.0.1:9222/json/version") is True
     assert _helpers.http_ok("https://127.0.0.1:9222/json/version") is True
     assert len(calls) == 2

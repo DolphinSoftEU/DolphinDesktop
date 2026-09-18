@@ -22,7 +22,7 @@ dolphin-run pytest tests/smoke/ -v --dolphin-backend=uia
 | Requirement | Reason |
 | --- | --- |
 | Windows Server 2019/2022 or Windows 10/11 | Dolphin depends on Windows UIA, Win32, and COM |
-| Python 3.11+ | Package requirement |
+| Python 3.11, 3.12, or 3.13 | Package requirement |
 | Agent runs as a normal logged-in user | UIA cannot drive another user's desktop |
 | Same privilege level as the app under test | Non-elevated tests cannot automate elevated apps |
 | Artifact upload for traces/screenshots/videos | Desktop failures are easier to debug visually |

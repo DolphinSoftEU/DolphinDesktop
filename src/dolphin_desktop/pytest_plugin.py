@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 import zipfile
+from argparse import ArgumentTypeError
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -22,8 +23,33 @@ _TRACE_SESSION_KEY: pytest.StashKey[Any] = pytest.StashKey()
 _VIDEO_RECORDER_KEY: pytest.StashKey[Any] = pytest.StashKey()
 _RETRY_ATTEMPT_KEY: pytest.StashKey[int] = pytest.StashKey()
 _RETRY_MAX_KEY: pytest.StashKey[int] = pytest.StashKey()
+_DOLPHIN_TRANSIENT_ATTR = "_dolphin_transient_failure"
 
 _session_reports: list[dict[str, Any]] = []
+
+
+def _cli_timeout(value: str) -> float:
+    """Parse a finite, non-negative timeout for pytest's CLI parser."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ArgumentTypeError(
+            f"timeout must be a finite non-negative number; got {value!r}"
+        ) from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ArgumentTypeError(f"timeout must be a finite non-negative number; got {value!r}")
+    return parsed
+
+
+def _cli_retry(value: str) -> int:
+    """Parse a non-negative retry count for pytest's CLI parser."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ArgumentTypeError(f"retry must be a non-negative integer; got {value!r}") from exc
+    if parsed < 0:
+        raise ArgumentTypeError(f"retry must be a non-negative integer; got {value!r}")
+    return parsed
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -40,30 +66,57 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
     log = _get_logger("plugin")
     for pid in pids:
+        handles = getattr(_application, "_owned_process_handles", {})
+        anchored_handle = handles.get(pid)
+        if anchored_handle is not None:
+            try:
+                import win32api  # type: ignore[import]
+
+                # The handle is bound to the original kernel process object;
+                # never reopen the numeric PID, which may have been reused.
+                win32api.TerminateProcess(anchored_handle, 1)
+                _application._discard_owned_process_handle(pid, anchored_handle)
+                getattr(_application, "_unanchored_pids", set()).discard(pid)
+                _application._live_pids.discard(pid)
+                _application.forget_process_identity(pid)
+                log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
+            except Exception as exc:
+                # Keep both the handle and PID registered. The session
+                # finalizer or a later explicit cleanup can retry and the
+                # failure remains visible in diagnostics.
+                log.warning(
+                    "Could not clean up anchored process PID=%d after test %s: %s",
+                    pid,
+                    item.nodeid,
+                    exc,
+                )
+            continue
+        if pid in getattr(_application, "_unanchored_pids", set()):
+            # Anchoring was attempted at launch and explicitly failed — the
+            # constructor already warned that automatic cleanup for this PID
+            # will fail closed. Honor that: no PID-based cleanup is attempted
+            # at all, since re-opening a bare PID here is exactly the reuse
+            # risk anchoring exists to avoid.
+            log.warning(
+                "Skipping cleanup for unanchored process PID=%d after test %s", pid, item.nodeid
+            )
+            continue
         try:
-            # Verified terminate: a PID whose creation time no longer matches
+            # No anchored handle and never marked unanchored (a synthetic or
+            # legacy wrapper predating handle anchoring) — fall back to the
+            # verified terminate: a PID whose creation time no longer matches
             # the process dolphin launched was reused by something unrelated
             # and is left alone (CWE-367). See _application.terminate_tracked_pid.
             if _application.terminate_tracked_pid(pid, log):
+                _application._live_pids.discard(pid)
                 log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
         except Exception:
             pass
-        finally:
-            _application._live_pids.discard(pid)
 
 
 def _is_transient_failure(report: pytest.TestReport | None) -> bool:
     """True when ``report`` is a failed report caused by a transient dolphin error."""
-    if report is None or not report.failed:
-        return False
-
-    from ._exceptions import ElementNotFoundError, WaitTimeoutError
-
-    longrepr = getattr(report, "longrepr", None)
-    if longrepr is None:
-        return False
-    text = str(longrepr)
-    return any(name in text for name in (ElementNotFoundError.__name__, WaitTimeoutError.__name__))
+    return bool(report and report.failed and getattr(report, _DOLPHIN_TRANSIENT_ATTR, False))
 
 
 def _attempt_will_retry(item: pytest.Item, report: pytest.TestReport | None) -> bool:
@@ -129,7 +182,6 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
                 attempt + 1,
                 max_retries,
             )
-            time.sleep(0.5)
             continue
 
         # Final attempt — publish its reports so they are counted and rendered normally.
@@ -163,7 +215,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     group.addoption(
         "--dolphin-timeout",
-        type=float,
+        type=_cli_timeout,
         default=None,
         help="Default element wait timeout in seconds (default: 10; also: DOLPHIN_TIMEOUT env var)",
     )
@@ -236,7 +288,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
     group.addoption(
         "--dolphin-retry",
-        type=int,
+        type=_cli_retry,
         default=None,
         metavar="N",
         help=(
@@ -341,8 +393,33 @@ def _dolphin_marker_config(request: pytest.FixtureRequest) -> Iterator[None]:
 
     from . import _config as _cfg
 
+    marker_kwargs = marker.kwargs
+    timeout = marker_kwargs.get("timeout")
+    if timeout is not None:
+        try:
+            timeout = _cli_timeout(str(timeout))
+        except ArgumentTypeError as exc:
+            raise pytest.UsageError(
+                f"Invalid @pytest.mark.dolphin timeout={marker_kwargs['timeout']!r}: {exc}"
+            ) from exc
+
+    video_mode = marker_kwargs.get("video_mode")
+    if video_mode is not None:
+        valid_video_modes = _cfg._video_modes()
+        if not isinstance(video_mode, str) or video_mode not in valid_video_modes:
+            raise pytest.UsageError(
+                "Invalid @pytest.mark.dolphin "
+                f"video_mode={video_mode!r}: expected one of {valid_video_modes}."
+            )
+
+    if "headless" in marker_kwargs and not isinstance(marker_kwargs["headless"], bool):
+        raise pytest.UsageError(
+            "Invalid @pytest.mark.dolphin "
+            f"headless={marker_kwargs['headless']!r}: expected a boolean."
+        )
+
     # headless guard — evaluated before any state mutation so nothing to restore on skip
-    headless = marker.kwargs.get("headless")
+    headless = marker_kwargs.get("headless")
     if headless is True:
         is_headless = bool(
             request.config.getoption("--dolphin-headless", default=False)
@@ -354,11 +431,9 @@ def _dolphin_marker_config(request: pytest.FixtureRequest) -> Iterator[None]:
     old_timeout = _cfg._defaults.get("timeout")
     old_video_mode = _cfg._defaults.get("video_mode")
 
-    timeout = marker.kwargs.get("timeout")
     if timeout is not None:
-        _cfg._defaults["timeout"] = float(timeout)
+        _cfg._defaults["timeout"] = timeout
 
-    video_mode = marker.kwargs.get("video_mode")
     if video_mode is not None:
         _cfg._defaults["video_mode"] = video_mode
 
@@ -689,12 +764,48 @@ def _capture_failure_screenshot(item: pytest.Item, phase: str = "call") -> Path 
 # Main report hook
 
 
+def _redact_report(report: pytest.TestReport) -> None:
+    """Sanitise every text sink before pytest reporters serialize a report."""
+    if getattr(report, "longrepr", None) is not None:
+        redacted = _redact(str(report.longrepr))
+        report.longrepr = redacted
+
+    sections = getattr(report, "sections", None)
+    if sections is not None:
+        for index, section in enumerate(list(sections)):
+            try:
+                heading, content = section
+            except (TypeError, ValueError):
+                continue
+            sections[index] = (heading, _redact(str(content)))
+
+    # TestReport exposes capstdout/capstderr as read-only properties derived
+    # from ``sections``.  Lightweight report doubles used by callers may store
+    # plain attributes instead, so update those too when they are writable.
+    values = getattr(report, "__dict__", {})
+    for name in ("capstdout", "capstderr"):
+        if name in values:
+            values[name] = _redact(str(values[name]))
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(  # type: ignore[misc]
     item: pytest.Item, call: pytest.CallInfo
 ) -> None:
     outcome = yield
     report = outcome.get_result()
+    # JUnit and terminal reporters consume the same TestReport after this hook.
+    # Sanitise the report itself so neither the failure nor captured output can
+    # serialize the original secret before artifact-specific copies are made.
+    _redact_report(report)
+    if call.when == "call":
+        from ._exceptions import ElementNotFoundError, WaitTimeoutError
+
+        excinfo = getattr(call, "excinfo", None)
+        is_transient = excinfo is not None and isinstance(
+            excinfo.value, (ElementNotFoundError, WaitTimeoutError)
+        )
+        setattr(report, _DOLPHIN_TRANSIENT_ATTR, is_transient)
     try:
         _collect_artifacts(item, call, report)
     except Exception as exc:
@@ -851,16 +962,44 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if orphans:
         log = _get_logger("plugin")
         for pid in orphans:
+            handles = getattr(_application, "_owned_process_handles", {})
+            anchored_handle = handles.get(pid)
+            if anchored_handle is not None:
+                try:
+                    import win32api  # type: ignore[import]
+
+                    # Reuse the anchored handle from launch; opening PID here
+                    # would make session cleanup vulnerable to PID reuse.
+                    win32api.TerminateProcess(anchored_handle, 1)
+                    _application._discard_owned_process_handle(pid, anchored_handle)
+                    getattr(_application, "_unanchored_pids", set()).discard(pid)
+                    _application._session_pids.discard(pid)
+                    _application._live_pids.discard(pid)
+                    _application.forget_process_identity(pid)
+                    log.info("Killed orphan AUT PID=%d at session end", pid)
+                except Exception as exc:
+                    log.warning(
+                        "Could not clean up anchored orphan AUT PID=%d at session end: %s",
+                        pid,
+                        exc,
+                    )
+                continue
+            if pid in getattr(_application, "_unanchored_pids", set()):
+                # Same "fail closed" contract as the per-test reaper: anchoring
+                # was attempted and explicitly failed, so no PID-based cleanup
+                # is attempted here either.
+                log.warning("Skipping cleanup for unanchored orphan AUT PID=%d at session end", pid)
+                continue
             try:
-                # Same identity check as the per-test reaper: never terminate
-                # a PID that has been reused since dolphin launched the AUT.
+                # No anchored handle and never marked unanchored — same
+                # identity check as the per-test reaper: never terminate a
+                # PID that has been reused since dolphin launched the AUT.
                 if _application.terminate_tracked_pid(pid, log):
+                    _application._session_pids.discard(pid)
+                    _application._live_pids.discard(pid)
                     log.info("Killed orphan AUT PID=%d at session end", pid)
             except Exception:
                 pass
-            finally:
-                _application._session_pids.discard(pid)
-                _application._live_pids.discard(pid)
 
     # ---- 2. HTML fallback report (unchanged) ----
     if not _session_reports:

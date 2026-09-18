@@ -42,6 +42,18 @@ Each alias has a required `selector` mapping and optional `fallback` and
 (`automationid:`) fails **at load time** with the file and path in the
 message, not deep inside a test.
 
+The only fields allowed on an alias entry are `selector`, `fallback`, and
+`children`. Unknown fields such as `metadata` are rejected. Duplicate keys
+are rejected in every YAML mapping, including top-level aliases, selectors,
+children, and fallback mappings; aliases with the same name in separate files
+at the same level are still a supported override and produce a warning, with
+the later file winning.
+
+Malformed YAML is reported as `ValueError` with the absolute file path and
+the one-based line and column. Its `__cause__` is the original PyYAML
+`YAMLError`, so callers can inspect the parser error when needed. A failed
+load changes neither the registry nor the list of watched files.
+
 `fallback` is a list of alternative selectors tried in order when the
 primary one stops matching — the same self-healing mechanism as
 [fallback selectors](fallback-selectors.md), just declared in data.
@@ -51,12 +63,18 @@ primary one stops matching — the same self-healing mechanism as
 ```python
 from dolphin_desktop import objects
 
-objects.discover("objects")          # every *.yaml in the directory
+objects.discover("objects")          # every *.yaml and *.yml in the directory
 # or explicitly:
 objects.load("objects/login.yaml")
 
 print(objects.available())           # ['login_window', ...]
 ```
+
+Repository paths are resolved from the current working directory of the
+process. Relative paths such as `objects/login.yaml` therefore use the
+process CWD, while absolute paths are supported as-is. YAML is parsed with
+PyYAML's safe loader; tags and constructors that could create Python objects
+or execute code are rejected with `ValueError` and are never executed.
 
 Call it once per session — `conftest.py` is the natural home:
 
@@ -84,8 +102,12 @@ def test_login(launch):
     win.element("submit_button").click()
 ```
 
-An unknown alias raises `AliasNotFoundError` naming the alias and the files
-that were searched.
+An unknown alias raises `AliasNotFoundError` naming the alias and listing the
+currently available aliases.
+
+Repository schema and YAML syntax errors raise `ValueError` while loading;
+they are distinct from `AliasNotFoundError`, which is raised only when a
+validly loaded alias cannot be resolved.
 
 ## 4. Override hierarchy
 
@@ -113,6 +135,30 @@ alias lookup — tune a selector against a running application without
 restarting the pytest session. Turn it off in CI (`objects.disable_watch()`
 or simply never enable it); production runs should be deterministic.
 
+Watch mode is synchronous and lazy: it checks file mtimes during the next
+repository resolve; it does not run a background watcher. A lazy locator made
+from an alias also resolves the alias again at its next action or query, so an
+existing locator sees the updated selector without creating a new locator:
+
+```python
+objects.enable_watch()
+button = window.element("submit_button")
+# Edit the YAML selector for submit_button here.
+button.click()  # resolves using the new selector
+```
+
+This applies only to lazy locators. An element that has already been
+materialized is not replaced or retargeted by a repository reload. Always turn
+watch mode off and clear test objects during cleanup:
+
+```python
+try:
+    ...
+finally:
+    objects.disable_watch()
+    objects.clear()
+```
+
 ## Where the aliases come from
 
 You don't have to write selectors by hand: `dolphin spy --pick` prints the
@@ -125,7 +171,7 @@ into YAML. See [Tracing and Debugging](tracing.md) for the spy workflow.
 | Call | Purpose |
 |---|---|
 | `objects.load(path, level="project")` | Load one YAML file |
-| `objects.discover(directory="objects")` | Load every `*.yaml` in a directory, returns the count |
+| `objects.discover(directory="objects")` | Load every `*.yaml` and `*.yml` in a directory, returns the count |
 | `objects.available()` | All registered aliases |
 | `objects.clear(level=None)` | Forget everything, or one level |
 | `objects.enable_watch()` / `disable_watch()` | Auto-reload on file change |

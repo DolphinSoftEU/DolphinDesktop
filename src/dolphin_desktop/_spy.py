@@ -220,18 +220,79 @@ def _element_info_from_point(x: int, y: int) -> Any | None:
     return None
 
 
+def _element_owner_is_alive(info: Any) -> bool:
+    """Return whether the top-level window behind a picked element still exists."""
+    # Some pywinauto backends expose the already-normalised top-level owner
+    # directly.  Prefer it because walking ``parent`` on UIAElementInfo can
+    # continue into the desktop/root element after the AUT has disappeared.
+    owner = info
+    try:
+        top_level_parent = getattr(info, "top_level_parent", None)
+        if top_level_parent is not None:
+            candidate = top_level_parent() if callable(top_level_parent) else top_level_parent
+            if candidate is not None:
+                owner = candidate
+    except Exception:
+        pass
+
+    visited: set[int] = set()
+    for _ in range(64):
+        marker = id(owner)
+        if marker in visited:
+            break
+        visited.add(marker)
+
+        # UIAElementInfo.parent reaches the Desktop Root.  A picked control
+        # belongs to the first Window on that path, so never replace that
+        # owner with the root just because the root itself is still alive.
+        try:
+            is_window = str(getattr(owner, "control_type", "") or "").casefold() == "window"
+        except Exception:
+            is_window = False
+        if is_window:
+            break
+
+        try:
+            parent = owner.parent
+        except Exception:
+            return False
+        if parent is None:
+            break
+        owner = parent
+
+    try:
+        handle = int(owner.handle)
+    except Exception:
+        handle = 0
+    if handle:
+        try:
+            import win32gui
+
+            return bool(win32gui.IsWindow(handle))
+        except Exception:
+            # A diagnostic failure must not cancel a live picker.
+            return True
+
+    try:
+        _ = owner.rectangle
+    except Exception:
+        return False
+    return True
+
+
 # Screen highlight — four click-through overlay windows forming a border.
 #
 # Overlay windows rather than drawing on the screen DC: a screen-DC scribble
 # lands outside DWM's composition, belongs to no window surface, and so is
 # never restored — any repaint underneath smears it and fragments stay on
-# screen. Hiding an overlay *is* the erase. WS_EX_TRANSPARENT keeps the
+# screen. Destroying an overlay is the erase. WS_EX_TRANSPARENT keeps the
 # strips out of hit-testing so element_from_point under the cursor never
 # lands on the border; WS_EX_NOACTIVATE leaves focus with the inspected app.
 
 _HIGHLIGHT_COLOR = 0x0000FF00  # BGR → green
 _HIGHLIGHT_PEN_WIDTH = 3
 _HIGHLIGHT_WND_CLASS = "DolphinSpyHighlight"
+_HIGHLIGHT_CLOSE_MESSAGE = 0x8001
 
 
 class _Highlighter:
@@ -263,6 +324,10 @@ class _Highlighter:
                 win32gui.EndPaint(hwnd, paint_struct)
                 return 0
 
+            def _on_close(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
+                win32gui.DestroyWindow(hwnd)
+                return 0
+
             wc = win32gui.WNDCLASS()
             wc.lpszClassName = _HIGHLIGHT_WND_CLASS
             wc.hInstance = win32api.GetModuleHandle(None)
@@ -270,6 +335,7 @@ class _Highlighter:
             wc.lpfnWndProc = {
                 win32con.WM_PAINT: _on_paint,
                 win32con.WM_DESTROY: lambda *args: 0,
+                _HIGHLIGHT_CLOSE_MESSAGE: _on_close,
             }
             try:
                 win32gui.RegisterClass(wc)
@@ -355,17 +421,35 @@ class _Highlighter:
             pass
 
     def clear(self) -> None:
-        if self._last is None:
+        if self._last is None and not self._strips:
             return
+        thread = self._thread
         try:
+            import win32api
             import win32con
             import win32gui
 
             for hwnd in self._strips:
-                win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+                win32gui.PostMessage(hwnd, _HIGHLIGHT_CLOSE_MESSAGE, 0, 0)
+            if thread is not None:
+                thread_id = getattr(thread, "native_id", None) or thread.ident
+                if thread_id is not None:
+                    win32api.PostThreadMessage(thread_id, win32con.WM_QUIT, 0, 0)
+                thread.join(timeout=3.0)
         except Exception:
-            pass
-        self._last = None
+            try:
+                import win32con
+                import win32gui
+
+                for hwnd in self._strips:
+                    win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+            except Exception:
+                pass
+        finally:
+            self._last = None
+            self._strips = []
+            self._thread = None
+            self._ready = threading.Event()
 
 
 # Public API: inspect()
@@ -927,6 +1011,12 @@ def pick(backend: str = "uia") -> dict[str, Any]:
 
             try:
                 info = _element_info_from_point(x, y)
+                # ElementFromPoint can return Desktop, the taskbar, or another
+                # window after the AUT closes.  Check the previously picked
+                # element before allowing that result to replace it.
+                if current_info is not None and not _element_owner_is_alive(current_info):
+                    print("Cancelled.")
+                    return _pick_result("cancelled", [])
                 if info is not None:
                     current_info = info
                     try:

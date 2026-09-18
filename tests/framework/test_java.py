@@ -213,7 +213,7 @@ def test_is_enabled_reads_modern_configuration_value(monkeypatch, configuration,
     assert java.JavaAccessBridge.is_enabled() is expected
 
 
-def test_is_enabled_finds_dll_in_java_home_and_windows_fallback(monkeypatch) -> None:
+def test_is_enabled_finds_dll_in_java_home_and_windows_fallback(monkeypatch, tmp_path) -> None:
     class _Key:
         def __enter__(self):
             return self
@@ -227,13 +227,15 @@ def test_is_enabled_finds_dll_in_java_home_and_windows_fallback(monkeypatch) -> 
         OpenKey=lambda *_args: (_ for _ in ()).throw(OSError("missing")),
     )
     monkeypatch.setitem(sys.modules, "winreg", winreg)
-    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: r"C:\jdk"))
+    java_home = tmp_path / "jdk"
+    java_home.mkdir()
+    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: str(java_home)))
     seen: list[str] = []
     monkeypatch.setattr(
         java.os.path, "isfile", lambda path: seen.append(path) or path.endswith("64.dll")
     )
     assert java.JavaAccessBridge.is_enabled() is True
-    assert seen[0].endswith(r"C:\jdk\bin\WindowsAccessBridge-64.dll")
+    assert seen[0].endswith(r"jdk\bin\WindowsAccessBridge-64.dll")
 
     seen.clear()
     monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: None))
@@ -367,6 +369,24 @@ def test_java_home_skips_an_invalid_registry_home_and_invalid_where_home(
         assert java.JavaAccessBridge.java_home() is None
 
 
+def test_trusted_java_home_fails_closed_when_path_normalization_fails(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(java.os.path, "abspath", Mock(side_effect=OSError("path error")))
+    assert java._trusted_java_home(str(tmp_path)) is None
+
+
+def test_is_enabled_rejects_relative_windows_directory(monkeypatch) -> None:
+    winreg = SimpleNamespace(
+        HKEY_CURRENT_USER=1,
+        OpenKey=lambda *_args: (_ for _ in ()).throw(OSError("missing")),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: None))
+    monkeypatch.setenv("WINDIR", "relative-windows")
+    assert java.JavaAccessBridge.is_enabled() is False
+
+
 def test_enable_prefers_jdk_jabswitch_and_reports_failures(monkeypatch, tmp_path) -> None:
     home = tmp_path / "jdk"
     binary = home / "bin" / "jabswitch.exe"
@@ -384,18 +404,28 @@ def test_enable_prefers_jdk_jabswitch_and_reports_failures(monkeypatch, tmp_path
         with pytest.raises(RuntimeError, match=r"exit 2.*bad"):
             java.JavaAccessBridge.enable()
     with patch.object(java.subprocess, "run", side_effect=FileNotFoundError):
-        with pytest.raises(RuntimeError, match=r"jabswitch\.exe not found"):
+        with pytest.raises(RuntimeError, match=r"jabswitch\.exe disappeared"):
             java.JavaAccessBridge.enable()
 
     monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: str(home)))
     with (
         patch.object(java.os.path, "isfile", return_value=False),
-        patch.object(
-            java.subprocess, "run", return_value=SimpleNamespace(returncode=0, stderr=b"")
-        ) as run,
     ):
-        java.JavaAccessBridge.enable()
-    run.assert_called_once_with(["jabswitch.exe", "/enable"], capture_output=True, timeout=15)
+        with pytest.raises(RuntimeError, match="jabswitch\\.exe not found"):
+            java.JavaAccessBridge.enable()
+
+
+def test_enable_never_falls_back_to_bare_jabswitch_from_path(monkeypatch, tmp_path) -> None:
+    import dolphin_desktop._java as java
+
+    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: str(tmp_path)))
+    with (
+        patch.object(java.os.path, "isfile", return_value=False),
+        patch.object(java.subprocess, "run") as run,
+    ):
+        with pytest.raises(RuntimeError, match="jabswitch\\.exe not found"):
+            java.JavaAccessBridge.enable()
+    run.assert_not_called()
 
 
 def test_ensure_enabled_calls_enable_only_when_probe_is_false(monkeypatch) -> None:
@@ -427,6 +457,7 @@ def test_session_is_singleton_and_loads_from_a_trusted_path(monkeypatch) -> None
     first = java._JABSession.get_or_create()
     assert java._JABSession.get_or_create() is first
     assert loaded == [trusted]
+    assert all(java.os.path.isabs(path) for path in loaded)
     assert wab.Windows_run.calls
     assert first._thread_ident == threading.get_ident()
     java._JABSession._instance = None
@@ -459,6 +490,32 @@ def test_session_init_raises_when_no_trusted_dll_can_be_loaded(monkeypatch) -> N
         Mock(side_effect=_native.NativeLibraryError("missing")),
     )
     with pytest.raises(RuntimeError, match=r"Could not load windowsaccessbridge-64\.dll"):
+        java._JABSession()
+
+
+def test_session_init_rejects_relative_java_home_without_loading_by_name(monkeypatch) -> None:
+    # A relative JAVA_HOME contributes no candidate at all — it is never
+    # joined onto "bin" and handed to the loader, which would otherwise let
+    # a bare/relative DLL name be resolved through the Windows search order.
+    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: "relative-jdk"))
+    loader = Mock()
+    monkeypatch.setattr(java.ctypes, "WinDLL", loader)
+
+    assert not any("relative-jdk" in path for path in java._JABSession._trusted_dll_paths())
+
+    monkeypatch.setattr(java._JABSession, "_trusted_dll_paths", classmethod(lambda cls: []))
+    with pytest.raises(RuntimeError, match=r"Could not load windowsaccessbridge-64\.dll"):
+        java._JABSession()
+    loader.assert_not_called()
+
+
+def test_session_init_continues_after_trusted_dll_load_failure(monkeypatch, tmp_path) -> None:
+    java_home = tmp_path / "jdk"
+    java_home.mkdir()
+    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: str(java_home)))
+    monkeypatch.setattr(java.ctypes, "WinDLL", Mock(side_effect=OSError("load failed")))
+
+    with pytest.raises(RuntimeError, match="Could not load windowsaccessbridge"):
         java._JABSession()
 
 
@@ -876,10 +933,8 @@ def test_locator_queries_cover_missing_values_and_states(monkeypatch) -> None:
 
     locator._find.return_value = (1, 2, info)
     assert locator.bounding_box() == {
-        "left": 10,
-        "top": 20,
-        "right": 40,
-        "bottom": 60,
+        "x": 10,
+        "y": 20,
         "width": 30,
         "height": 40,
     }
@@ -1520,10 +1575,8 @@ def test_jab_locator_queries_and_programmatic_actions() -> None:
     assert locator.is_enabled() is True
     assert locator.is_checked() is True
     assert locator.bounding_box() == {
-        "left": 10,
-        "top": 20,
-        "right": 40,
-        "bottom": 60,
+        "x": 10,
+        "y": 20,
         "width": 30,
         "height": 40,
     }
@@ -1579,10 +1632,30 @@ def test_java_access_bridge_checks_environment_and_runs_enable(monkeypatch, tmp_
     enable.assert_not_called()
 
     monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: None))
-    completed = SimpleNamespace(returncode=0)
-    with patch.object(java.subprocess, "run", return_value=completed) as run:
+    with pytest.raises(RuntimeError, match="trusted absolute"):
         java.JavaAccessBridge.enable()
-    run.assert_called_once_with(["jabswitch.exe", "/enable"], capture_output=True, timeout=15)
+
+
+def test_java_home_rejects_relative_environment_path(monkeypatch, tmp_path) -> None:
+    import dolphin_desktop._java as java
+
+    monkeypatch.setenv("JAVA_HOME", "relative-jdk")
+    monkeypatch.setattr(java.os.path, "isdir", lambda path: path == str(tmp_path))
+    monkeypatch.setitem(
+        sys.modules,
+        "winreg",
+        SimpleNamespace(
+            HKEY_CURRENT_USER=1,
+            HKEY_LOCAL_MACHINE=2,
+            OpenKey=lambda *_args: (_ for _ in ()).throw(OSError("not found")),
+        ),
+    )
+    with patch.object(
+        java.subprocess,
+        "run",
+        return_value=SimpleNamespace(returncode=1, stdout=b""),
+    ):
+        assert java.JavaAccessBridge.java_home() is None
 
 
 def test_java_role_mapping_rejects_unknown_roles() -> None:

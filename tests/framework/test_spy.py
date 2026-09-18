@@ -320,6 +320,7 @@ class TestHighlighter:
             GetClientRect=lambda hwnd: (0, 0, 20, 3),
             FillRect=lambda *args: calls.append(("fill", args)),
             EndPaint=lambda *args: calls.append(("end", args)),
+            DestroyWindow=lambda hwnd: calls.append(("destroy", hwnd)),
             PumpMessages=lambda: calls.append(("pump",)),
         )
         monkeypatch.setitem(sys.modules, "win32gui", gui)
@@ -348,7 +349,9 @@ class TestHighlighter:
         highlighter._strip_thread()
         assert highlighter._strips == [101, 102, 103, 104]
         assert paint_callback["proc"]["paint"]("hwnd", "paint", 0, 0) == 0
+        assert paint_callback["proc"][_spy._HIGHLIGHT_CLOSE_MESSAGE]("hwnd", "close", 0, 0) == 0
         assert any(call[0] == "fill" for call in calls)
+        assert ("destroy", "hwnd") in calls
         assert any(call[0] == "pump" for call in calls)
 
     def test_strip_thread_ignores_already_registered_class_and_pump_error(self, monkeypatch):
@@ -487,6 +490,155 @@ class TestHighlighter:
         )
         highlighter.clear()
         assert highlighter._last is None
+
+    def test_clear_destroys_overlay_windows_and_stops_worker(self, monkeypatch):
+        calls = []
+
+        class FakeThread:
+            native_id = 42
+            ident = 42
+
+            def join(self, timeout):
+                calls.append(("join", timeout))
+
+        monkeypatch.setitem(
+            sys.modules,
+            "win32gui",
+            _module(
+                "win32gui",
+                PostMessage=lambda *args: calls.append(("close", args)),
+            ),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            _module(
+                "win32api",
+                PostThreadMessage=lambda *args: calls.append(("quit", args)),
+            ),
+        )
+        monkeypatch.setitem(sys.modules, "win32con", _module("win32con", WM_QUIT=18))
+        highlighter = _spy._Highlighter()
+        highlighter._strips = [1, 2, 3, 4]
+        highlighter._last = (1, 2, 3, 4)
+        highlighter._thread = FakeThread()
+
+        highlighter.clear()
+
+        assert [call[0] for call in calls] == ["close"] * 4 + ["quit", "join"]
+        assert all(call[1][0] in {1, 2, 3, 4} for call in calls[:4])
+        assert highlighter._strips == []
+        assert highlighter._thread is None
+
+    def test_pick_cancels_when_current_owner_window_disappears(self, monkeypatch):
+        tick = {"value": -1}
+        _install_input_modules(monkeypatch, tick=tick)
+        monkeypatch.setitem(
+            sys.modules,
+            "win32gui",
+            _module("win32gui", IsWindow=lambda handle: False),
+        )
+        info = _Info()
+        info.handle = 123
+        desktop_root = _Info(name="Desktop Root", control_type="Pane")
+        points = iter([info, desktop_root])
+        point_calls = []
+        monkeypatch.setattr(
+            _spy,
+            "_element_info_from_point",
+            lambda x, y: point_calls.append((x, y)) or next(points),
+        )
+        highlighter = SimpleNamespace(update=Mock(), clear=Mock())
+        monkeypatch.setattr(_spy, "_Highlighter", lambda: highlighter)
+        monkeypatch.setattr(_spy, "_PICK_POLL", 0)
+
+        result = _spy.pick()
+
+        assert result["status"] == "cancelled"
+        assert len(point_calls) == 2
+        highlighter.clear.assert_called_once_with()
+
+    def test_owner_liveness_stops_at_window_before_uia_desktop_root(self, monkeypatch):
+        root = _Info(name="Desktop Root", control_type="Pane")
+        root.handle = 456
+        window = _Info(name="AUT", control_type="Window", parent=root)
+        window.handle = 123
+        child = _Info(control_type="Button", parent=window)
+        monkeypatch.setitem(
+            sys.modules,
+            "win32gui",
+            _module("win32gui", IsWindow=lambda handle: handle == root.handle),
+        )
+
+        assert _spy._element_owner_is_alive(child) is False
+
+    def test_owner_liveness_uses_callable_top_level_parent(self, monkeypatch):
+        owner = _Info(name="AUT", control_type="Window")
+        owner.handle = 123
+        child = _Info(control_type="Button", parent=owner)
+        child.top_level_parent = lambda: owner
+        monkeypatch.setitem(
+            sys.modules,
+            "win32gui",
+            _module("win32gui", IsWindow=lambda handle: handle == 123),
+        )
+
+        assert _spy._element_owner_is_alive(child) is True
+
+    def test_owner_liveness_survives_broken_top_level_parent_probe(self):
+        class BrokenTopLevel(_Info):
+            @property
+            def top_level_parent(self):
+                raise RuntimeError("provider unavailable")
+
+        assert _spy._element_owner_is_alive(BrokenTopLevel()) is True
+
+    def test_owner_liveness_stops_on_cycles_and_handles_broken_properties(self):
+        cyclic = _Info()
+        cyclic.parent = cyclic
+        assert _spy._element_owner_is_alive(cyclic) is True
+
+        class BrokenControlType:
+            parent = None
+            rectangle = _Rect()
+
+            @property
+            def control_type(self):
+                raise RuntimeError("control type unavailable")
+
+        assert _spy._element_owner_is_alive(BrokenControlType()) is True
+
+        class BrokenParent:
+            control_type = "Button"
+
+            @property
+            def parent(self):
+                raise RuntimeError("parent unavailable")
+
+        assert _spy._element_owner_is_alive(BrokenParent()) is False
+
+    def test_owner_liveness_treats_win32_and_rectangle_probe_errors_as_dead_or_live(
+        self, monkeypatch
+    ):
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setitem(
+                sys.modules,
+                "win32gui",
+                _module("win32gui", IsWindow=lambda _handle: (_ for _ in ()).throw(RuntimeError())),
+            )
+            info = _Info()
+            info.handle = 123
+            assert _spy._element_owner_is_alive(info) is True
+
+        class BrokenRectangle:
+            control_type = "Button"
+            parent = None
+
+            @property
+            def rectangle(self):
+                raise RuntimeError("rectangle unavailable")
+
+        assert _spy._element_owner_is_alive(BrokenRectangle()) is False
 
 
 class TestInspectAndFormatting:

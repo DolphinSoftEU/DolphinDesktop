@@ -55,6 +55,7 @@ from ._logging import Secret, get_logger, unwrap_secret
 
 _LOG = get_logger("mainframe")
 
+
 __all__ = [
     "AID",
     "FieldInfo",
@@ -212,6 +213,8 @@ def _split_s3270_host(host: str) -> tuple[bool, str]:
     other prefix form (``Y:``, ``B:``, ``N:``, ``P:``, ``S:``, ``T:``…) is
     rejected by :func:`_validate_host` because ``:`` is not a host character.
     """
+    if not isinstance(host, str):
+        raise MainframeError(f"host must be a string, got {type(host).__name__}")
     stripped = host.strip()
     if stripped[:2].upper() == _S3270_TLS_PREFIX:
         return True, _validate_host(stripped[2:])
@@ -568,6 +571,39 @@ _S3270_CANDIDATES = (
 )
 
 
+def _validate_s3270_text(value: str, *, field: str) -> None:
+    """Reject values that could change the line-oriented s3270 protocol.
+
+    s3270 reads exactly one action from each stdin line.  Newlines and other
+    non-printing characters must therefore never be copied from public API
+    arguments into an action.  ``String(...)`` quoting protects printable
+    payloads, but it cannot make a record separator safe.
+    """
+    if not isinstance(value, str):
+        raise MainframeError(f"s3270 {field} must be a string")
+    for index, char in enumerate(value):
+        if not char.isprintable():
+            raise MainframeError(
+                f"s3270 {field} contains a control character at offset {index} (U+{ord(char):04X})"
+            )
+
+
+
+
+def _validate_s3270_integer(value: object, *, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MainframeError(f"s3270 {field} must be an integer")
+    return value
+
+
+def _validate_port(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MainframeError("port must be an integer")
+    if not 1 <= value <= 65535:
+        raise MainframeError("port must be between 1 and 65535")
+    return value
+
+
 def _find_s3270() -> str | None:
     """Return the path to the first available s3270-family binary, or None."""
     for name in _S3270_CANDIDATES:
@@ -736,6 +772,15 @@ class _S3270Backend(_TerminalBackend):
         # The host and port are interpolated into a Connect() action, so they
         # are validated to a character set that cannot carry a second action
         # (or a second host prefix) before anything reaches the emulator.
+        #
+        # Trust boundary: unlike the tn5250 backend, dolphin does not own the
+        # TLS handshake here — s3270 is an external process, and we can only
+        # pass it ``-cafile``/``L:`` and trust that its own OpenSSL/Schannel
+        # layer enforces verification. ``_s3270_supports_cafile`` (in
+        # ``_spawn``) at least confirms the flag was accepted by the build;
+        # it cannot confirm the handshake itself was verified. Treat s3270
+        # TLS as "as trustworthy as the installed emulator build", not as
+        # independently verified by dolphin the way tn5250's TLS is.
         prefixed_tls, bare_host = _split_s3270_host(host)
         port = _validate_port(port)
         tls = self._tls or prefixed_tls
@@ -911,10 +956,14 @@ class _S3270Backend(_TerminalBackend):
     # ---- keyboard input -------------------------------------------------- #
 
     def send_string(self, text: str | Secret) -> None:
-        # One public call, one protocol action: the argument is serialised by
-        # _s3270_quote, which escapes quotes and backslashes and refuses the
+        # One public call, one protocol action: the argument must be entirely
+        # printable (control characters can do more than break line-framing
+        # — e.g. terminal escapes replayed into a log) and is serialised by
+        # _s3270_quote, which escapes quotes/backslashes and refuses the
         # CR/LF/NUL bytes that would otherwise start a second action.
-        self._exec(f"String({_s3270_quote(unwrap_secret(text))})")
+        plain = unwrap_secret(text)
+        _validate_s3270_text(plain, field="text")
+        self._exec(f"String({_s3270_quote(plain)})")
 
     def send_aid(self, aid: str) -> None:
         low = aid.lower()
@@ -939,6 +988,8 @@ class _S3270Backend(_TerminalBackend):
 
     def move_cursor(self, row: int, col: int) -> None:
         # s3270 MoveCursor uses 0-indexed by default.
+        row = _validate_s3270_integer(row, field="row")
+        col = _validate_s3270_integer(col, field="col")
         self._exec(f"MoveCursor({row - 1},{col - 1})")
 
     # ---- waits ----------------------------------------------------------- #
@@ -993,8 +1044,12 @@ class _S3270Backend(_TerminalBackend):
                 if self._trace:
                     self._trace_response(label, "error", data, status)
                 if raise_on_error:
-                    joined = "\n".join(data) or "unknown"
-                    raise MainframeError(f"s3270 {label} failed: {joined}")
+                    # Response data lines come from the host and are never
+                    # included here for the same reason _trace_response
+                    # never logs them: a host can echo back typed input,
+                    # passwords included. The exception names the action,
+                    # not the payload.
+                    raise MainframeError(f"s3270 {label} failed")
                 return (data, status)
             if text.startswith("data: "):
                 data.append(text[6:])
@@ -1003,11 +1058,10 @@ class _S3270Backend(_TerminalBackend):
             status = text
 
     def _trace_response(self, command: str, verdict: str, data: list[str], status: str) -> None:
-        # Truncate huge ReadBuffer responses so trace logs stay readable.
-        for i, line in enumerate(data[:4]):
-            _LOG.info("s3270 ← data[%d]: %s", i, line[:200])
-        if len(data) > 4:
-            _LOG.info("s3270 ← data[…]: (%d more lines)", len(data) - 4)
+        # Never log response bodies: a host can echo a password or a typed
+        # secret in a data line. Keep only shape/count metadata.
+        if data:
+            _LOG.info("s3270 ← data_lines=%d", len(data))
         if status:
             _LOG.info("s3270 ← status: %s", status)
         _LOG.info("s3270 ← %s (%s)", verdict, command)
@@ -1548,40 +1602,53 @@ class _Tn5250Backend(_TerminalBackend):
             allow_plaintext=self._allow_plaintext,
             backend="tn5250",
         )
-        raw = self._socket.create_connection((host, port), timeout=15)
-        if self._tls:
-            # Verified TLS or nothing: a failed handshake closes the TCP
-            # connection and raises. There is deliberately no retry without
-            # TLS — that would send the sign-on in the clear the moment a
-            # network attacker interferes with the handshake.
-            context = self._tls_context or _verified_tls_context(None, self._tls_cafile)
-            server_name = host[1:-1] if host.startswith("[") else host
-            try:
-                self._sock = context.wrap_socket(raw, server_hostname=server_name)
-            except (ssl.SSLError, OSError) as exc:
-                try:
-                    raw.close()
-                except OSError:
-                    pass
-                raise MainframeError(
-                    f"TLS handshake with {host}:{port} failed: {exc}",
-                    hint=(
-                        "the certificate chain and host name must verify; for a private CA "
-                        "pass tls_cafile=... — dolphin never falls back to plaintext"
-                    ),
-                ) from exc
-            if self._trace:
-                _LOG.info("tn5250: TLS %s negotiated with %s:%d", self._sock.version(), host, port)
-        else:
-            self._sock = raw
-        self._sock.settimeout(5.0)
-        self._negotiate()
-        self._connected = True
-        # Read the initial WTD burst so the buffer is populated.
         try:
-            self._read_records(timeout=8.0)
-        except (self._socket.timeout, OSError):
-            pass
+            raw = self._socket.create_connection((host, port), timeout=15)
+            if self._tls:
+                # Verified TLS or nothing: a failed handshake closes the TCP
+                # connection and raises. There is deliberately no retry without
+                # TLS — that would send the sign-on in the clear the moment a
+                # network attacker interferes with the handshake.
+                context = self._tls_context or _verified_tls_context(None, self._tls_cafile)
+                server_name = host[1:-1] if host.startswith("[") else host
+                try:
+                    self._sock = context.wrap_socket(raw, server_hostname=server_name)
+                except (ssl.SSLError, OSError) as exc:
+                    try:
+                        raw.close()
+                    except OSError:
+                        pass
+                    raise MainframeError(
+                        f"TLS handshake with {host}:{port} failed: {exc}",
+                        hint=(
+                            "the certificate chain and host name must verify; for a private CA "
+                            "pass tls_cafile=... — dolphin never falls back to plaintext"
+                        ),
+                    ) from exc
+                if self._trace:
+                    _LOG.info(
+                        "tn5250: TLS %s negotiated with %s:%d", self._sock.version(), host, port
+                    )
+            else:
+                self._sock = raw
+            self._sock.settimeout(5.0)
+            self._negotiate()
+            self._connected = True
+            # Read the initial WTD burst so the buffer is populated.
+            try:
+                self._read_records(timeout=8.0)
+            except (self._socket.timeout, OSError):
+                pass
+        except MainframeError:
+            self.disconnect()
+            raise
+        except (ssl.SSLError, OSError, ValueError) as exc:
+            self.disconnect()
+            if self._tls:
+                raise MainframeError(
+                    f"TN5250 TLS connection to {host}:{port} failed: {exc}"
+                ) from exc
+            raise
 
     def disconnect(self) -> None:
         if self._sock is None:
@@ -1700,7 +1767,7 @@ class _Tn5250Backend(_TerminalBackend):
 
     def _send_raw(self, data: bytes) -> None:
         if self._trace:
-            _LOG.info("tn5250 → raw %s", data[:32].hex())
+            _LOG.info("tn5250 → raw payload_bytes=%d", len(data))
         self._sock.sendall(data)
 
     def _read_records(self, timeout: float) -> list[bytes]:
@@ -2631,6 +2698,13 @@ def _build_terminal(
     tls_context: ssl.SSLContext | None = None,
     allow_plaintext: bool = False,
 ) -> MainframeTerminal:
+    if not tls and (tls_cafile or tls_context):
+        raise MainframeError("tls_cafile and tls_context require tls=True")
+    if backend == "hllapi" and (tls or tls_cafile or tls_context or allow_plaintext):
+        raise MainframeError(
+            "TLS/plaintext options are not supported by backend='hllapi'; the attached "
+            "emulator owns its network connection"
+        )
     if backend == "s3270":
         impl: _TerminalBackend = _S3270Backend(
             binary=ws3270_path,

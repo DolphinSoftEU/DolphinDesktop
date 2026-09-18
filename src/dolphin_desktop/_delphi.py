@@ -359,10 +359,8 @@ class DelphiComponent:
     def bounding_box(self) -> dict[str, int]:
         rect = self._w.rectangle()
         return {
-            "left": rect.left,
-            "top": rect.top,
-            "right": rect.right,
-            "bottom": rect.bottom,
+            "x": rect.left,
+            "y": rect.top,
             "width": rect.width(),
             "height": rect.height(),
         }

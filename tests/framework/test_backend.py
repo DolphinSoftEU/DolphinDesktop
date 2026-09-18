@@ -406,18 +406,30 @@ class TestRegistry:
         finally:
             _REGISTRY.pop("_test_ret", None)
 
-    def test_register_overwrites_existing_entry_with_warning(self):
-        # Registering a different class under an existing id emits a
-        # RuntimeWarning; overwrite still happens (last-in wins).
+    def test_register_rejects_existing_entry_without_mutation(self):
+        # A different class cannot replace an existing backend, including a
+        # built-in one. Re-registering the same class remains idempotent.
         cls_a = _make_backend("_test_ow")
         cls_b = _make_backend("_test_ow")
         register(cls_a)
         try:
-            with pytest.warns(RuntimeWarning, match="already registered"):
+            with pytest.raises(ValueError, match="already registered"):
                 register(cls_b)
-            assert _REGISTRY["_test_ow"] is cls_b
+            assert _REGISTRY["_test_ow"] is cls_a
         finally:
             _REGISTRY.pop("_test_ow", None)
+
+    def test_register_rejects_unknown_platform(self):
+        cls = _make_backend("_test_platform", platform_="solaris")
+        with pytest.raises(ValueError, match="unsupported platform"):
+            register(cls)
+        assert "_test_platform" not in _REGISTRY
+
+    def test_register_rejects_missing_platform(self):
+        cls = _make_backend("_test_missing_platform")
+        delattr(cls, "platform")
+        with pytest.raises(TypeError, match="platform"):
+            register(cls)
 
 
 # resolve()
@@ -644,12 +656,12 @@ def test_backend_constructor_and_capability_argument_validation() -> None:
         MissingId()
 
 
-def _backend_class(backend_id: str = "_completeness", *, caps=()):
+def _backend_class(backend_id: str = "_completeness", *, caps=(), platform_: str = "any"):
     """Build a concrete backend with a deliberately configurable contract."""
 
     class TestBackend(backend.Backend):
         id = backend_id
-        platform = "any"
+        platform = platform_
 
         def find_element(self, parent, criteria):
             return None
@@ -735,6 +747,11 @@ class TestCapabilityAndBaseContract:
         cls = _backend_class(f"_bad_{attribute}_{bad_value!r}")
         setattr(cls, attribute, bad_value)
         with pytest.raises(TypeError, match=attribute):
+            cls()
+
+    def test_backend_constructor_rejects_unsupported_platform(self):
+        cls = _backend_class("_bad_platform_value", platform_="solaris")
+        with pytest.raises(ValueError, match="unsupported platform"):
             cls()
 
     def test_default_base_helpers(self):
@@ -1151,9 +1168,13 @@ class TestRegistryAndPluginLoading:
         loader.assert_called_once_with()
 
     def test_plugin_discovery_registers_valid_plugins_and_skips_invalid_ones(self, monkeypatch):
+        """Hostile plugin metadata cannot alter registry state."""
         valid = _backend_class("_ep_valid")
         same = _backend_class("_ep_same")
         invalid_id = _backend_class("")
+        invalid_platform = _backend_class("_ep_invalid_platform", platform_="solaris")
+        missing_platform = _backend_class("_ep_missing_platform")
+        delattr(missing_platform, "platform")
         collision = _backend_class("uia")
         registry = dict(backend._REGISTRY)
         registry[same.id] = same
@@ -1165,6 +1186,8 @@ class TestRegistryAndPluginLoading:
                 _EntryPoint("broken", error=ImportError("dependency missing")),
                 _EntryPoint("not-backend", loaded=object()),
                 _EntryPoint("invalid-id", loaded=invalid_id),
+                _EntryPoint("missing-platform", loaded=missing_platform),
+                _EntryPoint("invalid-platform", loaded=invalid_platform),
                 _EntryPoint(valid.id, loaded=valid),
                 _EntryPoint(same.id, loaded=same),
                 _EntryPoint("alias", loaded=_backend_class("_ep_alias")),
@@ -1181,6 +1204,10 @@ class TestRegistryAndPluginLoading:
         assert any("failed to load" in message for message in messages)
         assert any("does not point at a Backend" in message for message in messages)
         assert any("not a non-empty str" in message for message in messages)
+        assert any(
+            "platform" in message and "not a non-empty str" in message for message in messages
+        )
+        assert any("unsupported platform" in message for message in messages)
         assert any("does not match" in message for message in messages)
         assert any("tries to replace" in message for message in messages)
 
@@ -1213,14 +1240,14 @@ class TestRegistryAndPluginLoading:
         assert backend._REGISTRY[cls.id] is cls
         backend._REGISTRY.pop(cls.id, None)
 
-    def test_register_warns_and_replaces_different_class(self):
+    def test_register_rejects_and_preserves_different_class(self):
         old = _backend_class("_register_collision")
         new = _backend_class("_register_collision")
         backend._REGISTRY[old.id] = old
         try:
-            with pytest.warns(RuntimeWarning, match="already registered"):
+            with pytest.raises(ValueError, match="already registered"):
                 register(new)
-            assert backend._REGISTRY[new.id] is new
+            assert backend._REGISTRY[new.id] is old
         finally:
             backend._REGISTRY.pop(old.id, None)
 
@@ -1343,7 +1370,7 @@ def test_backend_registry_listing_and_auto_detection(monkeypatch) -> None:
 
     class GoodBackend(backend.Backend):
         id = "plugin-good"
-        platform = "test"
+        platform = "any"
 
         def capabilities(self):
             return frozenset({Capability.CLICK})

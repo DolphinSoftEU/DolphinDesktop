@@ -53,7 +53,11 @@ class _CapturingS3270(mf._S3270Backend):
 @pytest.mark.parametrize("payload", ["hello\nQuit()", "a\rb", "x\x00y", "line1\nline2"])
 def test_send_string_rejects_frame_delimiters(payload: str) -> None:
     backend = _CapturingS3270()
-    with pytest.raises(mf.MainframeError, match=r"carriage return|line feed|NUL"):
+    # send_string() layers two guards: a printable-only check (which names
+    # the offending control character) runs before _s3270_quote's own
+    # carriage-return/line-feed/NUL check — either wording proves the same
+    # security property, that the payload never reaches the emulator.
+    with pytest.raises(mf.MainframeError, match=r"carriage return|line feed|NUL|control character"):
         backend.send_string(payload)
     assert backend.sent == []  # nothing reached the emulator
 

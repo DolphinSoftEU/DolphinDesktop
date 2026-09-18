@@ -145,7 +145,8 @@ def temp_file(
             _os.close(fd)
         else:
             try:
-                handle = _os.fdopen(fd, mode)
+                encoding = "utf-8" if mode == "w" else None
+                handle = _os.fdopen(fd, mode, encoding=encoding)
             except Exception:
                 _os.close(fd)
                 raise
@@ -318,18 +319,56 @@ def http_ok(url: str, *, timeout: float = 1.0) -> bool:
     """
     import urllib.error
     import urllib.request
+    from urllib.parse import urlsplit
 
-    if not _is_http_url(url):
-        return False
+    def _http_url(value: str):
+        # _is_http_url restricts the scheme to http/https and requires a
+        # host; forcing .port here also rejects a malformed port before
+        # urlopen gets a chance to interpret it in a platform-specific way.
+        if not _is_http_url(value):
+            return None
+        parsed = urlsplit(value)
+        _ = parsed.port
+        return parsed
+
     try:
-        # _is_http_url has already restricted the scheme to http/https and
-        # required a host, so file:// and other schemes the rule warns about
-        # cannot reach urlopen here.
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # nosec B310
-            return resp.status == 200
-    except Exception:
-        # ``urlopen`` can also raise ``ValueError`` / ``http.client``
-        # errors for a malformed response; the contract is "never raises".
+        if _http_url(url) is None:
+            return False
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+    try:
+        # Every redirect target is re-validated through _http_url before it
+        # is followed, so an http(s) URL cannot be used to make this probe
+        # fetch file://, ftp:// or any other scheme via a 3xx response.
+        class _HttpOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                try:
+                    redirected = _http_url(newurl)
+                except (AttributeError, TypeError, ValueError):
+                    return None
+                if redirected is None:
+                    return None
+                return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+        opener = urllib.request.build_opener(_HttpOnlyRedirectHandler)
+        with opener.open(url, timeout=timeout) as resp:  # nosec B310
+            try:
+                final = _http_url(resp.geturl())
+            except (AttributeError, TypeError, ValueError):
+                return False
+            if final is None:
+                return False
+            return getattr(resp, "status", None) == 200
+    except (
+        urllib.error.URLError,
+        ConnectionError,
+        TimeoutError,
+        OSError,
+        TypeError,
+        ValueError,
+        AttributeError,
+    ):
         return False
 
 

@@ -35,7 +35,8 @@ compat layer — dolphin does not have equivalents:
 * `chromium.launch()` — dolphin never spawns a standalone Chromium;
   use `Desktop().launch_electron_cdp(...)` for Electron apps or
   `connect_over_cdp(url)` for a running one.
-* Async API (`async_playwright`) — dolphin's CDP surface is sync-only.
+* Async API (`async_playwright`) — dolphin's CDP surface is sync-only;
+  calling it raises `NotImplementedError` with a migration hint.
 * Trace viewer / video recording APIs — dolphin has its own trace /
   video capture (see the pytest plugin options).
 * Multi-context / storage-state persistence — Electron apps run
@@ -43,3 +44,9 @@ compat layer — dolphin does not have equivalents:
 
 Calls to these attributes raise `NotImplementedError` with a
 pointer to the dolphin equivalent.
+
+The same explicit exception is used for `browser.new_context()`,
+`context.new_page()`, `context.storage_state()`, `context.tracing` and
+`page.video`.  These names are exposed so an accidentally ported Playwright
+test fails with a useful compatibility message rather than an
+`AttributeError`.

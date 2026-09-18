@@ -142,7 +142,9 @@ continues. That forgiveness window holds the last 256 abandoned ids —
 beyond it a late reply is indistinguishable from a desync and is treated as
 one.
 
-Replies are read with a bounded per-request timeout
+Requests are bounded before they reach the pipe: the Python client caps each
+serialized request at 1 MiB, JSON nesting at 32 levels, and JSON container
+complexity at 10,000 nodes. Replies are read with a bounded per-request timeout
 (`QtAgentClient.rpc_timeout`, 30 s) and a 16 MiB size cap. Expiry raises
 `QtAgentTimeoutError` and leaves the connection **usable** — a Qt event loop
 blocked behind a native modal dialog is an ordinary, recoverable condition.
@@ -242,12 +244,13 @@ be verified or fixed from this repository.
   per-attach random token (`\\.\pipe\dolphin_qt_<pid>_<random>`), so a local
   process can no longer pre-create it under a predictable name, and the
   client verifies the server's process id, so a squatter cannot impersonate
-  the agent. The agent's *server-side* security descriptor is still whatever
-  the prebuilt DLL sets: an explicit ACL and `PIPE_REJECT_REMOTE_CLIENTS`
-  would need a DLL rebuild (the C++ source is not in this repository). The
-  bundled DLLs are hash-verified against `agent_manifest.json` before
-  injection. `reattach()` refuses a PID whose creation time changed since the
-  original attach. See `SECURITY.md` for what this means for you in practice.
+  the agent. The Python side also bounds request size/depth/complexity. The
+  agent's *server-side* security descriptor is still whatever the prebuilt
+  DLL sets: an explicit ACL and `PIPE_REJECT_REMOTE_CLIENTS` would need a
+  DLL rebuild (the C++ source is not in this repository). The bundled DLLs
+  are hash-verified against `agent_manifest.json` before injection.
+  `reattach()` refuses a PID whose creation time changed since the original
+  attach. See `SECURITY.md` for what this means for you in practice.
 - **Per-Qt-major-version DLL** — Qt 5 and Qt 6 ABIs differ. We ship both,
   named `dolphin_qt5_agent.dll` and `dolphin_qt6_agent.dll`; the loader
   picks based on `Application.qt_version()`.

@@ -65,6 +65,11 @@ win.locator(
 ).click()
 ```
 
+The image fallback must point to a readable template. A missing template raises
+`FileNotFoundError`, and a corrupt or undecodable template raises `ValueError`, both with
+the `image_fallback` path in the diagnostic. When a valid template is not visible on the
+screen, normal locator resolution still reports `ElementNotFoundError`.
+
 ## OCR And Screen Helpers
 
 ```python

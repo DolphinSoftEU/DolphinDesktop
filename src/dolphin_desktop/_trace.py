@@ -169,7 +169,7 @@ class TraceSession:
             raise ValueError(f"Invalid trace mode: {mode!r}")
 
         self.run_id: str = uuid.uuid4().hex[:12]
-        self.test_nodeid = test_nodeid
+        self.test_nodeid = _redact(test_nodeid)
         self.run_dir = run_dir
         self.mode = mode
 
@@ -193,7 +193,7 @@ class TraceSession:
             self._db.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
         self._db.execute(
             "INSERT INTO runs (id, test_nodeid, started_at, status) VALUES (?, ?, ?, 'running')",
-            (self.run_id, test_nodeid, self._started_at),
+            (self.run_id, self.test_nodeid, self._started_at),
         )
         self._db.commit()
 
@@ -217,6 +217,10 @@ class TraceSession:
         """
         if self.mode == "off":
             return
+
+        action = _redact(action)
+        selector = _redact(selector) if selector is not None else None
+        error = _redact(error) if error is not None else None
 
         with self._lock:
             if self._closed:
@@ -282,6 +286,8 @@ class TraceSession:
 
         Never raises — see :meth:`record_step`.
         """
+        error_message = _redact(error_message) if error_message is not None else None
+        error_traceback = _redact(error_traceback) if error_traceback is not None else None
         with self._lock:
             if self._closed:
                 return
@@ -524,7 +530,7 @@ def list_runs(trace_dir: Path) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     if not trace_dir.is_dir():
         return results
-    for run_dir in sorted(trace_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+    for run_dir in trace_dir.iterdir():
         db_path = run_dir / "trace.db"
         if not db_path.is_file():
             continue
@@ -542,4 +548,10 @@ def list_runs(trace_dir: Path) -> list[dict[str, Any]]:
                 results.append(d)
         except Exception:
             continue
+    # Directory mtime changes when the viewer or another artifact is written;
+    # the trace's persisted start time is the stable source of truth for --last.
+    results.sort(
+        key=lambda run: (run.get("started_at", 0), run.get("id", "")),
+        reverse=True,
+    )
     return results

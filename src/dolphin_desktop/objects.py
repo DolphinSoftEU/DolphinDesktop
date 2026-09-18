@@ -47,6 +47,8 @@ _VALID_SELECTOR_KEYS = frozenset(_SELECTOR_KEY_MAP) | {
     "visible_only",
 }
 
+_VALID_ENTRY_KEYS = frozenset({"selector", "fallback", "children"})
+
 _LEVELS = ("workspace", "project", "test")
 
 
@@ -87,6 +89,93 @@ def _parse_entries(data: dict[str, Any]) -> dict[str, ObjectEntry]:
     return {alias: _parse_entry(entry) for alias, entry in data.items()}
 
 
+class _DuplicateYamlKeyError(Exception):
+    def __init__(self, key: Any, yaml_path: str, mark: Any) -> None:
+        super().__init__(f"duplicate key {key!r} at YAML path '{yaml_path}'")
+        self.key = key
+        self.yaml_path = yaml_path
+        self.mark = mark
+
+
+def _yaml_key(node: Any) -> Any:
+    """Return a readable key for a composed YAML node."""
+    if getattr(node, "value", None) is not None and not isinstance(node.value, list):
+        return node.value
+    return repr(getattr(node, "value", node))
+
+
+def _yaml_key_signature(node: Any) -> tuple[Any, Any]:
+    """Identify textual YAML keys without constructing arbitrary Python objects."""
+    value = getattr(node, "value", None)
+    try:
+        hash(value)
+    except TypeError:
+        value = repr(value)
+    return (getattr(node, "tag", None), value)
+
+
+def _yaml_child_path(parent: str, key: Any) -> str:
+    key_text = str(key)
+    if parent == "$":
+        return key_text
+    if key_text == "selector":
+        return f"{parent}.selector"
+    if key_text == "fallback":
+        return f"{parent}.fallback"
+    if key_text == "children":
+        return f"{parent}.children"
+    if parent.endswith(".children"):
+        return f"{parent[: -len('.children')]}.{key_text}"
+    return f"{parent}.{key_text}"
+
+
+def _check_unique_yaml_keys(node: Any, yaml_path: str = "$") -> None:
+    """Reject duplicate keys in every mapping before PyYAML constructs it."""
+    node_id = getattr(node, "id", None)
+    if node_id == "mapping":
+        seen: set[tuple[Any, Any]] = set()
+        for key_node, value_node in node.value:
+            signature = _yaml_key_signature(key_node)
+            if signature in seen:
+                raise _DuplicateYamlKeyError(_yaml_key(key_node), yaml_path, key_node.start_mark)
+            seen.add(signature)
+            _check_unique_yaml_keys(value_node, _yaml_child_path(yaml_path, _yaml_key(key_node)))
+    elif node_id == "sequence":
+        for index, item in enumerate(node.value):
+            _check_unique_yaml_keys(item, f"{yaml_path}[{index}]")
+
+
+def _yaml_location(mark: Any) -> str:
+    if mark is None:
+        return ""
+    return f"line {mark.line + 1}, column {mark.column + 1}"
+
+
+def _load_yaml(path: Path) -> Any:
+    """Parse one repository file with duplicate-key and syntax diagnostics."""
+    import yaml  # lazy — only needed if objects feature is used
+
+    with path.open(encoding="utf-8") as fh:
+        content = fh.read()
+
+    try:
+        node = yaml.compose(content, Loader=yaml.SafeLoader)
+        if node is not None:
+            _check_unique_yaml_keys(node)
+        return yaml.safe_load(content)
+    except _DuplicateYamlKeyError as exc:
+        location = _yaml_location(exc.mark)
+        location_suffix = f" ({location})" if location else ""
+        raise ValueError(
+            f"{path}: duplicate YAML key {exc.key!r} at '{exc.yaml_path}'{location_suffix}"
+        ) from exc
+    except yaml.YAMLError as exc:
+        location = _yaml_location(getattr(exc, "problem_mark", None))
+        location_suffix = f" at {location}" if location else ""
+        detail = getattr(exc, "problem", None) or str(exc)
+        raise ValueError(f"{path}: malformed YAML{location_suffix}: {detail}") from exc
+
+
 def _validate_selector_keys(selector: dict[str, Any], path_label: str, source: Path) -> None:
     unknown = sorted(k for k in selector if k not in _VALID_SELECTOR_KEYS)
     if unknown:
@@ -99,6 +188,13 @@ def _validate_selector_keys(selector: dict[str, Any], path_label: str, source: P
 def _validate_entry(entry: Any, path_label: str, source: Path) -> None:
     if not isinstance(entry, dict):
         raise ValueError(f"{source}: '{path_label}' must be a mapping, got {type(entry).__name__}")
+    unknown_fields = [key for key in entry if key not in _VALID_ENTRY_KEYS]
+    if unknown_fields:
+        formatted = sorted(repr(key) for key in unknown_fields)
+        raise ValueError(
+            f"{source}: '{path_label}' has unknown alias field(s) {formatted}. "
+            f"Valid fields: {sorted(_VALID_ENTRY_KEYS)}"
+        )
     if "selector" not in entry:
         raise ValueError(f"{source}: '{path_label}' missing required 'selector' key")
     if not isinstance(entry["selector"], dict):
@@ -117,6 +213,8 @@ def _validate_entry(entry: Any, path_label: str, source: Path) -> None:
         if not isinstance(children, dict):
             raise ValueError(f"{source}: '{path_label}.children' must be a mapping")
         for child_alias, child_entry in children.items():
+            if not isinstance(child_alias, str):
+                raise ValueError(f"{source}: alias key must be a string, got {child_alias!r}")
             _validate_entry(child_entry, f"{path_label}.{child_alias}", source)
 
 
@@ -159,11 +257,8 @@ class ObjectRepository:
         if level not in _LEVELS:
             raise ValueError(f"level must be one of {_LEVELS!r}, got {level!r}")
 
-        import yaml  # lazy — only needed if objects feature is used
-
-        path = Path(path)
-        with path.open(encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
+        path = Path(path).resolve()
+        data = _load_yaml(path)
 
         if data is None:
             data = {}
@@ -180,8 +275,9 @@ class ObjectRepository:
                 stacklevel=3,
             )
 
+        mtime = path.stat().st_mtime
         self._registry[level].update(entries)
-        self._files.append(_LoadedFile(path=path, level=level, mtime=path.stat().st_mtime))
+        self._files.append(_LoadedFile(path=path, level=level, mtime=mtime))
 
     def discover(self, directory: str | Path = "objects", *, level: str = "project") -> int:
         """Load all ``*.yaml`` / ``*.yml`` files from *directory*.
@@ -313,8 +409,6 @@ class ObjectRepository:
         is what lets it come back; dropping the *file* would make its aliases
         unrecoverable for the rest of the run.
         """
-        import yaml
-
         changed_levels = {lf.level for lf in self._files if self._mtime_advanced(lf)}
         for level in changed_levels:
             level_files = [lf for lf in self._files if lf.level == level]
@@ -323,8 +417,9 @@ class ObjectRepository:
             try:
                 for lf in level_files:
                     try:
-                        with lf.path.open(encoding="utf-8") as fh:
-                            data = yaml.safe_load(fh) or {}
+                        data = _load_yaml(lf.path)
+                        if data is None:
+                            data = {}
                     except OSError as exc:
                         if not lf.unopenable_logged:
                             lf.unopenable_logged = True

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import builtins
+import subprocess
 import sys
 import types
 import zipfile
@@ -15,6 +16,9 @@ from types import SimpleNamespace
 import pytest
 
 from dolphin_desktop import pytest_plugin as plugin
+from dolphin_desktop._exceptions import ElementNotFoundError
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestTraceRunDirName:
@@ -318,6 +322,38 @@ class TestHtmlReportEscaping:
 
 
 class TestMakereportIsolation:
+    def test_makereport_redacts_longrepr_before_reporters_serialize_it(self, monkeypatch):
+        monkeypatch.setattr(plugin, "_collect_artifacts", lambda *_args: None)
+        report = SimpleNamespace(
+            failed=True,
+            longrepr='login="DESKTOP_LOGIN_2c4b"',
+        )
+        hook = plugin.pytest_runtest_makereport(
+            SimpleNamespace(nodeid="tests/test_x.py::test_y"),
+            SimpleNamespace(when="call"),
+        )
+        next(hook)
+        with pytest.raises(StopIteration):
+            hook.send(SimpleNamespace(get_result=lambda: report))
+
+        assert report.longrepr == 'login="***"'
+
+    def test_redact_report_skips_malformed_sections_without_leaking_valid_content(self):
+        report = SimpleNamespace(
+            longrepr=None,
+            sections=[
+                ("Captured stdout", "token=DESKTOP_TOKEN_123"),
+                ("malformed",),
+                ("too many fields", "kept", "ignored"),
+            ],
+        )
+
+        plugin._redact_report(report)
+
+        assert report.sections[0] == ("Captured stdout", "token=***")
+        assert report.sections[1] == ("malformed",)
+        assert report.sections[2] == ("too many fields", "kept", "ignored")
+
     def test_collection_error_does_not_escape(self, monkeypatch, caplog):
         def _boom(item, call, report):
             raise RuntimeError("artifact backend exploded")
@@ -409,27 +445,28 @@ class TestBasicHooksAndOptions:
         monkeypatch.setattr(_application, "_live_pids", set())
         plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
 
-    def test_runtest_teardown_kills_processes_and_always_discards_them(self, monkeypatch):
+    def test_runtest_teardown_kills_anchored_processes_and_discards_them(self, monkeypatch):
         from dolphin_desktop import _application
 
         api_calls: list[tuple] = []
         api = types.SimpleNamespace(
-            OpenProcess=lambda *args: api_calls.append(("open", *args)) or "handle",
             TerminateProcess=lambda *args: api_calls.append(("terminate", *args)),
             CloseHandle=lambda *args: api_calls.append(("close", *args)),
         )
-        con = types.SimpleNamespace(PROCESS_TERMINATE=7)
         monkeypatch.setitem(sys.modules, "win32api", api)
-        monkeypatch.setitem(sys.modules, "win32con", con)
         live = {101, 102}
+        handles = {101: "handle-101", 102: "handle-102"}
         monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
 
         plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
 
         assert live == set()
-        assert ("terminate", "handle", 1) in api_calls
+        assert ("terminate", "handle-101", 1) in api_calls
+        assert ("terminate", "handle-102", 1) in api_calls
+        assert handles == {}
 
-    def test_runtest_teardown_discards_pid_when_win32_cleanup_fails(self, monkeypatch):
+    def test_runtest_teardown_keeps_unknown_pid_registered(self, monkeypatch):
         from dolphin_desktop import _application
 
         monkeypatch.setitem(
@@ -439,13 +476,81 @@ class TestBasicHooksAndOptions:
                 OpenProcess=lambda *_args: (_ for _ in ()).throw(OSError("gone"))
             ),
         )
-        monkeypatch.setitem(sys.modules, "win32con", types.SimpleNamespace(PROCESS_TERMINATE=7))
         live = {404}
         monkeypatch.setattr(_application, "_live_pids", live)
 
         plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
 
+        assert live == {404}
+
+    def test_runtest_teardown_uses_anchored_handle_and_keeps_it_on_failure(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        calls: list[tuple] = []
+        api = types.SimpleNamespace(
+            OpenProcess=lambda *_args: pytest.fail("PID must not be reopened"),
+            TerminateProcess=lambda *args: (
+                calls.append(("terminate", *args))
+                or (_ for _ in ()).throw(OSError("access denied"))
+            ),
+            CloseHandle=lambda *args: calls.append(("close", *args)),
+        )
+        monkeypatch.setitem(sys.modules, "win32api", api)
+        live = {505}
+        handles = {505: "original-process-handle"}
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
+
+        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="reuse"), None)
+
+        assert calls == [("terminate", "original-process-handle", 1)]
+        assert live == {505}
+        assert handles == {505: "original-process-handle"}
+
+    def test_runtest_teardown_terminates_original_process_handle_after_pid_reuse(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        calls: list[tuple] = []
+        api = types.SimpleNamespace(
+            OpenProcess=lambda *_args: pytest.fail("PID must not be reopened"),
+            TerminateProcess=lambda *args: calls.append(("terminate", *args)),
+            CloseHandle=lambda *args: calls.append(("close", *args)),
+        )
+        monkeypatch.setitem(sys.modules, "win32api", api)
+        live = {506}
+        handles = {506: "original-process-handle"}
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
+
+        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="reuse"), None)
+
+        assert calls == [
+            ("terminate", "original-process-handle", 1),
+            ("close", "original-process-handle"),
+        ]
         assert live == set()
+        assert handles == {}
+
+    def test_runtest_teardown_fails_closed_when_anchor_could_not_be_opened(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            types.SimpleNamespace(
+                OpenProcess=lambda *_args: pytest.fail("must not fall back to PID cleanup"),
+                TerminateProcess=lambda *_args: pytest.fail("must not terminate by PID"),
+            ),
+        )
+        live = {508}
+        unanchored = {508}
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_unanchored_pids", unanchored)
+
+        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="unanchored"), None)
+
+        assert live == {508}
+        assert unanchored == {508}
 
     @pytest.mark.parametrize(
         ("report", "expected"),
@@ -454,16 +559,77 @@ class TestBasicHooksAndOptions:
             (SimpleNamespace(failed=False, longrepr="ElementNotFoundError"), False),
             (SimpleNamespace(failed=True, longrepr=None), False),
             (SimpleNamespace(failed=True, longrepr="ordinary failure"), False),
-            (SimpleNamespace(failed=True, longrepr="ElementNotFoundError: gone"), True),
-            (SimpleNamespace(failed=True, longrepr="WaitTimeoutError: timed out"), True),
+            (
+                SimpleNamespace(
+                    failed=True,
+                    longrepr="AssertionError: ElementNotFoundError was expected",
+                    _dolphin_transient_failure=False,
+                ),
+                False,
+            ),
+            (
+                SimpleNamespace(
+                    failed=True,
+                    longrepr="ElementNotFoundError: gone",
+                    _dolphin_transient_failure=True,
+                ),
+                True,
+            ),
+            (
+                SimpleNamespace(
+                    failed=True,
+                    longrepr="WaitTimeoutError: timed out",
+                    _dolphin_transient_failure=True,
+                ),
+                True,
+            ),
         ],
     )
     def test_transient_failure_detection(self, report, expected):
         assert plugin._is_transient_failure(report) is expected
 
+    def test_report_hook_records_only_a_serializable_transient_flag(self, monkeypatch):
+        monkeypatch.setattr(plugin, "_collect_artifacts", lambda *_args: None)
+        item = _Item(Path("."))
+        call = SimpleNamespace(
+            when="call", excinfo=SimpleNamespace(value=ElementNotFoundError("gone"))
+        )
+        hook = plugin.pytest_runtest_makereport(item, call)
+        next(hook)
+        report = SimpleNamespace(failed=True, longrepr="ElementNotFoundError: gone")
+
+        with pytest.raises(StopIteration):
+            hook.send(SimpleNamespace(get_result=lambda: report))
+
+        assert getattr(report, plugin._DOLPHIN_TRANSIENT_ATTR) is True
+        assert isinstance(getattr(report, plugin._DOLPHIN_TRANSIENT_ATTR), bool)
+        assert plugin._is_transient_failure(report) is True
+
+    def test_report_hook_recognises_transient_exception_subclasses(self, monkeypatch):
+        class DerivedElementNotFoundError(ElementNotFoundError):
+            pass
+
+        monkeypatch.setattr(plugin, "_collect_artifacts", lambda *_args: None)
+        item = _Item(Path("."))
+        call = SimpleNamespace(
+            when="call", excinfo=SimpleNamespace(value=DerivedElementNotFoundError("gone"))
+        )
+        hook = plugin.pytest_runtest_makereport(item, call)
+        next(hook)
+        report = SimpleNamespace(failed=True, longrepr="gone")
+
+        with pytest.raises(StopIteration):
+            hook.send(SimpleNamespace(get_result=lambda: report))
+
+        assert getattr(report, plugin._DOLPHIN_TRANSIENT_ATTR) is True
+
     def test_retry_decision_requires_remaining_attempt_and_transient_failure(self):
         item = _Item(Path("."))
-        report = SimpleNamespace(failed=True, longrepr="WaitTimeoutError")
+        report = SimpleNamespace(
+            failed=True,
+            longrepr="WaitTimeoutError",
+            _dolphin_transient_failure=True,
+        )
         assert plugin._attempt_will_retry(item, report) is False
         item.stash[plugin._RETRY_MAX_KEY] = 2
         item.stash[plugin._RETRY_ATTEMPT_KEY] = 0
@@ -513,7 +679,11 @@ class TestBasicHooksAndOptions:
         )
         monkeypatch.setattr(plugin, "_effective_retry_count", lambda _config: 1)
         monkeypatch.setattr(plugin, "_is_transient_failure", lambda _report: next(transient))
-        monkeypatch.setattr(plugin.time, "sleep", lambda _seconds: calls.append(("sleep",)))
+        monkeypatch.setattr(
+            plugin.time,
+            "sleep",
+            lambda _seconds: (_ for _ in ()).throw(AssertionError("retry must not sleep")),
+        )
         run_calls: list[tuple] = []
 
         def run(item_arg, log, nextitem):
@@ -530,7 +700,7 @@ class TestBasicHooksAndOptions:
         assert [entry[0] for entry in calls if entry[0] == "report"] == ["report", "report"]
         assert calls[0][0] == "start"
         assert calls[-1][0] == "finish"
-        assert ("sleep",) in calls
+        assert ("sleep",) not in calls
         assert item.stash[plugin._RETRY_MAX_KEY] == 1
         assert item.stash[plugin._RETRY_ATTEMPT_KEY] == 1
 
@@ -589,7 +759,6 @@ class TestBasicHooksAndOptions:
             "runtestprotocol",
             lambda *_args, **_kwargs: [SimpleNamespace(when="call")],
         )
-        monkeypatch.setattr(plugin.time, "sleep", lambda _seconds: None)
         assert plugin.pytest_runtest_protocol(item, None) is True
         assert len(published) == 1
 
@@ -642,10 +811,33 @@ class TestBasicHooksAndOptions:
             "--dolphin-retry",
         ]
         assert added[0][1]["default"] == "uia"
+        assert added[1][1]["type"] is plugin._cli_timeout
         assert added[6][1]["choices"] == ["off", "keepfailedonly", "keepall"]
+        assert added[10][1]["type"] is plugin._cli_retry
 
 
 class TestFixtures:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        (("0", 0.0), ("1.5", 1.5), ("-0", -0.0)),
+    )
+    def test_cli_timeout_parser_accepts_finite_non_negative_values(self, value, expected):
+        assert plugin._cli_timeout(value) == expected
+
+    @pytest.mark.parametrize("value", ("nan", "inf", "-inf", "-1", "not-a-number"))
+    def test_cli_timeout_parser_rejects_invalid_values(self, value):
+        with pytest.raises(plugin.ArgumentTypeError, match="timeout"):
+            plugin._cli_timeout(value)
+
+    @pytest.mark.parametrize(("value", "expected"), (("0", 0), ("3", 3)))
+    def test_cli_retry_parser_accepts_non_negative_integers(self, value, expected):
+        assert plugin._cli_retry(value) == expected
+
+    @pytest.mark.parametrize("value", ("-1", "1.5", "not-an-integer"))
+    def test_cli_retry_parser_rejects_invalid_values(self, value):
+        with pytest.raises(plugin.ArgumentTypeError, match="retry"):
+            plugin._cli_retry(value)
+
     def test_session_fixtures_resolve_cli_env_and_defaults(self, monkeypatch, tmp_path):
         request = SimpleNamespace(
             config=_Options(tmp_path, **{"--dolphin-backend": "win32", "--dolphin-timeout": 2.5})
@@ -658,6 +850,13 @@ class TestFixtures:
         assert plugin.dolphin_timeout.__wrapped__(no_cli) == 3.75
         monkeypatch.delenv("DOLPHIN_TIMEOUT")
         assert plugin.dolphin_timeout.__wrapped__(no_cli) == 10.0
+
+        for invalid in (float("inf"), -1.0):
+            invalid_request = SimpleNamespace(
+                config=_Options(tmp_path, **{"--dolphin-timeout": invalid})
+            )
+            with pytest.raises(ValueError, match="timeout"):
+                plugin.dolphin_timeout.__wrapped__(invalid_request)
 
     def test_session_config_applies_every_cli_override(self, monkeypatch, tmp_path):
         from dolphin_desktop import _config
@@ -748,6 +947,28 @@ class TestFixtures:
         generator.close()
         assert _config._defaults["timeout"] == 10.0
         assert _config._defaults["video_mode"] == "off"
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        (
+            ({"timeout": "not-a-number"}, "timeout"),
+            ({"timeout": "nan"}, "timeout"),
+            ({"timeout": -1}, "timeout"),
+            ({"video_mode": "invalid-video"}, "video_mode"),
+            ({"headless": "yes"}, "headless"),
+        ),
+    )
+    def test_marker_config_rejects_invalid_values_before_mutation(
+        self, monkeypatch, tmp_path, kwargs, message
+    ):
+        from dolphin_desktop import _config
+
+        monkeypatch.setattr(_config, "_defaults", {"timeout": 10.0, "video_mode": "off"})
+        request = _request(tmp_path, **{"--dolphin-headless": False})
+        request.node.get_closest_marker = lambda _name: SimpleNamespace(kwargs=kwargs)
+        with pytest.raises(pytest.UsageError, match=message):
+            next(plugin._dolphin_marker_config.__wrapped__(request))
+        assert _config._defaults == {"timeout": 10.0, "video_mode": "off"}
 
     def test_marker_config_covers_active_headless_and_absent_marker_options(
         self, monkeypatch, tmp_path
@@ -1120,6 +1341,53 @@ class TestAllureAndVideoHelpers:
 
 
 class TestReportCollection:
+    def test_reports_with_failures_are_serializable_under_xdist(self, tmp_path):
+        test_file = tmp_path / "test_xdist_report_serialization.py"
+        test_file.write_text(
+            """
+from dolphin_desktop import ElementNotFoundError
+
+
+def test_transient_failure_report():
+    raise ElementNotFoundError("element disappeared")
+
+
+def test_regular_failure_report():
+    raise AssertionError("ordinary failure")
+""",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-n",
+                "2",
+                "-q",
+                "-p",
+                "dolphin_desktop.pytest_plugin",
+                "--dolphin-trace=off",
+                "--dolphin-video=off",
+                "--dolphin-html",
+                str(tmp_path / "dolphin-report.html"),
+                "-c",
+                str(REPO_ROOT / "pyproject.toml"),
+                str(test_file),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        output = result.stdout + result.stderr
+
+        assert result.returncode == 1, output
+        assert "2 failed" in output
+        assert "DumpError" not in output
+        assert "can't serialize" not in output
+
     def test_makereport_calls_collector_after_yield(self, monkeypatch):
         seen: list[tuple] = []
         monkeypatch.setattr(plugin, "_collect_artifacts", lambda *args: seen.append(args))
@@ -1314,8 +1582,10 @@ class TestSessionReports:
         monkeypatch.setitem(sys.modules, "win32con", types.SimpleNamespace(PROCESS_TERMINATE=9))
         session_pids = {88}
         live_pids = {88, 99}
+        handles = {88: "h"}
         monkeypatch.setattr(_application, "_session_pids", session_pids)
         monkeypatch.setattr(_application, "_live_pids", live_pids)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
         output_paths: list[Path] = []
         monkeypatch.setattr(plugin, "_generate_html_report", output_paths.append)
         monkeypatch.setattr(
@@ -1327,7 +1597,8 @@ class TestSessionReports:
         plugin.pytest_sessionfinish(SimpleNamespace(config=config), 0)
         assert session_pids == set()
         assert live_pids == {99}
-        assert api_calls[1] == ("terminate", "h", 1)
+        assert ("terminate", "h", 1) in api_calls
+        assert handles == {}
         assert output_paths == [tmp_path / "reports" / "summary-gw7.html"]
         plugin._session_reports.clear()
 
@@ -1387,15 +1658,69 @@ class TestSessionReports:
                 OpenProcess=lambda *_args: (_ for _ in ()).throw(OSError("gone"))
             ),
         )
-        monkeypatch.setitem(sys.modules, "win32con", types.SimpleNamespace(PROCESS_TERMINATE=9))
         pids = {77}
         live = {77}
         monkeypatch.setattr(_application, "_session_pids", pids)
         monkeypatch.setattr(_application, "_live_pids", live)
         plugin._session_reports.clear()
         plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
+        assert pids == {77}
+        assert live == {77}
+
+    def test_sessionfinish_uses_anchored_handle_after_pid_reuse(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        calls: list[tuple] = []
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            types.SimpleNamespace(
+                OpenProcess=lambda *_args: pytest.fail("PID must not be reopened"),
+                TerminateProcess=lambda *args: calls.append(("terminate", *args)),
+                CloseHandle=lambda *args: calls.append(("close", *args)),
+            ),
+        )
+        pids = {507}
+        live = {507}
+        handles = {507: "original-process-handle"}
+        monkeypatch.setattr(_application, "_session_pids", pids)
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
+        plugin._session_reports.clear()
+
+        plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
+
+        assert calls == [
+            ("terminate", "original-process-handle", 1),
+            ("close", "original-process-handle"),
+        ]
         assert pids == set()
         assert live == set()
+        assert handles == {}
+
+    def test_sessionfinish_keeps_registries_when_anchored_termination_fails(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            types.SimpleNamespace(
+                TerminateProcess=lambda *_args: (_ for _ in ()).throw(OSError("access denied")),
+            ),
+        )
+        pids = {508}
+        live = {508}
+        handles = {508: "anchor"}
+        monkeypatch.setattr(_application, "_session_pids", pids)
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", handles)
+        plugin._session_reports.clear()
+
+        plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
+
+        assert pids == {508}
+        assert live == {508}
+        assert handles == {508: "anchor"}
 
 
 class TestHtmlReport:

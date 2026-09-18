@@ -15,6 +15,32 @@ question "does the backend I selected support this operation?"
 BEFORE the test runs and BEFORE the operation fails opaquely at
 runtime.
 
+## UIA framework and desktop contract
+
+The `uia` backend consumes the Microsoft UI Automation provider exposed by
+the application. The supported application families for the native UIA
+contract are:
+
+| Application family | Stable locator contract | Boundary |
+|---|---|---|
+| WPF | `AutomationProperties.AutomationId` as `auto_id`, together with the UIA `control_type` | Custom-rendered content may expose only its parent or a custom provider |
+| WinForms | A provider-published `auto_id`/name and UIA `control_type` | Older or owner-drawn controls may expose less through UIA; consider `win32` for legacy-only surfaces |
+| WinUI / UWP | `AutomationProperties.AutomationId`/name and UIA `control_type` | The app must be started or connected through its supported desktop activation path |
+
+An application family is not a promise that every control publishes every
+property. Prefer a stable `auto_id` plus `control_type`, wait for the required
+state, and use `get_by_role()` or `get_by_automation_id()` rather than screen
+coordinates. Custom drawing that does not publish an accessible provider is
+outside the UIA tree contract; it may require an explicitly configured image
+fallback.
+
+UIA tests that use physical input or capture pixels require a visible,
+interactive desktop. Construct `Desktop(backend="uia", hidden=False)` for
+that contract and verify the desktop before launching the AUT. Hidden mode is
+not a substitute for a visible-desktop UAT; use programmatic, headless-safe
+operations only where the selected capability and control pattern support
+them.
+
 ## The `Capability` enum
 
 Every operation the library exposes is one enum member in

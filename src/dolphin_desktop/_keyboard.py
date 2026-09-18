@@ -1,6 +1,7 @@
 """Global keyboard utilities operating outside any specific window."""
 
 import sys
+from collections.abc import Callable
 
 if sys.platform == "win32":
     from pywinauto.keyboard import CODES as _PYWINAUTO_CODES  # type: ignore[import-untyped]
@@ -13,6 +14,7 @@ else:
     _CODES = {}
     _send_keys = _unsupported_callable("pywinauto.keyboard.send_keys")
 
+from ._exceptions import DolphinError
 from ._helpers import _escape_keys
 
 _MODIFIERS = {"ctrl": "^", "control": "^", "shift": "+", "alt": "%"}
@@ -39,6 +41,21 @@ _METACHARS = "+^%~(){}"
 # which a hotkey sequence never sets — hotkey("ctrl", "\n") would send a bare
 # Ctrl press.
 _WHITESPACE_KEYS = {" ": "{SPACE}", "\t": "{TAB}", "\n": "{ENTER}", "\r": "{ENTER}"}
+_WINDOW_TARGETED_MODIFIER_VKS = frozenset(
+    {
+        0x10,
+        0x11,
+        0x12,
+        0x5B,
+        0x5C,
+        0xA0,
+        0xA1,
+        0xA2,
+        0xA3,
+        0xA4,
+        0xA5,
+    }
+)
 
 
 def _hotkey_char(char: str) -> str:
@@ -95,6 +112,179 @@ def _hotkey_sequence(keys: tuple[str, ...]) -> tuple[str, bool]:
     if not combo and not win:
         raise ValueError(f"hotkey() needs a non-modifier key, got only modifiers {keys!r}.")
     return prefix + "".join(combo), win
+
+
+def _send_keys_on_hidden_desktop(
+    keys: str,
+    *,
+    focus: Callable[[], None] | None = None,
+) -> bool:
+    """Use the normal keyboard API while DolphinHidden is input-active.
+
+    A hidden desktop normally cannot receive ``SendInput``. Windows does not
+    offer a fully equivalent per-window keyboard injection API, especially for
+    modifier state consumed by WPF. When the desktop is switchable, briefly
+    make DolphinHidden the input desktop, send the sequence, and restore the
+    desktop that was active before the call.
+
+    ``focus`` is called after DolphinHidden becomes input-active and before the
+    key sequence is sent. Returns ``False`` when the desktop handles cannot be
+    opened or switched; callers can then use a window-message fallback or
+    report a clear error.
+    """
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    open_input_desktop = user32.OpenInputDesktop
+    open_input_desktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_input_desktop.restype = wintypes.HANDLE
+    open_desktop = user32.OpenDesktopW
+    open_desktop.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    ]
+    open_desktop.restype = wintypes.HANDLE
+    switch_desktop = user32.SwitchDesktop
+    switch_desktop.argtypes = [wintypes.HANDLE]
+    switch_desktop.restype = wintypes.BOOL
+    close_desktop = user32.CloseDesktop
+    close_desktop.argtypes = [wintypes.HANDLE]
+    close_desktop.restype = wintypes.BOOL
+
+    desktop_switch = 0x0100
+    original = open_input_desktop(0, False, desktop_switch)
+    hidden = open_desktop("DolphinHidden", 0, False, desktop_switch)
+    if not original or not hidden:
+        if original:
+            close_desktop(original)
+        if hidden:
+            close_desktop(hidden)
+        return False
+
+    switched = bool(switch_desktop(hidden))
+    if not switched:
+        close_desktop(hidden)
+        close_desktop(original)
+        return False
+    try:
+        if focus is not None:
+            focus()
+        _send_keys(keys)
+    finally:
+        # Restore first, then close both handles. If restoring fails Windows
+        # still owns the active desktop; do not hide that failure from callers.
+        restored = bool(switch_desktop(original))
+        close_desktop(hidden)
+        close_desktop(original)
+        if not restored:
+            error = ctypes.get_last_error()
+            raise OSError(error, "SwitchDesktop restore failed", error)
+    return True
+
+
+def _post_keys_to_hwnd(hwnd: int, keys: str, *, pause: float = 0.05) -> None:
+    """Post a pywinauto key sequence to a specific window handle.
+
+    ``pywinauto.send_keys`` uses ``SendInput``, which targets the interactive
+    input desktop. A window running on DolphinHidden cannot receive those
+    events even after UIA has given it keyboard focus. Posting the equivalent
+    ``WM_KEYDOWN``/``WM_KEYUP`` messages to that window keeps modifier-free
+    ``Locator.press_key`` usable on a hidden desktop. Modifier shortcuts are
+    rejected because ``keybd_event``/``AttachThreadInput`` cannot safely make
+    their state window-targeted.
+
+    This is intentionally a targeted helper. Global :class:`Keyboard` calls
+    still use ``SendInput`` because they have no window handle to target.
+    """
+    if sys.platform != "win32":
+        raise OSError("window-targeted keyboard input is only available on Windows")
+
+    import ctypes
+    from ctypes import wintypes
+
+    from pywinauto.keyboard import parse_keys
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    get_window_thread = user32.GetWindowThreadProcessId
+    get_window_thread.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    get_window_thread.restype = wintypes.DWORD
+    send_message = user32.SendMessageW
+    send_message.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
+    send_message.restype = ctypes.c_ssize_t
+
+    wm_keydown = 0x0100
+    wm_keyup = 0x0101
+    wm_char = 0x0102
+    keyeventf_extendedkey = 0x0001
+    keyeventf_unicode = 0x0004
+
+    # Use virtual-key actions for ordinary ASCII characters. The default
+    # pywinauto parser uses Unicode VK_PACKET actions for those, which have no
+    # virtual-key code that can be represented by WM_KEYDOWN.
+    actions = parse_keys(
+        keys,
+        with_spaces=True,
+        with_tabs=True,
+        with_newlines=True,
+        vk_packet=False,
+    )
+    process_id = wintypes.DWORD()
+    if not get_window_thread(hwnd, ctypes.byref(process_id)):
+        error = ctypes.get_last_error()
+        raise OSError(error, "GetWindowThreadProcessId failed", error)
+    if any(int(action.get_key_info()[0]) in _WINDOW_TARGETED_MODIFIER_VKS for action in actions):
+        raise DolphinError(
+            "press_key() cannot deliver modifier shortcuts through the hidden-window fallback",
+            hint=(
+                "the DolphinHidden desktop could not be activated; use a visible "
+                "desktop or retry when SwitchDesktop is available"
+            ),
+        )
+
+    import time
+
+    for action in actions:
+        vk, scan, flags = action.get_key_info()
+        if not vk:
+            # Unicode input has no WM_KEYDOWN virtual key. WM_CHAR preserves
+            # useful text-entry behaviour for non-ASCII keys.
+            value = getattr(action, "key", None)
+            if (
+                flags & keyeventf_unicode
+                and action.down
+                and action.up
+                and isinstance(value, str)
+                and len(value) == 1
+            ):
+                send_message(hwnd, wm_char, ord(value), 0)
+                if pause:
+                    time.sleep(pause)
+                continue
+            raise ValueError(f"key sequence contains an unsupported action: {action!r}")
+
+        lparam = (int(scan) & 0xFF) << 16
+        if flags & keyeventf_extendedkey:
+            lparam |= 1 << 24
+
+        if action.down:
+            send_message(hwnd, wm_keydown, int(vk), lparam)
+            if pause:
+                time.sleep(pause)
+        if action.up:
+            send_message(hwnd, wm_keyup, int(vk), lparam | (1 << 30) | (1 << 31))
+            if pause:
+                time.sleep(pause)
 
 
 class Keyboard:
