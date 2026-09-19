@@ -724,6 +724,24 @@ class TestRedactionShapesThatLeakedBefore:
             ),
             ("password:\thunter2tab", "hunter2tab"),
             ("password: hunter2\n  next: line", "hunter2"),
+            # KAN-630: dict-repr shape — the quote right after the keyword
+            # (from Python's own repr()) must not break the separator match.
+            (
+                "Element {'login': 'DESKTOP_CANARY_LOGIN_9f2e'} not found after 5.0s.",
+                "DESKTOP_CANARY_LOGIN_9f2e",
+            ),
+            (
+                "{'clipboard': 'DESKTOP_CANARY_CLIP_7a1c'}",
+                "DESKTOP_CANARY_CLIP_7a1c",
+            ),
+            (
+                "{'connection_string': 'DESKTOP_CANARY_CS_1b2c'}",
+                "DESKTOP_CANARY_CS_1b2c",
+            ),
+            (
+                "{'username': 'DESKTOP_CANARY_USER_3d4e'}",
+                "DESKTOP_CANARY_USER_3d4e",
+            ),
         ],
     )
     def test_the_value_never_survives(self, text: str, secret: str) -> None:

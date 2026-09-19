@@ -1447,6 +1447,49 @@ class TestLocatorOperations:
 
         assert raised.value is stale_error
 
+    @pytest.mark.parametrize(
+        ("handle_attr", "call"),
+        [
+            ("dblclick", lambda loc: loc.double_click()),
+            ("click", lambda loc: loc.right_click()),
+            ("hover", lambda loc: loc.hover()),
+            ("focus", lambda loc: loc.focus()),
+            ("press", lambda loc: loc.press_key("Enter")),
+            ("fill", lambda loc: loc.type_text("x")),
+            ("check", lambda loc: loc.check()),
+            ("uncheck", lambda loc: loc.uncheck()),
+            ("scroll_into_view_if_needed", lambda loc: loc.scroll_into_view()),
+            ("inner_text", lambda loc: loc.text()),
+            ("input_value", lambda loc: loc.value()),
+            ("get_attribute", lambda loc: loc.get_attribute("data-x")),
+            ("bounding_box", lambda loc: loc.bounding_box()),
+            ("wait_for", lambda loc: loc.wait_for()),
+            ("screenshot", lambda loc: loc.screenshot()),
+            ("inner_html", lambda loc: loc.inner_html()),
+            ("evaluate", lambda loc: loc.evaluate("el => el")),
+            ("select_text", lambda loc: loc.select_text()),
+            ("blur", lambda loc: loc.blur()),
+            ("tap", lambda loc: loc.tap()),
+            ("all_text_contents", lambda loc: loc.all_text_contents()),
+            ("element_handle", lambda loc: loc.element_handle()),
+        ],
+    )
+    def test_every_sibling_action_propagates_stale_page_error_unchanged(self, handle_attr, call):
+        """KAN-596: the CDPStalePageError re-raise guard must not be
+
+        click()-only — every action/query method that wraps self._resolve()
+        must let a stale-page error through unwrapped instead of masking it
+        as ElementNotFoundError/WaitTimeoutError.
+        """
+        locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
+        stale_error = CDPStalePageError("the selected page has closed")
+        getattr(handle, handle_attr).side_effect = stale_error
+
+        with pytest.raises(CDPStalePageError) as raised:
+            call(locator)
+
+        assert raised.value is stale_error
+
     def test_locator_resolution_and_mouse_keyboard_form_operations(self):
         locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
         assert locator._resolve() is handle

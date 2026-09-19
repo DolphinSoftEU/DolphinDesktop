@@ -296,6 +296,20 @@ class OracleFormsBlock:
                     return OracleFormsItem(jab, name=candidate, app=self._app)
             except ElementNotFoundError:
                 continue
+            except OracleFormsError as exc:
+                # Resolving the JAB locator also resolves the top-level
+                # window — a failure here (e.g. no window found at all) is
+                # not "this candidate name doesn't exist", it's a different
+                # class of failure that won't be fixed by trying the next
+                # candidate name. Surface it with the block/item context
+                # instead of silently falling through to a misleading
+                # "item not found" (same fix as OracleFormsApp.item()).
+                reason = exc.args[0] if exc.args else "lookup failed"
+                raise OracleFormsError(
+                    f"item {name!r} lookup failed in block {self._name!r} for Oracle Forms "
+                    f"app: {reason}",
+                    hint=exc.hint,
+                ) from exc
         raise ElementNotFoundError(
             f"item {name!r} not found in block {self._name!r} (tried names: {candidates})",
             hint=(
@@ -407,6 +421,14 @@ class OracleFormsWindow:
                     if ctx is not None:
                         session.release(*ctx)
                         return
+            except OracleFormsError:
+                # A misconfigured title_re (or no window at all) is not a
+                # transient JAB hiccup that another poll might resolve —
+                # it is the same failure every time, and swallowing it here
+                # would only ever surface the generic timeout below,
+                # discarding the specific, actionable diagnostic
+                # _primary_hwnd() already raised (KAN-617).
+                raise
             except Exception:
                 pass
             time.sleep(0.25)

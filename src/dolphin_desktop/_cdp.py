@@ -1399,6 +1399,8 @@ class CDPLocator:
     def double_click(self, *, timeout: float = 10.0) -> CDPLocator:
         try:
             self._resolve().dblclick(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP double_click failed for selector {self._selector!r}: {exc}"
@@ -1409,6 +1411,8 @@ class CDPLocator:
         """Right-click (context menu) the element."""
         try:
             self._resolve().click(button="right", timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP right_click failed for selector {self._selector!r}: {exc}"
@@ -1419,6 +1423,8 @@ class CDPLocator:
         """Move the mouse over the element — reveals tooltips / hover menus."""
         try:
             self._resolve().hover(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP hover failed for selector {self._selector!r}: {exc}"
@@ -1428,6 +1434,8 @@ class CDPLocator:
     def drag_to(self, other: CDPLocator, *, timeout: float = 10.0) -> CDPLocator:
         try:
             self._resolve().drag_to(other._resolve(), timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP drag_to failed for {self._selector!r} → {other._selector!r}: {exc}"
@@ -1440,6 +1448,8 @@ class CDPLocator:
         """Programmatically focus the element (fires focus event)."""
         try:
             self._resolve().focus(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP focus failed for selector {self._selector!r}: {exc}"
@@ -1455,6 +1465,8 @@ class CDPLocator:
         """
         try:
             self._resolve().press(key, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP press_key({key!r}) failed for {self._selector!r}: {exc}"
@@ -1476,6 +1488,8 @@ class CDPLocator:
                 self._resolve().fill(text, timeout=timeout * 1000)
             else:
                 self._resolve().type(text, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP type_text failed for selector {self._selector!r}: {exc}"
@@ -1490,6 +1504,8 @@ class CDPLocator:
         """Empty an editable field."""
         try:
             self._resolve().fill("", timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP clear failed for selector {self._selector!r}: {exc}"
@@ -1502,6 +1518,8 @@ class CDPLocator:
         """Ensure a checkbox / radio is checked (idempotent)."""
         try:
             self._resolve().check(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP check failed for selector {self._selector!r}: {exc}"
@@ -1512,6 +1530,8 @@ class CDPLocator:
         """Ensure a checkbox is unchecked (idempotent)."""
         try:
             self._resolve().uncheck(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP uncheck failed for selector {self._selector!r}: {exc}"
@@ -1540,6 +1560,8 @@ class CDPLocator:
             if index is not None:
                 kwargs["index"] = index
             return list(self._resolve().select_option(**kwargs))
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP select_option failed for selector {self._selector!r}: {exc}"
@@ -1551,6 +1573,8 @@ class CDPLocator:
         """Scroll the element into view (Playwright picks the best axis)."""
         try:
             self._resolve().scroll_into_view_if_needed(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP scroll_into_view failed for {self._selector!r}: {exc}"
@@ -1563,6 +1587,8 @@ class CDPLocator:
         """Return the element's rendered text."""
         try:
             return self._resolve().inner_text(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP text() failed for selector {self._selector!r}: {exc}"
@@ -1572,6 +1598,8 @@ class CDPLocator:
         """Return the ``value`` of an <input>/<textarea>/<select>."""
         try:
             return self._resolve().input_value(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP value() failed for selector {self._selector!r}: {exc}"
@@ -1581,6 +1609,8 @@ class CDPLocator:
         """Return the value of the named attribute, or ``None`` when unset."""
         try:
             return self._resolve().get_attribute(name, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP get_attribute({name!r}) failed for {self._selector!r}: {exc}"
@@ -1590,6 +1620,8 @@ class CDPLocator:
         """Return ``{x, y, width, height}`` in CSS pixels, or ``None`` if unmounted."""
         try:
             return self._resolve().bounding_box(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP bounding_box failed for {self._selector!r}: {exc}"
@@ -1635,6 +1667,8 @@ class CDPLocator:
         """
         try:
             self._resolve().wait_for(state=state, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise WaitTimeoutError(
                 f"CDP selector {self._selector!r} did not reach state "
@@ -1648,6 +1682,8 @@ class CDPLocator:
         """Capture the element as a :class:`PIL.Image`; optionally save it."""
         try:
             data = self._resolve().screenshot(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP screenshot failed for {self._selector!r}: {exc}"
@@ -1749,6 +1785,8 @@ class CDPLocator:
         """Return raw ``innerHTML`` of the element."""
         try:
             return self._resolve().inner_html(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP inner_html() failed for {self._selector!r}: {exc}"
@@ -1769,6 +1807,8 @@ class CDPLocator:
         """
         try:
             self._resolve().dispatch_event(event_type, event_init or {}, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP dispatch_event({event_type!r}) failed for {self._selector!r}: {exc}"
@@ -1784,6 +1824,8 @@ class CDPLocator:
         """
         try:
             return self._resolve().evaluate(script, *args)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP locator.evaluate failed for {self._selector!r}: {exc}"
@@ -1803,6 +1845,8 @@ class CDPLocator:
         """
         try:
             self._resolve().press_sequentially(text, delay=delay * 1000, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP press_sequentially failed for {self._selector!r}: {exc}"
@@ -1813,6 +1857,8 @@ class CDPLocator:
         """Select the element's text content (equivalent to Ctrl+A on inputs)."""
         try:
             self._resolve().select_text(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP select_text failed for {self._selector!r}: {exc}"
@@ -1823,6 +1869,8 @@ class CDPLocator:
         """Programmatically blur (unfocus) the element."""
         try:
             self._resolve().blur(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(f"CDP blur failed for {self._selector!r}: {exc}") from exc
         return self
@@ -1831,6 +1879,8 @@ class CDPLocator:
         """Dispatch a touch tap on the element (touch-enabled apps)."""
         try:
             self._resolve().tap(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(f"CDP tap failed for {self._selector!r}: {exc}") from exc
         return self
@@ -1839,6 +1889,8 @@ class CDPLocator:
         """Return the ``textContent`` of every element that matches."""
         try:
             return list(self._resolve().all_text_contents())
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP all_text_contents failed for {self._selector!r}: {exc}"
@@ -1853,6 +1905,8 @@ class CDPLocator:
         """
         try:
             return self._resolve().element_handle(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP element_handle failed for {self._selector!r}: {exc}"
@@ -1871,6 +1925,8 @@ class CDPLocator:
         """
         try:
             self._resolve().set_input_files(files, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP set_input_files failed for {self._selector!r}: {exc}"

@@ -454,7 +454,7 @@ class TestWaitForUsesFallbacks:
         spec = MagicMock()
         spec.children.return_value = []
         spec.child_window.side_effect = lambda **kw: (
-            fallback if kw == {"auto_id": "btnOk"} else primary
+            fallback if kw.get("auto_id") == "btnOk" else primary
         )
         return spec
 
@@ -510,6 +510,11 @@ class TestWaitForUsesFallbacks:
         loc = _window(spec).get_by_role("Button")
 
         assert loc.exists() is True
+        # KAN-592: pywinauto's own child_window()/find_elements() defaults
+        # visible_only=True and filters hidden elements out server-side —
+        # presence resolution must override that, not just handle a wrapper
+        # a mock happens to hand back regardless of criteria.
+        spec.child_window.assert_called_once_with(visible_only=False, control_type="Button")
 
     def test_wait_for_exists_accepts_an_existing_hidden_element(self):
         spec = _succeeding_spec()
@@ -517,6 +522,7 @@ class TestWaitForUsesFallbacks:
         loc = _window(spec).get_by_role("Button")
 
         assert loc.wait_for(state="exists", timeout=0.1) is loc
+        spec.child_window.assert_called_once_with(visible_only=False, control_type="Button")
 
     def test_presence_wait_uses_selector_fallbacks(self):
         spec = self._spec_where_only_the_fallback_resolves()

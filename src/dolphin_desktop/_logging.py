@@ -99,7 +99,7 @@ _SECRET_RE = re.compile(
 )
 
 _CONNECTION_STRING_RE = re.compile(
-    r"((?<![A-Za-z0-9_])connection[_\-]?string[ \t]*[:=][ \t]*)"
+    r"((?<![A-Za-z0-9_])connection[_\-]?string[\"']?[ \t]*[:=][ \t]*)"
     r"(?:"
     r'"(?P<dq>[^"\n]+)"'
     r"|'(?P<sq>[^'\n]+)'"
@@ -110,7 +110,12 @@ _CONNECTION_STRING_RE = re.compile(
 
 _ADDITIONAL_SECRET_RE = re.compile(
     r"((?<![A-Za-z0-9_])(?:login|username|user[_\-]?id|"
-    r"connection[_\-]?string|clipboard)[ \t]*[:=][ \t]*)"
+    r"connection[_\-]?string|clipboard)"
+    # Optional closing quote before the separator, same as _SECRET_RE — a
+    # dict repr like {'login': 'x'} puts a quote right after the keyword,
+    # and without this the separator match (and therefore the whole
+    # pattern) never starts (KAN-630).
+    r"[\"']?[ \t]*[:=][ \t]*)"
     r"(?:"
     r'"(?P<dq>[^"\n]+)"'
     r"|'(?P<sq>[^'\n]+)'"
@@ -262,7 +267,8 @@ def _redact(text: str) -> str:
 _SENSITIVE_KEY_RE = re.compile(
     r"(?:password|passwd|passphrase|pwd|secret|token|api[_\-]?key|apikey"
     r"|private[_\-]?key|credential|authorization|auth(?!or)|signature"
-    r"|sessionid|sas|pin)",
+    r"|sessionid|sas|pin"
+    r"|login|username|user[_\-]?id|connection[_\-]?string|clipboard)",
     re.IGNORECASE,
 )
 

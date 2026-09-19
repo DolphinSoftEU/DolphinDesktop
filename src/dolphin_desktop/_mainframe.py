@@ -596,14 +596,6 @@ def _validate_s3270_integer(value: object, *, field: str) -> int:
     return value
 
 
-def _validate_port(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise MainframeError("port must be an integer")
-    if not 1 <= value <= 65535:
-        raise MainframeError("port must be between 1 and 65535")
-    return value
-
-
 def _find_s3270() -> str | None:
     """Return the path to the first available s3270-family binary, or None."""
     for name in _S3270_CANDIDATES:

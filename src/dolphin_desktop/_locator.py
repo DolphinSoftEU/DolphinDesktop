@@ -1639,7 +1639,11 @@ class Locator:
                         enforce=enforce_deadline,
                     ):
                         return resolved
-                spec = parent_spec.child_window(**criteria)
+                # Presence must not require visibility — pywinauto's own
+                # find_elements() defaults visible_only=True and filters a
+                # hidden-but-live control out server-side before dolphin's
+                # own wrapper-liveness check ever runs (KAN-592).
+                spec = parent_spec.child_window(visible_only=False, **criteria)
                 _wait_until_present(spec, 0)
                 if not _deadline_expired(
                     deadline,
@@ -1665,7 +1669,7 @@ class Locator:
                 ):
                     break
                 try:
-                    fb_spec = parent_spec.child_window(**fb)
+                    fb_spec = parent_spec.child_window(visible_only=False, **fb)
                     _wait_until_present(fb_spec, 0)
                     if _deadline_expired(
                         deadline,
@@ -2763,6 +2767,14 @@ class _ResolvedLocator(Locator):
         self._fallback: list[dict[str, Any]] = []
         self._image_fallback: Any = None
         self._timeout = _get_timeout()
+        # Not overridden by this class, so the base Locator.all()/.count()
+        # it inherits calls _refresh_object_repository() unconditionally —
+        # these must exist even though a resolved locator is never itself
+        # bound to a watched Object Repository alias (KAN-611).
+        self._object_repository: Any | None = None
+        self._object_alias: str | None = None
+        self._object_parent_alias: str | None = None
+        self._object_selector_keys: set[str] = set()
 
     def nth(self, index: int) -> Self:
         """Reject any index but 0 — this locator wraps one resolved element.

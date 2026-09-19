@@ -75,6 +75,32 @@ def test_block_raises_a_useful_error_when_no_item_matches() -> None:
         OracleFormsBlock(app, name="EMP").item("ENAME")
 
 
+def test_block_item_preserves_the_block_and_item_name_when_no_window_is_found() -> None:
+    """KAN-595: OracleFormsBlock.item() must add block/item context to an
+
+    OracleFormsError the same way OracleFormsApp.item() does, instead of
+    letting it propagate bare (which also skips the second candidate name).
+    """
+    app = Mock()
+    app._locator.side_effect = forms.OracleFormsError(
+        "no top-level window found for Oracle Forms app",
+        hint="the JVM window may not be surfaced to JAB yet",
+    )
+
+    with pytest.raises(forms.OracleFormsError) as excinfo:
+        OracleFormsBlock(app, name="EMP").item("ENAME")
+
+    message = str(excinfo.value)
+    assert "ENAME" in message
+    assert "EMP" in message
+    assert "no top-level window found for Oracle Forms app" in message
+    assert excinfo.value.hint == "the JVM window may not be surfaced to JAB yet"
+    # Only the first candidate is attempted — an OracleFormsError is a
+    # different class of failure than "this name doesn't exist", so trying
+    # the second candidate name would not help.
+    app._locator.assert_called_once_with(name="EMP.ENAME")
+
+
 @pytest.mark.parametrize(
     ("status", "expected"),
     [("Record 3 of 12", 3), ("Ready.", 0), ("record 4 of ?", 4)],
@@ -215,6 +241,33 @@ def test_form_window_wait_ready_swallows_probe_errors_then_times_out(monkeypatch
         forms.OracleFormsWindow(app).wait_ready(timeout=1)
 
     sleep.assert_called_once_with(0.25)
+
+
+def test_form_window_wait_ready_surfaces_the_title_re_diagnostic_immediately(
+    monkeypatch,
+) -> None:
+    """KAN-617: a mismatched title_re must reach the caller as the specific
+
+    OracleFormsError _primary_hwnd() raises, not be swallowed into a
+    generic, JAB-focused WaitTimeoutError that steers debugging away from
+    the real cause.
+    """
+    app = _empty_app()
+    app._primary_hwnd = Mock(
+        side_effect=forms.OracleFormsError(
+            "no top-level window matched title_re='WrongPattern'",
+            hint="verify the Oracle Forms title selector and wait for the client to finish starting",
+        )
+    )
+    sleep = Mock()
+    monkeypatch.setattr(forms.time, "sleep", sleep)
+
+    with pytest.raises(forms.OracleFormsError, match="title_re='WrongPattern'"):
+        forms.OracleFormsWindow(app).wait_ready(timeout=15)
+
+    # Raised on the first probe — no polling/sleeping to wait out a timeout
+    # that a title_re mismatch will never self-resolve.
+    sleep.assert_not_called()
 
 
 def test_backend_class_helpers_resolve_and_delegate_capabilities(monkeypatch) -> None:
