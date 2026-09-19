@@ -12,11 +12,62 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   `DolphinHidden`, reports a clear `DolphinError` instead of using system-wide
   modifier events when activation fails, and `Locator.text()` preserves the
   exact text returned by UIA `TextPattern`.
+* `config(video_fps=…)` and `config(retry_count=…)` now raise `TypeError`
+  for a non-`int` value (e.g. `10.5`) instead of silently truncating it.
+* `Locator.exists()` / `Locator.wait_for(state="exists")` now find a real,
+  hidden-but-live UIA element on the common `window.locator(...)` path —
+  the presence resolution was only passing `visible_only=False` through
+  for chained/resolved locators, so pywinauto's own default filtering was
+  still excluding a hidden control before dolphin's own logic ran.
+* A `Locator` obtained from a prior `.all()` call (e.g. `rows[0].all()` to
+  read a row's own children) no longer crashes with `AttributeError`.
+* `CDPLocator`'s `CDPStalePageError` now propagates unwrapped from every
+  action/query method, not only `click()` — callers can reliably tell "the
+  selected page closed" apart from "element not found" everywhere.
+* `OracleFormsBlock.item()` now includes the block and item name in the
+  error it raises when no top-level window is found, matching
+  `OracleFormsApp.item()`; `OracleFormsWindow.wait_ready()` no longer
+  swallows a `title_re` mismatch into a generic, misleadingly
+  JAB-focused timeout.
 
 ### Security
 
-Addresses the findings from the `testpypi-preview` security audit
-(KAN-467 … KAN-477).
+Addresses further findings from a follow-up security review
+(KAN-574, KAN-575, KAN-577, KAN-578, KAN-580, KAN-581, KAN-630, KAN-636).
+
+* **Office automation force-disables macros.** `ExcelApp.open()` /
+  `WordApp.open()` set `AutomationSecurity` to force-disable before opening
+  a document, so macros in an untrusted workbook/document never run; Excel
+  also no longer auto-updates external links on open.
+* **TN5250 receive buffer is bounded and its deadline is unconditional.**
+  A host that never sends a terminating record (or streams complete
+  records continuously) can no longer grow the client's buffer without
+  bound or keep a read call alive past its own timeout.
+* **SAP `keyboard_login()` types credentials literally.** `user`/`password`
+  are escaped the same way every other typed-text path in the library is,
+  so a credential containing SendKeys metacharacters (`{`, `}`, `%`, …) is
+  typed as literal text instead of being interpreted as control keys.
+* **`trace.db` → HTML report is no longer an injection path.** The `seq`
+  column is coerced to a safe value before being interpolated into the
+  generated HTML, closing a route for a crafted/corrupted `trace.db` to
+  inject markup.
+* **TestPyPI release workflow hardened.** The smoke-test step no longer
+  mixes `--index-url`/`--extra-index-url` on one `pip` invocation (which
+  let a dependency resolve from either index); a version collision on
+  publish now fails instead of silently reusing the existing upload; the
+  downloaded wheel's SHA-256 is verified against the artifact built in the
+  same workflow run before it is installed.
+* **Dependency floors raised** to their audited-safe minimums: Pillow
+  `>=12.3.0`, `mkdocs-material>=9.7.7`, `sentry-sdk>=2.8.0`,
+  `pytest>=9.0.3`.
+* **Secret redaction gap closed for `login`/`username`/`connection_string`/
+  `clipboard`.** These keys were not masked when they appeared in a
+  dict-repr shape (e.g. inside an `ElementNotFoundError` message built from
+  `{criteria!r}`), and `selfheal.jsonl` wrote a selector dict keyed by a
+  sensitive name with a bare value to disk completely unredacted.
+* **`dolphin init` rejects a target outside the working directory** — an
+  absolute path, `..` traversal, and a symlinked intermediate directory are
+  all caught by one containment check before anything is written.
 
 * **Mainframe command injection blocked (KAN-467).** A single
   `MainframeTerminal` call now produces exactly one s3270 protocol
