@@ -10,6 +10,43 @@ w tej sesji. Wszystko na branchu `security-bugfix`.
 już zamknięte — patrz sekcja 3 niżej. Zostały tylko 3 pozycje wymagające
 decyzji człowieka (sekcja 4) + częściowy KAN-576 (sekcja 1, filtr `--app`).
 
+**Druga aktualizacja — dogłębny code review Kamila (66 ticketów Kamila,
+osobno, po tym jak pierwszy automatyczny audyt tylko sprawdzał "czy tekst
+ticketu pasuje do kodu i czy jest test"):** ten przebieg faktycznie czytał
+całe funkcje, sprawdzał czy test rzeczywiście przypina opisane zachowanie
+(nie przechodzi tylko dlatego że mock ignoruje argumenty), i każde
+znalezisko szło przez niezależną weryfikację adwersarialną (druga osoba
+próbowała je obalić). Wynik: 22 zgłoszenia, **19 potwierdzonych, 3 obalone**
+jako fałszywe alarmy. **7 z nich to realne błędy w kodzie (nie tylko braki
+testów) — wszystkie naprawione i przetestowane** w commicie `fc9f282`:
+
+- **KAN-592 (wysoka)** — `exists()`/`wait_for()` na najczęstszej ścieżce
+  (`window.locator(...)`) nadal nie widział realnych ukrytych elementów UIA
+  — fix działał tylko dla lokatorów łańcuchowych. Naprawione: dodano
+  `visible_only=False` do obu wywołań `child_window()` w
+  `_resolve_presence()`.
+- **KAN-630 (wysoka, bezpieczeństwo)** — dwie luki w redakcji: (1) klucze
+  `login`/`username`/`connection_string`/`clipboard` nie były maskowane w
+  tekście typu `{'login': 'hasło'}` (asymetria regexów), (2)
+  `selfheal.jsonl` zapisywał sekrety całkowicie nieredagowane na dysku.
+  Naprawione oba.
+- **KAN-595** — `OracleFormsBlock.item()` miał ten sam błąd co naprawiony
+  `OracleFormsApp.item()`. Naprawione.
+- **KAN-596** — ochrona `CDPStalePageError` była tylko w `click()`,
+  ~29 innych metod ją maskowało. Dodano do wszystkich.
+- **KAN-611** — `_ResolvedLocator.all()/.count()` rzucał `AttributeError`.
+  Naprawione.
+- **KAN-617** — `wait_ready()` łykał diagnostykę `title_re`. Naprawione.
+- **KAN-632** — duplikat `_validate_port` po moim mergu (martwy kod).
+  Usunięty.
+
+Naprawa KAN-592 wymagała też aktualizacji 5 istniejących testów, których
+mocki asercjonowały dokładną sygnaturę wywołania `child_window()` bez
+nowego argumentu — to nie są nowe bugi, tylko testy dostosowane do
+poprawnego zachowania.
+
+Pełny test suite po tych poprawkach: **2621 passed, 1 skipped, 0 failed.**
+
 Osobny plik `JIRA_UPDATE_KAN-467-477.md` pokrywa moje 11 ticketów
 bezpieczeństwa (KAN-467..477) ze szczegółowym opisem — nie duplikuję ich tu,
 tylko odsyłam.
