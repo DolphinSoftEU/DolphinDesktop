@@ -129,7 +129,7 @@ def _redact_values(value: Any) -> Any:
     ``keyword=value`` text of its own) was previously written to
     ``selfheal.jsonl`` unredacted — this journal is a direct file write that
     no log handler's redaction filter ever sees, so it needs the same
-    protection independently (KAN-630).
+    protection independently.
     """
     return redact_value(value)
 

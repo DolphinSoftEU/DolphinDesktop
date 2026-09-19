@@ -114,7 +114,7 @@ _ADDITIONAL_SECRET_RE = re.compile(
     # Optional closing quote before the separator, same as _SECRET_RE — a
     # dict repr like {'login': 'x'} puts a quote right after the keyword,
     # and without this the separator match (and therefore the whole
-    # pattern) never starts (KAN-630).
+    # pattern) never starts.
     r"[\"']?[ \t]*[:=][ \t]*)"
     r"(?:"
     r'"(?P<dq>[^"\n]+)"'

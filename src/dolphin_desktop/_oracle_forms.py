@@ -427,7 +427,7 @@ class OracleFormsWindow:
                 # it is the same failure every time, and swallowing it here
                 # would only ever surface the generic timeout below,
                 # discarding the specific, actionable diagnostic
-                # _primary_hwnd() already raised (KAN-617).
+                # _primary_hwnd() already raised.
                 raise
             except Exception:
                 pass

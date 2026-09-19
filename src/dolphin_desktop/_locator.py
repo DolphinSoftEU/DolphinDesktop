@@ -1642,7 +1642,7 @@ class Locator:
                 # Presence must not require visibility — pywinauto's own
                 # find_elements() defaults visible_only=True and filters a
                 # hidden-but-live control out server-side before dolphin's
-                # own wrapper-liveness check ever runs (KAN-592).
+                # own wrapper-liveness check ever runs.
                 spec = parent_spec.child_window(visible_only=False, **criteria)
                 _wait_until_present(spec, 0)
                 if not _deadline_expired(
@@ -2770,7 +2770,7 @@ class _ResolvedLocator(Locator):
         # Not overridden by this class, so the base Locator.all()/.count()
         # it inherits calls _refresh_object_repository() unconditionally —
         # these must exist even though a resolved locator is never itself
-        # bound to a watched Object Repository alias (KAN-611).
+        # bound to a watched Object Repository alias.
         self._object_repository: Any | None = None
         self._object_alias: str | None = None
         self._object_parent_alias: str | None = None
