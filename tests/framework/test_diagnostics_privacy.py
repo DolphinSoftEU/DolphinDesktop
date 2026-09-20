@@ -979,6 +979,108 @@ class TestSelfhealJournalStaysParseable:
         assert _selfheal.selfheal_stats(file=journal)
 
 
+class TestMarkSensitiveRegistry:
+    """The registry backing :class:`Secret` — see the module docstring in _logging.py."""
+
+    def test_short_and_non_string_values_are_ignored(self) -> None:
+        from dolphin_desktop._logging import _marked_secrets, mark_sensitive
+
+        before = dict(_marked_secrets)
+        mark_sensitive("abc")  # 3 chars, below the 4-char minimum
+        mark_sensitive(12345)  # type: ignore[arg-type]
+        assert _marked_secrets == before
+
+    def test_registry_evicts_the_oldest_entry_once_full(self) -> None:
+        from dolphin_desktop._logging import (
+            _MARKED_SECRETS_MAX,
+            _marked_secrets,
+            mark_sensitive,
+        )
+
+        saved = dict(_marked_secrets)
+        _marked_secrets.clear()
+        try:
+            for i in range(_MARKED_SECRETS_MAX):
+                mark_sensitive(f"canary-{i:04d}")
+            assert "canary-0000" in _marked_secrets
+
+            mark_sensitive("canary-overflow")
+
+            assert len(_marked_secrets) == _MARKED_SECRETS_MAX
+            assert "canary-0000" not in _marked_secrets
+            assert "canary-overflow" in _marked_secrets
+        finally:
+            _marked_secrets.clear()
+            _marked_secrets.update(saved)
+
+
+class TestSecretWrapper:
+    def test_wrapping_a_secret_reuses_its_value(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        inner = Secret("hunter2xyz")
+        outer = Secret(inner)
+        assert outer.reveal() == "hunter2xyz"
+
+    def test_non_string_value_is_rejected(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        with pytest.raises(TypeError, match="expects a str"):
+            Secret(12345)  # type: ignore[arg-type]
+
+    def test_str_and_repr_never_reveal_the_value(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        secret = Secret("hunter2xyz")
+        assert str(secret) == "***"
+        assert repr(secret) == "Secret('***')"
+        assert "hunter2xyz" not in str(secret)
+        assert "hunter2xyz" not in repr(secret)
+
+    def test_len_and_bool_reflect_the_wrapped_value(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        assert len(Secret("hunter2xyz")) == len("hunter2xyz")
+        assert bool(Secret("hunter2xyz")) is True
+        assert bool(Secret("")) is False
+
+    def test_equality_compares_wrapped_values_not_identity(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        assert Secret("hunter2xyz") == Secret("hunter2xyz")
+        assert Secret("hunter2xyz") != Secret("other")
+        assert Secret("hunter2xyz").__eq__("hunter2xyz") is NotImplemented
+
+    def test_hash_is_derived_from_the_wrapped_value(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        assert hash(Secret("hunter2xyz")) == hash(Secret("hunter2xyz"))
+        assert len({Secret("hunter2xyz"), Secret("hunter2xyz")}) == 1
+
+
+class TestRedactValueStructural:
+    def test_recursion_depth_is_capped(self) -> None:
+        """A pathologically deep structure must mask out rather than recurse forever."""
+        from dolphin_desktop._logging import redact_value
+
+        assert redact_value("password=hunter2xyz", _depth=33) == "***"
+        assert redact_value({"a": 1}, _depth=33) == "***"
+
+    def test_a_secret_instance_inside_a_structure_is_masked(self) -> None:
+        from dolphin_desktop._logging import Secret, redact_value
+
+        out = redact_value({"note": Secret("hunter2xyz")})
+        assert out["note"] == "***"
+
+    def test_tuples_and_sets_keep_their_type(self) -> None:
+        from dolphin_desktop._logging import redact_value
+
+        assert redact_value(("password=hunter2xyz", "plain")) == ("password=***", "plain")
+        out = redact_value(frozenset({"password=hunter2xyz"}))
+        assert isinstance(out, frozenset)
+        assert out == frozenset({"password=***"})
+
+
 def test_logging_filter_redacts_message_arguments() -> None:
     from dolphin_desktop._logging import _RedactingFilter
 

@@ -72,3 +72,46 @@ def test_mouse_x_button_sends_xbutton1_data(monkeypatch) -> None:
         ((_mouse._win32con.MOUSEEVENTF_XDOWN, 0, 0, 1, 0),),
         ((_mouse._win32con.MOUSEEVENTF_XUP, 0, 0, 1, 0),),
     ]
+
+
+def test_x_button_input_raises_without_win32_api(monkeypatch) -> None:
+    from dolphin_desktop import _mouse
+
+    monkeypatch.setattr(_mouse, "_win32api", None)
+    monkeypatch.setattr(_mouse, "_win32con", None)
+
+    with pytest.raises(RuntimeError, match="X-button input is only available on Windows"):
+        _mouse._x_button_input(1, 2)
+
+
+def test_mouse_double_click_x_button_delegates_to_x_button_input(monkeypatch) -> None:
+    from dolphin_desktop import _mouse
+
+    x_button_input = Mock()
+    monkeypatch.setattr(_mouse, "_x_button_input", x_button_input)
+
+    _mouse.Mouse.double_click(30, 40, button="x")
+
+    x_button_input.assert_called_once_with(30, 40, double=True)
+
+
+def test_mouse_press_x_button_delegates_to_x_button_input(monkeypatch) -> None:
+    from dolphin_desktop import _mouse
+
+    x_button_input = Mock()
+    monkeypatch.setattr(_mouse, "_x_button_input", x_button_input)
+
+    _mouse.Mouse.press(50, 60, button="x")
+
+    x_button_input.assert_called_once_with(50, 60, button_up=False)
+
+
+def test_mouse_release_x_button_delegates_to_x_button_input(monkeypatch) -> None:
+    from dolphin_desktop import _mouse
+
+    x_button_input = Mock()
+    monkeypatch.setattr(_mouse, "_x_button_input", x_button_input)
+
+    _mouse.Mouse.release(70, 80, button="x")
+
+    x_button_input.assert_called_once_with(70, 80, button_down=False)

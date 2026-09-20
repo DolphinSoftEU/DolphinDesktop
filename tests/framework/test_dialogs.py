@@ -616,3 +616,241 @@ def test_dialog_message_box_tries_buttons_in_order() -> None:
     window.child_window.side_effect = [Mock(click_input=Mock(side_effect=RuntimeError())), button]
     MessageBox(window).click("No", "Cancel")
     button.click_input.assert_called_once()
+
+
+def test_split_button_main_area_coords_handles_broken_and_tiny_rects() -> None:
+    from dolphin_desktop._dialogs import _split_button_main_area_coords
+
+    broken_rect = SimpleNamespace(
+        width=Mock(side_effect=RuntimeError("no rect")),
+        height=Mock(),
+    )
+    assert _split_button_main_area_coords(broken_rect) is None
+
+    tiny_rect = SimpleNamespace(width=lambda: 2, height=lambda: 2)
+    assert _split_button_main_area_coords(tiny_rect) is None
+
+    normal_rect = SimpleNamespace(width=lambda: 100, height=lambda: 20)
+    assert _split_button_main_area_coords(normal_rect) == (25, 10)
+
+
+def test_window_handle_skips_non_dict_criteria_entries() -> None:
+    from dolphin_desktop._dialogs import _window_handle
+
+    # Walked in reverse: the trailing non-dict entry is skipped first, then
+    # the dict carrying a usable handle is found and returned.
+    window = SimpleNamespace(criteria=[{"handle": "200"}, "not-a-dict"])
+    assert _window_handle(window) == 200
+
+
+def test_window_handle_breaks_on_unconvertible_handle_and_falls_back_to_attribute() -> None:
+    from dolphin_desktop._dialogs import _window_handle
+
+    window = SimpleNamespace(criteria=[{"handle": "not-a-number"}], handle=300)
+    assert _window_handle(window) == 300
+
+
+def test_set_path_filename_auto_id_lookup_exception_falls_back_to_address_bar(
+    monkeypatch,
+) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    window = Mock()
+    window.children.return_value = []
+    window.child_window.side_effect = RuntimeError("auto_id lookup failed")
+    send_keys = Mock()
+    monkeypatch.setattr("pywinauto.keyboard.send_keys", send_keys)
+    monkeypatch.setattr(dialogs.time, "sleep", Mock())
+
+    dialogs.FileDialog(window).set_path("C:\\reports\\a.txt")
+
+    window.set_focus.assert_called_once_with()
+    assert send_keys.call_args_list[0].args == ("^l",)
+    assert send_keys.call_args_list[-1].args == ("{ENTER}",)
+
+
+def test_set_path_auto_id_edit_set_text_failure_falls_back_to_address_bar(
+    monkeypatch,
+) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    window = Mock()
+    window.children.return_value = []
+    spec = Mock()
+    spec.exists.return_value = True
+    edit = Mock()
+    edit.set_focus.side_effect = RuntimeError("cannot focus")
+    spec.wrapper_object.return_value = edit
+    window.child_window.return_value = spec
+    send_keys = Mock()
+    monkeypatch.setattr("pywinauto.keyboard.send_keys", send_keys)
+    monkeypatch.setattr(dialogs.time, "sleep", Mock())
+
+    dialogs.FileDialog(window).set_path("C:\\reports\\a.txt")
+
+    edit.set_focus.assert_called_once_with()
+    window.set_focus.assert_called_once_with()
+    assert send_keys.call_args_list[0].args == ("^l",)
+
+
+def test_dialog_gone_reports_missing_when_is_visible_raises_pywinauto_not_found() -> None:
+    from pywinauto.findwindows import ElementNotFoundError
+
+    import dolphin_desktop._dialogs as dialogs
+
+    window = SimpleNamespace(
+        exists=lambda timeout=0.0: True,
+        is_visible=Mock(side_effect=ElementNotFoundError("gone")),
+    )
+    assert dialogs.FileDialog(window)._dialog_gone() is True
+
+
+def test_dialog_gone_stays_present_when_is_visible_raises_other_error() -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    window = SimpleNamespace(
+        exists=lambda timeout=0.0: True,
+        is_visible=Mock(side_effect=RuntimeError("com hiccup")),
+    )
+    assert dialogs.FileDialog(window)._dialog_gone() is False
+
+
+def test_click_split_button_main_area_returns_false_for_a_tiny_rectangle() -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    window = Mock()
+    spec = Mock()
+    spec.exists.return_value = True
+    wrapper = Mock()
+    wrapper.rectangle.return_value = SimpleNamespace(width=lambda: 1, height=lambda: 1)
+    spec.wrapper_object.return_value = wrapper
+    window.child_window.return_value = spec
+
+    assert dialogs.FileDialog(window)._click_split_button_main_area("1") is False
+    wrapper.click_input.assert_not_called()
+
+
+def test_press_enter_on_auto_id_skips_a_candidate_when_set_focus_raises() -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    split_button = Mock()
+    split_button.exists.return_value = True
+    split_button.set_focus.side_effect = RuntimeError("cannot focus")
+    button = Mock()
+    button.exists.return_value = False
+    window = Mock()
+
+    def child_window(**criteria):
+        return split_button if criteria["control_type"] == "SplitButton" else button
+
+    window.child_window.side_effect = child_window
+
+    assert dialogs.FileDialog(window)._press_enter_on_auto_id("1") is False
+    split_button.set_focus.assert_called_once_with()
+
+
+def test_native_click_by_id_short_circuits_off_windows(monkeypatch) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    monkeypatch.setattr(dialogs.sys, "platform", "linux")
+    assert dialogs.FileDialog(Mock())._native_click_by_id(1) is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 message fallback")
+def test_native_click_by_id_returns_false_when_win32_modules_are_unavailable(
+    monkeypatch,
+) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    window = SimpleNamespace(handle=100)
+    monkeypatch.setitem(sys.modules, "win32con", None)
+
+    assert dialogs.FileDialog(window)._native_click_by_id(1) is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 message fallback")
+def test_native_click_by_id_treats_get_dlg_item_failure_as_missing_button(
+    monkeypatch,
+) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    dialog = _NativeDialog()
+    dialog._alive = False
+    win32con = SimpleNamespace(BM_CLICK=0x00F5, WM_COMMAND=0x0111, BN_CLICKED=0)
+    win32gui = SimpleNamespace(
+        GetDlgItem=Mock(side_effect=RuntimeError("no such control")),
+        PostMessage=Mock(return_value=True),
+    )
+    monkeypatch.setitem(sys.modules, "win32con", win32con)
+    monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+
+    assert dialogs.FileDialog(dialog)._native_click_by_id(1) is True
+    win32gui.GetDlgItem.assert_called_once_with(100, 1)
+    win32gui.PostMessage.assert_called_once_with(100, win32con.WM_COMMAND, 1, 0)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 message fallback")
+def test_native_click_by_id_treats_bm_click_post_failure_as_not_posted(monkeypatch) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    dialog = _NativeDialog()
+    dialog._alive = False
+    win32con = SimpleNamespace(BM_CLICK=0x00F5, WM_COMMAND=0x0111, BN_CLICKED=0)
+    calls = []
+
+    def post_message(hwnd, message, w_param, l_param):
+        calls.append((hwnd, message, w_param, l_param))
+        if message == win32con.BM_CLICK:
+            raise RuntimeError("post failed")
+        return True
+
+    win32gui = SimpleNamespace(GetDlgItem=Mock(return_value=200), PostMessage=post_message)
+    monkeypatch.setitem(sys.modules, "win32con", win32con)
+    monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+
+    assert dialogs.FileDialog(dialog)._native_click_by_id(1) is True
+    assert calls == [
+        (200, win32con.BM_CLICK, 0, 0),
+        (100, win32con.WM_COMMAND, 1, 200),
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 message fallback")
+def test_native_click_by_id_returns_true_immediately_when_bm_click_closes_dialog(
+    monkeypatch,
+) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    dialog = _NativeDialog()
+    win32con = SimpleNamespace(BM_CLICK=0x00F5, WM_COMMAND=0x0111, BN_CLICKED=0)
+    calls = []
+
+    def post_message(hwnd, message, w_param, l_param):
+        calls.append((hwnd, message, w_param, l_param))
+        if message == win32con.BM_CLICK:
+            dialog._alive = False
+        return True
+
+    win32gui = SimpleNamespace(GetDlgItem=Mock(return_value=200), PostMessage=post_message)
+    monkeypatch.setitem(sys.modules, "win32con", win32con)
+    monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+
+    assert dialogs.FileDialog(dialog)._native_click_by_id(1) is True
+    assert calls == [(200, win32con.BM_CLICK, 0, 0)]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 message fallback")
+def test_native_click_by_id_returns_false_when_wm_command_post_fails(monkeypatch) -> None:
+    import dolphin_desktop._dialogs as dialogs
+
+    dialog = _NativeDialog()
+    win32con = SimpleNamespace(BM_CLICK=0x00F5, WM_COMMAND=0x0111, BN_CLICKED=0)
+    win32gui = SimpleNamespace(
+        GetDlgItem=Mock(return_value=0),
+        PostMessage=Mock(side_effect=RuntimeError("post failed")),
+    )
+    monkeypatch.setitem(sys.modules, "win32con", win32con)
+    monkeypatch.setitem(sys.modules, "win32gui", win32gui)
+
+    assert dialogs.FileDialog(dialog)._native_click_by_id(1) is False
+    win32gui.PostMessage.assert_called_once_with(100, win32con.WM_COMMAND, 1, 0)

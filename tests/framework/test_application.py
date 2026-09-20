@@ -167,6 +167,71 @@ def test_process_state_distinguishes_stopped_running_and_unknown(monkeypatch) ->
     assert application._process_state(12) == "unknown"
 
 
+def test_process_creation_time_covers_all_failure_and_success_paths(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    # kernel32 itself unavailable.
+    monkeypatch.setattr(ctypes, "WinDLL", Mock(side_effect=OSError("kernel32 missing")))
+    assert application._process_creation_time(12) is None
+
+    kernel32 = SimpleNamespace(
+        OpenProcess=Mock(side_effect=OSError("open failed")),
+        GetProcessTimes=Mock(),
+        CloseHandle=Mock(),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32)
+    assert application._process_creation_time(12) is None
+
+    kernel32.OpenProcess = Mock(return_value=0)
+    assert application._process_creation_time(12) is None
+
+    kernel32.OpenProcess = Mock(return_value=77)
+    kernel32.GetProcessTimes = Mock(return_value=False)
+    assert application._process_creation_time(12) is None
+    kernel32.CloseHandle.assert_called_with(77)
+
+    def fill_times(_handle, creation_ptr, _exit_ptr, _kernel_ptr, _user_ptr):
+        creation_ptr._obj.dwHighDateTime = 1
+        creation_ptr._obj.dwLowDateTime = 2
+        return True
+
+    kernel32.GetProcessTimes = Mock(side_effect=fill_times)
+    assert application._process_creation_time(12) == (1 << 32) | 2
+
+    kernel32.GetProcessTimes = Mock(side_effect=RuntimeError("times query failed"))
+    assert application._process_creation_time(12) is None
+
+    kernel32.GetProcessTimes = Mock(side_effect=fill_times)
+    kernel32.CloseHandle = Mock(side_effect=OSError("already closed"))
+    assert application._process_creation_time(12) == (1 << 32) | 2
+
+
+def test_record_process_identity_stores_only_known_creation_times(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    monkeypatch.setattr(application, "_process_identities", {})
+    monkeypatch.setattr(application, "_process_creation_time", lambda _pid: 555)
+    application.record_process_identity(4242)
+    assert application._process_identities == {4242: 555}
+
+    monkeypatch.setattr(application, "_process_identities", {})
+    monkeypatch.setattr(application, "_process_creation_time", lambda _pid: None)
+    application.record_process_identity(4243)
+    assert application._process_identities == {}
+
+
+def test_identity_is_foreign_treats_unreadable_current_time_as_not_foreign(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    # An identity was recorded earlier, but the PID's creation time can no
+    # longer be read now (e.g. the process has since exited). "Unknown" must
+    # not be conflated with "reused" — cleanup still needs to be able to
+    # terminate it.
+    monkeypatch.setattr(application, "_process_identities", {4242: 111})
+    monkeypatch.setattr(application, "_process_creation_time", lambda _pid: None)
+    assert application._identity_is_foreign(4242) is False
+
+
 def test_owned_handle_helpers_return_none_and_preserve_existing_pid_anchor(monkeypatch) -> None:
     import dolphin_desktop._application as application
 
@@ -721,6 +786,15 @@ def test_legacy_process_termination_and_soft_close_are_best_effort(monkeypatch) 
     app._request_soft_close()
     raw.windows.assert_called_once_with(visible_only=True)
     bad_window.force_close.assert_called_once_with()
+
+
+def test_request_soft_close_swallows_window_enumeration_failure() -> None:
+    import dolphin_desktop._application as application
+
+    app, raw = _bare_application(application, pid=1243, owns=True)
+    raw.windows.side_effect = RuntimeError("enumeration failed")
+    app._request_soft_close()
+    raw.windows.assert_called_once_with(visible_only=True)
 
 
 def test_legacy_kill_uses_pywinauto_only_for_legacy_wrappers() -> None:

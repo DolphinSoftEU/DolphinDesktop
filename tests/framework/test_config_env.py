@@ -157,3 +157,9 @@ def test_config_environment_validation_and_runtime_limits(monkeypatch) -> None:
 def test_config_rejects_non_finite_timeouts(value) -> None:
     with pytest.raises(ValueError, match="timeout must be finite"):
         _config.config(timeout=value)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_config_rejects_non_finite_poll_intervals(value) -> None:
+    with pytest.raises(ValueError, match="poll_interval must be finite"):
+        _config.config(poll_interval=value)

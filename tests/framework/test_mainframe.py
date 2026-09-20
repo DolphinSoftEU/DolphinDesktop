@@ -1602,3 +1602,163 @@ def test_mainframe_factory_selects_supported_backends_and_finds_binary(monkeypat
         lambda candidate: "C:\\tools\\s3270.exe" if candidate == "s3270" else None,
     )
     assert mainframe._find_s3270() == "C:\\tools\\s3270.exe"
+
+
+def test_is_loopback_host_strips_ipv6_brackets() -> None:
+    assert mf._is_loopback_host("[::1]") is True
+    assert mf._is_loopback_host("[2001:db8::1]") is False
+    assert mf._is_loopback_host("localhost") is True
+
+
+def test_verified_tls_context_reuses_a_supplied_context_and_loads_cafile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ssl
+
+    context = ssl.create_default_context()
+    load = Mock()
+    monkeypatch.setattr(context, "load_verify_locations", load)
+
+    result = mf._verified_tls_context(context, "/fake/ca.pem")
+
+    assert result is context
+    load.assert_called_once_with(cafile="/fake/ca.pem")
+
+
+def test_validate_host_rejects_a_non_string_directly() -> None:
+    with pytest.raises(mf.MainframeError, match="host must be a string"):
+        mf._validate_host(123)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "value,name",
+    [("cmd\rmore", "carriage return"), ("cmd\nmore", "line feed"), ("cmd\x00more", "NUL")],
+)
+def test_reject_frame_delimiters_names_the_offending_character(value: str, name: str) -> None:
+    with pytest.raises(mf.MainframeError, match=name):
+        mf._reject_frame_delimiters(value, "s3270 command")
+
+
+def test_s3270_send_string_rejects_a_non_string_payload() -> None:
+    backend = mf._S3270Backend.__new__(mf._S3270Backend)
+    backend._exec = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="s3270 text must be a string"):
+        backend.send_string(123)  # type: ignore[arg-type]
+
+    backend._exec.assert_not_called()
+
+
+def test_s3270_backend_rejects_extra_args_that_disable_tls_verification() -> None:
+    with pytest.raises(mf.MainframeError, match="disable TLS certificate verification"):
+        mf._S3270Backend(binary="fake-s3270.exe", extra_args=["-noverifycert"])
+
+
+def test_s3270_supports_cafile_probes_help_output_and_caches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mf._S3270_CAFILE_SUPPORT.clear()
+    run = Mock(return_value=SimpleNamespace(stdout="-cafile <file>\n", stderr=""))
+    monkeypatch.setattr(mf.subprocess, "run", run)
+
+    assert mf._s3270_supports_cafile("ws3270.exe") is True
+    # Second call is served from the cache — no second subprocess spawn.
+    assert mf._s3270_supports_cafile("ws3270.exe") is True
+    run.assert_called_once()
+
+    mf._S3270_CAFILE_SUPPORT.clear()
+    monkeypatch.setattr(mf.subprocess, "run", Mock(side_effect=OSError("no such binary")))
+    assert mf._s3270_supports_cafile("missing.exe") is False
+
+
+def test_trusted_hllapi_paths_explicit_missing_file_and_default_search(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from dolphin_desktop import _native
+
+    missing = tmp_path / "does-not-exist.dll"
+    with pytest.raises(_native.NativeLibraryError, match="does not exist"):
+        mf._trusted_hllapi_paths(str(missing))
+
+    monkeypatch.setattr(_native, "program_files_dirs", lambda: [r"C:\Program Files"])
+    monkeypatch.setattr(_native, "system32_dir", lambda: r"C:\Windows\System32")
+    found = Mock(return_value=[r"C:\Windows\System32\PCSHLL32.DLL"])
+    monkeypatch.setattr(_native, "existing_candidates", found)
+
+    result = mf._trusted_hllapi_paths(None)
+
+    assert result == [r"C:\Windows\System32\PCSHLL32.DLL"]
+    found.assert_called_once()
+
+
+def test_resolve_hllapi_dll_skips_paths_that_fail_to_load_or_lack_an_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dolphin_desktop import _native
+
+    monkeypatch.setattr(
+        mf, "_trusted_hllapi_paths", lambda explicit: ["bad.dll", "no-export.dll", "good.dll"]
+    )
+    fn = Mock()
+    good_dll = SimpleNamespace(hllapi=fn)
+    no_export_dll = SimpleNamespace()  # neither "hllapi" nor "HLLAPI"
+
+    def load(path: str, *, what: str) -> object:
+        if path == "bad.dll":
+            raise _native.NativeLibraryError("boom")
+        if path == "no-export.dll":
+            return no_export_dll
+        return good_dll
+
+    monkeypatch.setattr(_native, "load_trusted_dll", load)
+
+    resolved_dll, resolved_fn = mf._resolve_hllapi_dll(None)
+
+    assert resolved_dll is good_dll
+    assert resolved_fn is fn
+
+
+def test_tn5250_tls_handshake_failure_closes_the_socket_even_when_close_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ssl
+
+    context = ssl.create_default_context()
+    monkeypatch.setattr(context, "wrap_socket", Mock(side_effect=ssl.SSLError("bad cert")))
+    backend = mf._Tn5250Backend(tls=True, tls_context=context)
+    raw = SimpleNamespace(close=Mock(side_effect=OSError("already gone")))
+    monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=raw))
+
+    with pytest.raises(mf.MainframeError, match="TLS handshake"):
+        backend.connect("ibmi", 992, session_type="5250")
+
+
+def test_tn5250_tls_negotiate_failure_after_handshake_raises_tls_specific_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ssl
+
+    context = ssl.create_default_context()
+    tls_sock = SimpleNamespace(version=Mock(return_value="TLSv1.3"), settimeout=Mock())
+    monkeypatch.setattr(context, "wrap_socket", Mock(return_value=tls_sock))
+    backend = mf._Tn5250Backend(tls=True, tls_context=context, trace=True)
+    monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=SimpleNamespace()))
+    backend._negotiate = Mock(side_effect=OSError("negotiate failed"))  # type: ignore[method-assign]
+    backend.disconnect = Mock()  # type: ignore[method-assign]
+
+    with pytest.raises(mf.MainframeError, match="TN5250 TLS connection"):
+        backend.connect("ibmi", 992, session_type="5250")
+
+    backend.disconnect.assert_called_once()
+
+
+def test_tn5250_send_aid_logs_a_trace_line_for_the_input_record() -> None:
+    backend = mf._Tn5250Backend(rows=2, cols=5, trace=True)
+    sock = _Socket()
+    backend._sock = sock
+    backend._cursor = (1, 1)
+    backend._pending_writes = []
+
+    backend.send_aid("Enter")
+
+    assert sock.sent

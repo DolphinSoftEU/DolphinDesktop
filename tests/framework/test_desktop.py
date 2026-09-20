@@ -800,6 +800,32 @@ def test_cdp_launch_polling_succeeds_and_timeout_kills_process(monkeypatch) -> N
         )
 
 
+def test_cdp_rejects_preexisting_port_collision_before_launch(monkeypatch) -> None:
+    """A loopback listener already on the debug port must abort before spawning."""
+    desktop = desktop_module.Desktop(hidden=False)
+    launch = Mock()
+    monkeypatch.setattr(desktop, "launch", launch)
+    monkeypatch.setattr(
+        "dolphin_desktop._netinfo.loopback_listener_pids",
+        Mock(return_value={4321, 4322}),
+    )
+
+    with pytest.raises(
+        RuntimeError, match=r"TestRuntime CDP debug port 9222 is already in use by PID\(s\)"
+    ):
+        desktop._launch_with_cdp_flag(
+            "app.exe",
+            port_flag="--debug=1",
+            debug_port=9222,
+            timeout=5,
+            work_dir=None,
+            startup_delay=0,
+            runtime_label="TestRuntime",
+        )
+
+    launch.assert_not_called()
+
+
 def test_cdp_public_launchers_forward_their_runtime_specific_options(monkeypatch) -> None:
     desktop = desktop_module.Desktop(hidden=False)
     helper = Mock(return_value=("app", "session"))

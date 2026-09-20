@@ -1778,6 +1778,61 @@ class TestSessionReports:
         assert live == {508}
         assert handles == {508: "anchor"}
 
+    def test_sessionfinish_skips_cleanup_for_unanchored_orphan(self, monkeypatch):
+        """A PID that anchoring explicitly failed for must never be
+
+        PID-terminated at session end — same fail-closed contract as the
+        per-test reaper, guarding against terminating a reused PID.
+        """
+        from dolphin_desktop import _application
+
+        pids = {600}
+        live = {600}
+        monkeypatch.setattr(_application, "_session_pids", pids)
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", {})
+        monkeypatch.setattr(_application, "_unanchored_pids", {600})
+        monkeypatch.setattr(
+            _application,
+            "terminate_tracked_pid",
+            lambda *_a, **_k: pytest.fail("unanchored PID must not be terminated"),
+        )
+        plugin._session_reports.clear()
+
+        plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
+
+        assert pids == {600}
+        assert live == {600}
+
+    def test_sessionfinish_kills_orphan_via_tracked_pid_fallback(self, monkeypatch):
+        """No anchored handle and never marked unanchored: cleanup falls
+
+        back to identity-checked PID termination via
+        ``terminate_tracked_pid`` and discards the PID from both
+        registries once it succeeds.
+        """
+        from dolphin_desktop import _application
+
+        pids = {601}
+        live = {601}
+        calls: list[int] = []
+        monkeypatch.setattr(_application, "_session_pids", pids)
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", {})
+        monkeypatch.setattr(_application, "_unanchored_pids", set())
+        monkeypatch.setattr(
+            _application,
+            "terminate_tracked_pid",
+            lambda pid, log=None: calls.append(pid) or True,
+        )
+        plugin._session_reports.clear()
+
+        plugin.pytest_sessionfinish(SimpleNamespace(config=SimpleNamespace()), 0)
+
+        assert calls == [601]
+        assert pids == set()
+        assert live == set()
+
 
 class TestHtmlReport:
     def test_generate_html_renders_all_statuses_and_artifact_links(self, tmp_path):

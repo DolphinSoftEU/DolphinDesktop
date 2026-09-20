@@ -405,6 +405,41 @@ class TestBrokenTransportRecovery:
             client.reattach()
         assert opened == [4242]
 
+    def test_reattach_refuses_a_pid_whose_creation_time_changed(self, monkeypatch):
+        """Even a live, reachable pipe is refused once the pid's creation time
+        no longer matches — the pid was recycled onto a different process,
+        possibly one that is itself dolphin-injected and would otherwise pass
+        ``_verify_pipe_server`` for the wrong application."""
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda a, b, c: 555)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: 1)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda pid: 999)
+        monkeypatch.setattr(
+            _qt_inject,
+            "_open_pipe",
+            lambda *a: pytest.fail("must not touch the pipe once the pid looks recycled"),
+        )
+        client = QtAgentClient(4242, 5, pipe_name=r"\\.\pipe\dolphin_qt_4242_test", create_time=111)
+        with pytest.raises(QtAgentInjectError, match="PID was reused"):
+            client.reattach()
+
+    def test_reattach_tolerates_an_unreadable_creation_time(self, monkeypatch):
+        """``_pid_create_time`` returning ``None`` (a transient query failure)
+        must not be mistaken for proof that the pid was recycled."""
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda a, b, c: 555)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: 1)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda pid: None)
+        monkeypatch.setattr(_qt_inject, "_open_pipe", lambda name, pid, timeout: 9)
+        client = QtAgentClient(4242, 5, pipe_name=r"\\.\pipe\dolphin_qt_4242_test", create_time=111)
+        client.reattach()
+        assert client._pipe == 9
+
+    def test_reattach_requires_a_recorded_pipe_name(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda a, b, c: 555)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: 1)
+        client = QtAgentClient(4242, 5)
+        with pytest.raises(QtAgentInjectError, match="was not recorded"):
+            client.reattach()
+
     def test_broken_client_names_the_recovery_path(self):
         client = _FakeClient([b'{"id": 99, "ok": true, "result": "stale"}\n'])
         with pytest.raises(QtAgentRpcError):
@@ -682,6 +717,89 @@ class TestPipeServerVerification:
         with pytest.raises(QtAgentInjectError, match="served by pid 1337"):
             _qt_inject._open_pipe(r"\\.\pipe\dolphin_qt_4242", 4242, timeout_s=0.1)
         assert closed == [61]
+
+
+class TestPidCreateTime:
+    """``_pid_create_time`` backs the reused-pid guard in ``reattach()``."""
+
+    def test_returns_none_when_open_process_fails(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *a: 0)
+        assert _qt_inject._pid_create_time(4242) is None
+
+    def test_combines_the_filetime_halves_and_closes_the_handle(self, monkeypatch):
+        closed: list[int] = []
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *a: 555)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: closed.append(h) or 1)
+
+        def _times(_hproc, creation, _exit_t, _kernel_t, _user_t):
+            creation._obj.dwHighDateTime = 2
+            creation._obj.dwLowDateTime = 7
+            return 1
+
+        monkeypatch.setattr(_qt_inject, "_GetProcessTimes", _times)
+        assert _qt_inject._pid_create_time(4242) == (2 << 32) | 7
+        assert closed == [555]
+
+    def test_returns_none_when_get_process_times_fails(self, monkeypatch):
+        closed: list[int] = []
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *a: 555)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: closed.append(h) or 1)
+        monkeypatch.setattr(_qt_inject, "_GetProcessTimes", lambda *a: 0)
+        assert _qt_inject._pid_create_time(4242) is None
+        # The handle is still released on the failure path.
+        assert closed == [555]
+
+
+class TestAttach:
+    """``QtAgentClient.attach()`` wires inject -> start -> pipe-open together.
+
+    Everything below the DLL path resolution is faked; the pipe name itself
+    is left to run for real so the unguessable-token behaviour it relies on
+    (see ``_agent_pipe_name``) is exercised end to end.
+    """
+
+    def _install(self, monkeypatch, *, open_pipe=None):
+        calls = types.SimpleNamespace(closed=[], injected=[], started=[])
+        monkeypatch.setattr(_qt_inject, "agent_dll_for", lambda v: Path(f"fake_qt{v}_agent.dll"))
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *a: 555)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: calls.closed.append(h) or 1)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda pid: 4242424242)
+        monkeypatch.setattr(
+            _qt_inject, "_inject_dll", lambda pid, dll: calls.injected.append((pid, dll))
+        )
+        monkeypatch.setattr(
+            _qt_inject,
+            "_start_agent",
+            lambda pid, dll, pipe_name: calls.started.append((pid, dll, pipe_name)),
+        )
+        monkeypatch.setattr(_qt_inject, "_open_pipe", open_pipe or (lambda name, pid, timeout: 99))
+        return calls
+
+    def test_attach_wires_inject_start_and_pipe_open_together(self, monkeypatch):
+        calls = self._install(monkeypatch)
+        client = QtAgentClient.attach(4242, "6", timeout=5.0)
+        assert isinstance(client, QtAgentClient)
+        assert client.pid == 4242
+        assert client._pipe == 99
+        assert client._qt_version == "6"
+        assert client._create_time == 4242424242
+        # The pipe name is per-attach and carries the unguessable token.
+        assert client._pipe_name is not None
+        assert client._pipe_name.startswith(r"\\.\pipe\dolphin_qt_4242_")
+        assert calls.injected == [(4242, Path("fake_qt6_agent.dll"))]
+        assert calls.started == [(4242, Path("fake_qt6_agent.dll"), client._pipe_name)]
+        # The pin handle that keeps the pid stable across inject/start/connect
+        # is released once the pipe is open.
+        assert calls.closed == [555]
+
+    def test_attach_releases_the_pin_handle_even_when_the_pipe_never_opens(self, monkeypatch):
+        def _boom(name, pid, timeout):
+            raise QtAgentInjectError("pipe never appeared")
+
+        calls = self._install(monkeypatch, open_pipe=_boom)
+        with pytest.raises(QtAgentInjectError, match="pipe never appeared"):
+            QtAgentClient.attach(4242, "5")
+        assert calls.closed == [555]
 
 
 class _Win32Sim:
