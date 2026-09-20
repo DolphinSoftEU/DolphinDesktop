@@ -460,6 +460,7 @@ def _render_steps(steps: list[dict[str, Any]]) -> str:
     for s in steps:
         # trace.db is a persisted artifact — a crafted/corrupted row must not
         # turn into HTML/JS via the un-typed 'seq' column (CWE-79).
+        seq: int | str
         try:
             seq = int(s["seq"])
         except (TypeError, ValueError):
