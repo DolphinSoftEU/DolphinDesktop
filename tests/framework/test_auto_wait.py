@@ -330,7 +330,11 @@ class TestAutoWaitRetry:
             loc.click(timeout_ms=150)
         elapsed = time.monotonic() - start
 
-        assert elapsed < 0.4
+        # Generous upper bound (as in test_locator_timeout_bounds_the_visibility_wait
+        # above): the poll interval and scheduler jitter can push the actual
+        # wait well past 150ms under load, but it must still be nowhere near
+        # the locator's own 2.0s timeout — that's the behavior under test.
+        assert elapsed < 1.0
 
     def test_chained_actions_without_explicit_wait(self):
         """Chain of actions uses auto-wait on every step."""
