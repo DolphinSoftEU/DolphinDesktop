@@ -859,6 +859,20 @@ def _png_bytes() -> bytes:
     )
 
 
+class TestDecodeScreenshot:
+    def test_rejects_a_non_bytes_payload(self):
+        with pytest.raises(DolphinError, match="expected bytes"):
+            cdp._decode_screenshot("not-bytes-at-all")
+
+    def test_wraps_a_pillow_decode_failure(self):
+        # Correct PNG magic bytes but a body Pillow cannot actually decode —
+        # exercises the fallback branch that wraps the decoder's own
+        # exception as a DolphinError instead of letting it escape raw.
+        garbage = cdp._PNG_MAGIC + b"not a real PNG bitstream, just filler bytes"
+        with pytest.raises(DolphinError, match="could not be decoded as PNG"):
+            cdp._decode_screenshot(garbage)
+
+
 class TestValueAndOptionalDependencyHelpers:
     def test_request_route_download_and_lazy_value_adapters(self):
         raw_request = MagicMock()
@@ -1444,6 +1458,58 @@ class TestLocatorOperations:
 
         with pytest.raises(CDPStalePageError) as raised:
             locator.click()
+
+        assert raised.value is stale_error
+
+    @pytest.mark.parametrize(
+        ("handle_attr", "call"),
+        [
+            ("dblclick", lambda loc: loc.double_click()),
+            ("click", lambda loc: loc.right_click()),
+            ("hover", lambda loc: loc.hover()),
+            ("focus", lambda loc: loc.focus()),
+            ("press", lambda loc: loc.press_key("Enter")),
+            ("fill", lambda loc: loc.type_text("x")),
+            ("check", lambda loc: loc.check()),
+            ("uncheck", lambda loc: loc.uncheck()),
+            ("scroll_into_view_if_needed", lambda loc: loc.scroll_into_view()),
+            ("inner_text", lambda loc: loc.text()),
+            ("input_value", lambda loc: loc.value()),
+            ("get_attribute", lambda loc: loc.get_attribute("data-x")),
+            ("bounding_box", lambda loc: loc.bounding_box()),
+            ("wait_for", lambda loc: loc.wait_for()),
+            ("screenshot", lambda loc: loc.screenshot()),
+            ("inner_html", lambda loc: loc.inner_html()),
+            ("evaluate", lambda loc: loc.evaluate("el => el")),
+            ("select_text", lambda loc: loc.select_text()),
+            ("blur", lambda loc: loc.blur()),
+            ("tap", lambda loc: loc.tap()),
+            ("all_text_contents", lambda loc: loc.all_text_contents()),
+            ("element_handle", lambda loc: loc.element_handle()),
+            ("fill", lambda loc: loc.clear()),
+            (
+                "drag_to",
+                lambda loc: loc.drag_to(CDPLocator(loc._session, "#other", _handle=MagicMock())),
+            ),
+            ("select_option", lambda loc: loc.select_option(value="a")),
+            ("dispatch_event", lambda loc: loc.dispatch_event("click")),
+            ("press_sequentially", lambda loc: loc.press_sequentially("abc")),
+            ("set_input_files", lambda loc: loc.set_input_files("file.txt")),
+        ],
+    )
+    def test_every_sibling_action_propagates_stale_page_error_unchanged(self, handle_attr, call):
+        """KAN-596: the CDPStalePageError re-raise guard must not be
+
+        click()-only — every action/query method that wraps self._resolve()
+        must let a stale-page error through unwrapped instead of masking it
+        as ElementNotFoundError/WaitTimeoutError.
+        """
+        locator, handle, _session_obj, _page, _context, _browser, _playwright = _locator()
+        stale_error = CDPStalePageError("the selected page has closed")
+        getattr(handle, handle_attr).side_effect = stale_error
+
+        with pytest.raises(CDPStalePageError) as raised:
+            call(locator)
 
         assert raised.value is stale_error
 

@@ -39,6 +39,11 @@ def pub400_term():
             session_type="3270",
             ws3270_path=WS3270,
             timeout=25,
+            # pub400 is a public demo host that only offers plaintext telnet on
+            # port 23 — no TLS. The transport policy refuses a plaintext remote
+            # session unless the caller opts in, which this throwaway demo does
+            # explicitly. Never do this against a real host with real accounts.
+            allow_plaintext=True,
         )
     except MainframeError as exc:
         if _preflight_required():

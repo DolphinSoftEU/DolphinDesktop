@@ -10,7 +10,7 @@ from typing import Any
 
 from ._config import get_poll_interval, get_timeout
 from ._exceptions import ApplicationError, ElementNotFoundError, WaitTimeoutError
-from ._helpers import _MISSING
+from ._helpers import _MISSING, _escape_keys
 from ._logging import get_logger
 
 _LOG = get_logger("sap")
@@ -607,12 +607,15 @@ class SapGui:
         time.sleep(1.0)
 
         # Focus is on BNAME (User) — SAP auto-advances past pre-filled Client.
-        # Type user → Tab → type password → Enter.
-        _send_keys(user, with_spaces=True, pause=0.05)
+        # Type user → Tab → type password → Enter. Both are escaped as literal
+        # text — send_keys() treats +^%~(){} as SendKeys modifiers/delimiters,
+        # so an unescaped credential containing them (e.g. a password like
+        # "{ENTER}pwd") would act as control keys instead of being typed.
+        _send_keys(_escape_keys(user), with_spaces=True, pause=0.05)
         time.sleep(0.1)
         _send_keys("{TAB}")
         time.sleep(0.1)
-        _send_keys(password, with_spaces=True, pause=0.05)
+        _send_keys(_escape_keys(password), with_spaces=True, pause=0.05)
         time.sleep(0.1)
         _send_keys("{ENTER}")
 

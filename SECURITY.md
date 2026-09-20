@@ -32,17 +32,37 @@ application is terminated when the test finishes.
 
 **Qt agent DLL injection.** `QtAgentClient.attach(pid, ...)` loads a
 bundled DLL into the target process with `CreateRemoteThread` and talks to
-it over a named pipe (`\\.\pipe\dolphin_qt_<pid>`). The pipe name is
-predictable and the server accepts whichever local process connects
-first; anyone able to open it gets full `QObject` introspection, property
-writes and `QMetaObject` invocation in the target. dolphin's own client
-verifies the pipe server's owning process, so a squatter cannot forge
-responses back to your test, and it connects at
+it over a named pipe. The pipe name now carries an unguessable per-attach
+random token (`\\.\pipe\dolphin_qt_<pid>_<random>`), so a local process
+can no longer pre-create the pipe under a predictable name. dolphin's own
+client verifies the pipe server's owning process, so a squatter cannot
+forge responses back to your test, and it connects at
 `SECURITY_IDENTIFICATION` so a squatting server cannot impersonate the
-(possibly elevated) account running the tests. Neither of those protects
-the application itself. Attach only to applications you launched or own. Only 64-bit Qt
-targets are supported; injection into a 32-bit process is refused rather
-than attempted.
+(possibly elevated) account running the tests; `reattach()` additionally
+refuses a PID whose creation time changed since the original attach. The
+bundled agent DLLs are verified against a committed SHA-256 manifest before
+injection. None of this protects the application itself — anyone who can
+open the pipe gets full `QObject` introspection, property writes and
+`QMetaObject` invocation in the target, so attach only to applications you
+launched or own. The pipe's server-side security descriptor is set by the
+prebuilt DLL, whose C++ source is not in this repository; tightening it
+(an explicit ACL, `PIPE_REJECT_REMOTE_CLIENTS`) requires a DLL rebuild.
+Only 64-bit Qt targets are supported; injection into a 32-bit process is
+refused rather than attempted.
+
+**Mainframe transport.** Terminal sessions carry the sign-on credentials
+in the same byte stream as the screen, and neither EBCDIC nor Telnet
+provides confidentiality. `Desktop.mainframe()` therefore refuses a
+plaintext connection to a non-loopback host unless you pass
+`allow_plaintext=True`. Pass `tls=True` for a verified TLS channel
+(certificate chain and host name are checked; there is no fallback to
+plaintext); a port number, 992 included, does not enable TLS on its own.
+Wrap a password in `Secret(...)` before typing it so it is masked in every
+log, trace, crash dump and report. The native TN5250 backend also bounds
+how much unterminated data it will buffer while looking for a record
+boundary, and enforces its read deadline unconditionally — a host that
+never terminates a record (or streams them continuously) cannot grow the
+client's buffer without bound or keep a call blocked past its own timeout.
 
 **The recorder captures all keyboard input.** `dolphin record` installs a
 low-level keyboard hook. Without an application filter it records every
@@ -59,9 +79,23 @@ Traces additionally store the failing test's pytest report, which under
 frame. That text is passed through the same redaction as logging: a value
 assigned to a name containing `password`, `passwd`, `passphrase`, `pwd`,
 `secret`, `token`, `api_key`, `private_key`, `credential`, `authorization`,
-`auth`, `signature`, `sessionid` or `sas` is masked, including inside a
-compound name such as `AWS_SECRET_ACCESS_KEY`, and including the credential
-after any HTTP auth scheme.
+`auth`, `signature`, `sessionid`, `sas`, `login`, `username`, `user_id`,
+`connection_string` or `clipboard` is masked, including inside a compound
+name such as `AWS_SECRET_ACCESS_KEY`, including the credential after any
+HTTP auth scheme, and including a value shown inside a Python dict `repr()`
+(e.g. `{'login': '…'}`, the shape an unresolved locator's criteria are
+rendered in). The same redaction runs at every artifact boundary — trace
+steps, crash-dump ZIPs, the Allure stdout/stderr attachments, the
+self-healing journal (`selfheal.jsonl`) and UIA tree dumps — and, for
+structured data such as a selector's criteria dict, a sensitive *key* masks
+its whole value whatever its type.
+
+The surest control is not the pattern but `Secret`: wrap a value in
+`dolphin_desktop.Secret("…")` before handing it to `type_text` (UIA, CDP
+and mainframe locators accept it). The action receives the real characters;
+the literal value is then masked wherever it appears in any artifact,
+independent of the pattern and of any variable name. `str(secret)` and
+`repr(secret)` never reveal it.
 
 Redaction is pattern-based and therefore best-effort. It looks for a
 credential *assigned* to a recognised name, so the following are **not**
@@ -101,6 +135,10 @@ future refactor cannot preserve a prose claim while dropping the regression:
 | KAN-472 | DESKTOP-203 | `tests/framework/test_stability.py::TestLaunchCapturesImagePath::test_image_path_survives_a_launcher_that_exits_during_startup_delay` | The launch identity is captured before `startup_delay`, so a fast launcher cannot turn PID reuse into an unrelated cleanup target. |
 | KAN-473 | DESKTOP-204 | `tests/framework/test_java.py::test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path`; `tests/framework/test_mainframe.py::test_resolve_hllapi_dll_success_and_failure` | JAB and HLLAPI DLL loading use explicit trusted paths; relative and DLL search-order/PATH fallback is refused. |
 | KAN-475 | DESKTOP-205 | `tests/framework/test_desktop.py::test_cdp_rejects_http_endpoint_owned_by_foreign_pid` | A live CDP endpoint is accepted only when its listener PID belongs to the launched process tree. |
+| KAN-574 | — | `tests/framework/test_office_com.py::test_excel_open_force_disables_macros_and_link_updates`, `::test_word_open_force_disables_macros` | Opening a document through `ExcelApp.open()` / `WordApp.open()` force-disables macros before the file is opened. |
+| KAN-575 | — | `tests/framework/test_mainframe.py::test_tn5250_read_records_rejects_unbounded_backlog_without_eor`, `::test_tn5250_read_records_enforces_deadline_even_with_records_already_parsed` | A TN5250 host that never terminates a record cannot grow the receive buffer without bound, and the read deadline is enforced even once records have started arriving. |
+| KAN-630 | DESKTOP-107 | `tests/framework/test_diagnostics_privacy.py::TestRedactionShapesThatLeakedBefore::test_the_value_never_survives`, `tests/framework/test_selfheal.py::test_selfheal_redacts_a_selector_keyed_by_a_sensitive_name_with_a_bare_value` | `login`/`username`/`connection_string`/`clipboard` are masked in a dict-`repr()` shape, and a selector dict keyed by a sensitive name with a bare value is masked before it reaches the on-disk self-healing journal. |
+| KAN-636 | — | `tests/framework/test_cli_init.py::test_init_rejects_absolute_path_outside_cwd`, `::test_init_rejects_path_traversal`, `::test_init_rejects_symlinked_target_escaping_cwd` | `dolphin init` refuses a target that resolves outside the current working directory. |
 
 KAN-468 is intentionally not marked as fully delivered by this change. The
 native TLS path is verified when explicitly requested, but `port=23` still
@@ -115,7 +153,11 @@ uv run pytest `
   tests/framework/test_mainframe.py `
   tests/framework/test_stability.py `
   tests/framework/test_java.py `
-  tests/framework/test_desktop.py -q
+  tests/framework/test_desktop.py `
+  tests/framework/test_office_com.py `
+  tests/framework/test_diagnostics_privacy.py `
+  tests/framework/test_selfheal.py `
+  tests/framework/test_cli_init.py -q
 ```
 
 ## Reporting a Vulnerability

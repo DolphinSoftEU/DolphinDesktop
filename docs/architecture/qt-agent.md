@@ -212,7 +212,12 @@ and export `dolphin_qt_agent_start` and `dolphin_qt_agent_stop`.
 | `dolphin_qt5_agent.dll` | Qt 5.15.x processes (e.g. PyQt5 / older apps) |
 
 They live in `src/dolphin_desktop/_qt_agent/` and ship with the wheel, so
-end users need no build toolchain.
+end users need no build toolchain. Their SHA-256 hashes are recorded in
+`src/dolphin_desktop/_qt_agent/agent_manifest.json`; `agent_dll_for()`
+verifies each DLL against that manifest before injecting it, so a binary
+swapped on disk is refused. Because the C++ source is not in this
+repository, the manifest is the provenance anchor: a build pipeline can pin
+`hash → approved artifact` against it.
 
 Anything that requires a DLL change — the pipe's security descriptor, or
 whether `dolphin_qt_agent_start` copies its `pipe_name` argument — cannot
@@ -235,13 +240,17 @@ be verified or fixed from this repository.
   client end. This matters for `Desktop.connect(pid=…)` against an app
   dolphin did not launch: the injection is permanent until that app exits.
   Use `QtAgentClient.reattach()` to rebuild a wedged connection instead.
-- **Unauthenticated pipe** — `\\.\pipe\dolphin_qt_<pid>` has a predictable
-  name and the agent's security descriptor is whatever the prebuilt DLL sets.
-  The client verifies the server's process id, so a squatter cannot impersonate
-  the agent, and the Python side bounds request size/depth/complexity. Full
-  client authentication and a restrictive server ACL require rebuilding the
-  Qt5/Qt6 DLLs; their C++ sources are not present in this repository. See
-  `SECURITY.md` for what this means in practice.
+- **Unauthenticated pipe** — the pipe name now carries an unguessable
+  per-attach random token (`\\.\pipe\dolphin_qt_<pid>_<random>`), so a local
+  process can no longer pre-create it under a predictable name, and the
+  client verifies the server's process id, so a squatter cannot impersonate
+  the agent. The Python side also bounds request size/depth/complexity. The
+  agent's *server-side* security descriptor is still whatever the prebuilt
+  DLL sets: an explicit ACL and `PIPE_REJECT_REMOTE_CLIENTS` would need a
+  DLL rebuild (the C++ source is not in this repository). The bundled DLLs
+  are hash-verified against `agent_manifest.json` before injection.
+  `reattach()` refuses a PID whose creation time changed since the original
+  attach. See `SECURITY.md` for what this means for you in practice.
 - **Per-Qt-major-version DLL** — Qt 5 and Qt 6 ABIs differ. We ship both,
   named `dolphin_qt5_agent.dll` and `dolphin_qt6_agent.dll`; the loader
   picks based on `Application.qt_version()`.

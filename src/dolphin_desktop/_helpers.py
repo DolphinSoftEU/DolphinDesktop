@@ -280,13 +280,35 @@ def tcp_reachable(host: str, port: int, *, timeout: float = 3.0) -> bool:
     return True
 
 
+_HTTP_SCHEMES = frozenset({"http", "https"})
+
+
+def _is_http_url(url: str) -> bool:
+    """True when *url* is an ``http://`` or ``https://`` URL with a host.
+
+    ``urlopen`` accepts ``file://``, ``ftp://`` and ``data:`` too; a probe
+    that claims to check an HTTP endpoint must not open local files or
+    other schemes on the caller's behalf.
+    """
+    from urllib.parse import urlsplit
+
+    if not isinstance(url, str):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme.lower() in _HTTP_SCHEMES and bool(parts.hostname)
+
+
 def http_ok(url: str, *, timeout: float = 1.0) -> bool:
     """Return True when a plain HTTP GET to *url* returns status 200.
 
     Public probe so tests can check whether a debug endpoint (CDP port,
     devtools port, health-check URL) is live without importing
-    ``urllib`` themselves. Any transport error, timeout, or non-200
-    status returns False — never raises.
+    ``urllib`` themselves. Only ``http://`` and ``https://`` URLs with a
+    host are probed; any other scheme, a URL without a host, a transport
+    error, a timeout or a non-200 status returns False — never raises.
 
     Example::
 
@@ -300,23 +322,25 @@ def http_ok(url: str, *, timeout: float = 1.0) -> bool:
     from urllib.parse import urlsplit
 
     def _http_url(value: str):
-        parsed = urlsplit(value)
-        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        # _is_http_url restricts the scheme to http/https and requires a
+        # host; forcing .port here also rejects a malformed port before
+        # urlopen gets a chance to interpret it in a platform-specific way.
+        if not _is_http_url(value):
             return None
-        # Force validation of malformed ports before urlopen gets a chance to
-        # interpret the input in a platform-specific way.
+        parsed = urlsplit(value)
         _ = parsed.port
         return parsed
 
     try:
-        parsed = _http_url(url)
-        if parsed is None:
+        if _http_url(url) is None:
             return False
     except (AttributeError, TypeError, ValueError):
         return False
 
     try:
-
+        # Every redirect target is re-validated through _http_url before it
+        # is followed, so an http(s) URL cannot be used to make this probe
+        # fetch file://, ftp:// or any other scheme via a 3xx response.
         class _HttpOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 try:
@@ -328,7 +352,7 @@ def http_ok(url: str, *, timeout: float = 1.0) -> bool:
                 return super().redirect_request(req, fp, code, msg, headers, newurl)
 
         opener = urllib.request.build_opener(_HttpOnlyRedirectHandler)
-        with opener.open(url, timeout=timeout) as resp:
+        with opener.open(url, timeout=timeout) as resp:  # nosec B310
             try:
                 final = _http_url(resp.geturl())
             except (AttributeError, TypeError, ValueError):

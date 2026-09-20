@@ -11,7 +11,7 @@ import sys
 import time
 import types
 from types import SimpleNamespace
-from unittest.mock import Mock, call, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
@@ -631,7 +631,7 @@ def test_presence_resolution_uses_a_normalized_negative_index_and_reports_fallba
         patch.object(locator_module, "_wait_until_present"),
     ):
         assert locator._resolve_presence() is child
-    parent.child_window.assert_called_once_with(title="target", found_index=0)
+    parent.child_window.assert_called_once_with(visible_only=False, title="target", found_index=0)
 
     failing_parent = FakeSpec()
     failing_parent.child_window = Mock(side_effect=[RuntimeError("primary"), child])
@@ -776,8 +776,8 @@ def test_presence_resolution_uses_presence_for_an_unresolved_hidden_parent():
     child = parent.locator(title="hidden child")
 
     assert child.exists() is True
-    root.child_window.assert_called_once_with(title="hidden parent")
-    hidden_parent.child_window.assert_called_once_with(title="hidden child")
+    root.child_window.assert_called_once_with(visible_only=False, title="hidden parent")
+    hidden_parent.child_window.assert_called_once_with(visible_only=False, title="hidden child")
 
 
 def test_presence_resolution_rejects_expired_parent_and_raw_wrapper_deadlines():
@@ -1324,7 +1324,7 @@ def test_presence_fallback_is_not_used_after_the_primary_deadline():
     with patch.object(locator_module, "_wait_until_present", side_effect=late_primary):
         assert loc.exists(timeout=0.01) is False
 
-    parent.child_window.assert_called_once_with(title="primary")
+    parent.child_window.assert_called_once_with(visible_only=False, title="primary")
 
 
 def test_focus_for_input_uses_root_or_resolved_element_and_swallows_errors():
@@ -1931,6 +1931,20 @@ def test_wait_until_hidden_checked_and_text_matching():
             resolved(TextSequence(["still text"])).wait_for_text(text_re="", timeout=1)
 
 
+def test_wait_for_text_uses_the_configured_poll_interval_when_omitted(monkeypatch):
+    """KAN-597: an omitted poll_interval must reach time.sleep() from
+
+    config(poll_interval=...), not a hard-coded default — wire the actual
+    value through, not just that _get_poll_interval() gets consulted.
+    """
+    monkeypatch.setattr(locator_module, "_get_poll_interval", lambda: 0.37)
+    text_element = TextSequence(["old", "ready"])
+    loc = resolved(text_element)
+    with monotonic_values(0, 0, 2), patch.object(locator_module.time, "sleep") as sleep:
+        assert loc.wait_for_text("ready", timeout=1) is loc
+    sleep.assert_called_once_with(0.37)
+
+
 class ToggleStateSequence:
     def __init__(self, states):
         self.states = iter(states)
@@ -2521,7 +2535,20 @@ def test_resolved_locator_exists_accepts_a_live_hidden_uia_element():
     assert locator_module._ResolvedLocator(element).exists() is True
 
 
-def test_resolved_locator_rejects_an_expired_inherited_deadline():
+def test_resolved_locator_all_and_count_do_not_crash():
+    """KAN-611: a Locator obtained from a prior .all() call is a
+
+    _ResolvedLocator, and calling .all()/.count() on it (e.g.
+    `rows = window.locator(...).all(); rows[0].all()` to read a row's
+    cells) must not raise AttributeError for missing Object Repository
+    bookkeeping a resolved locator never had in the first place.
+    """
+    element = MagicMock()
+    element.children.return_value = []
+    loc = locator_module._ResolvedLocator(element)
+
+    assert loc.all() == []
+    assert loc.count() == 0
     loc = locator_module._ResolvedLocator(FakeElement())
     with patch.object(locator_module.time, "monotonic", return_value=10):
         with pytest.raises(ElementNotFoundError, match="deadline expired"):

@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from ._logging import _redact, get_logger
+from ._logging import get_logger, redact_value
 
 logger = get_logger("selfheal")
 
@@ -119,20 +119,19 @@ def _stats_lock(path: Path) -> Iterator[None]:
 
 
 def _redact_values(value: Any) -> Any:
-    """Redact every string inside *value*, leaving the structure intact.
+    """Redact *value* before it is written to the on-disk journal.
 
-    Recursive because the journal's ``primary`` and ``fallback`` are selector
-    dicts: redacting only the top level let a secret inside
-    ``{"title": "password=…"}`` through, which is exactly where a selector
-    carries one.
+    Delegates to :func:`dolphin_desktop._logging.redact_value`, which masks
+    a dict entry by *key* (e.g. ``{"password": "hunter2"}`` -> whole value
+    masked, regardless of the value's own shape) in addition to running the
+    same pattern-based redaction this module used to do alone. A selector
+    dict with a bare value under a sensitive key name (no embedded
+    ``keyword=value`` text of its own) was previously written to
+    ``selfheal.jsonl`` unredacted — this journal is a direct file write that
+    no log handler's redaction filter ever sees, so it needs the same
+    protection independently.
     """
-    if isinstance(value, str):
-        return _redact(value)
-    if isinstance(value, dict):
-        return {k: _redact_values(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redact_values(v) for v in value]
-    return value
+    return redact_value(value)
 
 
 def record_fallback(

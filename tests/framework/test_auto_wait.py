@@ -296,6 +296,46 @@ class TestAutoWaitRetry:
         # 4.0 s default that would apply if the timeout were dropped.
         assert 0.3 <= elapsed < 2.0
 
+    def test_click_timeout_ms_bounds_the_wait_even_with_a_longer_locator_timeout(self):
+        """KAN-531: timeout_ms must take precedence over the locator's own
+
+        (longer) configured timeout end-to-end — not just be threaded
+        through as a value, but actually bound how long click() waits, even
+        when the element would eventually appear within the locator's own
+        timeout.
+        """
+        ready = threading.Event()
+        spec = MagicMock()
+        child = MagicMock()
+
+        visible = MagicMock()
+        visible.is_visible.return_value = True
+
+        def appears_once_ready():
+            if not ready.is_set():
+                raise RuntimeError("element is not there yet")
+            return visible
+
+        child.wrapper_object.side_effect = appears_once_ready
+        spec.child_window.return_value = child
+        spec.children.return_value = []
+
+        # The element only appears at 0.5s, well within the locator's own
+        # 2.0s timeout — but timeout_ms=150 must still cut the wait short.
+        threading.Timer(0.5, ready.set).start()
+        loc = _window(spec).get_by_role("Button").timeout(2.0)
+
+        start = time.monotonic()
+        with pytest.raises(ElementNotFoundError):
+            loc.click(timeout_ms=150)
+        elapsed = time.monotonic() - start
+
+        # Generous upper bound (as in test_locator_timeout_bounds_the_visibility_wait
+        # above): the poll interval and scheduler jitter can push the actual
+        # wait well past 150ms under load, but it must still be nowhere near
+        # the locator's own 2.0s timeout — that's the behavior under test.
+        assert elapsed < 1.0
+
     def test_chained_actions_without_explicit_wait(self):
         """Chain of actions uses auto-wait on every step."""
         spec = _succeeding_spec()
@@ -418,7 +458,7 @@ class TestWaitForUsesFallbacks:
         spec = MagicMock()
         spec.children.return_value = []
         spec.child_window.side_effect = lambda **kw: (
-            fallback if kw == {"auto_id": "btnOk"} else primary
+            fallback if kw.get("auto_id") == "btnOk" else primary
         )
         return spec
 
@@ -474,6 +514,11 @@ class TestWaitForUsesFallbacks:
         loc = _window(spec).get_by_role("Button")
 
         assert loc.exists() is True
+        # KAN-592: pywinauto's own child_window()/find_elements() defaults
+        # visible_only=True and filters hidden elements out server-side —
+        # presence resolution must override that, not just handle a wrapper
+        # a mock happens to hand back regardless of criteria.
+        spec.child_window.assert_called_once_with(visible_only=False, control_type="Button")
 
     def test_wait_for_exists_accepts_an_existing_hidden_element(self):
         spec = _succeeding_spec()
@@ -481,6 +526,7 @@ class TestWaitForUsesFallbacks:
         loc = _window(spec).get_by_role("Button")
 
         assert loc.wait_for(state="exists", timeout=0.1) is loc
+        spec.child_window.assert_called_once_with(visible_only=False, control_type="Button")
 
     def test_presence_wait_uses_selector_fallbacks(self):
         spec = self._spec_where_only_the_fallback_resolves()

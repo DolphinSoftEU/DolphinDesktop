@@ -622,7 +622,7 @@ def test_user_fills_complete_settings_form(journey):
     Steps:
         1. Switch to "Inputs" tab via UIA
         2. Username = "alice_2026"
-        3. Password = "Sup3rS3cret!"
+        3. Password = "Sup3rS3cret!"  # pragma: allowlist secret
         4. Count (QSpinBox) = 25
         5. Volume (QSlider) = 80
         6. Notes (QPlainTextEdit) = "Daily check-in"

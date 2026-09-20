@@ -16,16 +16,69 @@ code is portable between them.
 ## Quick start
 
 ```python
-from dolphin_desktop import Desktop, AID
+from dolphin_desktop import Desktop, AID, Secret
 
-with Desktop().mainframe(host="tso.host.example", session_type="3270") as term:
+with Desktop().mainframe(host="tso.host.example", session_type="3270", tls=True) as term:
     term.wait_ready()
     term.field_after("USERID").type_text("MYUSER")
-    term.field_after("PASSWORD").type_text("s3cret")
+    term.field_after("PASSWORD").type_text(Secret("s3cret"))
     term.press(AID.ENTER)
     term.wait_change()
     assert term.screen().contains("READY")
 ```
+
+Two habits worth adopting from the start:
+
+* **`tls=True`** — a terminal session carries the sign-on in the clear
+  otherwise (see [Transport security](#transport-security)).
+* **`Secret(...)`** around a password — the emulator still receives the
+  real characters, but the value is masked in every log, trace, crash
+  dump and report.
+
+## Transport security
+
+A 3270/5250 session sends the user id and password in the same
+unencrypted byte stream as the rest of the screen; neither EBCDIC nor
+Telnet provides confidentiality. dolphin therefore **refuses a plaintext
+connection to a remote host** and asks you to choose:
+
+```python
+# Verified TLS — certificate chain AND host name are checked. No fallback:
+# a failed handshake raises, it never silently drops to plaintext.
+term = desktop.mainframe(host="mf.example", session_type="3270", tls=True)
+
+# Private CA: trust an extra PEM bundle on top of the system store.
+term = desktop.mainframe(host="mf.example", tls=True, tls_cafile=r"C:\ca\corp-root.pem")
+
+# Native TN5250 with a caller-built context (must still verify the peer).
+import ssl
+ctx = ssl.create_default_context(cafile=r"C:\ca\corp-root.pem")
+term = desktop.mainframe(host="ibmi.example", session_type="5250",
+                         backend="tn5250", tls=True, tls_context=ctx)
+
+# An SSH/stunnel tunnel terminated on localhost is exempt (loopback).
+term = desktop.mainframe(host="127.0.0.1", port=3271, session_type="3270")
+
+# Knowingly unencrypted (logged as a warning) — only through a channel
+# you have secured by other means.
+term = desktop.mainframe(host="mf.example", allow_plaintext=True)
+```
+
+The port number is **never** treated as a substitute for TLS — connecting
+to port 992 without `tls=True` is still refused. For the `s3270` backend,
+`tls=True` opens the emulator's supported `L:` TLS tunnel (you may also
+write `host="L:mf.example"`); switches that disable certificate
+verification (`-noverifycert`, `-noverifyhostcert`) are rejected. The
+`hllapi` backend delegates the network side to the emulator, so configure
+TLS in the emulator's own session profile.
+
+Unlike `tn5250`, where dolphin owns the TLS handshake and verifies it
+directly, `s3270`/`ws3270` is an external process: dolphin can confirm the
+`-cafile` flag was accepted by the build, but the certificate verification
+itself happens inside the emulator, not in Python. Treat `s3270` TLS as
+trustworthy as the installed emulator build, not as independently verified
+by dolphin — use `backend="tn5250"` when that independent verification
+matters.
 
 ## Install
 
@@ -97,48 +150,6 @@ must be a **32-bit or 64-bit build matching the Python interpreter**
 | `wait_for_text(needle, timeout, row=)` | Poll until `needle` appears. |
 | `is_keyboard_locked()` | True while the host is still writing. |
 | context manager | `with desktop.mainframe(...) as term:` auto-disconnects. |
-
-### TLS transport
-
-TLS is explicit. `port=992` never silently changes transport mode. The
-traditional plaintext default remains available on the normal port 23; using
-plaintext on port 992 requires the explicit `insecure_tls=True` opt-in. Use
-`tls=True` for a verified native TLS session.
-
-The native `tn5250` backend uses Python's `ssl.create_default_context()`.
-With `tls=True` it verifies the server certificate chain and hostname before
-starting TN5250 negotiation or sending application data. Use `tls_ca_file=`
-for a private CA bundle and `server_hostname=` when the certificate name is
-different from the TCP host:
-
-```python
-with Desktop().mainframe(
-    host="ibmi.example.test",
-    port=992,
-    session_type="5250",
-    backend="tn5250",
-    tls=True,
-    tls_ca_file=r"C:\certs\company-root.pem",
-) as term:
-    term.wait_ready()
-```
-
-Certificate errors (including an untrusted CA or hostname mismatch) raise
-`MainframeError`; no TN5250 negotiation or application payload is sent.
-`insecure_tls=True` explicitly enables an unverified/clear transport for
-controlled test endpoints only. It is never implied by port 992.
-
-Port 23 remains a plaintext compatibility default. Do not send credentials
-over that channel; callers that need transport protection must opt into a
-verified TLS connection on a TLS endpoint. This documents the current API
-behavior and is not a claim that every credential-bearing connection is
-blocked by default.
-
-The `s3270` backend expresses TLS using the documented `L:` host prefix, but
-the library cannot control whether a particular emulator verifies its server
-certificate. Therefore `tls=True` on `s3270` requires the explicit
-`insecure_tls=True` opt-in and rejects `tls_ca_file=`. Use `backend="tn5250"`
-when certificate verification is required.
 
 ### s3270 input safety
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import socket
 import sys
 import time
 import warnings
@@ -19,7 +18,6 @@ else:
 
 from ._application import (
     Application,
-    _enumerate_descendant_pids,
     _process_image_path,
 )
 from ._exceptions import ApplicationError, DolphinError
@@ -37,70 +35,6 @@ def _image_path_now(app: _PyWinApp) -> str | None:
         return _process_image_path(app.process)
     except Exception:
         return None
-
-
-def _cdp_listener_pid(port: int) -> int | None:
-    """Return the Windows PID listening on the IPv4 TCP *port*, if known.
-
-    CDP launchers only probe loopback.  Querying the kernel TCP table gives us
-    the owner of that listener instead of treating an arbitrary HTTP 200 as
-    proof that the freshly launched application owns the endpoint.
-    """
-    if sys.platform != "win32":
-        return None
-    try:
-        import ctypes
-
-        class _TcpRowOwnerPid(ctypes.Structure):
-            _fields_ = [
-                ("state", ctypes.c_ulong),
-                ("local_addr", ctypes.c_ulong),
-                ("local_port", ctypes.c_ulong),
-                ("remote_addr", ctypes.c_ulong),
-                ("remote_port", ctypes.c_ulong),
-                ("owning_pid", ctypes.c_ulong),
-            ]
-
-        iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)
-        get_table = iphlpapi.GetExtendedTcpTable
-        get_table.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_ulong),
-            ctypes.c_bool,
-            ctypes.c_ulong,
-            ctypes.c_ulong,
-            ctypes.c_ulong,
-        ]
-        get_table.restype = ctypes.c_ulong
-        size = ctypes.c_ulong(0)
-        # AF_INET=2, TCP_TABLE_OWNER_PID_LISTENER=5.
-        result = get_table(None, ctypes.byref(size), False, 2, 5, 0)
-        if result not in (0, 122) or size.value <= 0:
-            return None
-        buffer = ctypes.create_string_buffer(size.value)
-        result = get_table(buffer, ctypes.byref(size), False, 2, 5, 0)
-        if result != 0:
-            return None
-        count = ctypes.c_ulong.from_buffer(buffer).value
-        rows = (_TcpRowOwnerPid * count).from_buffer(buffer, ctypes.sizeof(ctypes.c_ulong))
-        for row in rows:
-            if socket.ntohs(row.local_port & 0xFFFF) == port:
-                return int(row.owning_pid)
-    except Exception:
-        return None
-    return None
-
-
-def _cdp_listener_belongs_to(app: Application, owner_pid: int | None) -> bool:
-    """Check that a CDP listener belongs to *app* or its process tree."""
-    if owner_pid is None:
-        return False
-    try:
-        return owner_pid == app.process_id or owner_pid in _enumerate_descendant_pids(
-            app.process_id
-        )
-    except Exception:
-        return False
 
 
 if TYPE_CHECKING:
@@ -741,9 +675,23 @@ class Desktop:
         other CEF-hosted apps use ``-cef-enable-debugging`` on a fixed port).
         """
         from ._cdp import CDPSession
+        from ._netinfo import describe_owners, loopback_listener_pids
 
         if port_flag not in cmd:
             cmd = cmd.rstrip() + f" {port_flag}"
+
+        # Port collision before launch: if something already loopback-listens
+        # on the debug port, the app we are about to start will not be able to
+        # bind it, and probing the port would then reach the squatter's server
+        # instead. Refuse rather than connect to whatever answers.
+        preexisting = loopback_listener_pids(debug_port)
+        if preexisting:
+            raise RuntimeError(
+                f"{runtime_label} CDP debug port {debug_port} is already in use by "
+                f"PID(s) {sorted(preexisting)} before launch — refusing to start, because "
+                "the debugger port could not be bound by the new process and a probe "
+                "would reach the existing server. Pass a unique high debug_port per run."
+            )
 
         app = self.launch(cmd, timeout=timeout, work_dir=work_dir, startup_delay=startup_delay)
 
@@ -755,22 +703,19 @@ class Desktop:
 
         while time.monotonic() < deadline:
             try:
-                with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1.0) as resp:
-                    if resp.status == 200:
-                        owner_pid = _cdp_listener_pid(debug_port)
-                        if not _cdp_listener_belongs_to(app, owner_pid):
-                            try:
-                                app.kill()
-                            except Exception:
-                                pass
-                            raise RuntimeError(
-                                f"{runtime_label} CDP endpoint {endpoint} is not owned "
-                                f"by launched PID {app.process_id}"
-                            )
-                        break
+                # endpoint is a fixed http:// loopback URL built from a
+                # numeric port, not caller-controlled; no file:// or custom
+                # scheme can reach urlopen here.
+                with urllib.request.urlopen(  # nosec B310
+                    f"{endpoint}/json/version", timeout=1.0
+                ) as resp:
+                    ready = resp.status == 200
             except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
                 last_err = exc
                 time.sleep(0.25)
+                continue
+            if ready:
+                break
         else:
             try:
                 app.kill()
@@ -781,6 +726,14 @@ class Desktop:
                 f"within {timeout}s: {last_err}"
             )
 
+        # The port answers 200 — but is it *our* process answering? Bind the
+        # listener to the launched PID or one of its verified descendants
+        # before handing the endpoint to Playwright. A 200 from a foreign PID
+        # (a squatter, a leftover browser) is rejected. When the owning PID
+        # cannot be read at all (lookup unavailable), the launch proceeds on
+        # the HTTP check alone, which is the pre-existing behavior.
+        self._verify_cdp_port_owner(app, debug_port, runtime_label, describe_owners)
+
         try:
             session = CDPSession.connect(endpoint, timeout=max(1.0, deadline - time.monotonic()))
         except Exception:
@@ -790,6 +743,41 @@ class Desktop:
                 pass
             raise
         return app, session
+
+    def _verify_cdp_port_owner(
+        self,
+        app: Application,
+        debug_port: int,
+        runtime_label: str,
+        describe_owners: Any,
+    ) -> None:
+        """Refuse a CDP port whose loopback listener is a process we do not own.
+
+        The owner set is compared against the launched PID and its verified
+        descendant tree (Chromium hands the debugger to a child process, so
+        the listener is frequently a descendant, not the launcher itself).
+        """
+        from ._application import _enumerate_descendant_pids
+        from ._netinfo import loopback_listener_pids
+
+        owners = loopback_listener_pids(debug_port)
+        if not owners:
+            # Owner lookup unavailable (older Windows, denied query) — keep the
+            # pre-existing HTTP-only readiness contract rather than fail closed
+            # on a platform limitation.
+            return
+        allowed = {app.process_id} | _enumerate_descendant_pids(app.process_id)
+        if not owners <= allowed:
+            try:
+                app.kill()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"{runtime_label} CDP debug port {debug_port} is served by a process that is "
+                f"not the application dolphin launched (pid {app.process_id}) nor a descendant "
+                f"of it: {describe_owners(debug_port)}. Refusing to connect — the endpoint "
+                "would expose another process's DOM, cookies and screenshots."
+            )
 
     def launch_electron_cdp(
         self,
@@ -1146,17 +1134,27 @@ class Desktop:
         extra_args: list[str] | None = None,
         trace: bool = False,
         tls: bool = False,
-        tls_ca_file: str | None = None,
-        server_hostname: str | None = None,
-        insecure_tls: bool = False,
+        tls_cafile: str | None = None,
+        tls_context: Any | None = None,
+        allow_plaintext: bool = False,
     ) -> MainframeTerminal:
         """Open a mainframe/midrange terminal session.
 
+        Transport security: a terminal session carries the sign-on
+        credentials in the clear unless TLS is negotiated, so a plaintext
+        connection to a remote host is refused with a ``MainframeError``
+        unless ``allow_plaintext=True`` is passed. Loopback hosts (the local
+        end of an SSH/stunnel tunnel, or a mock server) are exempt. A port
+        number — 992 included — never enables TLS by itself.
+
         Args:
-            host: Hostname or IP of the TN3270/TN5250 gateway. Ignored
-                when ``backend='hllapi'`` (the emulator manages the
-                connection).
-            port: TCP port. 23 (telnet) is standard for 3270/5250 hosts.
+            host: Hostname, IPv4 address or bracketed IPv6 literal of the
+                TN3270/TN5250 gateway. Ignored when ``backend='hllapi'`` (the
+                emulator manages the connection). x3270 host prefixes are not
+                passed through; ``L:`` is accepted as a synonym for
+                ``tls=True``.
+            port: TCP port. 23 (telnet) is standard for 3270/5250 hosts,
+                992 for TLS.
             session_type: ``"3270"`` for zSeries / z/OS, ``"5250"`` for
                 iSeries / IBM i. s3270 negotiates the correct TN option
                 automatically based on this hint.
@@ -1188,20 +1186,24 @@ class Desktop:
                 s3270 backend.
             extra_args: Additional command-line arguments for the s3270
                 subprocess (e.g. ``['-trace']``).
-            tls: Enable TLS explicitly. False is the default and port 992
-                does not enable TLS implicitly.
-            tls_ca_file: Optional CA bundle used by the native tn5250
-                backend. Native TLS verifies the CA and server hostname.
-            server_hostname: TLS hostname used for SNI and verification;
-                defaults to host.
-            insecure_tls: Explicitly opt into an unverified TLS or plaintext
-                transport for controlled endpoints. It is required for
-                s3270 TLS because dolphin_desktop cannot control the
-                emulator's certificate policy.
             trace: When True, every backend command + response is emitted
                 via ``dolphin_desktop.get_logger("dolphin_desktop.mainframe")``
                 at INFO level — invaluable when debugging why a test
-                fails inside a locked keyboard or a stuck field.
+                fails inside a locked keyboard or a stuck field. Typed text
+                and raw protocol frames are never included — the trace
+                names the action and the payload size only.
+            tls: Negotiate TLS with certificate *and* host-name
+                verification. ``tn5250`` uses :func:`ssl.create_default_context`;
+                ``s3270`` opens the emulator's ``L:`` tunnel. A failed
+                handshake raises — there is no fallback to plaintext.
+            tls_cafile: PEM bundle of a private CA to trust in addition to
+                the system store (``-cafile`` for s3270).
+            tls_context: An :class:`ssl.SSLContext` for the ``tn5250``
+                backend. It must still verify the peer (``check_hostname``
+                on, ``verify_mode == CERT_REQUIRED``) or it is refused.
+            allow_plaintext: Accept an unencrypted session to a remote
+                host. Logged as a warning; use it only through a channel
+                that is protected by other means.
 
         Returns:
             A :class:`~dolphin_desktop.MainframeTerminal`. Use as a
@@ -1218,28 +1220,20 @@ class Desktop:
         """
         from ._mainframe import _build_terminal
 
-        common_options: dict[str, Any] = {
-            "backend": backend,
-            "ws3270_path": ws3270_path,
-            "model": model,
-            "codepage": codepage,
-            "session_id": session_id,
-            "hllapi_dll_path": hllapi_dll_path,
-            "extra_args": extra_args,
-            "trace": trace,
-        }
-        if any((tls, tls_ca_file, server_hostname, insecure_tls)):
-            term = _build_terminal(
-                **common_options,
-                tls=tls,
-                tls_ca_file=tls_ca_file,
-                server_hostname=server_hostname,
-                insecure_tls=insecure_tls,
-            )
-        else:
-            term = _build_terminal(
-                **common_options,
-            )
+        term = _build_terminal(
+            backend=backend,
+            ws3270_path=ws3270_path,
+            model=model,
+            codepage=codepage,
+            session_id=session_id,
+            hllapi_dll_path=hllapi_dll_path,
+            extra_args=extra_args,
+            trace=trace,
+            tls=tls,
+            tls_cafile=tls_cafile,
+            tls_context=tls_context,
+            allow_plaintext=allow_plaintext,
+        )
         if connect:
             term.connect(host, port, session_type=session_type, timeout=timeout)
         return term

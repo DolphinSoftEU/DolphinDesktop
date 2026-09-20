@@ -1,0 +1,28 @@
+version: 2
+
+# Keep the pinned action SHAs and the Python dependencies current through
+# reviewed pull requests, so a security update is a controlled change rather
+# than a manual scramble. Dependabot understands the `uses: owner/repo@<sha> # vX`
+# form and bumps both the SHA and the version comment together.
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "deps"

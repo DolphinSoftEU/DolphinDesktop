@@ -38,104 +38,6 @@ def test_image_path_now_returns_path_and_swallows_probe_errors(monkeypatch) -> N
     assert desktop_module._image_path_now(app) is None
 
 
-def test_cdp_listener_pid_reads_the_owner_from_the_windows_tcp_table(monkeypatch) -> None:
-    import ctypes
-
-    class _TcpRow(ctypes.Structure):
-        _fields_ = [
-            ("state", ctypes.c_ulong),
-            ("local_addr", ctypes.c_ulong),
-            ("local_port", ctypes.c_ulong),
-            ("remote_addr", ctypes.c_ulong),
-            ("remote_port", ctypes.c_ulong),
-            ("owning_pid", ctypes.c_ulong),
-        ]
-
-    table_size = ctypes.sizeof(ctypes.c_ulong) + ctypes.sizeof(_TcpRow)
-    calls = []
-
-    def get_table(table, size, *_args):
-        calls.append(table is None)
-        if table is None:
-            size._obj.value = table_size
-            return 122
-        ctypes.c_ulong.from_buffer(table).value = 1
-        row = _TcpRow.from_buffer(table, ctypes.sizeof(ctypes.c_ulong))
-        row.local_port = desktop_module.socket.htons(9222)
-        row.owning_pid = 4321
-        return 0
-
-    api = SimpleNamespace(GetExtendedTcpTable=get_table)
-    monkeypatch.setattr(desktop_module.sys, "platform", "win32")
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: api)
-
-    assert desktop_module._cdp_listener_pid(9222) == 4321
-    assert calls == [True, False]
-
-
-def test_cdp_listener_pid_fails_closed_when_tcp_table_cannot_be_read(monkeypatch) -> None:
-    import ctypes
-
-    api = SimpleNamespace(GetExtendedTcpTable=lambda *_args: 5)
-    monkeypatch.setattr(desktop_module.sys, "platform", "win32")
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: api)
-
-    assert desktop_module._cdp_listener_pid(9222) is None
-
-
-def test_cdp_listener_pid_handles_platform_empty_table_and_query_failures(monkeypatch) -> None:
-    import ctypes
-
-    monkeypatch.setattr(desktop_module.sys, "platform", "linux")
-    assert desktop_module._cdp_listener_pid(9222) is None
-
-    monkeypatch.setattr(desktop_module.sys, "platform", "win32")
-    table_size = ctypes.sizeof(ctypes.c_ulong)
-
-    def second_query_fails(table, size, *_args):
-        if table is None:
-            size._obj.value = table_size
-            return 122
-        return 5
-
-    api = SimpleNamespace(GetExtendedTcpTable=second_query_fails)
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: api)
-    assert desktop_module._cdp_listener_pid(9222) is None
-
-    def empty_table(table, size, *_args):
-        if table is None:
-            size._obj.value = table_size
-            return 122
-        ctypes.c_ulong.from_buffer(table).value = 0
-        return 0
-
-    monkeypatch.setattr(
-        ctypes, "WinDLL", lambda *_args, **_kwargs: SimpleNamespace(GetExtendedTcpTable=empty_table)
-    )
-    assert desktop_module._cdp_listener_pid(9222) is None
-
-    monkeypatch.setattr(ctypes, "WinDLL", Mock(side_effect=OSError("iphlpapi missing")))
-    assert desktop_module._cdp_listener_pid(9222) is None
-
-
-def test_cdp_listener_belongs_to_requires_a_known_process_or_tree(monkeypatch) -> None:
-    app = Mock(process_id=1234)
-
-    assert desktop_module._cdp_listener_belongs_to(app, None) is False
-    assert desktop_module._cdp_listener_belongs_to(app, 1234) is True
-
-    monkeypatch.setattr(desktop_module, "_enumerate_descendant_pids", lambda _pid: {5678})
-    assert desktop_module._cdp_listener_belongs_to(app, 5678) is True
-    assert desktop_module._cdp_listener_belongs_to(app, 9999) is False
-
-    monkeypatch.setattr(
-        desktop_module,
-        "_enumerate_descendant_pids",
-        Mock(side_effect=RuntimeError("snapshot failed")),
-    )
-    assert desktop_module._cdp_listener_belongs_to(app, 5678) is False
-
-
 def test_constructor_validation_auto_detection_and_repr(monkeypatch) -> None:
     import dolphin_desktop._runner as runner
 
@@ -844,7 +746,13 @@ def test_cdp_launch_polling_succeeds_and_timeout_kills_process(monkeypatch) -> N
     session = object()
     connect = Mock(return_value=session)
     monkeypatch.setattr(cdp.CDPSession, "connect", connect)
-    monkeypatch.setattr(desktop_module, "_cdp_listener_pid", lambda _port: 1234)
+    # Sequenced: empty (pre-launch collision check) then {own pid} (post-launch
+    # ownership check) for the success call, then empty (pre-launch only —
+    # the two timeout calls below never reach the ownership check).
+    monkeypatch.setattr(
+        "dolphin_desktop._netinfo.loopback_listener_pids",
+        Mock(side_effect=[set(), {1234}, set(), set()]),
+    )
 
     result = desktop._launch_with_cdp_flag(
         "app.exe",
@@ -892,6 +800,32 @@ def test_cdp_launch_polling_succeeds_and_timeout_kills_process(monkeypatch) -> N
         )
 
 
+def test_cdp_rejects_preexisting_port_collision_before_launch(monkeypatch) -> None:
+    """A loopback listener already on the debug port must abort before spawning."""
+    desktop = desktop_module.Desktop(hidden=False)
+    launch = Mock()
+    monkeypatch.setattr(desktop, "launch", launch)
+    monkeypatch.setattr(
+        "dolphin_desktop._netinfo.loopback_listener_pids",
+        Mock(return_value={4321, 4322}),
+    )
+
+    with pytest.raises(
+        RuntimeError, match=r"TestRuntime CDP debug port 9222 is already in use by PID\(s\)"
+    ):
+        desktop._launch_with_cdp_flag(
+            "app.exe",
+            port_flag="--debug=1",
+            debug_port=9222,
+            timeout=5,
+            work_dir=None,
+            startup_delay=0,
+            runtime_label="TestRuntime",
+        )
+
+    launch.assert_not_called()
+
+
 def test_cdp_public_launchers_forward_their_runtime_specific_options(monkeypatch) -> None:
     desktop = desktop_module.Desktop(hidden=False)
     helper = Mock(return_value=("app", "session"))
@@ -937,12 +871,18 @@ def test_cdp_rejects_http_endpoint_owned_by_foreign_pid(monkeypatch) -> None:
     response_cm.__exit__.return_value = None
     monkeypatch.setattr("urllib.request.urlopen", Mock(return_value=response_cm))
     monkeypatch.setattr(desktop_module.time, "monotonic", Mock(return_value=0.0))
-    monkeypatch.setattr(desktop_module, "_cdp_listener_pid", lambda _port: 9876)
+    # Sequenced: empty (pre-launch collision check), {foreign pid} (post-launch
+    # ownership check), {foreign pid} again (describe_owners() building the
+    # error message).
+    monkeypatch.setattr(
+        "dolphin_desktop._netinfo.loopback_listener_pids",
+        Mock(side_effect=[set(), {9876}, {9876}]),
+    )
     app.kill.side_effect = RuntimeError("already gone")
     connect = Mock()
     monkeypatch.setattr(cdp.CDPSession, "connect", connect)
 
-    with pytest.raises(RuntimeError, match="not owned by launched PID 1234"):
+    with pytest.raises(RuntimeError, match="not the application dolphin launched"):
         desktop._launch_with_cdp_flag(
             "app.exe",
             port_flag="--debug=1",
@@ -969,7 +909,12 @@ def test_cdp_connect_failure_kills_launched_application(monkeypatch) -> None:
     response_cm.__exit__.return_value = None
     monkeypatch.setattr("urllib.request.urlopen", Mock(return_value=response_cm))
     monkeypatch.setattr(desktop_module.time, "monotonic", Mock(return_value=0.0))
-    monkeypatch.setattr(desktop_module, "_cdp_listener_pid", lambda _port: 1234)
+    # Sequenced: empty (pre-launch collision check), {own pid} (post-launch
+    # ownership check passes, so no describe_owners() call follows).
+    monkeypatch.setattr(
+        "dolphin_desktop._netinfo.loopback_listener_pids",
+        Mock(side_effect=[set(), {1234}]),
+    )
     app.kill.side_effect = RuntimeError("already gone")
     monkeypatch.setattr(
         cdp.CDPSession,
@@ -1086,6 +1031,10 @@ def test_mainframe_factory_connects_only_when_requested(monkeypatch) -> None:
         hllapi_dll_path="hllapi.dll",
         extra_args=["-trace"],
         trace=True,
+        tls=False,
+        tls_cafile=None,
+        tls_context=None,
+        allow_plaintext=False,
     )
     term.connect.assert_called_once_with("example.test", 992, session_type="5250", timeout=7)
 
@@ -1106,9 +1055,8 @@ def test_mainframe_factory_forwards_tls_options(monkeypatch) -> None:
             backend="tn5250",
             connect=False,
             tls=True,
-            tls_ca_file="company-root.pem",
-            server_hostname="ibmi.example.test",
-            insecure_tls=False,
+            tls_cafile="company-root.pem",
+            allow_plaintext=False,
         )
         is term
     )
@@ -1122,9 +1070,9 @@ def test_mainframe_factory_forwards_tls_options(monkeypatch) -> None:
         extra_args=None,
         trace=False,
         tls=True,
-        tls_ca_file="company-root.pem",
-        server_hostname="ibmi.example.test",
-        insecure_tls=False,
+        tls_cafile="company-root.pem",
+        tls_context=None,
+        allow_plaintext=False,
     )
 
 
@@ -1139,8 +1087,7 @@ def test_mainframe_factory_accepts_tls_options_in_real_terminal_factory(monkeypa
         backend="tn5250",
         connect=False,
         tls=True,
-        tls_ca_file="company-root.pem",
-        server_hostname="ibmi.example.test",
+        tls_cafile="company-root.pem",
     )
 
     assert terminal._backend is implementation
@@ -1148,9 +1095,9 @@ def test_mainframe_factory_accepts_tls_options_in_real_terminal_factory(monkeypa
         codepage="cp037",
         trace=False,
         tls=True,
-        tls_ca_file="company-root.pem",
-        server_hostname="ibmi.example.test",
-        insecure_tls=False,
+        tls_cafile="company-root.pem",
+        tls_context=None,
+        allow_plaintext=False,
     )
 
 

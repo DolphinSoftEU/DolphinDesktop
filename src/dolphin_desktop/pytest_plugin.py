@@ -78,6 +78,7 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
                 _application._discard_owned_process_handle(pid, anchored_handle)
                 getattr(_application, "_unanchored_pids", set()).discard(pid)
                 _application._live_pids.discard(pid)
+                _application.forget_process_identity(pid)
                 log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
             except Exception as exc:
                 # Keep both the handle and PID registered. The session
@@ -90,11 +91,27 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
                     exc,
                 )
             continue
-        log.warning(
-            "Skipping PID-only cleanup for unanchored or unknown process PID=%d after test %s",
-            pid,
-            item.nodeid,
-        )
+        if pid in getattr(_application, "_unanchored_pids", set()):
+            # Anchoring was attempted at launch and explicitly failed — the
+            # constructor already warned that automatic cleanup for this PID
+            # will fail closed. Honor that: no PID-based cleanup is attempted
+            # at all, since re-opening a bare PID here is exactly the reuse
+            # risk anchoring exists to avoid.
+            log.warning(
+                "Skipping cleanup for unanchored process PID=%d after test %s", pid, item.nodeid
+            )
+            continue
+        try:
+            # No anchored handle and never marked unanchored (a synthetic or
+            # legacy wrapper predating handle anchoring) — fall back to the
+            # verified terminate: a PID whose creation time no longer matches
+            # the process dolphin launched was reused by something unrelated
+            # and is left alone (CWE-367). See _application.terminate_tracked_pid.
+            if _application.terminate_tracked_pid(pid, log):
+                _application._live_pids.discard(pid)
+                log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
+        except Exception:
+            pass
 
 
 def _is_transient_failure(report: pytest.TestReport | None) -> bool:
@@ -629,10 +646,16 @@ def _attach_allure_trace(run_dir: Path) -> None:
 
 
 def _attach_allure_text(content: str, name: str) -> None:
+    """Attach *content* as a text artifact, redacted like every other sink.
+
+    Captured stdout/stderr is whatever the test and the application printed
+    — a ``print(password)`` while debugging, a library echoing its config —
+    and the Allure report is the artifact most likely to be shared.
+    """
     try:
         import allure
 
-        allure.attach(content, name=name, attachment_type=allure.attachment_type.TEXT)
+        allure.attach(_redact(str(content)), name=name, attachment_type=allure.attachment_type.TEXT)
     except Exception:
         pass
 
@@ -841,14 +864,16 @@ def _collect_artifacts(item: pytest.Item, call: pytest.CallInfo, report: pytest.
 
     video_path = _handle_video(item, report, phase)
 
-    # attach captured stdout/stderr to Allure on failure
+    # attach captured stdout/stderr to Allure on failure — redacted at the
+    # attach boundary (see _attach_allure_text), and again here so the
+    # guarantee does not depend on which helper a future caller picks.
     if report.failed:
         capstdout: str = getattr(report, "capstdout", "") or ""
         capstderr: str = getattr(report, "capstderr", "") or ""
         if capstdout:
-            _attach_allure_text(capstdout, "stdout")
+            _attach_allure_text(_redact(capstdout), "stdout")
         if capstderr:
-            _attach_allure_text(capstderr, "stderr")
+            _attach_allure_text(_redact(capstderr), "stderr")
 
     # enrich JUnit XML <properties> with artifact paths
     if screenshot_path:
@@ -950,6 +975,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
                     getattr(_application, "_unanchored_pids", set()).discard(pid)
                     _application._session_pids.discard(pid)
                     _application._live_pids.discard(pid)
+                    _application.forget_process_identity(pid)
                     log.info("Killed orphan AUT PID=%d at session end", pid)
                 except Exception as exc:
                     log.warning(
@@ -958,10 +984,22 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
                         exc,
                     )
                 continue
-            log.warning(
-                "Skipping PID-only session cleanup for unanchored or unknown process PID=%d",
-                pid,
-            )
+            if pid in getattr(_application, "_unanchored_pids", set()):
+                # Same "fail closed" contract as the per-test reaper: anchoring
+                # was attempted and explicitly failed, so no PID-based cleanup
+                # is attempted here either.
+                log.warning("Skipping cleanup for unanchored orphan AUT PID=%d at session end", pid)
+                continue
+            try:
+                # No anchored handle and never marked unanchored — same
+                # identity check as the per-test reaper: never terminate a
+                # PID that has been reused since dolphin launched the AUT.
+                if _application.terminate_tracked_pid(pid, log):
+                    _application._session_pids.discard(pid)
+                    _application._live_pids.discard(pid)
+                    log.info("Killed orphan AUT PID=%d at session end", pid)
+            except Exception:
+                pass
 
     # ---- 2. HTML fallback report (unchanged) ----
     if not _session_reports:
