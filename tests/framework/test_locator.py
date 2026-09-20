@@ -631,9 +631,7 @@ def test_presence_resolution_uses_a_normalized_negative_index_and_reports_fallba
         patch.object(locator_module, "_wait_until_present"),
     ):
         assert locator._resolve_presence() is child
-    parent.child_window.assert_called_once_with(
-        visible_only=False, title="target", found_index=0
-    )
+    parent.child_window.assert_called_once_with(visible_only=False, title="target", found_index=0)
 
     failing_parent = FakeSpec()
     failing_parent.child_window = Mock(side_effect=[RuntimeError("primary"), child])

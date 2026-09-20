@@ -1564,7 +1564,9 @@ class TestLazyPluginLoadCoverage:
             encoding="utf-8"
         )
         landmark_line = next(
-            i for i, line in enumerate(app_src.splitlines(), start=1) if line.startswith("class Application")
+            i
+            for i, line in enumerate(app_src.splitlines(), start=1)
+            if line.startswith("class Application")
         )
 
         cov_json = tmp_path / "coverage.json"

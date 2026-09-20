@@ -256,7 +256,8 @@ def test_form_window_wait_ready_surfaces_the_title_re_diagnostic_immediately(
     app._primary_hwnd = Mock(
         side_effect=forms.OracleFormsError(
             "no top-level window matched title_re='WrongPattern'",
-            hint="verify the Oracle Forms title selector and wait for the client to finish starting",
+            hint="verify the Oracle Forms title selector and wait for the client to finish "
+            "starting",
         )
     )
     sleep = Mock()
@@ -571,9 +572,7 @@ def test_item_preserves_the_item_name_and_hint_when_no_window_is_found() -> None
     startup_delay hint when the underlying window lookup fails — regression
     through the public facade, not just _primary_hwnd() directly.
     """
-    application = SimpleNamespace(
-        _app=SimpleNamespace(windows=Mock(return_value=[]))
-    )
+    application = SimpleNamespace(_app=SimpleNamespace(windows=Mock(return_value=[])))
     app = _empty_app_with_application(application)
 
     with pytest.raises(forms.OracleFormsError) as excinfo:

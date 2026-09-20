@@ -588,8 +588,6 @@ def _validate_s3270_text(value: str, *, field: str) -> None:
             )
 
 
-
-
 def _validate_s3270_integer(value: object, *, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise MainframeError(f"s3270 {field} must be an integer")

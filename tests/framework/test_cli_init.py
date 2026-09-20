@@ -27,9 +27,7 @@ def test_docs_reference_cli_lists_every_init_template() -> None:
 
     templates = ["minimal", "standard", "enterprise", *_cli._STACK_TEMPLATES]
 
-    docs_path = (
-        Path(__file__).resolve().parents[2] / "docs" / "reference" / "cli.md"
-    )
+    docs_path = Path(__file__).resolve().parents[2] / "docs" / "reference" / "cli.md"
     docs_text = docs_path.read_text(encoding="utf-8")
 
     missing = [t for t in templates if t not in docs_text]

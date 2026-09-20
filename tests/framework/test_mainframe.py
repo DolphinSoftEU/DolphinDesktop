@@ -7,7 +7,6 @@ and exercise the protocol parsers and the public facade directly.
 
 from __future__ import annotations
 
-import ssl
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock, call
@@ -1009,7 +1008,7 @@ def test_tn5250_read_records_rejects_unbounded_backlog_without_eor(
     backend._sock = _Socket([huge_chunk])
     backend.disconnect = Mock()  # type: ignore[method-assign]
 
-    with pytest.raises(mf.MainframeError, match="exceeded the .*-byte limit"):
+    with pytest.raises(mf.MainframeError, match=r"exceeded the .*-byte limit"):
         backend._read_records(1.0)
 
     backend.disconnect.assert_called_once_with()
