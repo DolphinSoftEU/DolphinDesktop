@@ -101,11 +101,27 @@ def _capture_screenshot(path: Path) -> None:
 # UIA tree
 
 
-def _dump_uia_tree(element: Any, max_depth: int = 4, max_children: int = 30) -> str | None:
+def _dump_uia_tree(
+    element: Any,
+    max_depth: int = 4,
+    max_children: int = 30,
+    *,
+    include_root: bool = False,
+) -> str | None:
     """Return a JSON string representing the subtree rooted at *element*."""
     try:
         nodes: list[dict[str, Any]] = []
-        _collect(element, nodes, 0, max_depth, max_children)
+        if include_root:
+            info = element.element_info
+            nodes.append(
+                {
+                    "d": 0,
+                    "ctrl": str(getattr(info, "control_type", "") or ""),
+                    "name": str(getattr(info, "name", "") or ""),
+                    "id": str(getattr(info, "automation_id", "") or ""),
+                }
+            )
+        _collect(element, nodes, 1 if include_root else 0, max_depth, max_children)
         return json.dumps(nodes)
     except Exception:
         return None
@@ -224,8 +240,11 @@ class TraceSession:
                 pass
 
         uia_tree: str | None = None
-        if bool(error) and element is not None:
-            uia_tree = _dump_uia_tree(element)
+        if element is not None:
+            if error:
+                uia_tree = _dump_uia_tree(element)
+            elif self.mode == "always":
+                uia_tree = _dump_uia_tree(element, include_root=True)
 
         try:
             with self._lock:
