@@ -333,7 +333,10 @@ def test_s3270_lifecycle_and_status_operations(monkeypatch: pytest.MonkeyPatch) 
     assert backend._connected is True
 
 
-def test_s3270_tls_passes_explicit_certificate_policy_to_emulator() -> None:
+def test_s3270_tls_passes_explicit_certificate_policy_to_emulator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mf.sys, "platform", "linux")
     verified = mf._S3270Backend(
         binary="demo",
         tls=True,
@@ -347,6 +350,16 @@ def test_s3270_tls_passes_explicit_certificate_policy_to_emulator() -> None:
 
     insecure = mf._S3270Backend(binary="demo", tls=True, insecure_tls=True)
     assert insecure._extra_args[-1] == "-noverifycert"
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_s3270_tls_rejects_ca_file_on_platforms_without_cafile(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    monkeypatch.setattr(mf.sys, "platform", platform)
+
+    with pytest.raises(mf.MainframeError, match=r"tls_ca_file.*not supported"):
+        mf._S3270Backend(binary="ws3270.exe", tls=True, tls_ca_file="company-root.pem")
 
 
 def test_s3270_read_fields_keyboard_and_input(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -612,7 +625,10 @@ def test_tn5250_plaintext_on_port_23_remains_the_default(
     backend.disconnect()
 
 
-def test_s3270_tls_uses_l_prefix_and_explicit_verification_policy() -> None:
+def test_s3270_tls_uses_l_prefix_and_explicit_verification_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mf.sys, "platform", "linux")
     backend = mf._S3270Backend(
         binary="s3270",
         tls=True,
@@ -658,18 +674,22 @@ def test_s3270_port_992_plaintext_requires_explicit_opt_in() -> None:
     backend._spawn.assert_not_called()
 
 
-def test_s3270_tls_rejects_mismatched_server_hostname() -> None:
+def test_s3270_tls_uses_accept_hostname_for_certificate_verification() -> None:
     backend = mf._S3270Backend(
         binary="s3270",
         tls=True,
-        server_hostname="other.example.test",
+        server_hostname="mainframe.company.test",
     )
     backend._spawn = Mock()  # type: ignore[method-assign]
+    backend._exec = Mock()  # type: ignore[method-assign]
 
-    with pytest.raises(mf.MainframeError, match="must match host"):
-        backend.connect("host.example.test", 992, session_type="3270")
+    backend.connect("10.0.0.5", 992, session_type="3270")
 
-    backend._spawn.assert_not_called()
+    assert backend._extra_args[-2:] == ["-accepthostname", "mainframe.company.test"]
+    assert backend._exec.call_args_list[:2] == [
+        call("Connect(L:10.0.0.5:992)"),
+        call("Wait(15,InputField)", raise_on_error=False),
+    ]
 
 
 def test_s3270_exec_protocol_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -467,11 +467,20 @@ class _S3270Backend(_TerminalBackend):
         # emulator's default, and append our flags after caller-supplied
         # options so a test cannot accidentally downgrade a verified session.
         if tls:
-            self._extra_args.extend(
-                ["-noverifycert" if insecure_tls else "-verifycert"]
-            )
+            self._extra_args.extend(["-noverifycert" if insecure_tls else "-verifycert"])
             if tls_ca_file and not insecure_tls:
+                unsupported_platform = {
+                    "win32": "Windows ws3270 (Schannel)",
+                    "darwin": "macOS x3270",
+                }.get(sys.platform)
+                if unsupported_platform:
+                    raise MainframeError(
+                        f"tls_ca_file is not supported by {unsupported_platform}; "
+                        "use tls=True with the system certificate store instead"
+                    )
                 self._extra_args.extend(["-cafile", tls_ca_file])
+            if server_hostname and not insecure_tls:
+                self._extra_args.extend(["-accepthostname", server_hostname])
 
     # ---- lifecycle ------------------------------------------------------- #
 
@@ -518,7 +527,6 @@ class _S3270Backend(_TerminalBackend):
         port = _validate_port(port)
         tls = getattr(self, "_tls", False)
         insecure_tls = getattr(self, "_insecure_tls", False)
-        server_hostname = getattr(self, "_server_hostname", None)
         # Keep the traditional plaintext 3270 default on its normal port.
         # Port 992 is conventionally the TLS port, so using it without an
         # explicit transport choice must be an opt-in rather than a silent
@@ -528,11 +536,6 @@ class _S3270Backend(_TerminalBackend):
             raise MainframeError(
                 "s3270 plaintext transport requires insecure_tls=True; use "
                 "tls=True for the L: transport"
-            )
-        if tls and server_hostname and server_hostname != host:
-            raise MainframeError(
-                "s3270 TLS server_hostname must match host because x3270 "
-                "verifies the Connect() hostname"
             )
         self._spawn()
         target = f"L:{host}:{port}" if tls else f"{host}:{port}"

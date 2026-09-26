@@ -136,10 +136,15 @@ blocked by default.
 
 The `s3270` backend expresses TLS using the documented `L:` host prefix and
 passes the verification policy explicitly to the emulator. With `tls=True`,
-DolphinDesktop starts s3270 with `-verifycert`; `tls_ca_file=` is passed as
-`-cafile`, and the `host` value is used for certificate hostname validation.
-Use `insecure_tls=True` only when an unverified emulator connection is
-intentional; it passes `-noverifycert`.
+DolphinDesktop starts s3270 with `-verifycert`. On OpenSSL builds,
+`tls_ca_file=` is passed as `-cafile`; Windows `ws3270` and macOS `x3270`
+builds reject that option with `MainframeError`, so omit it to use the
+platform certificate store. `server_hostname=` is passed as
+`-accepthostname`, which changes the certificate hostname accepted by the
+emulator. It does not change the `host` used for the connection or SNI; use
+the TLS hostname as `host` when SNI must match it. Use `insecure_tls=True`
+only when an unverified emulator connection is intentional; it passes
+`-noverifycert`.
 
 ### s3270 input safety
 

@@ -9,8 +9,12 @@ selection.
 TLS. Plaintext on the normal port 23 remains the compatible default; plaintext
 on port 992 requires the explicit `insecure_tls=True` opt-in. Native `tn5250`
 TLS validates the CA and hostname before TN5250 data is sent. `s3270` uses its
-`L:` transport prefix with `-verifycert`; `tls_ca_file` maps to `-cafile`, and
-`insecure_tls=True` explicitly selects the unverified `-noverifycert` mode.
+`L:` transport prefix with `-verifycert`. On OpenSSL builds,
+`tls_ca_file` maps to `-cafile`; Windows `ws3270` and macOS `x3270` reject
+that option with `MainframeError`. For `s3270`, `server_hostname` maps to
+`-accepthostname` for certificate-name validation, while `host` remains the
+connection/SNI host. `insecure_tls=True` explicitly selects the unverified
+`-noverifycert` mode.
 
 For the line-oriented `s3270` backend, `connect()` and `type_text()` reject
 control characters before process startup or stdin writes. Host action
