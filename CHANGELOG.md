@@ -12,6 +12,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   `DolphinHidden`, reports a clear `DolphinError` instead of using system-wide
   modifier events when activation fails, and `Locator.text()` preserves the
   exact text returned by UIA `TextPattern`.
+* `s3270` TLS now rejects `tls_ca_file` on Windows `ws3270` and macOS `x3270`,
+  where `-cafile` is unsupported, and uses `-accepthostname` for a custom
+  certificate hostname without changing the connection host.
 
 ## [0.2.0] — 2026-08-05
 

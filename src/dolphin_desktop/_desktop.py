@@ -1191,13 +1191,18 @@ class Desktop:
             tls: Enable TLS explicitly. False is the default and port 992
                 does not enable TLS implicitly.
             tls_ca_file: Optional CA bundle used by the native tn5250
-                backend. Native TLS verifies the CA and server hostname.
-            server_hostname: TLS hostname used for SNI and verification;
-                defaults to host.
+                backend. Native TLS verifies the CA and server hostname. For
+                s3270, ``-cafile`` is supported only by OpenSSL builds;
+                Windows ws3270 and macOS x3270 raise ``MainframeError``.
+            server_hostname: TLS hostname used for SNI and verification by
+                the native tn5250 backend; defaults to host. For s3270,
+                ``-accepthostname`` changes the certificate name accepted by
+                the emulator, but the ``host`` value remains the connection
+                (and SNI) host.
             insecure_tls: Explicitly opt into an unverified TLS or plaintext
-                transport for controlled endpoints. It is required for
-                s3270 TLS because dolphin_desktop cannot control the
-                emulator's certificate policy.
+                transport for controlled endpoints. For s3270, ``tls=True``
+                passes the verified ``-verifycert`` policy; set this flag
+                only when an unverified emulator connection is intentional.
             trace: When True, every backend command + response is emitted
                 via ``dolphin_desktop.get_logger("dolphin_desktop.mainframe")``
                 at INFO level — invaluable when debugging why a test

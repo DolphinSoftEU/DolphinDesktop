@@ -31,6 +31,7 @@ The package exports these names through `dolphin_desktop.__all__`.
         - AID
         - ALL_CAPABILITIES
         - AliasNotFoundError
+        - AmbiguousMatchError
         - Application
         - ApplicationError
         - Backend

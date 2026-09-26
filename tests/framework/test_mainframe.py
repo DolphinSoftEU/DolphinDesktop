@@ -333,6 +333,35 @@ def test_s3270_lifecycle_and_status_operations(monkeypatch: pytest.MonkeyPatch) 
     assert backend._connected is True
 
 
+def test_s3270_tls_passes_explicit_certificate_policy_to_emulator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mf.sys, "platform", "linux")
+    verified = mf._S3270Backend(
+        binary="demo",
+        tls=True,
+        tls_ca_file="company-root.pem",
+    )
+    assert verified._extra_args[-3:] == [
+        "-verifycert",
+        "-cafile",
+        "company-root.pem",
+    ]
+
+    insecure = mf._S3270Backend(binary="demo", tls=True, insecure_tls=True)
+    assert insecure._extra_args[-1] == "-noverifycert"
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_s3270_tls_rejects_ca_file_on_platforms_without_cafile(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    monkeypatch.setattr(mf.sys, "platform", platform)
+
+    with pytest.raises(mf.MainframeError, match=r"tls_ca_file.*not supported"):
+        mf._S3270Backend(binary="ws3270.exe", tls=True, tls_ca_file="company-root.pem")
+
+
 def test_s3270_read_fields_keyboard_and_input(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = mf._S3270Backend.__new__(mf._S3270Backend)
     backend._exec = Mock(return_value=([], _status(cursor=(4, 7))))  # type: ignore[method-assign]
@@ -596,21 +625,33 @@ def test_tn5250_plaintext_on_port_23_remains_the_default(
     backend.disconnect()
 
 
-def test_s3270_tls_uses_l_prefix_and_requires_insecure_opt_in() -> None:
-    rejected = mf._S3270Backend(binary="s3270", tls=True)
-    rejected._spawn = Mock()  # type: ignore[method-assign]
-    with pytest.raises(mf.MainframeError, match="certificate verification"):
-        rejected.connect("host.example.test", 992, session_type="3270")
-    rejected._spawn.assert_not_called()
-
-    backend = mf._S3270Backend(binary="s3270", tls=True, insecure_tls=True)
+def test_s3270_tls_uses_l_prefix_and_explicit_verification_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mf.sys, "platform", "linux")
+    backend = mf._S3270Backend(
+        binary="s3270",
+        tls=True,
+        tls_ca_file="company-root.pem",
+    )
     backend._spawn = Mock()  # type: ignore[method-assign]
     backend._exec = Mock()  # type: ignore[method-assign]
     backend.connect("host.example.test", 992, session_type="3270")
+    assert backend._extra_args[-3:] == [
+        "-verifycert",
+        "-cafile",
+        "company-root.pem",
+    ]
     assert backend._exec.call_args_list[:2] == [
         call("Connect(L:host.example.test:992)"),
         call("Wait(15,InputField)", raise_on_error=False),
     ]
+
+    insecure = mf._S3270Backend(binary="s3270", tls=True, insecure_tls=True)
+    insecure._spawn = Mock()  # type: ignore[method-assign]
+    insecure._exec = Mock()  # type: ignore[method-assign]
+    insecure.connect("host.example.test", 992, session_type="3270")
+    assert insecure._extra_args[-1] == "-noverifycert"
 
 
 def test_s3270_plaintext_on_port_23_remains_the_default() -> None:
@@ -633,21 +674,22 @@ def test_s3270_port_992_plaintext_requires_explicit_opt_in() -> None:
     backend._spawn.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "options",
-    [
-        {"tls_ca_file": "root.pem"},
-        {"server_hostname": "other.example.test"},
-    ],
-)
-def test_s3270_rejects_tls_options_it_cannot_verify(options: dict[str, str]) -> None:
-    backend = mf._S3270Backend(binary="s3270", tls=True, insecure_tls=True, **options)
+def test_s3270_tls_uses_accept_hostname_for_certificate_verification() -> None:
+    backend = mf._S3270Backend(
+        binary="s3270",
+        tls=True,
+        server_hostname="mainframe.company.test",
+    )
     backend._spawn = Mock()  # type: ignore[method-assign]
+    backend._exec = Mock()  # type: ignore[method-assign]
 
-    with pytest.raises(mf.MainframeError, match=r"cannot be verified|does not accept"):
-        backend.connect("host.example.test", 992, session_type="3270")
+    backend.connect("10.0.0.5", 992, session_type="3270")
 
-    backend._spawn.assert_not_called()
+    assert backend._extra_args[-2:] == ["-accepthostname", "mainframe.company.test"]
+    assert backend._exec.call_args_list[:2] == [
+        call("Connect(L:10.0.0.5:992)"),
+        call("Wait(15,InputField)", raise_on_error=False),
+    ]
 
 
 def test_s3270_exec_protocol_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:
