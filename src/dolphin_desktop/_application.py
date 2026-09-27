@@ -711,6 +711,21 @@ class Application:
         except Exception:
             pass
 
+        # pywinauto's title lookup can omit an owned modal window even though
+        # windows() finds its native top-level handle. Keep alias lookup scoped
+        # to this application before considering a desktop-wide hand-off.
+        if set(criteria) == {"title"}:
+            try:
+                owned_windows = self.windows()
+            except Exception:
+                owned_windows = []
+            for candidate in owned_windows:
+                try:
+                    if candidate.title() == criteria["title"] and candidate.is_visible():
+                        return candidate
+                except Exception:
+                    continue
+
         # Fallback: single-instance apps (e.g. Windows 11 Notepad) hand off to
         # an existing process, so the window's PID differs from the launched one.
         # Search the entire desktop with the same criteria.

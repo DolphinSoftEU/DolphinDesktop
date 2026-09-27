@@ -1004,6 +1004,22 @@ def test_find_window_uses_own_process_before_desktop_fallback(monkeypatch) -> No
     app._adopt_hand_off.assert_called_once_with(desktop_bound_spec, criteria)
 
 
+def test_find_window_resolves_owned_modal_by_title(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    app, raw = _bare_application(application)
+    raw.window.side_effect = RuntimeError("owned modal omitted by title lookup")
+    modal = Mock()
+    modal.title.return_value = "Dialog"
+    modal.is_visible.return_value = True
+    monkeypatch.setattr(app, "windows", Mock(return_value=[modal]))
+    desktop = Mock()
+    monkeypatch.setattr(application, "_PwDesktop", Mock(return_value=desktop))
+
+    assert app._find_window({"title": "Dialog"}, 1) is modal
+    desktop.window.assert_not_called()
+
+
 def test_find_window_reports_desktop_failure(monkeypatch) -> None:
     import dolphin_desktop._application as application
     from dolphin_desktop._exceptions import WindowNotFoundError
