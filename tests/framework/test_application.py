@@ -1004,6 +1004,57 @@ def test_find_window_uses_own_process_before_desktop_fallback(monkeypatch) -> No
     app._adopt_hand_off.assert_called_once_with(desktop_bound_spec, criteria)
 
 
+@pytest.mark.parametrize("found_index", [0, 1])
+def test_window_resolves_owned_modal_by_title(monkeypatch, found_index: int) -> None:
+    import dolphin_desktop._application as application
+
+    app, raw = _bare_application(application)
+    raw.window.side_effect = RuntimeError("owned modal omitted by title lookup")
+    hidden = Mock()
+    hidden.title.return_value = "Dialog"
+    hidden.is_visible.return_value = False
+    other = Mock()
+    other.title.return_value = "Other"
+    other.is_visible.return_value = True
+    unreadable = Mock()
+    unreadable.title.side_effect = RuntimeError("window disappeared")
+    modals = [Mock(), Mock()]
+    for modal in modals:
+        modal.title.return_value = "Dialog"
+        modal.is_visible.return_value = True
+    monkeypatch.setattr(app, "windows", Mock(return_value=[hidden, other, unreadable, *modals]))
+    desktop = Mock()
+    monkeypatch.setattr(application, "_PwDesktop", Mock(return_value=desktop))
+
+    if found_index == 0:
+        result = app.window(title="Dialog", timeout=1)
+    else:
+        result = app.window(title="Dialog", found_index=found_index, timeout=1)
+    assert result is modals[found_index]
+    raw.window.assert_called_once_with(found_index=found_index, title="Dialog")
+    desktop.window.assert_not_called()
+
+
+def test_window_owned_modal_respects_out_of_range_found_index(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+    from dolphin_desktop._exceptions import WindowNotFoundError
+
+    app, raw = _bare_application(application)
+    raw.window.side_effect = RuntimeError("owned modal omitted by title lookup")
+    modal = Mock()
+    modal.title.return_value = "Dialog"
+    modal.is_visible.return_value = True
+    monkeypatch.setattr(app, "windows", Mock(return_value=[modal]))
+    desktop = Mock()
+    desktop.window.side_effect = RuntimeError("desktop miss")
+    monkeypatch.setattr(application, "_PwDesktop", Mock(return_value=desktop))
+
+    with pytest.raises(WindowNotFoundError):
+        app.window(title="Dialog", found_index=1, timeout=0)
+
+    desktop.window.assert_called_once_with(found_index=1, title="Dialog")
+
+
 def test_find_window_reports_desktop_failure(monkeypatch) -> None:
     import dolphin_desktop._application as application
     from dolphin_desktop._exceptions import WindowNotFoundError
