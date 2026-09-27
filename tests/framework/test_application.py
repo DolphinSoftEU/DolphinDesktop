@@ -1016,11 +1016,13 @@ def test_window_resolves_owned_modal_by_title(monkeypatch, found_index: int) -> 
     other = Mock()
     other.title.return_value = "Other"
     other.is_visible.return_value = True
+    unreadable = Mock()
+    unreadable.title.side_effect = RuntimeError("window disappeared")
     modals = [Mock(), Mock()]
     for modal in modals:
         modal.title.return_value = "Dialog"
         modal.is_visible.return_value = True
-    monkeypatch.setattr(app, "windows", Mock(return_value=[hidden, other, *modals]))
+    monkeypatch.setattr(app, "windows", Mock(return_value=[hidden, other, unreadable, *modals]))
     desktop = Mock()
     monkeypatch.setattr(application, "_PwDesktop", Mock(return_value=desktop))
 
@@ -1035,7 +1037,6 @@ def test_window_resolves_owned_modal_by_title(monkeypatch, found_index: int) -> 
 
 def test_window_owned_modal_respects_out_of_range_found_index(monkeypatch) -> None:
     import dolphin_desktop._application as application
-
     from dolphin_desktop._exceptions import WindowNotFoundError
 
     app, raw = _bare_application(application)
