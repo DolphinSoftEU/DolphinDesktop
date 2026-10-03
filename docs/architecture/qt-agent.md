@@ -251,6 +251,11 @@ be verified or fixed from this repository.
   are hash-verified against `agent_manifest.json` before injection.
   `reattach()` refuses a PID whose creation time changed since the original
   attach. See `SECURITY.md` for what this means for you in practice.
+  **KAN-470 remains open:** these client-side measures are a partial
+  mitigation. The follow-up requires the agent's C++ source and a
+  reproducible DLL build, a server-side ACL limited to the authorized
+  logon/session, `PIPE_REJECT_REMOTE_CLIENTS`, a per-attach session secret,
+  and tests that reject unauthorized local, other-session and remote clients.
 - **Per-Qt-major-version DLL** — Qt 5 and Qt 6 ABIs differ. We ship both,
   named `dolphin_qt5_agent.dll` and `dolphin_qt6_agent.dll`; the loader
   picks based on `Application.qt_version()`.

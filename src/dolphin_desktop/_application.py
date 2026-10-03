@@ -365,38 +365,28 @@ def forget_process_identity(pid: int) -> None:
     _process_identities.pop(pid, None)
 
 
-def _identity_is_foreign(pid: int) -> bool:
-    """True only when *pid*'s recorded creation time no longer matches reality.
-
-    "Unknown" — no recorded identity, or the creation time cannot be read — is
-    never treated as foreign: that would make cleanup stop terminating the
-    very AUTs it exists to reap. Only a recorded value that has *changed*
-    proves the PID was reused.
-    """
+def _identity_matches(pid: int) -> bool:
+    """Return True only when the recorded creation time can be confirmed."""
     expected = _process_identities.get(pid)
     if expected is None:
         return False
     current = _process_creation_time(pid)
-    if current is None:
-        return False
-    return current != expected
+    return current is not None and current == expected
 
 
 def terminate_tracked_pid(pid: int, log: Any | None = None) -> bool:
-    """Terminate *pid* unless its identity shows it was reused. Returns True if killed.
+    """Terminate *pid* only when its recorded identity matches. Returns True if killed.
 
     The recorded ``(PID, creation-time)`` pair is checked first: a PID whose
-    creation time has changed since it was registered belongs to a different
-    process now, so it is skipped and logged rather than terminated. The
-    recorded identity is always forgotten afterwards.
+    creation time has changed or cannot be read is skipped. An unrecorded PID
+    is also skipped. The recorded identity is always forgotten afterwards.
     """
     try:
-        if _identity_is_foreign(pid):
+        if not _identity_matches(pid):
             if log is not None:
                 log.warning(
-                    "skipping TerminateProcess for PID=%d: its creation time no longer "
-                    "matches the process dolphin launched — the PID was reused by an "
-                    "unrelated process and must not be killed",
+                    "skipping TerminateProcess for PID=%d: process identity could not "
+                    "be confirmed (missing, unreadable or changed creation time)",
                     pid,
                 )
             return False
@@ -849,6 +839,26 @@ class Application:
             return Window(spec, application=self)
         except Exception:
             pass
+
+        # pywinauto's title lookup can omit an owned modal window even though
+        # windows() finds its native top-level handle. Keep alias lookup scoped
+        # to this application before considering a desktop-wide hand-off.
+        if "title" in criteria and set(criteria) <= {"title", "found_index"}:
+            try:
+                owned_windows = self.windows()
+            except Exception:
+                owned_windows = []
+            matching_windows = []
+            for candidate in owned_windows:
+                try:
+                    if candidate.title() == criteria["title"] and candidate.is_visible():
+                        matching_windows.append(candidate)
+                except Exception:
+                    continue
+            try:
+                return matching_windows[criteria.get("found_index", 0)]
+            except IndexError:
+                pass
 
         # Fallback: single-instance apps (e.g. Windows 11 Notepad) hand off to
         # an existing process, so the window's PID differs from the launched one.

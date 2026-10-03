@@ -37,6 +37,15 @@ Two habits worth adopting from the start:
 
 ## Transport security
 
+### Migrating from the previous API
+
+This release changes `Desktop.mainframe()` transport defaults and arguments.
+Replace `tls_ca_file=` with `tls_cafile=`. Use the certificate's DNS name as
+`host`; `server_hostname=` is no longer accepted. `insecure_tls=` is also
+removed: unverified TLS is unavailable, and an intentional remote plaintext
+session must use `allow_plaintext=True`. Existing remote plaintext calls need
+that explicit opt-in or `tls=True`. Port 992 does not enable TLS by itself.
+
 A 3270/5250 session sends the user id and password in the same
 unencrypted byte stream as the rest of the screen; neither EBCDIC nor
 Telnet provides confidentiality. dolphin therefore **refuses a plaintext

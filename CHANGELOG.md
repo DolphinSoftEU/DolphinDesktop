@@ -6,6 +6,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ## [Unreleased]
 
+### Breaking changes
+
+* `Desktop.mainframe()` now refuses plaintext connections to remote hosts
+  unless `allow_plaintext=True` is set. The former `tls_ca_file` argument is
+  now `tls_cafile`; `server_hostname` and `insecure_tls` have been removed.
+  Use the verified TCP host name in `host`, and use `tls=True` with
+  `tls_cafile` or `tls_context` for private CAs. Unverified TLS is no longer
+  supported. To retain an intentional cleartext connection, pass
+  `allow_plaintext=True`. Port 992 does not select TLS automatically.
+
 ### Fixed
 
 * Hidden-desktop `Locator.press_key()` now focuses the element after activating
@@ -97,7 +107,7 @@ Addresses further findings from a follow-up security review
   masked everywhere, independent of any variable name. The s3270,
   TN5250 and HLLAPI trace paths no longer log typed text or raw frame
   bytes — only the action name and payload size.
-* **Qt agent IPC hardening (KAN-470).** The agent's named pipe now
+* **Qt agent IPC partial mitigation (KAN-470 remains open).** The agent's named pipe now
   carries an unguessable per-attach random token instead of the
   predictable `dolphin_qt_<pid>`, so a local process can no longer
   pre-create the pipe and impersonate the agent. `reattach()` refuses a
@@ -108,7 +118,10 @@ Addresses further findings from a follow-up security review
   The remaining server-side items (an explicit pipe ACL,
   `PIPE_REJECT_REMOTE_CLIENTS`, an in-band session secret, and a
   reproducible build of the DLL) live in the agent's C++ source, which is
-  not part of this repository and is tracked as follow-up work.
+  not part of this repository. The follow-up must provide the C++ source,
+  reproducible DLL build, a server-side ACL restricted to the expected
+  logon/session, `PIPE_REJECT_REMOTE_CLIENTS`, a per-attach session secret,
+  and tests that reject unauthorized local, other-session and remote clients.
 * **Dependency updates (KAN-471).** Pillow `>=12.3.0` (EPS decode DoS),
   `mkdocs-material 9.7.7`, `cryptography 50.0.1`, `pymdown-extensions
   11.0.2`. `CDPSession.screenshot()` now accepts only PNG / JPEG
@@ -118,8 +131,7 @@ Addresses further findings from a follow-up security review
   are pinned by `(PID, creation-time)`. The pytest teardown reaper and
   the session-end cleanup verify that identity before calling
   `TerminateProcess`, and skip a PID whose creation time no longer
-  matches — so a reused PID belonging to an unrelated process is never
-  killed.
+  matches or cannot be read, as well as any PID with no recorded identity.
 * **DLL search-order hijacking removed (KAN-473).** The Java Access
   Bridge and HLLAPI DLLs load only from absolute, trusted locations
   (`JAVA_HOME`/registry/vendor dirs, then `System32`) via
@@ -135,7 +147,8 @@ Addresses further findings from a follow-up security review
   `launch_cef_cdp()` refuse to start when the debug port is already in
   use, and after the port answers they confirm its loopback listener is
   the launched process or a verified descendant before connecting — a
-  200 from a foreign PID is rejected.
+  200 from a foreign or unidentifiable listener is rejected; the launched
+  application is cleaned up in either case.
 * **`launch_qt` no longer mutates the global environment (KAN-476).**
   Qt variables were already passed through a private per-child
   environment block; a concurrency regression test now locks that in.

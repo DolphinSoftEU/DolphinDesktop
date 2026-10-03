@@ -246,15 +246,25 @@ def test_terminate_kills_a_matching_identity(monkeypatch) -> None:
     assert ("terminate", "H", 1) in calls
 
 
-def test_terminate_kills_when_identity_was_never_recorded(monkeypatch) -> None:
+def test_terminate_skips_when_identity_was_never_recorded(monkeypatch) -> None:
     from dolphin_desktop import _application
 
     calls = _fake_win32(monkeypatch)
     monkeypatch.setattr(_application, "_process_identities", {})
-    monkeypatch.setattr(_application, "_process_creation_time", lambda pid: None)
+    monkeypatch.setattr(_application, "_process_creation_time", lambda pid: 111)
     killed = _application.terminate_tracked_pid(9001, log=Mock())
-    assert killed is True
-    assert ("terminate", "H", 1) in calls
+    assert killed is False
+    assert calls == []
+
+
+def test_terminate_skips_when_current_identity_cannot_be_read(monkeypatch) -> None:
+    from dolphin_desktop import _application
+
+    calls = _fake_win32(monkeypatch)
+    monkeypatch.setattr(_application, "_process_identities", {9001: 111})
+    monkeypatch.setattr(_application, "_process_creation_time", lambda pid: None)
+    assert _application.terminate_tracked_pid(9001, log=Mock()) is False
+    assert calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -333,15 +343,16 @@ def test_verify_cdp_port_owner_accepts_a_descendant(monkeypatch) -> None:
     app.kill.assert_not_called()
 
 
-def test_verify_cdp_port_owner_is_lenient_when_lookup_unavailable(monkeypatch) -> None:
+def test_verify_cdp_port_owner_rejects_unknown_owner(monkeypatch) -> None:
     from dolphin_desktop import _desktop
 
     desktop = _desktop.Desktop(hidden=False)
     app = SimpleNamespace(process_id=1000, kill=Mock())
-    # Empty owner set == "cannot determine" — keep the HTTP-only contract.
+    # Empty owner set cannot authenticate the endpoint, even after HTTP 200.
     monkeypatch.setattr("dolphin_desktop._netinfo.loopback_listener_pids", lambda port: set())
-    desktop._verify_cdp_port_owner(app, 9222, "Electron", lambda p: f"port {p}")
-    app.kill.assert_not_called()
+    with pytest.raises(RuntimeError, match="ownership cannot be confirmed"):
+        desktop._verify_cdp_port_owner(app, 9222, "Electron", lambda p: f"port {p}")
+    app.kill.assert_called_once()
 
 
 # --------------------------------------------------------------------------- #

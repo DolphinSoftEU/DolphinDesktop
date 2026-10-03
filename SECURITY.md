@@ -50,6 +50,13 @@ prebuilt DLL, whose C++ source is not in this repository; tightening it
 Only 64-bit Qt targets are supported; injection into a 32-bit process is
 refused rather than attempted.
 
+KAN-470 remains open. The random pipe name, PID check and DLL hash check are
+partial mitigations; they do not authenticate a client to the agent. Closing
+the issue requires the C++ source and reproducible DLL build, a server-side
+ACL restricted to the authorized logon/session, `PIPE_REJECT_REMOTE_CLIENTS`,
+a per-attach session secret, and tests for unauthorized local, other-session
+and remote clients.
+
 **Mainframe transport.** Terminal sessions carry the sign-on credentials
 in the same byte stream as the screen, and neither EBCDIC nor Telnet
 provides confidentiality. `Desktop.mainframe()` therefore refuses a
@@ -131,20 +138,19 @@ future refactor cannot preserve a prose claim while dropping the regression:
 | Work item | Regression | Test location | Status / invariant covered |
 | --- | --- | --- | --- |
 | KAN-467 | DESKTOP-199 | `tests/framework/test_mainframe.py::test_s3270_rejects_unsafe_host_before_spawn_or_stdin` | s3270 host input cannot inject another emulator action; the process is not spawned. |
-| KAN-468 | DESKTOP-200 | `tests/framework/test_mainframe.py::test_tn5250_tls_uses_verified_context_before_negotiation` | Partial / not claimed complete: explicit native TLS verifies before TN5250 negotiation, but plaintext on port 23 remains the compatibility default. |
-| KAN-472 | DESKTOP-203 | `tests/framework/test_stability.py::TestLaunchCapturesImagePath::test_image_path_survives_a_launcher_that_exits_during_startup_delay` | The launch identity is captured before `startup_delay`, so a fast launcher cannot turn PID reuse into an unrelated cleanup target. |
+| KAN-468 | DESKTOP-200 | `tests/framework/test_security_mainframe.py::test_tn5250_tls_handshake_verifies_the_certificate`; DESKTOP-200 TLS UAT | Verified TLS is enforced for native TN5250 and the s3270 `L:` path when explicitly requested; remote plaintext requires `allow_plaintext=True`. |
+| KAN-472 | DESKTOP-203 | `tests/framework/test_security_core.py::test_terminate_skips_when_identity_was_never_recorded`, `::test_terminate_skips_when_current_identity_cannot_be_read` | Cleanup does not terminate a PID unless its recorded creation time can be confirmed. |
 | KAN-473 | DESKTOP-204 | `tests/framework/test_java.py::test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path`; `tests/framework/test_mainframe.py::test_resolve_hllapi_dll_success_and_failure` | JAB and HLLAPI DLL loading use explicit trusted paths; relative and DLL search-order/PATH fallback is refused. |
-| KAN-475 | DESKTOP-205 | `tests/framework/test_desktop.py::test_cdp_rejects_http_endpoint_owned_by_foreign_pid` | A live CDP endpoint is accepted only when its listener PID belongs to the launched process tree. |
+| KAN-475 | DESKTOP-205 | `tests/framework/test_desktop.py::test_cdp_rejects_http_endpoint_owned_by_foreign_pid`; `tests/framework/test_security_core.py::test_verify_cdp_port_owner_rejects_unknown_owner` | A live CDP endpoint is accepted only when its listener PID is known and belongs to the launched process tree. |
 | KAN-574 | — | `tests/framework/test_office_com.py::test_excel_open_force_disables_macros_and_link_updates`, `::test_word_open_force_disables_macros` | Opening a document through `ExcelApp.open()` / `WordApp.open()` force-disables macros before the file is opened. |
 | KAN-575 | — | `tests/framework/test_mainframe.py::test_tn5250_read_records_rejects_unbounded_backlog_without_eor`, `::test_tn5250_read_records_enforces_deadline_even_with_records_already_parsed` | A TN5250 host that never terminates a record cannot grow the receive buffer without bound, and the read deadline is enforced even once records have started arriving. |
 | KAN-630 | DESKTOP-107 | `tests/framework/test_diagnostics_privacy.py::TestRedactionShapesThatLeakedBefore::test_the_value_never_survives`, `tests/framework/test_selfheal.py::test_selfheal_redacts_a_selector_keyed_by_a_sensitive_name_with_a_bare_value` | `login`/`username`/`connection_string`/`clipboard` are masked in a dict-`repr()` shape, and a selector dict keyed by a sensitive name with a bare value is masked before it reaches the on-disk self-healing journal. |
 | KAN-636 | — | `tests/framework/test_cli_init.py::test_init_rejects_absolute_path_outside_cwd`, `::test_init_rejects_path_traversal`, `::test_init_rejects_symlinked_target_escaping_cwd` | `dolphin init` refuses a target that resolves outside the current working directory. |
 
-KAN-468 is intentionally not marked as fully delivered by this change. The
-native TLS path is verified when explicitly requested, but `port=23` still
-means plaintext for backwards compatibility. Callers must not send
-credentials over that channel; a complete block-or-explicit-opt-in policy
-for all credential-bearing connections requires a separate change.
+KAN-468 uses explicit transport selection. Native TN5250 and s3270 `L:`
+connections verify their configured certificate policy before application
+data is sent. A remote plaintext connection, including on port 23, requires
+`allow_plaintext=True`; a loopback connection is exempt.
 
 Run the focused set with:
 

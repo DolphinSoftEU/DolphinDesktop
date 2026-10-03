@@ -492,6 +492,13 @@ class TestUiATreeDump:
 
         assert _trace._dump_uia_tree(root) == "[]"
 
+    def test_success_tree_includes_the_action_target(self):
+        save = self._Node(self._Info("Button", "Save", "save-v2"))
+
+        assert json.loads(_trace._dump_uia_tree(save, include_root=True)) == [
+            {"d": 0, "ctrl": "Button", "name": "Save", "id": "save-v2"}
+        ]
+
     def test_dump_returns_none_when_serialisation_fails(self, monkeypatch):
         monkeypatch.setattr(_trace, "_collect", lambda *args: (_ for _ in ()).throw(RuntimeError()))
 
@@ -511,6 +518,19 @@ class TestTraceSessionBranches:
         db = sqlite3.connect(str(tmp_path / "run" / "trace.db"))
         assert db.execute("SELECT COUNT(*) FROM steps").fetchone()[0] == 0
         db.close()
+
+    def test_always_mode_stores_tree_for_successful_action(self, tmp_path, monkeypatch):
+        session = _trace.TraceSession("tests/t.py::test_x", tmp_path / "run", mode="always")
+        monkeypatch.setattr(_trace, "_capture_screenshot", lambda path: path.write_bytes(b"jpeg"))
+        element = TestUiATreeDump._Node(TestUiATreeDump._Info("Button", "Save", "save-v2"))
+
+        session.record_step("click", "{'auto_id': 'save'}", element=element)
+        session.finish("passed")
+
+        with sqlite3.connect(str(session.run_dir / "trace.db")) as db:
+            result, tree = db.execute("SELECT result, uia_tree FROM steps").fetchone()
+        assert result == "ok"
+        assert json.loads(tree)[0]["id"] == "save-v2"
 
     def test_existing_schema_is_reused(self, tmp_path):
         run_dir = tmp_path / "run"

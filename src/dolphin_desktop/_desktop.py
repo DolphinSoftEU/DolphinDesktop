@@ -729,9 +729,8 @@ class Desktop:
         # The port answers 200 — but is it *our* process answering? Bind the
         # listener to the launched PID or one of its verified descendants
         # before handing the endpoint to Playwright. A 200 from a foreign PID
-        # (a squatter, a leftover browser) is rejected. When the owning PID
-        # cannot be read at all (lookup unavailable), the launch proceeds on
-        # the HTTP check alone, which is the pre-existing behavior.
+        # (a squatter, a leftover browser) is rejected. If the owner cannot
+        # be determined, the HTTP response alone cannot prove ownership.
         self._verify_cdp_port_owner(app, debug_port, runtime_label, describe_owners)
 
         try:
@@ -762,10 +761,15 @@ class Desktop:
 
         owners = loopback_listener_pids(debug_port)
         if not owners:
-            # Owner lookup unavailable (older Windows, denied query) — keep the
-            # pre-existing HTTP-only readiness contract rather than fail closed
-            # on a platform limitation.
-            return
+            try:
+                app.kill()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"{runtime_label} CDP debug port {debug_port} answered, but its "
+                "listener PID could not be determined. Refusing to connect because "
+                "endpoint ownership cannot be confirmed."
+            )
         allowed = {app.process_id} | _enumerate_descendant_pids(app.process_id)
         if not owners <= allowed:
             try:

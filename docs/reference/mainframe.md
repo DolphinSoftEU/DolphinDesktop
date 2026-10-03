@@ -15,6 +15,10 @@ itself happens inside the emulator process, not in Python — see the
 [Mainframe guide](../guides/mainframe.md#transport-security) for that trust
 boundary.
 
+The previous `tls_ca_file`, `server_hostname`, and `insecure_tls` parameters
+were removed. See the [migration note](../guides/mainframe.md#migrating-from-the-previous-api)
+before upgrading an existing terminal integration.
+
 For the line-oriented `s3270` backend, `connect()` and `type_text()` reject
 control characters before process startup or stdin writes. Host action
 delimiters are rejected too. Printable text is escaped as one literal
