@@ -127,6 +127,9 @@ Addresses further findings from a follow-up security review
   11.0.2`. `CDPSession.screenshot()` now accepts only PNG / JPEG
   payloads (checked by magic bytes, decoded with the format pinned) and
   bounds the payload size, closing the untrusted-decoder path.
+* **Security audit lockfile refreshed.** The locked `urllib3` and
+  `virtualenv` versions were upgraded past the advisories reported by
+  `pip-audit` on this PR; the full exported lockfile now audits cleanly.
 * **PID-reuse-safe process termination (KAN-472).** Launched processes
   are pinned by `(PID, creation-time)`. The pytest teardown reaper and
   the session-end cleanup verify that identity before calling
