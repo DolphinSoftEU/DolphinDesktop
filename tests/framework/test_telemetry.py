@@ -40,6 +40,15 @@ def test_raised_in_dolphin_rejects_an_empty_frame_list() -> None:
     assert _raised_in_dolphin(event) is False
 
 
+def test_redact_event_leaves_non_string_scalars_untouched() -> None:
+    from dolphin_desktop._telemetry import _redact_event
+
+    assert _redact_event(42) == 42
+    assert _redact_event(None) is None
+    assert _redact_event(True) is True
+    assert _redact_event(3.14) == 3.14
+
+
 def test_telemetry_initialization_is_idempotent(monkeypatch) -> None:
     import dolphin_desktop._telemetry as telemetry
 

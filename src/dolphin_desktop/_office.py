@@ -158,8 +158,17 @@ class ExcelApp:
         xl = client.DispatchEx("Excel.Application")
         app = cls(xl, owned=True)
         try:
+            # msoAutomationSecurityForceDisable: macros in the opened
+            # workbook never run, regardless of the user's own Trust Center
+            # setting — a test driving an arbitrary/untrusted .xlsm must not
+            # be able to execute code through it.
+            xl.AutomationSecurity = 3
+            xl.AskToUpdateLinks = False
             xl.Visible = visible
-            app._opened.append(xl.Workbooks.Open(str(Path(path).resolve())))
+            # Second positional arg is UpdateLinks (0 = never update external
+            # links silently) — a workbook opened for automation must not
+            # reach out to another file/URL on open.
+            app._opened.append(xl.Workbooks.Open(str(Path(path).resolve()), 0))
         except BaseException:
             # Nothing outside this call holds the private instance, so a
             # failing Open (missing, locked, corrupt, password-prompted)
@@ -314,6 +323,11 @@ class WordApp:
         wd = client.DispatchEx("Word.Application")
         app = cls(wd, owned=True)
         try:
+            # msoAutomationSecurityForceDisable: macros in the opened
+            # document never run, regardless of the user's own Trust Center
+            # setting — a test driving an arbitrary/untrusted .docm must not
+            # be able to execute code through it.
+            wd.AutomationSecurity = 3
             wd.Visible = visible
             app._opened.append(wd.Documents.Open(str(Path(path).resolve())))
         except BaseException:

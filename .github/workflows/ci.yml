@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [master, testpypi-preview]
 
+# Least privilege: the whole workflow only reads the repository. No job here
+# writes contents, and none needs an OIDC token — those are granted per job
+# in release.yml, and only to the jobs that publish.
+permissions:
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -19,19 +25,21 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
       - name: Check lockfile
+        # A lockfile that does not match pyproject fails the build here rather
+        # than letting an inconsistent dependency set install.
         run: uv lock --check
 
       - name: Install dependencies
@@ -56,7 +64,7 @@ jobs:
           -q
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
         if: always()
         with:
           files: coverage.xml
@@ -67,9 +75,9 @@ jobs:
     name: "Linux package install and import"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 
@@ -113,14 +121,14 @@ jobs:
     env:
       DOLPHIN_COMPONENT_PREFLIGHT: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
@@ -166,15 +174,15 @@ jobs:
     needs: unit
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
 
@@ -185,8 +193,49 @@ jobs:
         run: uv run --with twine twine check dist/*
 
       - name: Upload package artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dolphin-desktop-dist
           path: dist/
           if-no-files-found: error
+
+  security:
+    name: "Security gate (CVE / secrets / SAST)"
+    runs-on: ubuntu-latest
+    # Read-only: this job inspects the tree, it never writes to it.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Dependency audit (CVE)
+        # Audits the exact locked versions. A known-vulnerable dependency
+        # fails the gate. Exported without hashes because pip-audit resolves
+        # the pinned versions directly.
+        run: |
+          uv export --no-hashes --format requirements-txt --all-extras \
+            --no-emit-project > requirements.audit.txt
+          uvx --from pip-audit pip-audit -r requirements.audit.txt --no-deps --strict
+
+      - name: Static analysis (SAST)
+        # Bandit over the shipped package. -ll: report medium+ severity;
+        # the build fails if any is found.
+        run: uvx bandit -r src/dolphin_desktop -ll
+
+      - name: Secret scan
+        # Scans every git-tracked file for committed credentials, comparing
+        # against .secrets.baseline. The baseline records the known, reviewed
+        # matches (test fixtures, the throwaway localhost test key, commit
+        # SHAs); the hook fails only on a NEW secret that is not in it. Refresh
+        # the baseline with:
+        #   uvx detect-secrets scan > .secrets.baseline
+        run: uvx --from detect-secrets detect-secrets-hook --baseline .secrets.baseline $(git ls-files)

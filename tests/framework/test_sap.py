@@ -256,6 +256,17 @@ def test_sap_gui_connect_backend_login_and_collections(monkeypatch):
     sap.SapGui.keyboard_login("SAP Logon", "user", "pass")
     assert [item[0][0] for item in sent] == ["user", "{TAB}", "pass", "{ENTER}"]
 
+    # KAN-577: a credential containing SendKeys metacharacters must be typed
+    # literally, not interpreted as control keys.
+    sent.clear()
+    sap.SapGui.keyboard_login("SAP Logon", "us+er", "{TAB}{ENTER}pw%d")
+    assert [item[0][0] for item in sent] == [
+        "us{+}er",
+        "{TAB}",
+        "{{}TAB{}}{{}ENTER{}}pw{%}d",
+        "{ENTER}",
+    ]
+
 
 def test_sap_gui_failure_and_open_connection_fallbacks(monkeypatch):
     monkeypatch.setattr(sap, "_require_win32com", Mock(side_effect=RuntimeError("offline")))

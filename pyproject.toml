@@ -34,7 +34,7 @@ classifiers = [
 ]
 dependencies = [
     "pywinauto>=0.6.8",
-    "Pillow>=10.4",
+    "Pillow>=12.3.0",
     "comtypes>=1.4; platform_system == \"Windows\"",
     "pywin32>=306; platform_system == \"Windows\"",
     "pyyaml>=6.0",
@@ -75,15 +75,15 @@ vision = [
     "pytesseract>=0.3.10",
 ]
 docs = [
-    "mkdocs-material>=9.5",
+    "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=0.25",
     "mike>=2.0",
 ]
 telemetry = [
-    "sentry-sdk>=2.0",
+    "sentry-sdk>=2.8.0",
 ]
 pytest = [
-    "pytest>=8.3",
+    "pytest>=9.0.3",
     "allure-pytest>=2.13",
 ]
 cdp = [
@@ -96,7 +96,7 @@ dev = [
     "build>=1.5.0",
     "mypy>=1.10",
     "pre-commit>=3.7",
-    "pytest>=8.3",
+    "pytest>=9.0.3",
     "pytest-cov>=5.0",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",

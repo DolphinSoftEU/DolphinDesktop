@@ -4,17 +4,20 @@ Mainframe terminal automation surface. See
 [Mainframe guide](../guides/mainframe.md) for install steps and backend
 selection.
 
-`Desktop.mainframe()` accepts `tls=False` (the default), `tls_ca_file=`,
-`server_hostname=`, and `insecure_tls=`. Port 992 does not implicitly enable
-TLS. Plaintext on the normal port 23 remains the compatible default; plaintext
-on port 992 requires the explicit `insecure_tls=True` opt-in. Native `tn5250`
-TLS validates the CA and hostname before TN5250 data is sent. `s3270` uses its
-`L:` transport prefix with `-verifycert`. On OpenSSL builds,
-`tls_ca_file` maps to `-cafile`; Windows `ws3270` and macOS `x3270` reject
-that option with `MainframeError`. For `s3270`, `server_hostname` maps to
-`-accepthostname` for certificate-name validation, while `host` remains the
-connection/SNI host. `insecure_tls=True` explicitly selects the unverified
-`-noverifycert` mode.
+`Desktop.mainframe()` accepts `tls=False` (the default), `tls_cafile=`,
+`tls_context=`, and `allow_plaintext=`. Port 992 does not implicitly enable
+TLS. dolphin refuses a plaintext session to a remote host unless `tls=True`,
+the host is loopback, or `allow_plaintext=True` is passed explicitly — a port
+number, 992 included, is never treated as a substitute. Native `tn5250` TLS
+validates the CA and hostname before TN5250 data is sent. `s3270` uses its
+`L:` transport prefix and accepts `tls_cafile=`, but certificate verification
+itself happens inside the emulator process, not in Python — see the
+[Mainframe guide](../guides/mainframe.md#transport-security) for that trust
+boundary.
+
+The previous `tls_ca_file`, `server_hostname`, and `insecure_tls` parameters
+were removed. See the [migration note](../guides/mainframe.md#migrating-from-the-previous-api)
+before upgrading an existing terminal integration.
 
 For the line-oriented `s3270` backend, `connect()` and `type_text()` reject
 control characters before process startup or stdin writes. Host action

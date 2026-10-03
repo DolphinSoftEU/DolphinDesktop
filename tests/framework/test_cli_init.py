@@ -8,12 +8,30 @@ from __future__ import annotations
 import importlib
 import io
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from dolphin_desktop._cli import _doctor_cmd, _scaffold
+
+
+def test_docs_reference_cli_lists_every_init_template() -> None:
+    """KAN-605: docs/reference/cli.md must not drift from the CLI's actual
+
+    `--template` choices — a new stack template added to _STACK_TEMPLATES
+    without a docs update would otherwise go unnoticed.
+    """
+    from dolphin_desktop import _cli
+
+    templates = ["minimal", "standard", "enterprise", *_cli._STACK_TEMPLATES]
+
+    docs_path = Path(__file__).resolve().parents[2] / "docs" / "reference" / "cli.md"
+    docs_text = docs_path.read_text(encoding="utf-8")
+
+    missing = [t for t in templates if t not in docs_text]
+    assert not missing, f"docs/reference/cli.md is missing templates: {missing}"
 
 
 def test_minimal_creates_expected_files(tmp_path):
@@ -251,6 +269,70 @@ def test_cli_handlers_scaffold_stats_and_trace_listing(tmp_path, monkeypatch, ca
     output = capsys.readouterr().out
     assert "PASSED" in output and "TEST_RUNNING" not in output
     assert "test_running" in output and "—" in output
+
+
+def test_init_rejects_absolute_path_outside_cwd(tmp_path, monkeypatch, capsys) -> None:
+    """KAN-636: `dolphin init` must not scaffold outside the working directory."""
+    from dolphin_desktop import _cli as cli
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    outside = tmp_path / "outside-project"
+
+    with pytest.raises(SystemExit):
+        cli._init_cmd(
+            SimpleNamespace(
+                yes=True, name=str(outside), template="minimal", install=False, git=False
+            )
+        )
+
+    assert "resolves outside the current working directory" in capsys.readouterr().out
+    assert not outside.exists()
+
+
+def test_init_rejects_path_traversal(tmp_path, monkeypatch, capsys) -> None:
+    """KAN-636: a '..' name must not escape the working directory either."""
+    from dolphin_desktop import _cli as cli
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+
+    with pytest.raises(SystemExit):
+        cli._init_cmd(
+            SimpleNamespace(
+                yes=True, name="../escaped-project", template="minimal", install=False, git=False
+            )
+        )
+
+    assert "resolves outside the current working directory" in capsys.readouterr().out
+    assert not (tmp_path / "escaped-project").exists()
+
+
+def test_init_rejects_symlinked_target_escaping_cwd(tmp_path, monkeypatch, capsys) -> None:
+    """KAN-636: a symlinked intermediate directory must not bypass the containment check."""
+    from dolphin_desktop import _cli as cli
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    try:
+        (workspace / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported in this environment")
+    monkeypatch.chdir(workspace)
+
+    with pytest.raises(SystemExit):
+        cli._init_cmd(
+            SimpleNamespace(
+                yes=True, name="link/escaped", template="minimal", install=False, git=False
+            )
+        )
+
+    assert "resolves outside the current working directory" in capsys.readouterr().out
+    assert not (outside / "escaped").exists()
 
 
 def test_cli_doctor_and_backend_info_are_rendered(monkeypatch, capsys) -> None:

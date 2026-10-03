@@ -163,9 +163,11 @@ def config(
             raise ValueError(f"Invalid video_mode: {video_mode!r}")
         _defaults["video_mode"] = video_mode
     if video_fps is not None:
+        if isinstance(video_fps, bool) or not isinstance(video_fps, int):
+            raise TypeError(f"video_fps must be an int, got {type(video_fps).__name__}")
         if not 1 <= video_fps <= MAX_VIDEO_FPS:
             raise ValueError(f"video_fps must be between 1 and {MAX_VIDEO_FPS}")
-        _defaults["video_fps"] = int(video_fps)
+        _defaults["video_fps"] = video_fps
     if log_level is not None:
         normalized_log_level = log_level.upper() if isinstance(log_level, str) else None
         if normalized_log_level not in VALID_LOG_LEVELS:
@@ -177,9 +179,11 @@ def config(
         _defaults["log_level"] = normalized_log_level
         apply_log_level(normalized_log_level)
     if retry_count is not None:
+        if isinstance(retry_count, bool) or not isinstance(retry_count, int):
+            raise TypeError(f"retry_count must be an int, got {type(retry_count).__name__}")
         if retry_count < 0:
             raise ValueError("retry_count must be non-negative")
-        _defaults["retry_count"] = int(retry_count)
+        _defaults["retry_count"] = retry_count
 
 
 def get_timeout() -> float:

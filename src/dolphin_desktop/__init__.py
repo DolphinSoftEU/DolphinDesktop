@@ -121,7 +121,7 @@ from ._image import ImageLocator, Screen
 from ._java import JavaAccessBridge
 from ._keyboard import Keyboard
 from ._locator import Locator
-from ._logging import get_logger, setup_logging
+from ._logging import Secret, get_logger, setup_logging
 from ._mainframe import (
     AID,
     FieldInfo,
@@ -240,6 +240,7 @@ __all__ = [
     "SapLocator",
     "SapSession",
     "Screen",
+    "Secret",
     "Stopwatch",
     "Tab",
     "TerminalField",

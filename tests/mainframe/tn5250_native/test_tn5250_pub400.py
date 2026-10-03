@@ -21,7 +21,15 @@ def tn5250_term():
         pytest.skip(f"cannot reach {_HOST}:{_PORT}")
     try:
         term = Desktop().mainframe(
-            host=_HOST, port=_PORT, session_type="5250", backend="tn5250", timeout=15
+            host=_HOST,
+            port=_PORT,
+            session_type="5250",
+            backend="tn5250",
+            timeout=15,
+            # pub400 offers only plaintext on port 23; the throwaway public
+            # demo opts into the unencrypted channel explicitly (see the
+            # pub400 3270 conftest for the same note).
+            allow_plaintext=True,
         )
     except MainframeError as exc:
         pytest.skip(f"tn5250 connect failed: {exc}")

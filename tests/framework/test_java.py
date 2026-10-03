@@ -438,44 +438,73 @@ def test_ensure_enabled_calls_enable_only_when_probe_is_false(monkeypatch) -> No
 # Session construction, ctypes prototypes, and low-level calls
 
 
-def test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path(
-    monkeypatch, tmp_path
-) -> None:
-    """DESKTOP-204 / KAN-473: JAB DLL loading cannot use search-order fallback."""
-    wab = _MinimalWab()
-    java_home = tmp_path / "jdk"
-    java_home.mkdir()
-    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: str(java_home)))
-    attempts: list[str] = []
+def test_session_is_singleton_and_loads_from_a_trusted_path(monkeypatch) -> None:
+    from dolphin_desktop import _native
 
-    def load(path):
-        attempts.append(path)
+    wab = _MinimalWab()
+    # Only the JAVA_HOME\bin candidate exists on disk; the loader is the
+    # trusted-path loader (absolute path, restricted search order).
+    trusted = r"C:\jdk\bin\windowsaccessbridge-64.dll"
+    monkeypatch.setattr(java._JABSession, "_trusted_dll_paths", classmethod(lambda cls: [trusted]))
+    loaded: list[str] = []
+
+    def load(path, *, what="native library"):
+        loaded.append(path)
         return wab
 
-    monkeypatch.setattr(java.ctypes, "WinDLL", load)
+    monkeypatch.setattr(_native, "load_trusted_dll", load)
     java._JABSession._instance = None
     first = java._JABSession.get_or_create()
     assert java._JABSession.get_or_create() is first
-    assert attempts == [str(java_home / "bin" / "windowsaccessbridge-64.dll")]
-    assert all(java.os.path.isabs(path) for path in attempts)
+    assert loaded == [trusted]
+    assert all(java.os.path.isabs(path) for path in loaded)
     assert wab.Windows_run.calls
     assert first._thread_ident == threading.get_ident()
     java._JABSession._instance = None
 
 
-def test_session_init_raises_when_no_dll_can_be_loaded(monkeypatch) -> None:
-    monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: None))
-    monkeypatch.setattr(java.ctypes, "WinDLL", Mock(side_effect=OSError("missing")))
+def test_session_resolves_java_home_bin_before_system32(monkeypatch, tmp_path) -> None:
+    # The JRE/JDK bin directory is preferred and System32 is the fallback;
+    # neither the working directory nor PATH is consulted.
+    bin_dir = tmp_path / "jdk" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "windowsaccessbridge-64.dll").write_bytes(b"MZ")
+    monkeypatch.setattr(
+        java.JavaAccessBridge, "java_home", staticmethod(lambda: str(tmp_path / "jdk"))
+    )
+    paths = java._JABSession._trusted_dll_paths()
+    assert paths
+    assert paths[0] == str(bin_dir / "windowsaccessbridge-64.dll")
+    assert all(java.os.path.isabs(p) for p in paths)
+
+
+def test_session_init_raises_when_no_trusted_dll_can_be_loaded(monkeypatch) -> None:
+    from dolphin_desktop import _native
+
+    monkeypatch.setattr(
+        java._JABSession, "_trusted_dll_paths", classmethod(lambda cls: [r"C:\jdk\bin\wab.dll"])
+    )
+    monkeypatch.setattr(
+        _native,
+        "load_trusted_dll",
+        Mock(side_effect=_native.NativeLibraryError("missing")),
+    )
     with pytest.raises(RuntimeError, match=r"Could not load windowsaccessbridge-64\.dll"):
         java._JABSession()
 
 
 def test_session_init_rejects_relative_java_home_without_loading_by_name(monkeypatch) -> None:
+    # A relative JAVA_HOME contributes no candidate at all — it is never
+    # joined onto "bin" and handed to the loader, which would otherwise let
+    # a bare/relative DLL name be resolved through the Windows search order.
     monkeypatch.setattr(java.JavaAccessBridge, "java_home", staticmethod(lambda: "relative-jdk"))
     loader = Mock()
     monkeypatch.setattr(java.ctypes, "WinDLL", loader)
 
-    with pytest.raises(RuntimeError, match="trusted absolute JRE/JDK path"):
+    assert not any("relative-jdk" in path for path in java._JABSession._trusted_dll_paths())
+
+    monkeypatch.setattr(java._JABSession, "_trusted_dll_paths", classmethod(lambda cls: []))
+    with pytest.raises(RuntimeError, match=r"Could not load windowsaccessbridge-64\.dll"):
         java._JABSession()
     loader.assert_not_called()
 

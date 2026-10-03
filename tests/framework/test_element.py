@@ -145,6 +145,80 @@ def test_menu_item_resolve_falls_back_to_invoke_root_popup_and_error(monkeypatch
         item._resolve()
 
 
+def test_menu_item_resolve_raises_when_deadline_already_expired_after_click(
+    monkeypatch,
+) -> None:
+    """A deadline that has already passed by the time the click settles must
+    raise immediately rather than proceeding to the settle sleep."""
+    parent_element = Mock()
+    item = _menu_item_with_parent(parent_element)
+    item._timeout = 5.0
+    monkeypatch.setattr(element_module.time, "monotonic", Mock(side_effect=[0.0, 100.0]))
+
+    with pytest.raises(ElementNotFoundError, match="deadline expired"):
+        item._resolve()
+
+    parent_element.click_input.assert_called_once_with()
+
+
+def test_menu_item_resolve_raises_when_deadline_expires_after_settle_sleep(
+    monkeypatch,
+) -> None:
+    """The deadline check right after the settle sleep can also expire, even
+    when the earlier pre-sleep check still had time left."""
+    parent_element = Mock()
+    item = _menu_item_with_parent(parent_element)
+    item._timeout = 5.0
+    monkeypatch.setattr(element_module.time, "monotonic", Mock(side_effect=[0.0, 1.0, 10.0]))
+    sleep = Mock()
+    monkeypatch.setattr(element_module.time, "sleep", sleep)
+
+    with pytest.raises(ElementNotFoundError, match="deadline expired"):
+        item._resolve()
+
+    sleep.assert_called_once()
+
+
+def test_menu_item_resolve_bounded_direct_child_uses_wait_until_visible(monkeypatch) -> None:
+    """A bounded resolution (single-attempt or an inherited deadline) uses the
+    cheaper ``_wait_until_visible`` probe instead of ``spec.wait()``."""
+    import dolphin_desktop._locator as locator_module
+
+    parent_element = Mock()
+    child_spec = Mock()
+    parent_element.child_window.return_value = child_spec
+    item = _menu_item_with_parent(parent_element)
+    item._timeout = 0
+
+    wait_until_visible = Mock()
+    monkeypatch.setattr(locator_module, "_wait_until_visible", wait_until_visible)
+
+    assert item._resolve() is child_spec
+    wait_until_visible.assert_called_once_with(child_spec, 0)
+
+
+def test_menu_item_resolve_bounded_root_scope_uses_wait_until_visible(monkeypatch) -> None:
+    """Same as above, but for the root-window-scope fallback search reached
+    when the item is not a direct child of the parent element."""
+    import dolphin_desktop._locator as locator_module
+
+    parent_element = Mock()
+    parent_element.child_window.side_effect = RuntimeError("not a direct child")
+    item = _menu_item_with_parent(parent_element)
+    item._timeout = 0
+
+    root_spec = Mock()
+    root_child = Mock()
+    root_spec.child_window.return_value = root_child
+    item._root_window_spec = Mock(return_value=root_spec)
+
+    wait_until_visible = Mock()
+    monkeypatch.setattr(locator_module, "_wait_until_visible", wait_until_visible)
+
+    assert item._resolve() is root_child
+    wait_until_visible.assert_called_once_with(root_child, 0)
+
+
 def test_menu_item_resolve_and_readonly_delegate_for_non_menu_parent(monkeypatch) -> None:
     parent = Locator(_root(), title="container")
     item = MenuItem(parent, title="Open", control_type="MenuItem")

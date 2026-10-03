@@ -1004,7 +1004,7 @@ def test_process_loop_handles_mouse_key_unknown_and_empty_queue(monkeypatch) -> 
     monkeypatch.setattr(rec, "_handle_mouse", mouse)
     monkeypatch.setattr(rec, "_handle_key", key)
     rec._evt_queue.put(("mouse", "click", 1, 2, 3.0))
-    rec._evt_queue.put(("key", 65, 30, True, False, False, True, 4.0))
+    rec._evt_queue.put(("key", 65, 30, True, False, False, True, 4.0, 99))
     rec._evt_queue.put(("other", "ignored"))
     rec._evt_queue.put(None)
 
@@ -1012,7 +1012,7 @@ def test_process_loop_handles_mouse_key_unknown_and_empty_queue(monkeypatch) -> 
 
     flush.assert_called_once_with()
     mouse.assert_called_once_with("click", 1, 2, 3.0)
-    key.assert_called_once_with(65, 30, True, False, False, 4.0, ralt=True)
+    key.assert_called_once_with(65, 30, True, False, False, 4.0, ralt=True, hwnd=99)
     assert rec._processed == 3
 
 
@@ -1095,6 +1095,34 @@ def test_handle_key_covers_window_lookup_failure_filter_and_modifier_only(monkey
     assert ignored.actions() == []
 
 
+def test_handle_key_uses_the_hwnd_captured_at_hook_time_not_a_live_requery(
+    monkeypatch,
+) -> None:
+    """KAN-576: classification must use the window at keystroke time, not
+
+    whatever window happens to be foreground when the processor thread
+    catches up — GetForegroundWindow() is never re-queried when a captured
+    hwnd is available.
+    """
+    windows = {11: ("Target", "TargetClass"), 22: ("Other", "OtherClass")}
+    gui = SimpleNamespace(
+        GetForegroundWindow=lambda: 22,  # a different window is foreground *now*
+        GetWindowText=lambda hwnd: windows[hwnd][0],
+        GetClassName=lambda hwnd: windows[hwnd][1],
+    )
+    monkeypatch.setitem(sys.modules, "win32gui", gui)
+    monkeypatch.setattr(_recorder, "_get_root_hwnd", lambda hwnd: hwnd)
+    monkeypatch.setattr(_recorder, "_focused_is_password", lambda: False)
+    monkeypatch.setattr(_recorder, "_focused_element_selector", lambda: {})
+    monkeypatch.setattr(_recorder, "_vk_to_sendkeys", lambda *args, **kwargs: "a")
+
+    rec = Recorder(app="Target")
+    rec._handle_key(0x41, 30, False, False, False, 1.0, hwnd=11)
+    rec._flush_text()
+
+    assert [a.window_title for a in rec.actions()] == ["Target"]
+
+
 @pytest.mark.parametrize(
     ("actions", "expected_connection", "expected_window"),
     [
@@ -1171,6 +1199,9 @@ class _HookAPI:
 
     def GetAsyncKeyState(self, vk):  # noqa: N802
         return 0x8000 if vk in {_recorder._VK_SHIFT, _recorder._VK_CONTROL} else 0
+
+    def GetForegroundWindow(self):  # noqa: N802
+        return 11
 
     def PostQuitMessage(self, code):  # noqa: N802
         self.quit_calls.append(code)

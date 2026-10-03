@@ -45,11 +45,12 @@ class _FakeCollection:
         #: Exception Open() raises — missing, locked or corrupt file.
         self.open_error: Exception | None = None
 
-    def Open(self, path: str) -> _FakeDoc:  # noqa: N802
+    def Open(self, path: str, *args) -> _FakeDoc:  # noqa: N802
         if self.open_error is not None:
             raise self.open_error
         doc = _FakeDoc(path, self._app)
         self._app.documents.append(doc)
+        self.last_open_args = args
         return doc
 
     def __iter__(self):
@@ -103,6 +104,23 @@ def test_word_open_creates_a_private_instance(monkeypatch) -> None:
     WordApp.open("letter.docx")
     app.client.Dispatch.assert_not_called()
     app.client.DispatchEx.assert_called_once_with("Word.Application")
+
+
+# KAN-574 — open() must force-disable macros and not auto-update external links
+
+
+def test_excel_open_force_disables_macros_and_link_updates(monkeypatch) -> None:
+    app = _client(monkeypatch)
+    ExcelApp.open("book.xlsx")
+    assert app.AutomationSecurity == 3  # msoAutomationSecurityForceDisable
+    assert app.AskToUpdateLinks is False
+    assert app.Workbooks.last_open_args == (0,)  # UpdateLinks=0
+
+
+def test_word_open_force_disables_macros(monkeypatch) -> None:
+    app = _client(monkeypatch)
+    WordApp.open("letter.docx")
+    assert app.AutomationSecurity == 3  # msoAutomationSecurityForceDisable
 
 
 # A failed open() must not strand the private instance

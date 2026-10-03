@@ -32,6 +32,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import json
+import secrets
 import sys
 import threading
 import time
@@ -78,8 +79,11 @@ _MACHINE_NAMES = {
 DEFAULT_RPC_TIMEOUT = 30.0
 #: Largest single agent response accepted before the stream is declared corrupt.
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-#: Largest request the Python client will put on the agent pipe.
-MAX_REQUEST_BYTES = 1 * 1024 * 1024
+#: Largest single request this client will put on the wire. A caller passing a
+#: huge ``set_property`` value or a pathological argument would otherwise hand
+#: the in-process agent an unbounded read; the request is refused here, before
+#: it is sent, so the connection stays usable (nothing reached the pipe).
+MAX_REQUEST_BYTES = 8 * 1024 * 1024
 #: Maximum nesting depth accepted in a request JSON value.
 MAX_REQUEST_DEPTH = 32
 #: Maximum number of dict/list nodes accepted in a request JSON value.
@@ -218,6 +222,16 @@ _GetNamedPipeServerProcessId.restype = wt.BOOL
 _GetCurrentProcess = _kernel32.GetCurrentProcess
 _GetCurrentProcess.argtypes = []
 _GetCurrentProcess.restype = wt.HANDLE
+
+_GetProcessTimes = _kernel32.GetProcessTimes
+_GetProcessTimes.argtypes = [
+    wt.HANDLE,
+    ctypes.POINTER(wt.FILETIME),
+    ctypes.POINTER(wt.FILETIME),
+    ctypes.POINTER(wt.FILETIME),
+    ctypes.POINTER(wt.FILETIME),
+]
+_GetProcessTimes.restype = wt.BOOL
 
 _IsWow64Process = _kernel32.IsWow64Process
 _IsWow64Process.argtypes = [wt.HANDLE, ctypes.POINTER(wt.BOOL)]
@@ -427,6 +441,40 @@ def _inject_dll(pid: int, dll_path: Path) -> None:
 # Named-pipe client
 
 
+def _agent_pipe_name(pid: int) -> str:
+    """Return an unguessable agent pipe name for *pid*.
+
+    The pid keeps the name human-readable and per-target; the random token is
+    what a squatter cannot reproduce, so it cannot pre-create the pipe and
+    answer as the agent before the real server starts.
+    """
+    return f"\\\\.\\pipe\\dolphin_qt_{pid}_{secrets.token_hex(16)}"
+
+
+def _pid_create_time(pid: int) -> int | None:
+    """Return *pid*'s creation time (FILETIME as int), or None on failure."""
+    hproc = _OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not hproc:
+        return None
+    try:
+        creation = wt.FILETIME()
+        exit_t = wt.FILETIME()
+        kernel_t = wt.FILETIME()
+        user_t = wt.FILETIME()
+        ok = _GetProcessTimes(
+            hproc,
+            ctypes.byref(creation),
+            ctypes.byref(exit_t),
+            ctypes.byref(kernel_t),
+            ctypes.byref(user_t),
+        )
+        if not ok:
+            return None
+        return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    finally:
+        _CloseHandle(hproc)
+
+
 def _verify_pipe_server(handle: int, pipe_name: str, expected_pid: int) -> None:
     """Refuse a pipe that is not served by *expected_pid*.
 
@@ -495,11 +543,20 @@ class QtAgentClient:
         *,
         rpc_timeout: float = DEFAULT_RPC_TIMEOUT,
         qt_version: str | None = None,
+        pipe_name: str | None = None,
+        create_time: int | None = None,
     ) -> None:
         self.pid = pid
         self.rpc_timeout = rpc_timeout
         self._pipe = pipe_handle
         self._qt_version = qt_version
+        # The agent's pipe name carries an unguessable per-attach token, so a
+        # local process cannot pre-create the pipe and answer as the agent.
+        # reattach() reuses the exact name it was opened with.
+        self._pipe_name = pipe_name
+        # Creation time of the target at attach: reattach refuses if the PID
+        # has since been reused by a different process (CWE-367 / CWE-346).
+        self._create_time = create_time
         self._req_id = 0
         self._pending = b""
         self._broken: str | None = None
@@ -545,19 +602,29 @@ class QtAgentClient:
         if not hpin:
             err = ctypes.get_last_error()
             raise QtAgentInjectError(f"OpenProcess({pid}) failed: WinError {err}")
+        create_time = _pid_create_time(pid)
         try:
             _inject_dll(pid, dll)
 
             # The injected DLL's DllMain doesn't call dolphin_qt_agent_start —
             # we need to invoke it explicitly via a second CreateRemoteThread
-            # pointed at the exported entry point.
-            pipe_name = f"\\\\.\\pipe\\dolphin_qt_{pid}"
+            # pointed at the exported entry point. The pipe name carries an
+            # unguessable token so a local process cannot pre-create the pipe
+            # under a predictable name and forge the agent's responses.
+            pipe_name = _agent_pipe_name(pid)
             _start_agent(pid, dll, pipe_name)
 
             handle = _open_pipe(pipe_name, pid, timeout)
         finally:
             _CloseHandle(hpin)
-        return cls(pid, handle, rpc_timeout=rpc_timeout, qt_version=qt_version)
+        return cls(
+            pid,
+            handle,
+            rpc_timeout=rpc_timeout,
+            qt_version=qt_version,
+            pipe_name=pipe_name,
+            create_time=create_time,
+        )
 
     def reattach(self, *, timeout: float = 15.0) -> QtAgentClient:
         """Reopen the pipe to the agent already loaded in the target process.
@@ -584,7 +651,7 @@ class QtAgentClient:
         with self._lock:
             # Same pin as attach(): without a handle open, Windows may have
             # recycled this pid onto a different process — which, if that one
-            # was also injected, serves a genuine dolphin_qt_<pid> pipe, so
+            # was also injected, serves a genuine dolphin_qt pipe, so
             # _verify_pipe_server would happily accept the wrong application.
             hpin = _OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, self.pid)
             if not hpin:
@@ -594,7 +661,23 @@ class QtAgentClient:
                     f"(WinError {err}) — the process has most likely exited"
                 )
             try:
-                pipe_name = f"\\\\.\\pipe\\dolphin_qt_{self.pid}"
+                # Reject a reused PID: if the target's creation time changed
+                # since attach, this pid is a different process now and its
+                # pipe (even a genuine dolphin one) belongs to another app.
+                if self._create_time is not None:
+                    now_ct = _pid_create_time(self.pid)
+                    if now_ct is not None and now_ct != self._create_time:
+                        raise QtAgentInjectError(
+                            f"refusing to reattach to pid={self.pid}: its creation time "
+                            "changed since attach — the PID was reused by a different "
+                            "process and its agent pipe is not this application's"
+                        )
+                if self._pipe_name is None:
+                    raise QtAgentInjectError(
+                        f"cannot reattach to pid={self.pid}: the agent pipe name from the "
+                        "original attach was not recorded"
+                    )
+                pipe_name = self._pipe_name
                 try:
                     handle = _open_pipe(pipe_name, self.pid, timeout)
                 except QtAgentInjectError:
@@ -786,16 +869,21 @@ class QtAgentClient:
             req = {"id": req_id, "op": op, **kwargs}
             _validate_request_shape(req)
             try:
-                encoded_request = (json.dumps(req, allow_nan=False) + "\n").encode("utf-8")
+                payload = (json.dumps(req, allow_nan=False) + "\n").encode("utf-8")
             except (TypeError, ValueError, RecursionError) as exc:
                 raise QtAgentRpcError(
                     f"cannot serialize agent request for op={op!r}: {exc}"
                 ) from exc
-            if len(encoded_request) > MAX_REQUEST_BYTES:
+            if len(payload) > MAX_REQUEST_BYTES:
+                # Not terminal: the request never left the client, so the id
+                # was consumed but the stream is still in sync. Raise a plain
+                # RPC error and leave the connection usable.
                 raise QtAgentRpcError(
-                    f"agent request for op={op!r} exceeded {MAX_REQUEST_BYTES} bytes"
+                    f"request for op={op!r} is {len(payload)} bytes, over the "
+                    f"{MAX_REQUEST_BYTES}-byte limit — refusing to send it",
+                    hint="pass a smaller value; the agent reads the whole request into memory",
                 )
-            self._write_line(encoded_request)
+            self._write_line(payload)
 
             deadline = time.monotonic() + self.rpc_timeout
             while True:

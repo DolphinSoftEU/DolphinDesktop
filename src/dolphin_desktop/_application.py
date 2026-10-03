@@ -284,6 +284,126 @@ def _process_state(pid: int) -> Literal["running", "stopped", "unknown"]:
             pass
 
 
+# Process identity — guards TerminateProcess against PID reuse.
+#
+# A PID is only unique while the process lives; once it exits Windows may hand
+# the same number to something unrelated. Between the moment a tracked AUT is
+# registered for cleanup and the moment the reaper fires, an early-exiting AUT
+# can therefore be replaced by a stranger wearing its PID. Terminating on the
+# number alone would then kill that stranger (CWE-367). We record each launched
+# process's creation time — the ``(PID, creation-time)`` pair is stable across
+# the process's whole life and unforgeable by a later reuse — and refuse to
+# terminate a PID whose creation time no longer matches what we recorded.
+_process_identities: dict[int, int] = {}
+
+
+def _process_creation_time(pid: int) -> int | None:
+    """Return *pid*'s creation time (FILETIME as an int), or None on failure.
+
+    ``GetProcessTimes`` needs only ``PROCESS_QUERY_LIMITED_INFORMATION``,
+    which succeeds against higher-integrity processes where the wider right is
+    denied. Any failure returns None — the caller treats "unknown" distinctly
+    from "known and different".
+    """
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wt.HANDLE
+        k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        k32.GetProcessTimes.argtypes = [
+            wt.HANDLE,
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+        ]
+        k32.GetProcessTimes.restype = wt.BOOL
+        k32.CloseHandle.argtypes = [wt.HANDLE]
+    except Exception:
+        return None
+
+    try:
+        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    except Exception:
+        return None
+    if not handle:
+        return None
+    try:
+        creation = wt.FILETIME()
+        exit_t = wt.FILETIME()
+        kernel_t = wt.FILETIME()
+        user_t = wt.FILETIME()
+        if not k32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_t),
+            ctypes.byref(kernel_t),
+            ctypes.byref(user_t),
+        ):
+            return None
+        return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    except Exception:
+        return None
+    finally:
+        try:
+            k32.CloseHandle(handle)
+        except Exception:
+            pass
+
+
+def record_process_identity(pid: int) -> None:
+    """Remember *pid*'s current creation time so cleanup can verify it later."""
+    ct = _process_creation_time(pid)
+    if ct is not None:
+        _process_identities[pid] = ct
+
+
+def forget_process_identity(pid: int) -> None:
+    """Drop any recorded identity for *pid* (idempotent)."""
+    _process_identities.pop(pid, None)
+
+
+def _identity_matches(pid: int) -> bool:
+    """Return True only when the recorded creation time can be confirmed."""
+    expected = _process_identities.get(pid)
+    if expected is None:
+        return False
+    current = _process_creation_time(pid)
+    return current is not None and current == expected
+
+
+def terminate_tracked_pid(pid: int, log: Any | None = None) -> bool:
+    """Terminate *pid* only when its recorded identity matches. Returns True if killed.
+
+    The recorded ``(PID, creation-time)`` pair is checked first: a PID whose
+    creation time has changed or cannot be read is skipped. An unrecorded PID
+    is also skipped. The recorded identity is always forgotten afterwards.
+    """
+    try:
+        if not _identity_matches(pid):
+            if log is not None:
+                log.warning(
+                    "skipping TerminateProcess for PID=%d: process identity could not "
+                    "be confirmed (missing, unreadable or changed creation time)",
+                    pid,
+                )
+            return False
+        try:
+            import win32api  # type: ignore[import]
+            import win32con  # type: ignore[import]
+
+            handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
+            win32api.TerminateProcess(handle, 1)
+            win32api.CloseHandle(handle)
+            return True
+        except Exception:
+            return False
+    finally:
+        forget_process_identity(pid)
+
+
 def _has_any_signature(names: list[str], signatures: tuple[str, ...]) -> bool:
     """Return True if any signature substring appears in any module name."""
     return any(sig in name for name in names for sig in signatures)
@@ -628,6 +748,15 @@ class Application:
                     "automatic cleanup will fail closed",
                     pid,
                 )
+            # Independent of the OS handle above: pin (pid, creation time) so a
+            # cleanup path with no live Application object — the pytest reaper,
+            # which runs after this object and its handle are gone — can still
+            # prove a PID it is about to kill is the process we started, not
+            # one the OS has since recycled the number to.
+            try:
+                record_process_identity(pid)
+            except Exception:
+                pass
         else:
             _attached_pids.add(pid)
 
@@ -819,6 +948,10 @@ class Application:
                         "automatic cleanup will fail closed",
                         actual_pid,
                     )
+                # The tracked PID changed; re-pin identity to the process that
+                # actually owns the window, and drop the launcher's.
+                forget_process_identity(old_pid)
+                record_process_identity(actual_pid)
             else:
                 _attached_pids.discard(old_pid)
                 _attached_pids.add(actual_pid)
@@ -1174,6 +1307,7 @@ class Application:
         try:
             _live_pids.discard(self.process_id)
             _session_pids.discard(self.process_id)
+            forget_process_identity(self.process_id)
         except Exception:
             pass
 
@@ -1229,6 +1363,7 @@ class Application:
                 try:
                     _live_pids.discard(self.process_id)
                     _session_pids.discard(self.process_id)
+                    forget_process_identity(self.process_id)
                 except Exception:
                     pass
         if first_error is not None:
@@ -1482,8 +1617,9 @@ class Application:
                 _unanchored_pids.discard(self.process_id)
                 self._owned_process_handle = None
                 # "dolphin will not touch that process" extends to the crash
-                # dump's capture scope.
+                # dump's capture scope and its recorded kill-time identity.
                 _attached_pids.discard(self.process_id)
+                forget_process_identity(self.process_id)
         except Exception:
             pass
 

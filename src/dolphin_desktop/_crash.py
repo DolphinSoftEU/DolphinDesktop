@@ -20,6 +20,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from ._logging import _redact, is_sensitive_key, redact_value
+
 _DEFAULT_DIR = Path("dolphin-crashes")
 _UIA_BUDGET = 5.0
 
@@ -35,10 +37,16 @@ def write_crash_dump(
 ) -> Path:
     """Write ``crash-<timestamp>.zip`` with full diagnostics.
 
+    Every text member of the archive is redacted on the way in: the
+    exception text (which under ``pytest -l`` carries local variables), the
+    UIA window titles and the *extra* mapping. A key in *extra* that names a
+    credential (``password``, ``token``, ``api_key``…) has its whole value
+    masked, whatever the value contains.
+
     Args:
         exc: The exception that triggered the dump (``None`` → captures current stack).
         output_dir: Where to write the ZIP (default: ``dolphin-crashes/``).
-        extra: Additional key/value pairs written verbatim to ``extra.txt``.
+        extra: Additional key/value pairs written to ``extra.txt`` after redaction.
         pid: Restrict the UIA capture to this process.  Defaults to every
             process dolphin launched during the session plus every process it
             is attached to.
@@ -59,14 +67,27 @@ def write_crash_dump(
     zip_path = out / f"crash-{ts}_{os.getpid()}_{uuid.uuid4().hex[:6]}.zip"
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("stack.txt", _fmt_stack(exc))
-        zf.writestr("uia_tree.txt", _fmt_uia_tree(_target_pids(pid), all_windows, uia_budget))
+        zf.writestr("stack.txt", _redact(_fmt_stack(exc)))
+        zf.writestr(
+            "uia_tree.txt",
+            _redact(_fmt_uia_tree(_target_pids(pid), all_windows, uia_budget)),
+        )
         zf.writestr("environment.txt", _fmt_env())
         if extra:
-            body = "\n".join(f"{k}: {v}" for k, v in extra.items())
-            zf.writestr("extra.txt", body)
+            zf.writestr("extra.txt", _fmt_extra(extra))
 
     return zip_path.resolve()
+
+
+def _fmt_extra(extra: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for key, value in extra.items():
+        if is_sensitive_key(key):
+            shown: Any = "***"
+        else:
+            shown = redact_value(value)
+        lines.append(_redact(f"{key}: {shown}"))
+    return "\n".join(lines)
 
 
 # Internal helpers

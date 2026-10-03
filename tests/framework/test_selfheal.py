@@ -231,3 +231,24 @@ def test_selfheal_records_redacted_jsonl(tmp_path: Path, monkeypatch) -> None:
     event = selfheal_stats(file=path)[0]
     assert event["test"] == "unit"
     assert "secret" not in event["primary"]["title"]
+
+
+def test_selfheal_redacts_a_selector_keyed_by_a_sensitive_name_with_a_bare_value(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """KAN-630: a criteria dict like {"password": "hunter2"} — a bare value
+
+    under a sensitive key, with no embedded "keyword=value" text of its own
+    — must be masked on disk. The old pattern-only redaction only matched
+    a keyword INSIDE the string value; a selector dict keyed literally
+    "password" sailed through unredacted.
+    """
+    from dolphin_desktop._selfheal import record_fallback, selfheal_stats
+
+    path = tmp_path / "selfheal.jsonl"
+    monkeypatch.setenv("DOLPHIN_SELFHEAL_FILE", str(path))
+    record_fallback({"password": "hunter2xyz"}, {"auto_id": "field"}, test_name="unit")
+    raw = path.read_text(encoding="utf-8")
+    assert "hunter2xyz" not in raw
+    event = selfheal_stats(file=path)[0]
+    assert event["primary"]["password"] == "***"

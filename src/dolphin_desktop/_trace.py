@@ -16,9 +16,17 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from ._logging import _redact, get_logger
+from ._logging import _redact, get_logger, redact_value
 
 _log = get_logger("trace")
+
+
+def _redact_optional(text: str | None) -> str | None:
+    """Redact *text* for storage; ``None`` stays ``None``."""
+    if text is None:
+        return None
+    return _redact(str(text))
+
 
 # Schema — version-gated so external tooling can detect incompatible files
 
@@ -108,7 +116,12 @@ def _dump_uia_tree(
     *,
     include_root: bool = False,
 ) -> str | None:
-    """Return a JSON string representing the subtree rooted at *element*."""
+    """Return a JSON string representing the subtree rooted at *element*.
+
+    Node names are the controls' current text — an Edit control's ``name``
+    can be the value someone typed into it — so every string in the tree is
+    redacted before it is serialised.
+    """
     try:
         nodes: list[dict[str, Any]] = []
         if include_root:
@@ -122,7 +135,7 @@ def _dump_uia_tree(
                 }
             )
         _collect(element, nodes, 1 if include_root else 0, max_depth, max_children)
-        return json.dumps(nodes)
+        return json.dumps(redact_value(nodes))
     except Exception:
         return None
 
@@ -213,6 +226,10 @@ class TraceSession:
 
         Never raises: tracing is observational, so a storage failure is logged and
         dropped rather than turned into a failure of the action being traced.
+
+        Every text column is redacted at this boundary — the selector and the
+        error message are built from user input and exception text, and the
+        store outlives the test run.
         """
         if self.mode == "off":
             return
@@ -228,6 +245,9 @@ class TraceSession:
             seq = self._seq
         ts = time.time() - self._started_at
         result = "error" if error else "ok"
+        action = _redact(str(action))
+        selector = _redact_optional(selector)
+        error = _redact_optional(error)
 
         screenshot_file: str | None = None
         capture_shot = self.mode == "always" or bool(error)
@@ -292,6 +312,8 @@ class TraceSession:
                 return
             self._closed = True
 
+        error_message = _redact_optional(error_message)
+        error_traceback = _redact_optional(error_traceback)
         try:
             with self._lock:
                 self._db.execute(
@@ -455,7 +477,13 @@ def _render_steps(steps: list[dict[str, Any]]) -> str:
 
     parts: list[str] = []
     for s in steps:
-        seq = s["seq"]
+        # trace.db is a persisted artifact — a crafted/corrupted row must not
+        # turn into HTML/JS via the un-typed 'seq' column (CWE-79).
+        seq: int | str
+        try:
+            seq = int(s["seq"])
+        except (TypeError, ValueError):
+            seq = "?"
         act = _h.escape(s["action"])
         sel = _h.escape(s.get("selector") or "")
         ts_str = f"{s.get('ts', 0):.3f}s"

@@ -117,6 +117,32 @@ def test_config_rejects_invalid_modes_and_frame_rates() -> None:
         _config.config(video_fps=31)
 
 
+def test_config_rejects_non_integer_video_fps_instead_of_truncating() -> None:
+    """KAN-569: a fractional video_fps must raise, not silently become int(fps)."""
+    from dolphin_desktop import _config
+
+    _config.config(video_fps=24)
+    try:
+        with pytest.raises(TypeError, match="video_fps"):
+            _config.config(video_fps=10.5)
+        assert _config.get_video_fps() == 24
+    finally:
+        _config.config(video_fps=10)
+
+
+def test_config_rejects_non_integer_retry_count_instead_of_truncating() -> None:
+    """KAN-570: a fractional retry_count must raise, not silently become int(retry_count)."""
+    from dolphin_desktop import _config
+
+    _config.config(retry_count=2)
+    try:
+        with pytest.raises(TypeError, match="retry_count"):
+            _config.config(retry_count=1.5)
+        assert _config.get_retry_count() == 2
+    finally:
+        _config.config(retry_count=0)
+
+
 def test_config_environment_validation_and_runtime_limits(monkeypatch) -> None:
     from dolphin_desktop import _config
 
@@ -131,3 +157,9 @@ def test_config_environment_validation_and_runtime_limits(monkeypatch) -> None:
 def test_config_rejects_non_finite_timeouts(value) -> None:
     with pytest.raises(ValueError, match="timeout must be finite"):
         _config.config(timeout=value)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_config_rejects_non_finite_poll_intervals(value) -> None:
+    with pytest.raises(ValueError, match="poll_interval must be finite"):
+        _config.config(poll_interval=value)

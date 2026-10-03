@@ -260,6 +260,45 @@ def test_http_ok_redirect_handler_rejects_non_http_targets(monkeypatch) -> None:
     assert redirected is not None
 
 
+def test_http_ok_redirect_handler_rejects_target_with_malformed_port(monkeypatch) -> None:
+    """A redirect Location with an http(s) host but an out-of-range port
+
+    makes ``urlsplit(...).port`` raise ``ValueError`` inside the nested
+    ``_http_url`` helper; the handler's own try/except must swallow that
+    and refuse the redirect rather than letting it escape.
+    """
+    import urllib.request
+
+    from dolphin_desktop import _helpers
+
+    opener = Mock(open=Mock(side_effect=TimeoutError()))
+    build_opener = Mock(return_value=opener)
+    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
+    assert _helpers.http_ok("http://example.test") is False
+
+    (handler_type,) = build_opener.call_args.args
+    handler = handler_type()
+    request = urllib.request.Request("http://origin.example")
+    assert (
+        handler.redirect_request(
+            request, None, 302, "found", {}, "https://target.example:999999/path"
+        )
+        is None
+    )
+
+
+def test_is_http_url_returns_false_when_urlsplit_raises() -> None:
+    """A malformed IPv6 host makes ``urlsplit`` itself raise ``ValueError``
+
+    (not just the ``.port`` accessor) — ``_is_http_url`` must catch that
+    and report the URL as not-HTTP rather than let it propagate.
+    """
+    from dolphin_desktop import _helpers
+
+    assert _helpers._is_http_url("http://[::1") is False
+    assert _helpers.http_ok("http://[::1") is False
+
+
 def test_helpers_encode_and_escape_key_syntax() -> None:
     from dolphin_desktop._helpers import _escape_keys, b64decode, b64encode
 

@@ -318,6 +318,36 @@ def test_launch_cmd_on_desktop_cleans_up_when_gui_readiness_times_out(monkeypatc
     assert kernel32.closed_handles == [333, 222]
 
 
+def test_launch_cmd_on_desktop_skips_wait_when_timeout_is_zero(monkeypatch) -> None:
+    kernel32 = _FakeLauncher(pid=111, process=222, thread=333)
+    wait_for_idle = Mock()
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(_runner._user32, "WaitForInputIdle", wait_for_idle)
+
+    assert _runner.launch_cmd_on_desktop("tool.exe", timeout=0, wait_for_idle=True) == (
+        111,
+        222,
+    )
+
+    wait_for_idle.assert_not_called()
+
+
+def test_launch_cmd_on_desktop_treats_wait_failed_as_ready(monkeypatch) -> None:
+    kernel32 = _FakeLauncher(pid=111, process=222, thread=333)
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(
+        _runner._user32, "WaitForInputIdle", Mock(return_value=_runner._WAIT_FAILED)
+    )
+
+    # WAIT_FAILED is expected for console processes with no GUI message
+    # queue; the process is still treated as ready rather than as an error.
+    assert _runner.launch_cmd_on_desktop("tool.exe", timeout=2, wait_for_idle=True) == (
+        111,
+        222,
+    )
+    assert kernel32.closed_handles == [333]
+
+
 def test_launch_cmd_on_desktop_rejects_negative_timeout_before_spawning(monkeypatch) -> None:
     kernel32 = _FakeLauncher()
     monkeypatch.setattr(_runner, "_kernel32", kernel32)

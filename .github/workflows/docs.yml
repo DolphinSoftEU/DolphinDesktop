@@ -13,8 +13,11 @@ on:
       - "mkdocs.yml"
       - "src/dolphin_desktop/**"
 
+# Default to read-only. Only the Pages deploy job needs to write (mike
+# pushes the built site to the gh-pages branch), so contents: write is
+# granted there and nowhere else.
 permissions:
-  contents: write
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -26,11 +29,11 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0   # needed for mike versioning
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
           cache: pip
@@ -42,7 +45,7 @@ jobs:
         run: mkdocs build --strict
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: docs-site
           path: site/
@@ -53,13 +56,16 @@ jobs:
     runs-on: windows-latest
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    # The only writer in this workflow: mike commits the built site to gh-pages.
+    permissions:
+      contents: write
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
           cache: pip

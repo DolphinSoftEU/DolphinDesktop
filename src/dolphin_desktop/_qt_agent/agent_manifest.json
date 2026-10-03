@@ -1,0 +1,10 @@
+{
+  "dolphin_qt5_agent.dll": {
+    "sha256": "8cbf7fae055e84d5ee8762aace0e78a6eb4bc88041aea68e4061c7e37f982cd4",
+    "size": 80896
+  },
+  "dolphin_qt6_agent.dll": {
+    "sha256": "5c076f94614179618e8e5ec7b1a8dfc5bf1a3ef7ecfb81501020f211fcd9734c",
+    "size": 96256
+  }
+}
