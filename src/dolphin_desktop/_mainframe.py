@@ -663,10 +663,17 @@ class _S3270Backend(_TerminalBackend):
       state, connection state, cursor row/col, screen size, etc.
     """
 
-    #: Emulator switches that disable certificate or host-name verification.
-    #: With TLS on they would turn ``L:`` into an unauthenticated tunnel.
-    _VERIFICATION_KILL_SWITCHES = frozenset(
-        {"-noverifycert", "+verifycert", "-noverifyhostcert", "+verifyhostcert"}
+    #: Emulator switches that disable or override certificate / host-name
+    #: verification. The public API binds verification to ``host``; accepting
+    #: an alternate name here would reintroduce a second, hidden hostname API.
+    _VERIFICATION_OVERRIDE_SWITCHES = frozenset(
+        {
+            "-noverifycert",
+            "+verifycert",
+            "-noverifyhostcert",
+            "+verifyhostcert",
+            "-accepthostname",
+        }
     )
 
     def __init__(
@@ -699,21 +706,26 @@ class _S3270Backend(_TerminalBackend):
         self._allow_plaintext = allow_plaintext
         self._proc: subprocess.Popen[bytes] | None = None
         self._connected = False
-        disabled = self._VERIFICATION_KILL_SWITCHES.intersection(
-            arg.lower() for arg in self._extra_args
+        overridden = self._VERIFICATION_OVERRIDE_SWITCHES.intersection(
+            arg.lower().split("=", 1)[0] for arg in self._extra_args
         )
-        if disabled:
+        if overridden:
             raise MainframeError(
-                f"extra_args {sorted(disabled)} disable TLS certificate verification, which "
-                "dolphin does not allow",
-                hint="for a private CA pass tls_cafile=... instead of turning verification off",
+                f"extra_args {sorted(overridden)} override TLS certificate or host-name "
+                "verification, which dolphin does not allow",
+                hint=(
+                    "use the verified host name in host and pass tls_cafile=... for a private "
+                    "CA instead of changing certificate verification"
+                ),
             )
 
     # ---- lifecycle ------------------------------------------------------- #
 
-    def _spawn(self) -> None:
+    def _spawn(self, *, verify_tls: bool | None = None) -> None:
         if self._proc is not None:
             return
+        if verify_tls is None:
+            verify_tls = self._tls
         args = [
             self._binary,
             "-model",
@@ -744,6 +756,12 @@ class _S3270Backend(_TerminalBackend):
                     ),
                 )
         args += list(self._extra_args)
+        if verify_tls:
+            # Make the verification policy explicit. This also overrides a
+            # verifyHostCert resource inherited from the user's emulator config.
+            # A Y: host prefix can override this inside x3270 itself, so host
+            # parsing rejects every prefix other than L: before Connect().
+            args.append("-verifycert")
         creationflags = 0
         if sys.platform == "win32":
             # CREATE_NO_WINDOW — hide the console the emulator would open.
@@ -794,7 +812,7 @@ class _S3270Backend(_TerminalBackend):
             backend="s3270",
         )
         target = f"{_S3270_TLS_PREFIX if tls else ''}{bare_host}:{port}"
-        self._spawn()
+        self._spawn(verify_tls=tls)
         self._exec(f"Connect({target})")
         self._connected = True
         # Wait for the initial screen to draw.

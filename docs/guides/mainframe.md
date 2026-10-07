@@ -76,15 +76,17 @@ term = desktop.mainframe(host="mf.example", allow_plaintext=True)
 The port number is **never** treated as a substitute for TLS — connecting
 to port 992 without `tls=True` is still refused. For the `s3270` backend,
 `tls=True` opens the emulator's supported `L:` TLS tunnel (you may also
-write `host="L:mf.example"`); switches that disable certificate
-verification (`-noverifycert`, `-noverifyhostcert`) are rejected. The
+write `host="L:mf.example"`); dolphin passes `-verifycert` explicitly and
+rejects switches that disable verification or substitute another accepted
+hostname (`-noverifycert`, `-noverifyhostcert`, `-accepthostname`). The
 `hllapi` backend delegates the network side to the emulator, so configure
 TLS in the emulator's own session profile.
 
 Unlike `tn5250`, where dolphin owns the TLS handshake and verifies it
 directly, `s3270`/`ws3270` is an external process: dolphin can confirm the
 `-cafile` flag was accepted by the build, but the certificate verification
-itself happens inside the emulator, not in Python. Treat `s3270` TLS as
+itself happens inside the emulator, not in Python. dolphin explicitly passes
+`-verifycert`, but treats `s3270` TLS as
 trustworthy as the installed emulator build, not as independently verified
 by dolphin — use `backend="tn5250"` when that independent verification
 matters.

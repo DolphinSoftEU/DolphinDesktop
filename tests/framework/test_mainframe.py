@@ -240,7 +240,15 @@ def test_find_s3270_and_spawn_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     backend._spawn()
     popen.assert_called_once_with(
-        ["demo", "-model", "3278-2", "-utf8", "-charset", "cp500", "-trace"],
+        [
+            "demo",
+            "-model",
+            "3278-2",
+            "-utf8",
+            "-charset",
+            "cp500",
+            "-trace",
+        ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -326,7 +334,7 @@ def test_s3270_lifecycle_and_status_operations(monkeypatch: pytest.MonkeyPatch) 
     backend._spawn = Mock()  # type: ignore[method-assign]
     backend._exec = Mock(return_value=([], ""))  # type: ignore[method-assign]
     backend.connect("host", 23, session_type="3270")
-    backend._spawn.assert_called_once_with()
+    backend._spawn.assert_called_once_with(verify_tls=False)
     assert backend._exec.call_args_list == [
         (("Connect(host:23)",), {}),
         (("Wait(15,InputField)",), {"raise_on_error": False}),
@@ -352,6 +360,7 @@ def test_s3270_lifecycle_and_status_operations(monkeypatch: pytest.MonkeyPatch) 
     tls_backend._exec = Mock(return_value=([], ""))  # type: ignore[method-assign]
     tls_backend.connect("L:securehost", 992, session_type="3270")
     assert tls_backend._exec.call_args_list[0] == (("Connect(L:securehost:992)",), {})
+    tls_backend._spawn.assert_called_once_with(verify_tls=True)
 
     # A CR/LF in the host cannot smuggle a second s3270 action.
     inject = mf._S3270Backend.__new__(mf._S3270Backend)
@@ -1656,8 +1665,14 @@ def test_s3270_send_string_rejects_a_non_string_payload() -> None:
 
 
 def test_s3270_backend_rejects_extra_args_that_disable_tls_verification() -> None:
-    with pytest.raises(mf.MainframeError, match="disable TLS certificate verification"):
+    message = "override TLS certificate or host-name verification"
+    with pytest.raises(mf.MainframeError, match=message):
         mf._S3270Backend(binary="fake-s3270.exe", extra_args=["-noverifycert"])
+
+    with pytest.raises(mf.MainframeError, match=message):
+        mf._S3270Backend(
+            binary="fake-s3270.exe", extra_args=["-accepthostname", "another.example"]
+        )
 
 
 def test_s3270_supports_cafile_probes_help_output_and_caches(

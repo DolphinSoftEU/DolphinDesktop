@@ -141,6 +141,7 @@ def test_s3270_cafile_on_a_build_without_support_is_a_clear_error(monkeypatch) -
     backend._codepage = None
     backend._extra_args = []
     backend._tls_cafile = r"C:\ca\corp.pem"
+    backend._tls = False
     backend._proc = None
     with pytest.raises(mf.MainframeError, match="does not support -cafile"):
         backend._spawn()
@@ -159,10 +160,12 @@ def test_s3270_cafile_is_passed_when_the_build_supports_it(monkeypatch) -> None:
     backend._codepage = None
     backend._extra_args = []
     backend._tls_cafile = "/etc/corp-ca.pem"
+    backend._tls = True
     backend._proc = None
     backend._spawn()
     assert "-cafile" in captured["args"]
     assert "/etc/corp-ca.pem" in captured["args"]
+    assert captured["args"][-1] == "-verifycert"
 
 
 def test_a_non_verifying_tls_context_is_refused() -> None:
