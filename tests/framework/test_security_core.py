@@ -39,46 +39,55 @@ def test_structural_redaction_masks_by_key_and_value() -> None:
         {
             "password": _CANARY,
             "pin": 1234,
+            "card_pin": _CANARY,
             "nested": {"token": _CANARY, "keep": "visible"},
             "list": [f"password={_CANARY}", "plain"],
+            "mapping": "visible",
+            "shipping": "visible",
         }
     )
     assert out["password"] == "***"
     assert out["pin"] == "***"
+    assert out["card_pin"] == "***"
     assert out["nested"]["token"] == "***"
     assert out["nested"]["keep"] == "visible"
+    assert out["mapping"] == "visible"
+    assert out["shipping"] == "visible"
     assert _CANARY not in repr(out)
 
 
-def test_trace_db_never_stores_a_secret(tmp_path: Path) -> None:
+@pytest.mark.parametrize("key", ["password", "pin"])
+def test_trace_db_never_stores_a_secret(tmp_path: Path, key: str) -> None:
     from dolphin_desktop import _trace
 
     session = _trace.TraceSession("test::node", tmp_path / "run", mode="always")
     # A selector and an error message that both carry a canary.
     session.record_step(
         "type_text",
-        selector=f"{{'password': '{_CANARY}'}}",
-        error=f"failed with token={_CANARY}",
+        selector=repr({key: _CANARY}),
+        error=f"failed with {key}={_CANARY}",
     )
-    session.finish("failed", error_message=f"assert password = '{_CANARY}'")
+    session.finish("failed", error_message=f"assert {key} = '{_CANARY}'")
     blob = (tmp_path / "run" / "trace.db").read_bytes()
     assert _CANARY.encode() not in blob
 
 
-def test_crash_dump_zip_never_stores_a_secret(tmp_path: Path) -> None:
+@pytest.mark.parametrize("key", ["password", "pin"])
+def test_crash_dump_zip_never_stores_a_secret(tmp_path: Path, key: str) -> None:
     from dolphin_desktop._crash import write_crash_dump
 
     try:
-        raise ValueError(f"boom token={_CANARY}")
+        raise ValueError(f"boom {key}={_CANARY}")
     except ValueError as exc:
-        path = write_crash_dump(exc=exc, output_dir=tmp_path, extra={"password": _CANARY})
+        path = write_crash_dump(exc=exc, output_dir=tmp_path, extra={key: _CANARY})
 
     with zipfile.ZipFile(path) as zf:
         for name in zf.namelist():
             assert _CANARY.encode() not in zf.read(name), f"{_CANARY} leaked into {name}"
 
 
-def test_allure_text_attachment_is_redacted(monkeypatch) -> None:
+@pytest.mark.parametrize("key", ["password", "pin"])
+def test_allure_text_attachment_is_redacted(monkeypatch, key: str) -> None:
     import dolphin_desktop.pytest_plugin as plugin
 
     captured: list[str] = []
@@ -87,7 +96,7 @@ def test_allure_text_attachment_is_redacted(monkeypatch) -> None:
         attachment_type=types.SimpleNamespace(TEXT="text"),
     )
     monkeypatch.setitem(sys.modules, "allure", fake_allure)
-    plugin._attach_allure_text(f"stdout had password={_CANARY}", "stdout")
+    plugin._attach_allure_text(f"stdout had {key}={_CANARY}", "stdout")
     assert captured and _CANARY not in captured[0]
     assert "***" in captured[0]
 
