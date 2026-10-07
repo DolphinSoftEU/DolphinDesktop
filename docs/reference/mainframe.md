@@ -11,7 +11,9 @@ the host is loopback, or `allow_plaintext=True` is passed explicitly — a port
 number, 992 included, is never treated as a substitute. Native `tn5250` TLS
 validates the CA and hostname before TN5250 data is sent. `s3270` uses its
 `L:` transport prefix and accepts `tls_cafile=`, but certificate verification
-itself happens inside the emulator process, not in Python — see the
+itself happens inside the emulator process, not in Python. dolphin explicitly
+passes `-verifycert` and rejects arguments that disable verification or
+substitute another hostname — see the
 [Mainframe guide](../guides/mainframe.md#transport-security) for that trust
 boundary.
 

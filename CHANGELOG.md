@@ -89,9 +89,9 @@ Addresses further findings from a follow-up security review
 * **TLS for TN3270 / TN5250 (KAN-468).** `Desktop.mainframe(tls=True)`
   negotiates TLS with certificate *and* host-name verification —
   `ssl.create_default_context()` for the native TN5250 backend, the
-  emulator's `L:` tunnel for s3270. There is no silent fallback to
-  plaintext: a failed handshake raises. A plaintext session to a
-  non-loopback host is refused unless `allow_plaintext=True` is passed,
+  emulator's `L:` tunnel with explicit `-verifycert` for s3270. There is no
+  silent fallback to plaintext: a failed handshake raises. A plaintext
+  session to a non-loopback host is refused unless `allow_plaintext=True` is passed,
   and a port number (992 included) is never treated as a substitute for
   TLS. New `tls`, `tls_cafile`, `tls_context` and `allow_plaintext`
   parameters on `Desktop.mainframe()`. `tls_cafile` is passed to s3270

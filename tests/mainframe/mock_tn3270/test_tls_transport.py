@@ -164,6 +164,90 @@ def test_tn5250_tls_rejects_an_untrusted_certificate_without_fallback() -> None:
 
 
 @pytest.mark.skipif(not _CERT.is_file(), reason="TLS fixture certificate missing")
+def test_tn5250_tls_rejects_a_hostname_mismatch(monkeypatch) -> None:
+    """A trusted CA is insufficient when the certificate names another host."""
+    mock = _Tls5250Mock()
+    create_connection = socket.create_connection
+
+    def connect_to_mock(address, timeout=None, source_address=None):
+        # Keep the TCP destination local while preserving the hostname passed
+        # by the public API for TLS SNI and certificate-name verification.
+        return create_connection(("127.0.0.1", address[1]), timeout, source_address)
+
+    monkeypatch.setattr(socket, "create_connection", connect_to_mock)
+    try:
+        with pytest.raises(MainframeError, match="TLS handshake"):
+            Desktop().mainframe(
+                host="wrong.example",
+                port=mock.port,
+                session_type="5250",
+                backend="tn5250",
+                tls=True,
+                tls_cafile=str(_CERT),
+                timeout=5,
+            )
+    finally:
+        mock.close()
+    assert not mock.tls_completed, "hostname mismatch must fail before a usable TLS session"
+
+
+@pytest.mark.parametrize("backend,session_type", [("tn5250", "5250"), ("s3270", "3270")])
+@pytest.mark.parametrize("port", [23, 992])
+def test_public_api_blocks_remote_plaintext_before_connecting(
+    monkeypatch, backend: str, session_type: str, port: int
+) -> None:
+    """Credentials cannot be typed because an unprotected remote session never opens."""
+    import dolphin_desktop._mainframe as mf
+
+    socket_attempts: list[object] = []
+    emulator_spawns: list[bool] = []
+
+    def record_socket_attempt(*args, **kwargs):
+        socket_attempts.append(args[0] if args else None)
+        raise AssertionError("plaintext policy must run before socket creation")
+
+    monkeypatch.setattr(socket, "create_connection", record_socket_attempt)
+    monkeypatch.setattr(
+        mf._S3270Backend,
+        "_spawn",
+        lambda self: emulator_spawns.append(True),
+    )
+
+    with pytest.raises(MainframeError, match="plaintext"):
+        Desktop().mainframe(
+            host="ibmi.example",
+            port=port,
+            session_type=session_type,
+            backend=backend,
+            ws3270_path="fake-emulator",
+        )
+
+    assert socket_attempts == []
+    assert emulator_spawns == []
+
+
+def test_public_api_plaintext_requires_and_logs_explicit_opt_in(monkeypatch, caplog) -> None:
+    attempted: list[object] = []
+
+    def fail_after_policy(address, timeout=None, source_address=None):
+        attempted.append(address)
+        raise OSError("stopped by test")
+
+    monkeypatch.setattr(socket, "create_connection", fail_after_policy)
+    with pytest.raises(OSError, match="stopped by test"):
+        Desktop().mainframe(
+            host="ibmi.example",
+            port=23,
+            session_type="5250",
+            backend="tn5250",
+            allow_plaintext=True,
+        )
+
+    assert attempted == [("ibmi.example", 23)]
+    assert "allow_plaintext=True" in caplog.text
+
+
+@pytest.mark.skipif(not _CERT.is_file(), reason="TLS fixture certificate missing")
 def test_tn5250_plaintext_to_a_tls_port_does_not_leak_a_session(monkeypatch) -> None:
     """A plaintext client against the TLS mock must not end up 'connected'.
 
