@@ -77,8 +77,10 @@ The port number is **never** treated as a substitute for TLS — connecting
 to port 992 without `tls=True` is still refused. For the `s3270` backend,
 `tls=True` opens the emulator's supported `L:` TLS tunnel (you may also
 write `host="L:mf.example"`); dolphin passes `-verifycert` explicitly and
-rejects switches that disable verification or substitute another accepted
-hostname (`-noverifycert`, `-noverifyhostcert`, `-accepthostname`). The
+pins `-accepthostname` to the connected host after user arguments. It rejects
+switches and `-xrm` resources that disable verification or substitute another
+accepted hostname (`-noverifycert`, `-noverifyhostcert`, `acceptHostname`,
+`verifyHostCert`, `selfSignedOk`). The
 `hllapi` backend delegates the network side to the emulator, so configure
 TLS in the emulator's own session profile.
 

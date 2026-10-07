@@ -162,10 +162,14 @@ def test_s3270_cafile_is_passed_when_the_build_supports_it(monkeypatch) -> None:
     backend._tls_cafile = "/etc/corp-ca.pem"
     backend._tls = True
     backend._proc = None
-    backend._spawn()
+    backend._spawn(verify_tls=True, verify_hostname="secure.example")
     assert "-cafile" in captured["args"]
     assert "/etc/corp-ca.pem" in captured["args"]
-    assert captured["args"][-1] == "-verifycert"
+    assert captured["args"][-3:] == [
+        "-verifycert",
+        "-accepthostname",
+        "secure.example",
+    ]
 
 
 def test_a_non_verifying_tls_context_is_refused() -> None:

@@ -334,7 +334,7 @@ def test_s3270_lifecycle_and_status_operations(monkeypatch: pytest.MonkeyPatch) 
     backend._spawn = Mock()  # type: ignore[method-assign]
     backend._exec = Mock(return_value=([], ""))  # type: ignore[method-assign]
     backend.connect("host", 23, session_type="3270")
-    backend._spawn.assert_called_once_with(verify_tls=False)
+    backend._spawn.assert_called_once_with(verify_tls=False, verify_hostname=None)
     assert backend._exec.call_args_list == [
         (("Connect(host:23)",), {}),
         (("Wait(15,InputField)",), {"raise_on_error": False}),
@@ -360,7 +360,7 @@ def test_s3270_lifecycle_and_status_operations(monkeypatch: pytest.MonkeyPatch) 
     tls_backend._exec = Mock(return_value=([], ""))  # type: ignore[method-assign]
     tls_backend.connect("L:securehost", 992, session_type="3270")
     assert tls_backend._exec.call_args_list[0] == (("Connect(L:securehost:992)",), {})
-    tls_backend._spawn.assert_called_once_with(verify_tls=True)
+    tls_backend._spawn.assert_called_once_with(verify_tls=True, verify_hostname="securehost")
 
     # A CR/LF in the host cannot smuggle a second s3270 action.
     inject = mf._S3270Backend.__new__(mf._S3270Backend)
@@ -1670,9 +1670,28 @@ def test_s3270_backend_rejects_extra_args_that_disable_tls_verification() -> Non
         mf._S3270Backend(binary="fake-s3270.exe", extra_args=["-noverifycert"])
 
     with pytest.raises(mf.MainframeError, match=message):
-        mf._S3270Backend(
-            binary="fake-s3270.exe", extra_args=["-accepthostname", "another.example"]
-        )
+        mf._S3270Backend(binary="fake-s3270.exe", extra_args=["-accepthostname", "another.example"])
+
+
+@pytest.mark.parametrize(
+    "xrm",
+    [
+        "ws3270.acceptHostname: another.example",
+        "ws3270*acceptHostname: another.example",
+        "ws3270.verifyHostCert: false",
+        "ws3270.selfSignedOk: true",
+    ],
+)
+def test_s3270_backend_rejects_tls_sensitive_xrm_overrides(xrm: str) -> None:
+    with pytest.raises(
+        mf.MainframeError, match=r"-xrm (accepthostname|verifyhostcert|selfsignedok)"
+    ):
+        mf._S3270Backend(binary="fake-s3270.exe", extra_args=["-xrm", xrm])
+
+    with pytest.raises(
+        mf.MainframeError, match=r"-xrm (accepthostname|verifyhostcert|selfsignedok)"
+    ):
+        mf._S3270Backend(binary="fake-s3270.exe", extra_args=[f"-xrm={xrm}"])
 
 
 def test_s3270_supports_cafile_probes_help_output_and_caches(
