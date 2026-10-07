@@ -183,6 +183,7 @@ def _validate_host(host: str) -> str:
     """Return *host* stripped, or raise if it is not a plain host name/IP."""
     if not isinstance(host, str):
         raise MainframeError(f"host must be a string, got {type(host).__name__}")
+    _reject_host_control_characters(host)
     bare = host.strip()
     if not bare:
         raise MainframeError("host must not be empty")
@@ -196,6 +197,16 @@ def _validate_host(host: str) -> str:
             "use tls=True instead of a prefix"
         ),
     )
+
+
+def _reject_host_control_characters(host: str) -> None:
+    """Reject controls before whitespace normalization can hide them."""
+    for index, char in enumerate(host):
+        if not char.isprintable():
+            raise MainframeError(
+                f"invalid host {host!r}: control character at offset {index} "
+                f"(U+{ord(char):04X}) is not allowed"
+            )
 
 
 def _validate_port(port: int) -> int:
@@ -215,6 +226,7 @@ def _split_s3270_host(host: str) -> tuple[bool, str]:
     """
     if not isinstance(host, str):
         raise MainframeError(f"host must be a string, got {type(host).__name__}")
+    _reject_host_control_characters(host)
     stripped = host.strip()
     if stripped[:2].upper() == _S3270_TLS_PREFIX:
         return True, _validate_host(stripped[2:])

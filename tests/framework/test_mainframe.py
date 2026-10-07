@@ -432,13 +432,19 @@ def test_s3270_read_fields_keyboard_and_input(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.parametrize(
     "value",
     [
-        # A bare trailing "\r" with nothing after it is inert once
-        # _validate_host() strips leading/trailing whitespace — it is not
-        # tested here, see test_host_validation_accepts_plain_hosts for that
-        # normalization boundary. Every case below carries an actual payload.
+        "host\r",
+        "host\n",
+        "host\r\n",
+        "L:host\r",
+        "L:host\n",
+        "L:host\r\n",
+        "host\t",
+        "L:host\t",
         "host\nQuit()",
         "host\r\nScript(boom)",
         "host\x00",
+        "host\x1b",
+        "host\x7f",
         "host;Quit()",
         "host=evil",
     ],
