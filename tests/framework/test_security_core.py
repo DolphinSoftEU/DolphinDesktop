@@ -40,6 +40,12 @@ def test_structural_redaction_masks_by_key_and_value() -> None:
             "password": _CANARY,
             "pin": 1234,
             "card_pin": _CANARY,
+            "pin-code": _CANARY,
+            "PIN_CODE": _CANARY,
+            "card.pin": _CANARY,
+            "pinCode": _CANARY,
+            "cardPin": _CANARY,
+            "pin1": _CANARY,
             "nested": {"token": _CANARY, "keep": "visible"},
             "list": [f"password={_CANARY}", "plain"],
             "mapping": "visible",
@@ -47,8 +53,17 @@ def test_structural_redaction_masks_by_key_and_value() -> None:
         }
     )
     assert out["password"] == "***"
-    assert out["pin"] == "***"
-    assert out["card_pin"] == "***"
+    for sensitive_key in (
+        "pin",
+        "card_pin",
+        "pin-code",
+        "PIN_CODE",
+        "card.pin",
+        "pinCode",
+        "cardPin",
+        "pin1",
+    ):
+        assert out[sensitive_key] == "***"
     assert out["nested"]["token"] == "***"
     assert out["nested"]["keep"] == "visible"
     assert out["mapping"] == "visible"

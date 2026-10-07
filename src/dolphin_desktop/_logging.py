@@ -57,13 +57,12 @@ _SECRET_KEY_PATTERN = (
     r"|private[_\-]?key|credential|authorization|auth(?!or)|signature"
     r"|sessionid|sas"
     # PIN is short and also appears inside ordinary words such as "mapping"
-    # and "shipping". Treat it as a complete name (underscores and hyphens
-    # still delimit compound names such as ``card_pin`` and ``pin-code``).
-    r"|(?<![A-Za-z0-9])pin(?![A-Za-z0-9])"
+    # and "shipping". Accept separators, numeric suffixes, and camelCase
+    # boundaries, but reject lowercase continuations that would match those words.
+    r"|(?<![A-Za-z0-9])pin(?!(?-i:[a-z]))"
+    r"|(?<=(?-i:[a-z]))(?-i:P)(?i:in)(?!(?-i:[a-z]))"
 )
-_ADDITIONAL_SECRET_KEY_PATTERN = (
-    r"login|username|user[_\-]?id|connection[_\-]?string|clipboard"
-)
+_ADDITIONAL_SECRET_KEY_PATTERN = r"login|username|user[_\-]?id|connection[_\-]?string|clipboard"
 
 _SECRET_RE = re.compile(
     r"("

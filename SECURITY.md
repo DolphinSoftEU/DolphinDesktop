@@ -95,8 +95,9 @@ assigned to a name containing `password`, `passwd`, `passphrase`, `pwd`,
 `secret`, `token`, `api_key`, `private_key`, `credential`, `authorization`,
 `auth`, `signature`, `sessionid`, `sas`, `pin`, `login`, `username`, `user_id`,
 `connection_string` or `clipboard` is masked, including inside a compound
-name such as `AWS_SECRET_ACCESS_KEY`, including the credential after any
-HTTP auth scheme, and including a value shown inside a Python dict `repr()`
+name such as `AWS_SECRET_ACCESS_KEY`, including camelCase PIN names such as
+`pinCode` and `cardPin`, including the credential after any HTTP auth scheme,
+and including a value shown inside a Python dict `repr()`
 (e.g. `{'login': '…'}`, the shape an unresolved locator's criteria are
 rendered in). The same redaction runs at every artifact boundary — trace
 steps, crash-dump ZIPs, the Allure stdout/stderr attachments, the
