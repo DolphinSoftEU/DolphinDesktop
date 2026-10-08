@@ -1833,6 +1833,85 @@ class TestSessionReports:
         assert pids == set()
         assert live == set()
 
+    @pytest.mark.parametrize("failure_stage", ["creation_time", "terminate"])
+    def test_sessionfinish_retries_fallback_cleanup_after_transient_failure(
+        self, monkeypatch, failure_stage
+    ):
+        from dolphin_desktop import _application
+
+        pid = 602
+        pids = {pid}
+        live = {pid}
+        identities = {pid: 111}
+        handles: list[str] = []
+        calls: list[tuple] = []
+        terminate_attempts = 0
+
+        def open_process(access, inherit, opened_pid):
+            handle = f"handle-{len(handles) + 1}"
+            handles.append(handle)
+            calls.append(("open", access, inherit, opened_pid, handle))
+            return handle
+
+        def get_creation_time(handle):
+            calls.append(("times", handle))
+            if failure_stage == "creation_time" and handle == "handle-1":
+                raise OSError("transient creation time failure")
+            return 111
+
+        def terminate(handle, exit_code):
+            nonlocal terminate_attempts
+            terminate_attempts += 1
+            calls.append(("terminate", handle, exit_code))
+            if failure_stage == "terminate" and terminate_attempts == 1:
+                raise OSError("transient terminate failure")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            types.SimpleNamespace(
+                OpenProcess=open_process,
+                TerminateProcess=terminate,
+                CloseHandle=lambda handle: calls.append(("close", handle)),
+            ),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "win32con",
+            types.SimpleNamespace(PROCESS_TERMINATE=1, PROCESS_QUERY_LIMITED_INFORMATION=0x1000),
+        )
+        monkeypatch.setattr(_application, "_process_creation_time_from_handle", get_creation_time)
+        monkeypatch.setattr(_application, "_process_identities", identities)
+        monkeypatch.setattr(_application, "_session_pids", pids)
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_owned_process_handles", {})
+        monkeypatch.setattr(_application, "_unanchored_pids", set())
+        plugin._session_reports.clear()
+
+        session = SimpleNamespace(config=SimpleNamespace())
+        plugin.pytest_sessionfinish(session, 0)
+
+        assert pids == {pid}
+        assert live == {pid}
+        assert identities == {pid: 111}
+        assert calls[-1] == ("close", "handle-1")
+        if failure_stage == "creation_time":
+            assert not any(call[0] == "terminate" for call in calls)
+        else:
+            assert ("terminate", "handle-1", 1) in calls
+
+        plugin.pytest_sessionfinish(session, 0)
+
+        assert pids == set()
+        assert live == set()
+        assert identities == {}
+        assert calls[-4:] == [
+            ("open", 0x1001, False, pid, "handle-2"),
+            ("times", "handle-2"),
+            ("terminate", "handle-2", 1),
+            ("close", "handle-2"),
+        ]
+
 
 class TestHtmlReport:
     def test_generate_html_renders_all_statuses_and_artifact_links(self, tmp_path):

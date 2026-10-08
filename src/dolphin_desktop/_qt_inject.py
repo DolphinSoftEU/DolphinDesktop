@@ -498,22 +498,30 @@ def _pid_create_time(pid: int) -> int | None:
     if not hproc:
         return None
     try:
-        creation = wt.FILETIME()
-        exit_t = wt.FILETIME()
-        kernel_t = wt.FILETIME()
-        user_t = wt.FILETIME()
+        return _process_handle_create_time(hproc)
+    finally:
+        _CloseHandle(hproc)
+
+
+def _process_handle_create_time(handle: int) -> int | None:
+    """Return an already-open process handle's creation time as a FILETIME."""
+    creation = wt.FILETIME()
+    exit_t = wt.FILETIME()
+    kernel_t = wt.FILETIME()
+    user_t = wt.FILETIME()
+    try:
         ok = _GetProcessTimes(
-            hproc,
+            handle,
             ctypes.byref(creation),
             ctypes.byref(exit_t),
             ctypes.byref(kernel_t),
             ctypes.byref(user_t),
         )
-        if not ok:
-            return None
-        return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
-    finally:
-        _CloseHandle(hproc)
+    except Exception:
+        return None
+    if not ok:
+        return None
+    return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
 
 
 def _verify_pipe_server(handle: int, pipe_name: str, expected_pid: int) -> None:
@@ -805,9 +813,16 @@ class QtAgentClient:
                 # Reject a reused PID: if the target's creation time changed
                 # since attach, this pid is a different process now and its
                 # pipe (even a genuine dolphin one) belongs to another app.
+                # Query the same pinned handle used below so an unreadable
+                # identity also fails closed instead of being treated as proof.
                 if self._create_time is not None:
-                    now_ct = _pid_create_time(self.pid)
-                    if now_ct is not None and now_ct != self._create_time:
+                    now_ct = _process_handle_create_time(hpin)
+                    if now_ct is None:
+                        raise QtAgentInjectError(
+                            f"refusing to reattach to pid={self.pid}: its creation time "
+                            "could not be confirmed"
+                        )
+                    if now_ct != self._create_time:
                         raise QtAgentInjectError(
                             f"refusing to reattach to pid={self.pid}: its creation time "
                             "changed since attach — the PID was reused by a different "
