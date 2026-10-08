@@ -13,7 +13,7 @@ from importlib.util import find_spec
 import pytest
 
 from dolphin_desktop import Desktop, QtAgentRpcError, sleep
-from dolphin_desktop._qt_inject import QtAgentClient
+from dolphin_desktop._qt_inject import QtAgentClient, _AgentStartConfig, _start_agent
 from tests.qt._qt_helpers import (
     QT5_SCRIPT,
     QT5_WINDOW_TITLE,
@@ -35,7 +35,6 @@ _GENERIC_WRITE = 0x40000000
 _OPEN_EXISTING = 3
 _SECURITY_SQOS_PRESENT = 0x00100000
 _SECURITY_IDENTIFICATION = 0x00010000
-_PIPE_REJECT_REMOTE_CLIENTS = 0x00000008
 _ERROR_ACCESS_DENIED = 5
 _ERROR_FILE_NOT_FOUND = 2
 _ERROR_PIPE_BUSY = 231
@@ -189,8 +188,86 @@ def _assert_logon_sid_is_required(pipe_name: str) -> None:
                 kernel32.CloseHandle(token)
 
 
+def _assert_localhost_named_pipe_transport_available() -> None:
+    """Prove the localhost SMB named-pipe route works with a control pipe."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateNamedPipeW.argtypes = [
+        wt.LPCWSTR,
+        wt.DWORD,
+        wt.DWORD,
+        wt.DWORD,
+        wt.DWORD,
+        wt.DWORD,
+        wt.DWORD,
+        wt.HANDLE,
+    ]
+    kernel32.CreateNamedPipeW.restype = wt.HANDLE
+    kernel32.ConnectNamedPipe.argtypes = [wt.HANDLE, wt.HANDLE]
+    kernel32.ConnectNamedPipe.restype = wt.BOOL
+    kernel32.CreateFileW.argtypes = [
+        wt.LPCWSTR,
+        wt.DWORD,
+        wt.DWORD,
+        ctypes.c_void_p,
+        wt.DWORD,
+        wt.DWORD,
+        wt.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wt.HANDLE
+    kernel32.WaitNamedPipeW.argtypes = [wt.LPCWSTR, wt.DWORD]
+    kernel32.WaitNamedPipeW.restype = wt.BOOL
+    kernel32.CloseHandle.argtypes = [wt.HANDLE]
+    kernel32.CloseHandle.restype = wt.BOOL
+
+    name = f"dolphin_qt_agent_control_{time.time_ns()}"
+    local_name = "\\\\.\\pipe\\" + name
+    remote_name = "\\\\localhost\\pipe\\" + name
+    invalid_handle = ctypes.c_void_p(-1).value
+    server = kernel32.CreateNamedPipeW(local_name, 3, 0, 1, 4096, 4096, 0, None)
+    if server in (None, invalid_handle):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    connected: list[tuple[bool, int]] = []
+
+    def accept_control_client() -> None:
+        ok = kernel32.ConnectNamedPipe(server, None)
+        connected.append((bool(ok), ctypes.get_last_error()))
+
+    client = None
+    thread = threading.Thread(target=accept_control_client, daemon=True)
+    try:
+        thread.start()
+        client = kernel32.CreateFileW(
+            remote_name,
+            _GENERIC_READ | _GENERIC_WRITE,
+            0,
+            None,
+            _OPEN_EXISTING,
+            _SECURITY_SQOS_PRESENT | _SECURITY_IDENTIFICATION,
+            None,
+        )
+        if client in (None, invalid_handle):
+            error = ctypes.get_last_error()
+            raise AssertionError(
+                "localhost SMB named-pipe transport is unavailable; "
+                f"remote rejection cannot be verified (WinError {error})"
+            )
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "control named-pipe connection did not complete"
+        assert connected and (connected[0][0] or connected[0][1] == 535), (
+            f"control named-pipe connection failed: {connected!r}"
+        )
+    finally:
+        if client not in (None, invalid_handle):
+            kernel32.CloseHandle(client)
+        kernel32.CloseHandle(server)
+        thread.join(timeout=1)
+
+
 def _assert_remote_named_pipe_client_is_rejected(pipe_name: str) -> None:
-    """Open through the localhost SMB namespace and require remote rejection."""
+    """Require policy denial after a localhost SMB control connection succeeds."""
+    _assert_localhost_named_pipe_transport_available()
+
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateFileW.argtypes = [
         wt.LPCWSTR,
@@ -206,6 +283,12 @@ def _assert_remote_named_pipe_client_is_rejected(pipe_name: str) -> None:
     kernel32.WaitNamedPipeW.restype = wt.BOOL
     kernel32.CloseHandle.argtypes = [wt.HANDLE]
     kernel32.CloseHandle.restype = wt.BOOL
+
+    if not kernel32.WaitNamedPipeW(pipe_name, 5000):
+        raise AssertionError(
+            "agent pipe is unavailable locally after the SMB control connection "
+            f"succeeded (WinError {ctypes.get_last_error()})"
+        )
 
     remote_name = "\\\\localhost\\pipe\\" + pipe_name.rsplit("\\", 1)[-1]
     invalid_handle = ctypes.c_void_p(-1).value
@@ -507,7 +590,7 @@ app.exec()
     ids=["qt5", "qt6"],
 )
 def test_agent_pipe_security_boundaries(binding, version, script, title):
-    """Verify logon SID ACLs, client PID checks, and the remote-client pipe flag."""
+    """Verify logon SID ACLs, client PID checks, and remote-client rejection."""
     assert find_spec(binding) is not None, f"required Qt test binding {binding} is not installed"
 
     app, _window = launch_demo(Desktop(), script, title)
@@ -516,27 +599,20 @@ def test_agent_pipe_security_boundaries(binding, version, script, title):
         assert agent.ping() == "pong"
         pipe_name = agent._pipe_name
         auth_token = agent._auth_token
-        assert pipe_name and auth_token
+        client_pid = agent._client_pid
+        dll_path = agent._agent_dll
+        assert pipe_name and auth_token and client_pid and dll_path
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.GetNamedPipeInfo.argtypes = [
-            wt.HANDLE,
-            ctypes.POINTER(wt.DWORD),
-            ctypes.POINTER(wt.DWORD),
-            ctypes.POINTER(wt.DWORD),
-            ctypes.POINTER(wt.DWORD),
-        ]
-        kernel32.GetNamedPipeInfo.restype = wt.BOOL
-        pipe_flags = wt.DWORD()
-        if not kernel32.GetNamedPipeInfo(agent._pipe, ctypes.byref(pipe_flags), None, None, None):
-            raise ctypes.WinError(ctypes.get_last_error())
-        assert pipe_flags.value & _PIPE_REJECT_REMOTE_CLIENTS, (
-            "agent pipe is not configured to reject remote named-pipe clients"
+        # Restart the native listener without an authorized pipe handle so the
+        # remote probe reaches an available instance instead of seeing PIPE_BUSY.
+        agent.close()
+        _start_agent(
+            agent.pid,
+            dll_path,
+            _AgentStartConfig(pipe_name, auth_token, client_pid),
         )
-
-        # Free the authorized instance without stopping the server so probes
-        # can test the remote flag and logon SID ACL at the pipe boundary.
-        agent._close_pipe()
+        # A working control connection proves localhost named-pipe transport
+        # is available before the remote agent connection is required to fail.
         _assert_remote_named_pipe_client_is_rejected(pipe_name)
         _assert_logon_sid_is_required(pipe_name)
 

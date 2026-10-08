@@ -15,7 +15,7 @@ def test_agent_dll_for_returns_the_requested_existing_dll(
     expected.touch()
     monkeypatch.setattr(qt_agent, attribute, expected)
 
-    assert qt_agent.agent_dll_for(version) == expected
+    assert qt_agent.agent_dll_for(version, verify=False) == expected
 
 
 def test_agent_dll_for_rejects_an_unknown_qt_version() -> None:
