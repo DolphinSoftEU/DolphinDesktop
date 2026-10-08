@@ -206,6 +206,41 @@ def test_process_creation_time_covers_all_failure_and_success_paths(monkeypatch)
     assert application._process_creation_time(12) == (1 << 32) | 2
 
 
+def test_process_creation_time_from_handle_covers_win32_results(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    get_process_times = Mock()
+
+    def fill_times(handle, creation_ptr, _exit_ptr, _kernel_ptr, _user_ptr):
+        assert handle.value == 77
+        creation_ptr._obj.dwHighDateTime = 1
+        creation_ptr._obj.dwLowDateTime = 2
+        return True
+
+    attempts = 0
+
+    def query_times(*args):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return False
+        if attempts == 2:
+            return fill_times(*args)
+        raise OSError("query failed")
+
+    get_process_times.side_effect = query_times
+    kernel32 = SimpleNamespace(GetProcessTimes=get_process_times)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32)
+
+    assert application._process_creation_time_from_handle(77) is None
+    assert application._process_creation_time_from_handle(77) == (1 << 32) | 2
+    assert application._process_creation_time_from_handle(77) is None
+    assert [call.args[0].value for call in get_process_times.call_args_list] == [77, 77, 77]
+
+    monkeypatch.setattr(ctypes, "WinDLL", Mock(side_effect=OSError("kernel32 unavailable")))
+    assert application._process_creation_time_from_handle(77) is None
+
+
 def test_record_process_identity_stores_only_known_creation_times(monkeypatch) -> None:
     import dolphin_desktop._application as application
 
@@ -228,6 +263,18 @@ def test_identity_matches_requires_readable_current_time(monkeypatch) -> None:
     # fail closed because this PID cannot be confirmed as the same process.
     monkeypatch.setattr(application, "_process_identities", {4242: 111})
     monkeypatch.setattr(application, "_process_creation_time", lambda _pid: None)
+    assert application._identity_matches(4242) is False
+
+
+def test_identity_matches_fails_when_no_creation_time_was_recorded(monkeypatch) -> None:
+    import dolphin_desktop._application as application
+
+    monkeypatch.setattr(application, "_process_identities", {})
+    monkeypatch.setattr(
+        application,
+        "_process_creation_time",
+        lambda _pid: pytest.fail("must not query an untracked PID"),
+    )
     assert application._identity_matches(4242) is False
 
 

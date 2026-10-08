@@ -299,9 +299,36 @@ def test_terminate_skips_when_identity_was_never_recorded(monkeypatch) -> None:
     calls = _fake_win32(monkeypatch)
     monkeypatch.setattr(_application, "_process_identities", {})
     monkeypatch.setattr(_application, "_process_creation_time_from_handle", lambda handle: 111)
-    killed = _application.terminate_tracked_pid(9001, log=Mock())
+    killed = _application.terminate_tracked_pid(9001)
     assert killed is False
     assert calls == []
+
+
+def test_terminate_skips_and_preserves_identity_when_process_handle_cannot_open(
+    monkeypatch,
+) -> None:
+    from dolphin_desktop import _application
+
+    calls: list[tuple] = []
+    monkeypatch.setitem(
+        sys.modules,
+        "win32api",
+        types.SimpleNamespace(
+            OpenProcess=lambda *args: calls.append(("open", *args)) or 0,
+            TerminateProcess=lambda *args: calls.append(("terminate", *args)),
+            CloseHandle=lambda *args: calls.append(("close", *args)),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32con",
+        types.SimpleNamespace(PROCESS_TERMINATE=1, PROCESS_QUERY_LIMITED_INFORMATION=0x1000),
+    )
+    monkeypatch.setattr(_application, "_process_identities", {9002: 111})
+
+    assert _application.terminate_tracked_pid(9002) is False
+    assert calls == [("open", 0x1001, False, 9002)]
+    assert _application._process_identities == {9002: 111}
 
 
 def test_terminate_skips_when_current_identity_cannot_be_read(monkeypatch) -> None:
@@ -314,13 +341,58 @@ def test_terminate_skips_when_current_identity_cannot_be_read(monkeypatch) -> No
         "_process_creation_time_from_handle",
         lambda handle: calls.append(("times", handle)) or None,
     )
-    assert _application.terminate_tracked_pid(9001, log=Mock()) is False
+    assert _application.terminate_tracked_pid(9001) is False
     assert calls == [
         ("open", 0x1001, False, 9001),
         ("times", "H"),
         ("close", "H"),
     ]
     assert _application._process_identities == {9001: 111}
+
+
+@pytest.mark.parametrize("failure_stage", ["creation_time", "terminate"])
+def test_terminate_preserves_identity_and_closes_handle_after_transient_error(
+    monkeypatch, failure_stage
+) -> None:
+    from dolphin_desktop import _application
+
+    calls = _fake_win32(monkeypatch)
+    monkeypatch.setattr(_application, "_process_identities", {9003: 111})
+
+    if failure_stage == "creation_time":
+
+        def fail_creation_time(handle):
+            calls.append(("times", handle))
+            raise OSError("creation time temporarily unavailable")
+
+        monkeypatch.setattr(_application, "_process_creation_time_from_handle", fail_creation_time)
+        expected_calls = [
+            ("open", 0x1001, False, 9003),
+            ("times", "H"),
+            ("close", "H"),
+        ]
+    else:
+        monkeypatch.setattr(
+            _application,
+            "_process_creation_time_from_handle",
+            lambda handle: calls.append(("times", handle)) or 111,
+        )
+
+        def fail_termination(handle, exit_code):
+            calls.append(("terminate", handle, exit_code))
+            raise OSError("termination temporarily failed")
+
+        monkeypatch.setattr(sys.modules["win32api"], "TerminateProcess", fail_termination)
+        expected_calls = [
+            ("open", 0x1001, False, 9003),
+            ("times", "H"),
+            ("terminate", "H", 1),
+            ("close", "H"),
+        ]
+
+    assert _application.terminate_tracked_pid(9003, log=Mock()) is False
+    assert calls == expected_calls
+    assert _application._process_identities == {9003: 111}
 
 
 # --------------------------------------------------------------------------- #

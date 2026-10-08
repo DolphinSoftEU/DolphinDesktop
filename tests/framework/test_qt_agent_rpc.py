@@ -15,6 +15,7 @@ import threading
 import time
 import types
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -1265,6 +1266,14 @@ class TestPidCreateTime:
         assert _qt_inject._pid_create_time(4242) is None
         # The handle is still released on the failure path.
         assert closed == [555]
+
+    def test_open_handle_creation_time_returns_none_when_query_raises(self, monkeypatch):
+        monkeypatch.setattr(
+            _qt_inject,
+            "_GetProcessTimes",
+            Mock(side_effect=OSError("query failed")),
+        )
+        assert _qt_inject._process_handle_create_time(555) is None
 
 
 class TestAttach:
