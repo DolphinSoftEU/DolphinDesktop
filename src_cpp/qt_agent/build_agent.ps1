@@ -13,8 +13,8 @@ if (-not (Test-Path -LiteralPath $QtRoot -PathType Container)) {
 }
 
 $versions = @{
-    '5' = @{ Qt = '5.15.2'; Msvc = '19.29.'; MsvcLabel = 'MSVC 14.29.30133' }
-    '6' = @{ Qt = '6.11.1'; Msvc = '19.44.'; MsvcLabel = 'MSVC 14.44.35207' }
+    '5' = @{ Qt = '5.15.2'; Msvc = '19.50.35726'; MsvcLabel = 'MSVC 19.50.35726' }
+    '6' = @{ Qt = '6.10.3'; Msvc = '19.50.35726'; MsvcLabel = 'MSVC 19.50.35726' }
 }
 $expected = $versions[$QtMajor]
 $qtConfig = Join-Path $QtRoot "lib\cmake\Qt${QtMajor}Core\Qt${QtMajor}CoreConfigVersion.cmake"
@@ -22,14 +22,18 @@ if (-not (Test-Path -LiteralPath $qtConfig -PathType Leaf)) {
     throw "Qt $QtMajor Core CMake package not found under $QtRoot"
 }
 $qtConfigText = Get-Content -LiteralPath $qtConfig -Raw
+$qtConfigImpl = Join-Path $QtRoot "lib\cmake\Qt${QtMajor}Core\Qt${QtMajor}CoreConfigVersionImpl.cmake"
+if (Test-Path -LiteralPath $qtConfigImpl -PathType Leaf) {
+    $qtConfigText += Get-Content -LiteralPath $qtConfigImpl -Raw
+}
 if ($qtConfigText -notmatch [regex]::Escape($expected.Qt)) {
     throw "Expected Qt $($expected.Qt), but the SDK at $QtRoot reports a different version"
 }
 
 $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
 if ($null -eq $cl) { throw 'cl.exe is missing; run this script from an x64 MSVC developer shell' }
-$compilerLine = (& cl.exe 2>&1 | Select-Object -First 1 | Out-String).Trim()
-if ($compilerLine -notmatch [regex]::Escape("Version $($expected.Msvc)")) {
+$compilerLine = (& cl.exe 2>&1 | Out-String)
+if ($compilerLine -notmatch [regex]::Escape($expected.Msvc)) {
     throw "Expected $($expected.MsvcLabel), found: $compilerLine"
 }
 $cmake = Get-Command cmake.exe -ErrorAction SilentlyContinue
@@ -38,17 +42,29 @@ if ($null -eq $cmake) { throw 'cmake.exe is missing from PATH' }
 if ($null -eq $ninja) { throw 'ninja.exe is missing from PATH' }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$sourceStatus = & git -C $repoRoot status --porcelain --untracked-files=all -- src_cpp/qt_agent
+$sourceStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all -- src_cpp/qt_agent)
 if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect the source revision with git' }
-if ($sourceStatus) {
-    throw 'Build input is modified or untracked. Commit src_cpp/qt_agent first so the artifact can be linked to an approved source commit.'
+if (@($sourceStatus | Where-Object { $_.StartsWith('??') }).Count -gt 0) {
+    throw 'Build input contains untracked files. Stage src_cpp/qt_agent before building.'
 }
-$sourceCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-f]{40}$') {
-    throw 'Unable to resolve the source commit for this build'
+$unstagedDiff = & git -C $repoRoot diff --quiet -- src_cpp/qt_agent
+if ($LASTEXITCODE -ne 0) {
+    throw 'Build input differs from the staged source; stage the intended source before building.'
+}
+$indexTree = (& git -C $repoRoot write-tree).Trim()
+if ($LASTEXITCODE -ne 0 -or $indexTree -notmatch '^[0-9a-f]{40}$') {
+    throw 'Unable to resolve the staged repository tree for this build'
+}
+$sourceEntry = @(& git -C $repoRoot ls-tree $indexTree src_cpp/qt_agent)
+if ($LASTEXITCODE -ne 0 -or $sourceEntry.Count -ne 1) {
+    throw 'Unable to resolve src_cpp/qt_agent in the staged tree'
+}
+$sourceTree = ($sourceEntry[0] -split '\s+')[2]
+if ($sourceTree -notmatch '^[0-9a-f]{40}$') {
+    throw 'The staged native source has no valid Git tree id'
 }
 
-$buildDir = Join-Path $env:TEMP "dolphin-qt-agent-qt$QtMajor-$sourceCommit-$([guid]::NewGuid().ToString('N'))"
+$buildDir = Join-Path $env:TEMP "dolphin-qt-agent-qt$QtMajor-$sourceTree-$([guid]::NewGuid().ToString('N'))"
 $cmakeArgs = @(
     '-S', $PSScriptRoot,
     '-B', $buildDir,
@@ -83,7 +99,7 @@ $entry = [pscustomobject][ordered]@{
     sha256 = $hash
     size = $size
     protocol_version = 2
-    source_commit = $sourceCommit
+    source_tree = $sourceTree
     qt_version = $expected.Qt
     msvc_toolset = $expected.MsvcLabel
 }
@@ -92,5 +108,5 @@ $manifestJson = $manifest | ConvertTo-Json -Depth 5
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($manifestPath, $manifestJson + [Environment]::NewLine, $utf8NoBom)
 
-Write-Host "Built $dllName from $sourceCommit" -ForegroundColor Green
+Write-Host "Built $dllName from staged tree $sourceTree" -ForegroundColor Green
 Write-Host "SHA-256: $hash ($size bytes)"

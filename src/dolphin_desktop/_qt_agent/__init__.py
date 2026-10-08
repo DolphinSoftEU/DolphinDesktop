@@ -84,9 +84,7 @@ def verify_agent_dll(path: Path) -> None:
         actual_size = path.stat().st_size
         actual = dll_sha256(path)
     except OSError as exc:
-        raise AgentIntegrityError(
-            f"cannot read agent DLL {path}: refusing to inject it"
-        ) from exc
+        raise AgentIntegrityError(f"cannot read agent DLL {path}: refusing to inject it") from exc
     if actual_size != expected_size or actual != expected:
         raise AgentIntegrityError(
             f"agent DLL {path.name} does not match its recorded size/SHA-256 "

@@ -448,6 +448,59 @@ class TestBrokenTransportRecovery:
             client.ping()
 
 
+class TestAgentSessionOwnership:
+    def _session(self):
+        return _qt_inject._AgentSession(
+            pid=4242,
+            qt_version="5",
+            create_time=111,
+            pipe_name=r"\\.\pipe\dolphin_qt_4242_test",
+            auth_token="a" * 43,
+            client_pid=1234,
+            agent_dll=Path("dolphin_qt5_agent.dll"),
+        )
+
+    def test_explicit_close_stops_only_after_last_client(self, monkeypatch):
+        stopped = []
+        monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_: 1)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda *_: 1)
+        monkeypatch.setattr(
+            _qt_inject,
+            "_stop_agent",
+            lambda pid, dll, *, expected_create_time: stopped.append(
+                (pid, dll, expected_create_time)
+            ),
+        )
+        session = self._session()
+        first = QtAgentClient(4242, 71, _session=session)
+        second = QtAgentClient(4242, 72, _session=session)
+
+        first.close()
+        assert stopped == []
+        assert session.clients == 1
+        assert session.server_started is True
+
+        second.close()
+        assert stopped == [(4242, Path("dolphin_qt5_agent.dll"), 111)]
+        assert session.clients == 0
+        assert session.server_started is False
+
+    def test_finalizer_releases_only_its_local_ownership(self, monkeypatch):
+        stopped = []
+        monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_: 1)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda *_: 1)
+        monkeypatch.setattr(_qt_inject, "_stop_agent", lambda *a, **k: stopped.append(True))
+        session = self._session()
+        client = QtAgentClient(4242, 73, _session=session)
+
+        del client
+        gc.collect()
+
+        assert stopped == []
+        assert session.clients == 0
+        assert session.server_started is True
+
+
 class _AlwaysTimingOutClient(_FakeClient):
     def _read_chunk(self, deadline: float, op: str) -> bytes:
         raise QtAgentTimeoutError("the agent's event loop is wedged")
@@ -797,6 +850,7 @@ class TestAttach:
             raise QtAgentInjectError("pipe never appeared")
 
         calls = self._install(monkeypatch, open_pipe=_boom)
+        monkeypatch.setattr(_qt_inject, "_stop_agent", lambda *args, **kwargs: None)
         with pytest.raises(QtAgentInjectError, match="pipe never appeared"):
             QtAgentClient.attach(4242, "5")
         assert calls.closed == [555]

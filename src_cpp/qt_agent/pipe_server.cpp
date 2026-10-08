@@ -7,15 +7,22 @@
 #include "qml_walker.h"
 
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
+#include <QMutex>
 #include <QThread>
+#include <QWaitCondition>
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <exception>
+#include <memory>
+#include <stdexcept>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -35,23 +42,78 @@ constexpr auto kIdleTimeout = std::chrono::seconds(60);
 constexpr auto kWriteTimeout = std::chrono::seconds(30);
 constexpr DWORD kPollMs = 5;
 
-// Dispatch a callable onto the GUI thread and block until it returns.
-template <typename Fn>
-QJsonValue run_on_gui_thread(Fn&& fn)
+struct GuiCall
 {
+    QMutex mutex;
+    QWaitCondition completed;
+    bool cancelled = false;
+    bool done = false;
     QJsonValue result;
+    std::exception_ptr error;
+};
+
+// Queue work on the GUI thread, but keep the server responsive to stop().
+template <typename Fn>
+QJsonValue run_on_gui_thread(Fn&& fn, const std::atomic<bool>& stop)
+{
+    if (!qApp) throw std::runtime_error("Qt application is shutting down");
     if (QThread::currentThread() == qApp->thread()) {
-        result = fn();
-    } else {
-        QMetaObject::invokeMethod(
-            qApp,
-            [&]() { result = fn(); },
-            Qt::BlockingQueuedConnection);
+        return fn();
     }
+
+    auto call = std::make_shared<GuiCall>();
+    auto callable = std::forward<Fn>(fn);
+    const bool queued = QMetaObject::invokeMethod(
+        qApp,
+        [call, callable = std::move(callable)]() mutable {
+            call->mutex.lock();
+            if (call->cancelled) {
+                call->mutex.unlock();
+                return;
+            }
+            call->mutex.unlock();
+
+            QJsonValue result;
+            std::exception_ptr error;
+            try {
+                result = callable();
+            } catch (...) {
+                error = std::current_exception();
+            }
+
+            call->mutex.lock();
+            if (!call->cancelled) {
+                call->result = result;
+                call->error = error;
+                call->done = true;
+                call->completed.wakeAll();
+            }
+            call->mutex.unlock();
+        },
+        Qt::QueuedConnection);
+    if (!queued) throw std::runtime_error("cannot queue work on the Qt GUI thread");
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    call->mutex.lock();
+    while (!call->done && !stop.load() && elapsed.elapsed() < 30'000) {
+        call->completed.wait(&call->mutex, 10);
+    }
+    if (!call->done) {
+        call->cancelled = true;
+        call->mutex.unlock();
+        throw std::runtime_error(stop.load()
+            ? "agent stopped while waiting for the Qt GUI thread"
+            : "timed out waiting for the Qt GUI thread");
+    }
+    const QJsonValue result = call->result;
+    const std::exception_ptr error = call->error;
+    call->mutex.unlock();
+    if (error) std::rethrow_exception(error);
     return result;
 }
 
-QJsonObject handle_request(const QJsonObject& req)
+QJsonObject handle_request(const QJsonObject& req, const std::atomic<bool>& stop)
 {
     QJsonObject resp;
     resp["id"] = req.value("id");
@@ -65,91 +127,91 @@ QJsonObject handle_request(const QJsonObject& req)
             resp["ok"] = true;
             resp["result"] = run_on_gui_thread([]() {
                 return QJsonValue(ObjectWalker::topLevelTree());
-            });
+            }, stop);
         } else if (op == "find") {
             const QJsonObject filter = req.value("filter").toObject();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(ObjectWalker::find(filter));
-            });
+            }, stop);
         } else if (op == "describe") {
             const QString target = req.value("target").toString();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(ObjectWalker::describeFull(target));
-            });
+            }, stop);
         } else if (op == "members") {
             const QString target = req.value("target").toString();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(ObjectWalker::listMembers(target));
-            });
+            }, stop);
         } else if (op == "invoke") {
             const QString target = req.value("target").toString();
             const QString method = req.value("method").toString();
             const QJsonArray args = req.value("args").toArray();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(ObjectWalker::invoke(target, method, args));
-            });
+            }, stop);
         } else if (op == "set_property") {
             const QString target = req.value("target").toString();
             const QString prop = req.value("property").toString();
             const QJsonValue value = req.value("value");
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(ObjectWalker::setProperty(target, prop, value));
-            });
+            }, stop);
         } else if (op == "get_property") {
             const QString target = req.value("target").toString();
             const QString prop = req.value("property").toString();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return ObjectWalker::getProperty(target, prop);
-            });
+            }, stop);
         }
 #ifdef DOLPHIN_QT_AGENT_HAS_QML
         else if (op == "qml_root") {
             resp["ok"] = true;
             resp["result"] = run_on_gui_thread([]() {
                 return QJsonValue(QmlWalker::rootObjects());
-            });
+            }, stop);
         } else if (op == "qml_find") {
             const QString name = req.value("objectName").toString();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(QmlWalker::findByObjectName(name));
-            });
+            }, stop);
         } else if (op == "qml_item_at") {
             const QString winH = req.value("window").toString();
             const double x = req.value("x").toDouble();
             const double y = req.value("y").toDouble();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(QmlWalker::itemAt(winH, x, y));
-            });
+            }, stop);
         } else if (op == "qml_click") {
             const QString item = req.value("target").toString();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(QmlWalker::click(item));
-            });
+            }, stop);
         }
 #endif
         else if (op == "graphics_items") {
             const QString view = req.value("view").toString();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(GraphicsWalker::sceneItems(view));
-            });
+            }, stop);
         } else if (op == "graphics_item_at") {
             const QString view = req.value("view").toString();
             const double x = req.value("x").toDouble();
             const double y = req.value("y").toDouble();
             resp["ok"] = true;
-            resp["result"] = run_on_gui_thread([&]() {
+            resp["result"] = run_on_gui_thread([=]() {
                 return QJsonValue(GraphicsWalker::itemAt(view, x, y));
-            });
+            }, stop);
         } else {
             resp["ok"] = false;
             resp["error"] = QString("unknown op: %1").arg(op);
@@ -345,13 +407,14 @@ ReadResult read_line(HANDLE pipe, std::atomic<bool>& stop,
     return ReadResult::Closed;
 }
 
-bool write_line(HANDLE pipe, const QByteArray& data)
+bool write_line(HANDLE pipe, const QByteArray& data,
+                const std::atomic<bool>& stop)
 {
     QByteArray out = data;
     out.append('\n');
     qsizetype offset = 0;
     const auto deadline = std::chrono::steady_clock::now() + kWriteTimeout;
-    while (offset < out.size()) {
+    while (offset < out.size() && !stop.load(std::memory_order_acquire)) {
         const DWORD count = static_cast<DWORD>(std::min<qsizetype>(4096, out.size() - offset));
         DWORD written = 0;
         if (WriteFile(pipe, out.constData() + offset, count, &written, nullptr)) {
@@ -364,7 +427,7 @@ bool write_line(HANDLE pipe, const QByteArray& data)
         if (std::chrono::steady_clock::now() >= deadline) return false;
         Sleep(kPollMs);
     }
-    return true;
+    return offset == out.size();
 }
 
 bool expected_client(HANDLE pipe, quint32 client_pid)
@@ -386,7 +449,7 @@ PipeServer::PipeServer(QString pipe_name, QString session_secret, quint32 client
 
 PipeServer::~PipeServer() = default;
 
-void PipeServer::stop() { stop_ = true; }
+void PipeServer::stop() { stop_.store(true, std::memory_order_release); }
 
 void PipeServer::run()
 {
@@ -461,7 +524,7 @@ void PipeServer::run()
                                 response["ok"] = false;
                                 response["error"] = QStringLiteral("request JSON exceeds limits");
                             } else {
-                                response = handle_request(request);
+                                response = handle_request(request, stop_);
                             }
                         }
                     }
@@ -476,7 +539,7 @@ void PipeServer::run()
                     bounded["error"] = QStringLiteral("response exceeds size limit");
                     encoded = QJsonDocument(bounded).toJson(QJsonDocument::Compact);
                 }
-                if (!write_line(pipe, encoded)) break;
+                if (!write_line(pipe, encoded, stop_)) break;
             }
         }
 

@@ -4,8 +4,8 @@ dolphin_desktop ships an in-process **Qt Agent DLL** that extends Qt
 support beyond what UIA can see — primarily Qt Quick / QML and
 `QGraphicsView` custom-paint widgets that are opaque to UIA.
 
-> - `dolphin_qt5_agent.dll` — built against Qt 5.15.2 + MSVC v142.
-> - `dolphin_qt6_agent.dll` — built against Qt 6.11.1 + MSVC v143.
+> - `dolphin_qt5_agent.dll` — built against Qt 5.15.2 + MSVC 19.50.35726.
+> - `dolphin_qt6_agent.dll` — built against Qt 6.10.3 + MSVC 19.50.35726.
 >
 > Both DLLs ship with the Python wheel as prebuilt binaries — no
 > separate install or build step.
@@ -209,22 +209,18 @@ when no agent is attached.
 ## Build
 
 The C++ source and pinned build scripts are in `src_cpp/qt_agent/`. The scripts
-build the Qt 5.15.2/MSVC 19.29 and Qt 6.11.1/MSVC 19.44 variants from a clean,
-committed checkout, verify the v2 start/stop exports, and record the source
-commit, toolchain, size and SHA-256 in `agent_manifest.json`.
+build the Qt 5.15.2 and Qt 6.10.3 variants with MSVC 19.50.35726, verify the v2
+start/stop exports, and record the staged source tree, toolchain, size and
+SHA-256 in `agent_manifest.json`.
 
-Newly built DLLs are `IMAGE_FILE_MACHINE_AMD64` and use the authenticated v2
+The bundled DLLs are `IMAGE_FILE_MACHINE_AMD64` and use the authenticated v2
 start and stop exports. Python refuses to call the legacy unauthenticated
-start export.
-
-The DLLs currently checked into this branch still have the legacy exports.
-`QtAgentClient.attach()` rejects them before injection. Rebuild both DLLs from
-the committed native source and review the updated manifest before using or
-publishing this branch.
+start export. The manifest records each DLL's protocol, staged source tree,
+toolchain, size and SHA-256.
 
 | File | Target |
 |---|---|
-| `dolphin_qt6_agent.dll` | Qt 6.11.x processes (e.g. PySide6) |
+| `dolphin_qt6_agent.dll` | Qt 6.10.x processes (e.g. PySide6 6.10.3) |
 | `dolphin_qt5_agent.dll` | Qt 5.15.x processes (e.g. PyQt5 / older apps) |
 
 They live in `src/dolphin_desktop/_qt_agent/` and ship with the wheel, so end

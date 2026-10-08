@@ -4,9 +4,9 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QObject>
+#include <QPointer>
 #include <QString>
-
-class QObject;
 
 namespace dolphin {
 
@@ -41,7 +41,7 @@ public:
 
     // Lookup a stable handle for the QObject pointer (used by other walkers).
     static QString registerObject(QObject* obj);
-    static QObject* resolveHandle(const QString& handle);
+    static QPointer<QObject> resolveHandle(const QString& handle);
 };
 
 }  // namespace dolphin

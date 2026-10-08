@@ -3,6 +3,7 @@
 #include "object_walker.h"
 
 #include <QApplication>
+#include <QByteArray>
 #include <QGraphicsItem>
 #include <QGraphicsObject>
 #include <QGraphicsScene>
@@ -17,6 +18,7 @@
 #include <QRegularExpression>
 #include <QString>
 #include <QVariant>
+#include <QVector>
 #include <QWidget>
 #include <QWindow>
 
@@ -30,7 +32,14 @@ namespace dolphin {
 namespace {
 
 QMutex g_mutex;
-QHash<QString, QObject*> g_handles;
+struct HandleEntry
+{
+    QPointer<QObject> object;
+    quint64 generation = 0;
+};
+QHash<QString, HandleEntry> g_handles;
+QHash<QString, QString> g_current_handles;
+quint64 g_next_generation = 0;
 
 QString makeKey(QObject* obj)
 {
@@ -44,26 +53,47 @@ QString makeKey(QObject* obj)
 QString ObjectWalker::registerObject(QObject* obj)
 {
     if (!obj) return {};
-    const QString key = makeKey(obj);
+    const QString base_key = makeKey(obj);
     QMutexLocker lock(&g_mutex);
-    if (!g_handles.contains(key)) {
-        g_handles.insert(key, obj);
-        // Best-effort cleanup on destroy. Using a lambda with captured key
-        // means even if the QObject lives in another thread, the connect
-        // queues into our worker.
-        QObject::connect(obj, &QObject::destroyed, qApp, [key]() {
-            QMutexLocker l(&g_mutex);
-            g_handles.remove(key);
-        });
+    auto current = g_current_handles.find(base_key);
+    if (current != g_current_handles.end()) {
+        const auto existing = g_handles.constFind(current.value());
+        if (existing != g_handles.cend() && existing.value().object.data() == obj) {
+            return current.value();
+        }
     }
+    const quint64 generation = ++g_next_generation;
+    const QString key = QStringLiteral("%1#%2")
+                            .arg(base_key)
+                            .arg(static_cast<qulonglong>(generation));
+    g_handles.insert(key, HandleEntry{QPointer<QObject>(obj), generation});
+    g_current_handles.insert(base_key, key);
+    // The generation prevents a delayed destroyed callback from removing a
+    // new object that reused the same address and therefore the same handle.
+    QObject::connect(obj, &QObject::destroyed, qApp, [base_key, key, generation]() {
+            QMutexLocker l(&g_mutex);
+            auto current = g_handles.find(key);
+            if (current != g_handles.end() &&
+                current.value().generation == generation) {
+                g_handles.erase(current);
+            }
+            auto current_key = g_current_handles.find(base_key);
+            if (current_key != g_current_handles.end() &&
+                current_key.value() == key) {
+                g_current_handles.erase(current_key);
+            }
+        });
     return key;
 }
 
-QObject* ObjectWalker::resolveHandle(const QString& handle)
+QPointer<QObject> ObjectWalker::resolveHandle(const QString& handle)
 {
     QMutexLocker lock(&g_mutex);
     const auto it = g_handles.find(handle);
-    return it == g_handles.end() ? nullptr : it.value();
+    if (it == g_handles.end()) return {};
+    const QPointer<QObject> object = it.value().object;
+    if (object.isNull()) g_handles.erase(it);
+    return object;
 }
 
 namespace {
@@ -252,7 +282,8 @@ QJsonArray ObjectWalker::find(const QJsonObject& filter)
 QJsonObject ObjectWalker::describeFull(const QString& handle)
 {
     QJsonObject result;
-    QObject* obj = resolveHandle(handle);
+    const QPointer<QObject> object_guard = resolveHandle(handle);
+    QObject* obj = object_guard.data();
     if (!obj) {
         result["ok"] = false;
         result["error"] = QStringLiteral("invalid handle");
@@ -276,7 +307,8 @@ QJsonObject ObjectWalker::describeFull(const QString& handle)
 QJsonObject ObjectWalker::listMembers(const QString& handle)
 {
     QJsonObject result;
-    QObject* obj = resolveHandle(handle);
+    const QPointer<QObject> object_guard = resolveHandle(handle);
+    QObject* obj = object_guard.data();
     if (!obj) {
         result["ok"] = false;
         result["error"] = QStringLiteral("invalid handle");
@@ -317,20 +349,28 @@ namespace {
 // underlying type matches what Qt expects, then take its address.
 struct ArgSlot {
     QVariant variant;
-    QGenericArgument arg() { return QGenericArgument(variant.typeName(), variant.data()); }
+    QGenericArgument arg() const
+    {
+        return QGenericArgument(variant.typeName(), variant.constData());
+    }
 };
 
-QVariant coerce(const QJsonValue& jv, int targetTypeId)
+bool coerce(const QJsonValue& jv, int targetTypeId, QVariant& converted)
 {
     QVariant v = jv.toVariant();
-    if (targetTypeId == QMetaType::UnknownType) return v;
-    if (v.userType() == targetTypeId) return v;
+    if (targetTypeId == QMetaType::UnknownType) return false;
+    if (targetTypeId == QMetaType::QVariant || v.userType() == targetTypeId) {
+        converted = v;
+        return true;
+    }
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-    v.convert(QMetaType(targetTypeId));
+    const bool ok = v.convert(QMetaType(targetTypeId));
 #else
-    v.convert(targetTypeId);
+    const bool ok = v.convert(targetTypeId);
 #endif
-    return v;
+    if (!ok || v.userType() != targetTypeId) return false;
+    converted = v;
+    return true;
 }
 
 QVariant makeEmptyVariant(int typeId)
@@ -349,59 +389,82 @@ QJsonObject ObjectWalker::invoke(const QString& handle,
                                  const QJsonArray& args)
 {
     QJsonObject result;
-    QObject* obj = resolveHandle(handle);
+    const QPointer<QObject> object_guard = resolveHandle(handle);
+    QObject* obj = object_guard.data();
     if (!obj) {
         result["ok"] = false;
         result["error"] = QStringLiteral("invalid handle");
         return result;
     }
 
-    // Strip "(...)" if present.
-    QString methodName = method;
-    if (methodName.endsWith(')')) {
-        methodName = methodName.left(methodName.indexOf('('));
-    }
-
-    // Locate matching method by name + arg count.
+    const bool has_signature = method.contains('(') && method.endsWith(')');
+    const QByteArray requested_signature = has_signature
+        ? QMetaObject::normalizedSignature(method.toUtf8().constData())
+        : QByteArray();
+    const QString methodName = has_signature
+        ? method.left(method.indexOf('('))
+        : method;
     const QMetaObject* mo = obj->metaObject();
-    int matchIdx = -1;
-    QMetaMethod matched;
+    struct Candidate {
+        QMetaMethod method;
+        ArgSlot args[10];
+    };
+    QVector<Candidate> candidates;
+    bool found_name_and_arity = false;
+    bool conversion_failed = false;
+    if (args.size() > 10) {
+        result["ok"] = false;
+        result["error"] = QStringLiteral("invoke supports at most 10 arguments");
+        return result;
+    }
     for (int i = 0; i < mo->methodCount(); ++i) {
         const QMetaMethod m = mo->method(i);
-        if (QString::fromUtf8(m.name()) == methodName
-            && m.parameterCount() == args.size()) {
-            matchIdx = i;
-            matched = m;
-            break;
+        if (m.parameterCount() != args.size()) continue;
+        if (has_signature) {
+            if (m.methodSignature() != requested_signature) continue;
+        } else if (QString::fromUtf8(m.name()) != methodName) {
+            continue;
         }
+        found_name_and_arity = true;
+
+        Candidate candidate;
+        candidate.method = m;
+        bool viable = true;
+        for (int argIndex = 0; argIndex < args.size(); ++argIndex) {
+            if (!coerce(args[argIndex], m.parameterType(argIndex),
+                        candidate.args[argIndex].variant)) {
+                viable = false;
+                conversion_failed = true;
+                break;
+            }
+        }
+        if (viable) candidates.append(candidate);
     }
 
-    if (matchIdx < 0) {
-        // Fall back to no-arg invoke (covers methods not registered as Q_INVOKABLE
-        // but accessible via QMetaObject::invokeMethod by name).
-        if (args.isEmpty()) {
+    if (candidates.size() > 1) {
+        result["ok"] = false;
+        result["error"] = QStringLiteral(
+            "method '%1' is ambiguous; provide a full signature").arg(method);
+        return result;
+    }
+    if (candidates.isEmpty()) {
+        if (!found_name_and_arity && !has_signature && args.isEmpty()) {
             const bool ok = QMetaObject::invokeMethod(
                 obj, methodName.toUtf8().constData(), Qt::DirectConnection);
             result["ok"] = ok;
-            if (!ok) {
-                result["error"] = QStringLiteral("invokeMethod (no-arg) failed");
-            }
+            if (!ok) result["error"] = QStringLiteral("invokeMethod (no-arg) failed");
             return result;
         }
         result["ok"] = false;
-        result["error"] = QStringLiteral("no method '%1' with %2 args")
-                              .arg(methodName)
-                              .arg(args.size());
+        result["error"] = conversion_failed
+            ? QStringLiteral("arguments cannot be converted for method '%1'").arg(method)
+            : QStringLiteral("no method '%1' with %2 args").arg(method).arg(args.size());
         return result;
     }
 
-    // Coerce args using parameter types. Note: don't name this 'slots' —
-    // that's a Qt Q_SLOTS keyword via moc preprocessor.
-    ArgSlot arg_slots[10];
-    int n = qMin<int>(args.size(), 10);
-    for (int i = 0; i < n; ++i) {
-        arg_slots[i].variant = coerce(args[i], matched.parameterType(i));
-    }
+    const Candidate& candidate = candidates.first();
+    const QMetaMethod matched = candidate.method;
+    const int n = args.size();
 
     QVariant returnVar;
     QGenericReturnArgument ret;
@@ -415,16 +478,16 @@ QJsonObject ObjectWalker::invoke(const QString& handle,
         obj,
         Qt::DirectConnection,
         ret,
-        n > 0 ? arg_slots[0].arg() : QGenericArgument(),
-        n > 1 ? arg_slots[1].arg() : QGenericArgument(),
-        n > 2 ? arg_slots[2].arg() : QGenericArgument(),
-        n > 3 ? arg_slots[3].arg() : QGenericArgument(),
-        n > 4 ? arg_slots[4].arg() : QGenericArgument(),
-        n > 5 ? arg_slots[5].arg() : QGenericArgument(),
-        n > 6 ? arg_slots[6].arg() : QGenericArgument(),
-        n > 7 ? arg_slots[7].arg() : QGenericArgument(),
-        n > 8 ? arg_slots[8].arg() : QGenericArgument(),
-        n > 9 ? arg_slots[9].arg() : QGenericArgument());
+        n > 0 ? candidate.args[0].arg() : QGenericArgument(),
+        n > 1 ? candidate.args[1].arg() : QGenericArgument(),
+        n > 2 ? candidate.args[2].arg() : QGenericArgument(),
+        n > 3 ? candidate.args[3].arg() : QGenericArgument(),
+        n > 4 ? candidate.args[4].arg() : QGenericArgument(),
+        n > 5 ? candidate.args[5].arg() : QGenericArgument(),
+        n > 6 ? candidate.args[6].arg() : QGenericArgument(),
+        n > 7 ? candidate.args[7].arg() : QGenericArgument(),
+        n > 8 ? candidate.args[8].arg() : QGenericArgument(),
+        n > 9 ? candidate.args[9].arg() : QGenericArgument());
 
     result["ok"] = ok;
     if (returnVar.isValid()) {
@@ -441,7 +504,8 @@ QJsonObject ObjectWalker::setProperty(const QString& handle,
                                       const QJsonValue& value)
 {
     QJsonObject result;
-    QObject* obj = resolveHandle(handle);
+    const QPointer<QObject> object_guard = resolveHandle(handle);
+    QObject* obj = object_guard.data();
     if (!obj) {
         result["ok"] = false;
         result["error"] = QStringLiteral("invalid handle");
@@ -469,7 +533,8 @@ QJsonObject ObjectWalker::setProperty(const QString& handle,
 
 QJsonValue ObjectWalker::getProperty(const QString& handle, const QString& prop)
 {
-    QObject* obj = resolveHandle(handle);
+    const QPointer<QObject> object_guard = resolveHandle(handle);
+    QObject* obj = object_guard.data();
     if (!obj) return QJsonValue();
     return QJsonValue::fromVariant(obj->property(prop.toUtf8().constData()));
 }

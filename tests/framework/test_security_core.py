@@ -140,9 +140,7 @@ def test_a_tampered_agent_dll_is_refused(tmp_path, monkeypatch) -> None:
         _qt_agent.agent_dll_for("6")
 
 
-def test_missing_or_malformed_manifest_refuses_injection(
-    tmp_path, monkeypatch
-) -> None:
+def test_missing_or_malformed_manifest_refuses_injection(tmp_path, monkeypatch) -> None:
     """Without a valid integrity record, native code is never injected."""
     from dolphin_desktop import _qt_agent
 

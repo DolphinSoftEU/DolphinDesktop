@@ -79,7 +79,8 @@ QJsonObject describeItem(QGraphicsItem* item)
 QJsonArray GraphicsWalker::sceneItems(const QString& viewHandle)
 {
     QJsonArray out;
-    QObject* obj = ObjectWalker::resolveHandle(viewHandle);
+    const QPointer<QObject> object_guard = ObjectWalker::resolveHandle(viewHandle);
+    QObject* obj = object_guard.data();
     QGraphicsView* view = qobject_cast<QGraphicsView*>(obj);
     if (!view) return out;
 
@@ -98,7 +99,8 @@ QJsonArray GraphicsWalker::sceneItems(const QString& viewHandle)
 QJsonObject GraphicsWalker::itemAt(const QString& viewHandle, double sceneX, double sceneY)
 {
     QJsonObject result;
-    QObject* obj = ObjectWalker::resolveHandle(viewHandle);
+    const QPointer<QObject> object_guard = ObjectWalker::resolveHandle(viewHandle);
+    QObject* obj = object_guard.data();
     QGraphicsView* view = qobject_cast<QGraphicsView*>(obj);
     if (!view || !view->scene()) {
         result["ok"] = false;

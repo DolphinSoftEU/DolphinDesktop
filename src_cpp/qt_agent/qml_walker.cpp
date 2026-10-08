@@ -121,7 +121,8 @@ QJsonArray QmlWalker::findByObjectName(const QString& objectName)
 QJsonObject QmlWalker::itemAt(const QString& windowHandle, double x, double y)
 {
     QJsonObject result;
-    QObject* obj = ObjectWalker::resolveHandle(windowHandle);
+    const QPointer<QObject> object_guard = ObjectWalker::resolveHandle(windowHandle);
+    QObject* obj = object_guard.data();
     QQuickWindow* qw = qobject_cast<QQuickWindow*>(obj);
     if (!qw) {
         result["ok"] = false;
@@ -159,7 +160,8 @@ QJsonObject QmlWalker::itemAt(const QString& windowHandle, double x, double y)
 QJsonObject QmlWalker::click(const QString& itemHandle)
 {
     QJsonObject result;
-    QObject* obj = ObjectWalker::resolveHandle(itemHandle);
+    const QPointer<QObject> object_guard = ObjectWalker::resolveHandle(itemHandle);
+    QObject* obj = object_guard.data();
     QQuickItem* item = qobject_cast<QQuickItem*>(obj);
     if (!item) {
         result["ok"] = false;

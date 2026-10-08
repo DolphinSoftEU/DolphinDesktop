@@ -37,6 +37,8 @@ import secrets
 import sys
 import threading
 import time
+import weakref
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +80,26 @@ _MACHINE_NAMES = {
 
 #: Seconds a single RPC round-trip may take before the call is abandoned.
 DEFAULT_RPC_TIMEOUT = 30.0
+
+
+@dataclass
+class _AgentSession:
+    """Process-local ownership record shared by clients using one native server."""
+
+    pid: int
+    qt_version: str
+    create_time: int
+    pipe_name: str
+    auth_token: str
+    client_pid: int
+    agent_dll: Path
+    clients: int = 0
+    server_started: bool = True
+    transport_owner: weakref.ReferenceType[QtAgentClient] | None = None
+
+
+_sessions_lock = threading.RLock()
+_sessions: dict[tuple[int, int, str], _AgentSession] = {}
 #: Largest single agent response accepted before the stream is declared corrupt.
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 #: Largest single request this client will put on the wire. A caller passing a
@@ -564,6 +586,8 @@ class QtAgentClient:
         auth_token: str | None = None,
         client_pid: int | None = None,
         agent_dll: Path | None = None,
+        _session: _AgentSession | None = None,
+        _delegate: QtAgentClient | None = None,
     ) -> None:
         self.pid = pid
         self.rpc_timeout = rpc_timeout
@@ -587,6 +611,14 @@ class QtAgentClient:
         # The handle is guarded separately: recovery has to be able to drop a
         # pipe that a _send() is parked on, which it cannot do behind _lock.
         self._pipe_lock = threading.Lock()
+        self._session = _session
+        self._delegate = _delegate
+        self._session_released = _session is None
+        if _session is not None:
+            with _sessions_lock:
+                _session.clients += 1
+                if _session.transport_owner is None:
+                    _session.transport_owner = weakref.ref(self)
 
     # ----- lifecycle --------------------------------------------------
 
@@ -633,41 +665,77 @@ class QtAgentClient:
                     f"cannot pin the creation time of target pid={pid}; refusing to "
                     "attach without a stable process identity"
                 )
-            _inject_dll(pid, dll)
-
-            # The injected DLL's DllMain doesn't call dolphin_qt_agent_start_v2 —
-            # we need to invoke it explicitly via a second CreateRemoteThread
-            # pointed at the exported entry point. The pipe name carries an
-            # unguessable token so a local process cannot pre-create the pipe
-            # under a predictable name and forge the agent's responses.
-            pipe_name = _agent_pipe_name(pid)
-            auth_token = secrets.token_urlsafe(32)
-            client_pid = os.getpid()
-            start_config = _AgentStartConfig(pipe_name, auth_token, client_pid)
-            _start_agent(pid, dll, start_config)
-            try:
-                handle = _open_pipe(pipe_name, pid, timeout)
-            except Exception:
-                # Do not leave a pipe server running with a token that the
-                # failed attach will discard.
-                try:
-                    _stop_agent(pid, dll, expected_create_time=create_time)
-                except Exception:
-                    pass
-                raise
+            key = (pid, create_time, qt_version)
+            delegate = None
+            with _sessions_lock:
+                session = _sessions.get(key)
+                if session is not None:
+                    pipe_name = session.pipe_name
+                    auth_token = session.auth_token
+                    client_pid = session.client_pid
+                    owner = (
+                        session.transport_owner() if session.transport_owner is not None else None
+                    )
+                    if owner is not None:
+                        delegate = owner
+                        if delegate._pipe == 0 or delegate.is_broken:
+                            owner_was_released = delegate._session_released
+                            delegate.reattach(timeout=timeout)
+                            if owner_was_released:
+                                delegate._release_session(stop=False)
+                        handle = 0
+                    else:
+                        start_config = _AgentStartConfig(pipe_name, auth_token, client_pid)
+                        if not session.server_started:
+                            _start_agent(pid, dll, start_config)
+                            session.server_started = True
+                        try:
+                            handle = _open_pipe(pipe_name, pid, timeout)
+                        except QtAgentInjectError:
+                            _start_agent(pid, dll, start_config)
+                            session.server_started = True
+                            handle = _open_pipe(pipe_name, pid, timeout)
+                else:
+                    _inject_dll(pid, dll)
+                    pipe_name = _agent_pipe_name(pid)
+                    auth_token = secrets.token_urlsafe(32)
+                    client_pid = os.getpid()
+                    start_config = _AgentStartConfig(pipe_name, auth_token, client_pid)
+                    _start_agent(pid, dll, start_config)
+                    try:
+                        handle = _open_pipe(pipe_name, pid, timeout)
+                    except Exception:
+                        try:
+                            _stop_agent(pid, dll, expected_create_time=create_time)
+                        except Exception:
+                            pass
+                        raise
+                    session = _AgentSession(
+                        pid=pid,
+                        qt_version=qt_version,
+                        create_time=create_time,
+                        pipe_name=pipe_name,
+                        auth_token=auth_token,
+                        client_pid=client_pid,
+                        agent_dll=dll,
+                    )
+                    _sessions[key] = session
+                client = cls(
+                    pid,
+                    handle,
+                    rpc_timeout=rpc_timeout,
+                    qt_version=qt_version,
+                    pipe_name=pipe_name,
+                    create_time=create_time,
+                    auth_token=auth_token,
+                    client_pid=client_pid,
+                    agent_dll=dll,
+                    _session=session,
+                    _delegate=delegate,
+                )
         finally:
             _CloseHandle(hpin)
-        return cls(
-            pid,
-            handle,
-            rpc_timeout=rpc_timeout,
-            qt_version=qt_version,
-            pipe_name=pipe_name,
-            create_time=create_time,
-            auth_token=auth_token,
-            client_pid=client_pid,
-            agent_dll=dll,
-        )
+        return client
 
     def reattach(self, *, timeout: float = 15.0) -> QtAgentClient:
         """Reopen the pipe to the agent already loaded in the target process.
@@ -690,6 +758,24 @@ class QtAgentClient:
                 pipe cannot be reached, or if it is served by a process other
                 than the attached target.
         """
+        if self._delegate is not None:
+            if self._delegate._pipe == 0 or self._delegate.is_broken:
+                owner_was_released = self._delegate._session_released
+                self._delegate.reattach(timeout=timeout)
+                if owner_was_released:
+                    self._delegate._release_session(stop=False)
+            self._acquire_session_ref()
+            return self
+        if (
+            self._session is not None
+            and self._session_released
+            and self._session.transport_owner is not None
+            and self._session.transport_owner() is self
+            and self._pipe != 0
+        ):
+            self._acquire_session_ref()
+            return self
+
         self._close_pipe()
         with self._lock:
             # Same pin as attach(): without a handle open, Windows may have
@@ -721,6 +807,15 @@ class QtAgentClient:
                         "original attach was not recorded"
                     )
                 pipe_name = self._pipe_name
+                if self._session is not None and not self._session.server_started:
+                    start_config = _AgentStartConfig(
+                        pipe_name,
+                        self._session.auth_token,
+                        self._session.client_pid,
+                    )
+                    _start_agent(self.pid, self._session.agent_dll, start_config)
+                    with _sessions_lock:
+                        self._session.server_started = True
                 try:
                     handle = _open_pipe(pipe_name, self.pid, timeout)
                 except QtAgentInjectError:
@@ -731,6 +826,9 @@ class QtAgentClient:
                     client_pid = self._client_pid or os.getpid()
                     start_config = _AgentStartConfig(pipe_name, auth_token, client_pid)
                     _start_agent(self.pid, dll, start_config)
+                    if self._session is not None:
+                        with _sessions_lock:
+                            self._session.server_started = True
                     self._auth_token = auth_token
                     self._client_pid = client_pid
                     self._agent_dll = dll
@@ -739,6 +837,7 @@ class QtAgentClient:
                 _CloseHandle(hpin)
             with self._pipe_lock:
                 self._pipe = handle
+            self._acquire_session_ref()
             self._pending = b""
             self._abandoned.clear()
             self._broken = None
@@ -747,11 +846,15 @@ class QtAgentClient:
     @property
     def is_broken(self) -> bool:
         """True once the transport failed terminally; :meth:`reattach` clears it."""
+        if self._delegate is not None:
+            return self._delegate.is_broken
         return self._broken is not None
 
     @property
     def broken_reason(self) -> str | None:
         """Why the transport is unusable, or ``None`` while it is healthy."""
+        if self._delegate is not None:
+            return self._delegate.broken_reason
         return self._broken
 
     def _close_pipe(self) -> None:
@@ -770,34 +873,58 @@ class QtAgentClient:
             _CloseHandle(pipe)
 
     def close(self) -> None:
-        """Stop the authenticated pipe server and close this client connection.
+        """Close this connection and stop the server when its last owner closes.
 
-        The DLL remains mapped in the target process. Its server thread is
-        stopped and joined before returning, so no RPC listener is left behind;
-        the module is never unloaded under a possibly active Qt callback.
-        :meth:`reattach` can start a fresh server using the same private token.
+        The DLL remains mapped in the target process. Other clients sharing the
+        session keep the server alive; :meth:`reattach` can restart a server
+        stopped by the last explicit close using the same private token.
         """
-        if self._agent_dll is not None and self._auth_token is not None:
-            try:
-                _stop_agent(
-                    self.pid,
-                    self._agent_dll,
-                    expected_create_time=self._create_time,
-                )
-            except Exception:
-                # Closing a client must remain safe after the AUT has exited or
-                # the transport has already failed. In either case the local
-                # handle still needs to be dropped.
-                pass
-        self._close_pipe()
+        if self._session is None:
+            self._close_pipe()
+        self._release_session(stop=True)
 
     def __del__(self) -> None:
-        # A client poisoned by _fail() can be unreachable through Application's
-        # cache. Stop its authenticated server too, unless the AUT has exited.
+        # Finalization only drops this object's local resources. A global native
+        # server may still be in use by another client or an active Qt call.
         try:
-            self.close()
+            self._close_pipe()
+            self._release_session(stop=False)
         except Exception:
             pass
+
+    def _acquire_session_ref(self) -> None:
+        session = self._session
+        if session is None or not self._session_released:
+            return
+        with _sessions_lock:
+            session.clients += 1
+            self._session_released = False
+            if session.transport_owner is None or session.transport_owner() is None:
+                session.transport_owner = weakref.ref(self)
+
+    def _release_session(self, *, stop: bool) -> None:
+        session = self._session
+        if session is None or self._session_released:
+            return
+        with _sessions_lock:
+            if self._session_released:
+                return
+            self._session_released = True
+            session.clients = max(0, session.clients - 1)
+            if stop and session.clients == 0 and session.server_started:
+                owner = session.transport_owner() if session.transport_owner is not None else None
+                if owner is not None:
+                    owner._close_pipe()
+                try:
+                    _stop_agent(
+                        session.pid,
+                        session.agent_dll,
+                        expected_create_time=session.create_time,
+                    )
+                except Exception:
+                    return
+                session.server_started = False
+                session.transport_owner = None
 
     def __enter__(self) -> QtAgentClient:
         return self
@@ -918,6 +1045,8 @@ class QtAgentClient:
     def _send(self, op: str, **kwargs: Any) -> Any:
         # The lock spans write → read: two unserialised callers would each read
         # the other's reply off the shared pipe.
+        if self._delegate is not None:
+            return self._delegate._send(op, **kwargs)
         with self._lock:
             if self._broken is not None:
                 raise QtAgentRpcError(
@@ -1224,14 +1353,17 @@ def _start_agent(pid: int, dll_path: Path, pipe_name: str) -> None:
         session_secret = secrets.token_urlsafe(32)
         client_pid = os.getpid()
         config_owned = False
-    startup = json.dumps(
-        {
-            "pipe_name": str(pipe_name),
-            "session_secret": session_secret,
-            "client_pid": client_pid,
-        },
-        separators=(",", ":"),
-    ).encode("utf-8") + b"\x00"
+    startup = (
+        json.dumps(
+            {
+                "pipe_name": str(pipe_name),
+                "session_secret": session_secret,
+                "client_pid": client_pid,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\x00"
+    )
 
     # Allocate the startup config in the target process.
     rights2 = (
@@ -1246,9 +1378,7 @@ def _start_agent(pid: int, dll_path: Path, pipe_name: str) -> None:
         err = ctypes.get_last_error()
         raise QtAgentInjectError(f"OpenProcess(start) failed: WinError {err}")
     try:
-        addr = _VirtualAllocEx(
-            hproc2, None, len(startup), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE
-        )
+        addr = _VirtualAllocEx(hproc2, None, len(startup), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
         if not addr:
             err = ctypes.get_last_error()
             raise QtAgentInjectError(f"VirtualAllocEx(start) failed: WinError {err}")
@@ -1256,9 +1386,7 @@ def _start_agent(pid: int, dll_path: Path, pipe_name: str) -> None:
         thread_finished = False
         try:
             written = ctypes.c_size_t(0)
-            ok = _WriteProcessMemory(
-                hproc2, addr, startup, len(startup), ctypes.byref(written)
-            )
+            ok = _WriteProcessMemory(hproc2, addr, startup, len(startup), ctypes.byref(written))
             if not ok or written.value != len(startup):
                 err = ctypes.get_last_error()
                 raise QtAgentInjectError(f"WriteProcessMemory(start config) failed: WinError {err}")
@@ -1329,20 +1457,14 @@ def _stop_agent(
                 f"refusing to stop Qt agent pid={pid}: process identity changed"
             )
 
-        remote_proc = _remote_export_address(
-            pid, dll_path, b"dolphin_qt_agent_stop_v2"
-        )
-        hproc = _OpenProcess(
-            PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION, False, pid
-        )
+        remote_proc = _remote_export_address(pid, dll_path, b"dolphin_qt_agent_stop_v2")
+        hproc = _OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION, False, pid)
         if not hproc:
             err = ctypes.get_last_error()
             raise QtAgentInjectError(f"OpenProcess(stop) failed: WinError {err}")
         try:
             tid = wt.DWORD(0)
-            hthread = _CreateRemoteThread(
-                hproc, None, 0, remote_proc, None, 0, ctypes.byref(tid)
-            )
+            hthread = _CreateRemoteThread(hproc, None, 0, remote_proc, None, 0, ctypes.byref(tid))
             if not hthread:
                 err = ctypes.get_last_error()
                 raise QtAgentInjectError(f"CreateRemoteThread(stop) failed: WinError {err}")
@@ -1358,9 +1480,7 @@ def _stop_agent(
                         f"GetExitCodeThread failed (WinError {err})"
                     )
                 if exit_code.value != 0:
-                    raise QtAgentInjectError(
-                        f"dolphin_qt_agent_stop_v2 returned {exit_code.value}"
-                    )
+                    raise QtAgentInjectError(f"dolphin_qt_agent_stop_v2 returned {exit_code.value}")
             finally:
                 _CloseHandle(hthread)
         finally:

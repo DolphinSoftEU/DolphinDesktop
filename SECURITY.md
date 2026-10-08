@@ -45,11 +45,11 @@ refused rather than attempted.
 
 The agent provides powerful access: `QObject` introspection, property writes
 and `QMetaObject` invocation. Attach only to applications you launched or
-own. Releases must rebuild both native DLLs from the committed source and
-review their updated manifest entries before packaging them. Legacy DLLs
-without the v2 start export are refused before injection. The DLLs currently
-checked into this branch are legacy builds and must be regenerated before
-Qt-agent use or release.
+own. Releases must rebuild both native DLLs from the staged native source and
+review their manifest entries before packaging them. Legacy DLLs without the
+v2 start export are refused before injection. The checked-in DLLs use protocol
+v2 and have their source tree, build toolchain, size and SHA-256 recorded in
+the manifest.
 
 **Mainframe transport.** Terminal sessions carry the sign-on credentials
 in the same byte stream as the screen, and neither EBCDIC nor Telnet

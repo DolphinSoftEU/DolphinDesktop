@@ -1,10 +1,18 @@
 {
   "dolphin_qt5_agent.dll": {
-    "sha256": "8cbf7fae055e84d5ee8762aace0e78a6eb4bc88041aea68e4061c7e37f982cd4",
-    "size": 80896
+    "sha256": "fd68ce9902ba0cb0fc11fd99e5da26856bedd46f7ab562dcd768653a0c0fb130",
+    "size": 122368,
+    "protocol_version": 2,
+    "source_tree": "964ea44f719282c2aba1d5a0474ce8de66c626f6",
+    "qt_version": "5.15.2",
+    "msvc_toolset": "MSVC 19.50.35726"
   },
   "dolphin_qt6_agent.dll": {
-    "sha256": "5c076f94614179618e8e5ec7b1a8dfc5bf1a3ef7ecfb81501020f211fcd9734c",
-    "size": 96256
+    "sha256": "94d4b0b71b4463e7e0a9f1bffd7465ef41279990810d318e4e7bcfaf82d9904e",
+    "size": 140800,
+    "protocol_version": 2,
+    "source_tree": "964ea44f719282c2aba1d5a0474ce8de66c626f6",
+    "qt_version": "6.10.3",
+    "msvc_toolset": "MSVC 19.50.35726"
   }
 }

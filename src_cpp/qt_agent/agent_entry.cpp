@@ -4,10 +4,9 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QString>
+#include <QThread>
 
 #include <atomic>
-#include <mutex>
-#include <thread>
 
 #include "pipe_server.h"
 
@@ -17,21 +16,57 @@
 
 namespace {
 
-std::mutex g_lifecycle_mutex;
-// These handles are deliberately process-lifetime allocations. If the AUT
-// exits without an explicit stop call, C++ global destructors must not destroy
-// a joinable std::thread while the OS is tearing down the process.
+constexpr unsigned long kStartReapTimeoutMs = 1'000;
+constexpr unsigned long kStopWaitTimeoutMs = 12'000;
+SRWLOCK g_lifecycle_lock = SRWLOCK_INIT;
+// Deliberately retained until an explicit stop: process teardown must not
+// destroy a running thread object while the OS is unloading the DLL.
 dolphin::PipeServer* g_server = nullptr;
-std::thread* g_server_thread = nullptr;
+void agent_main(dolphin::PipeServer* server);
+
+class AgentThread final : public QThread
+{
+public:
+    // Use the target's Qt runtime for worker lifecycle; this avoids crossing
+    // the host application's C++ standard-library mutex/thread ABI.
+    explicit AgentThread(dolphin::PipeServer* server) : server_(server) {}
+
+protected:
+    void run() override { agent_main(server_); }
+
+private:
+    dolphin::PipeServer* server_;
+};
+
+AgentThread* g_server_thread = nullptr;
 std::atomic<bool> g_server_running{false};
 bool g_started = false;
 QString g_pipe_name;
 QString g_session_secret;
 quint32 g_client_pid = 0;
 
+class LifecycleLock final
+{
+public:
+    explicit LifecycleLock(SRWLOCK& lock) : lock_(lock)
+    {
+        AcquireSRWLockExclusive(&lock_);
+    }
+    ~LifecycleLock() { ReleaseSRWLockExclusive(&lock_); }
+    LifecycleLock(const LifecycleLock&) = delete;
+    LifecycleLock& operator=(const LifecycleLock&) = delete;
+
+private:
+    SRWLOCK& lock_;
+};
+
 void agent_main(dolphin::PipeServer* server)
 {
-    server->run();
+    try {
+        server->run();
+    } catch (...) {
+        // Keep exceptions inside the worker and update lifecycle state.
+    }
     g_server_running = false;
 }
 
@@ -86,25 +121,20 @@ DOLPHIN_EXPORT int dolphin_qt_agent_start_v2(const char* raw_config)
     if (!parse_start_config(raw_config, pipe_name, session_secret, client_pid)) return 1;
     if (!qApp) return 2;
 
-    std::lock_guard<std::mutex> lock(g_lifecycle_mutex);
+    LifecycleLock lock(g_lifecycle_lock);
     if (g_started && g_server_running) {
         return g_pipe_name == pipe_name && g_session_secret == session_secret &&
                g_client_pid == client_pid ? 0 : 3;
     }
 
-    if (!g_server_thread) {
-        try {
-            g_server_thread = new std::thread();
-        } catch (...) {
-            return 5;
-        }
-    }
-
-    // Reap a server thread that exited after a pipe creation failure before
+    // Reap a server thread that exited after pipe creation failed before
     // replacing the server object it referenced.
-    if (g_server_thread->joinable()) {
-        if (g_server_thread->get_id() == std::this_thread::get_id()) return 4;
-        g_server_thread->join();
+    if (g_server_thread) {
+        if (g_server_thread->isRunning() &&
+            QThread::currentThread() == g_server_thread) return 4;
+        if (!g_server_thread->wait(kStartReapTimeoutMs)) return 6;
+        delete g_server_thread;
+        g_server_thread = nullptr;
     }
     delete g_server;
     g_server = nullptr;
@@ -116,10 +146,13 @@ DOLPHIN_EXPORT int dolphin_qt_agent_start_v2(const char* raw_config)
         g_client_pid = client_pid;
         g_server_running = true;
         g_started = true;
-        *g_server_thread = std::thread(agent_main, g_server);
+        g_server_thread = new AgentThread(g_server);
+        g_server_thread->start();
     } catch (...) {
         g_server_running = false;
         g_started = false;
+        delete g_server_thread;
+        g_server_thread = nullptr;
         delete g_server;
         g_server = nullptr;
         return 5;
@@ -132,12 +165,14 @@ DOLPHIN_EXPORT int dolphin_qt_agent_start_v2(const char* raw_config)
 // still be running.
 DOLPHIN_EXPORT int dolphin_qt_agent_stop_v2()
 {
-    std::lock_guard<std::mutex> lock(g_lifecycle_mutex);
+    LifecycleLock lock(g_lifecycle_lock);
     if (g_server) g_server->stop();
-    if (g_server_thread && g_server_thread->joinable()) {
-        if (g_server_thread->get_id() == std::this_thread::get_id()) return 1;
-        g_server_thread->join();
+    if (g_server_thread && g_server_thread->isRunning()) {
+        if (QThread::currentThread() == g_server_thread) return 1;
+        if (!g_server_thread->wait(kStopWaitTimeoutMs)) return 2;
     }
+    delete g_server_thread;
+    g_server_thread = nullptr;
     delete g_server;
     g_server = nullptr;
     g_server_running = false;
