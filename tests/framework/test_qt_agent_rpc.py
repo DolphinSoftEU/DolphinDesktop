@@ -623,7 +623,7 @@ class TestBrokenTransportRecovery:
         assert len(starts) == 2
         assert starts[0][1] == old_dll
         assert starts[1][1] == new_dll
-        assert all(config.session_secret == "session-token" for _, _, config in starts)
+        assert all(config.session_secret == "session-token" for _, _, config in starts)  # pragma: allowlist secret
         assert all(config.client_pid == 777 for _, _, config in starts)
         assert session.server_started is True
         assert opened == [(pipe_name, 4242, 3), (pipe_name, 4242, 3)]
@@ -1791,7 +1791,7 @@ class TestStartAgentExitCode:
 
         assert json.loads(written[0][:-1]) == {
             "pipe_name": r"\\.\pipe\agent",
-            "session_secret": "secret",
+            "session_secret": "secret",  # pragma: allowlist secret
             "client_pid": 777,
         }
         assert sim.freed == [(0x1000, 0)]
