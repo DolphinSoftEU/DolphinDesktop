@@ -140,25 +140,26 @@ def test_a_tampered_agent_dll_is_refused(tmp_path, monkeypatch) -> None:
         _qt_agent.agent_dll_for("6")
 
 
-def test_missing_manifest_skips_verification_instead_of_breaking_install(
-    tmp_path, monkeypatch
-) -> None:
-    """Hash-pinning is a hardening check, not a hard dependency: a missing or
-    unparsable manifest must not turn a working install into a crash."""
+def test_missing_or_malformed_manifest_refuses_injection(tmp_path, monkeypatch) -> None:
+    """Without a valid integrity record, native code is never injected."""
     from dolphin_desktop import _qt_agent
 
     fake = tmp_path / "dolphin_qt6_agent.dll"
     fake.write_bytes(b"MZ" + b"\x00" * 500)
 
     monkeypatch.setattr(_qt_agent, "AGENT_MANIFEST", tmp_path / "does_not_exist.json")
-    assert _qt_agent._load_manifest() == {}
-    _qt_agent.verify_agent_dll(fake)  # does not raise
+    with pytest.raises(_qt_agent.AgentIntegrityError, match="missing or invalid"):
+        _qt_agent._load_manifest()
+    with pytest.raises(_qt_agent.AgentIntegrityError, match="missing or invalid"):
+        _qt_agent.verify_agent_dll(fake)
 
     bad_json = tmp_path / "manifest.json"
     bad_json.write_text("not json", encoding="utf-8")
     monkeypatch.setattr(_qt_agent, "AGENT_MANIFEST", bad_json)
-    assert _qt_agent._load_manifest() == {}
-    _qt_agent.verify_agent_dll(fake)  # does not raise
+    with pytest.raises(_qt_agent.AgentIntegrityError, match="missing or invalid"):
+        _qt_agent._load_manifest()
+    with pytest.raises(_qt_agent.AgentIntegrityError, match="missing or invalid"):
+        _qt_agent.verify_agent_dll(fake)
 
 
 def test_agent_pipe_name_is_unguessable_and_per_attach() -> None:

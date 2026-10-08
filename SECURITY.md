@@ -32,30 +32,24 @@ application is terminated when the test finishes.
 
 **Qt agent DLL injection.** `QtAgentClient.attach(pid, ...)` loads a
 bundled DLL into the target process with `CreateRemoteThread` and talks to
-it over a named pipe. The pipe name now carries an unguessable per-attach
-random token (`\\.\pipe\dolphin_qt_<pid>_<random>`), so a local process
-can no longer pre-create the pipe under a predictable name. dolphin's own
-client verifies the pipe server's owning process, so a squatter cannot
-forge responses back to your test, and it connects at
-`SECURITY_IDENTIFICATION` so a squatting server cannot impersonate the
-(possibly elevated) account running the tests; `reattach()` additionally
-refuses a PID whose creation time changed since the original attach. The
-bundled agent DLLs are verified against a committed SHA-256 manifest before
-injection. None of this protects the application itself — anyone who can
-open the pipe gets full `QObject` introspection, property writes and
-`QMetaObject` invocation in the target, so attach only to applications you
-launched or own. The pipe's server-side security descriptor is set by the
-prebuilt DLL, whose C++ source is not in this repository; tightening it
-(an explicit ACL, `PIPE_REJECT_REMOTE_CLIENTS`) requires a DLL rebuild.
+it over a per-attach named pipe. The authenticated v2 server restricts its
+DACL to the target process's logon SID, sets `PIPE_REJECT_REMOTE_CLIENTS`,
+checks the connecting controller PID, and requires a separate random secret
+on every RPC. The Python client verifies the pipe server's process id and
+refuses a reused target PID. The DLL source and pinned Qt/MSVC build scripts
+are in `src_cpp/qt_agent/`; the scripts record each rebuilt DLL's hash, size
+and source commit in the required manifest. `QtAgentClient.close()` requests
+an orderly server stop and join; the DLL remains mapped until the target exits.
 Only 64-bit Qt targets are supported; injection into a 32-bit process is
 refused rather than attempted.
 
-KAN-470 remains open. The random pipe name, PID check and DLL hash check are
-partial mitigations; they do not authenticate a client to the agent. Closing
-the issue requires the C++ source and reproducible DLL build, a server-side
-ACL restricted to the authorized logon/session, `PIPE_REJECT_REMOTE_CLIENTS`,
-a per-attach session secret, and tests for unauthorized local, other-session
-and remote clients.
+The agent provides powerful access: `QObject` introspection, property writes
+and `QMetaObject` invocation. Attach only to applications you launched or
+own. Releases must rebuild both native DLLs from the staged native source and
+review their manifest entries before packaging them. Legacy DLLs without the
+v2 start export are refused before injection. The checked-in DLLs use protocol
+v2 and have their source tree, build toolchain, size and SHA-256 recorded in
+the manifest.
 
 **Mainframe transport.** Terminal sessions carry the sign-on credentials
 in the same byte stream as the screen, and neither EBCDIC nor Telnet
