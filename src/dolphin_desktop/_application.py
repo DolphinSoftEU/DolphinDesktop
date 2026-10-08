@@ -297,14 +297,55 @@ def _process_state(pid: int) -> Literal["running", "stopped", "unknown"]:
 _process_identities: dict[int, int] = {}
 
 
-def _process_creation_time(pid: int) -> int | None:
-    """Return *pid*'s creation time (FILETIME as an int), or None on failure.
+def _process_creation_time_from_handle(handle: Any) -> int | None:
+    """Read a process handle's creation time without opening its PID again."""
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetProcessTimes.argtypes = [
+            wt.HANDLE,
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+        ]
+        k32.GetProcessTimes.restype = wt.BOOL
+    except Exception:
+        return None
+
+    try:
+        creation = wt.FILETIME()
+        exit_t = wt.FILETIME()
+        kernel_t = wt.FILETIME()
+        user_t = wt.FILETIME()
+        process_handle = wt.HANDLE(int(handle))
+        if not k32.GetProcessTimes(
+            process_handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_t),
+            ctypes.byref(kernel_t),
+            ctypes.byref(user_t),
+        ):
+            return None
+        return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    except Exception:
+        return None
+
+
+def _process_creation_time(process_or_handle: Any) -> int | None:
+    """Return a PID's or an open process handle's creation time as a FILETIME.
 
     ``GetProcessTimes`` needs only ``PROCESS_QUERY_LIMITED_INFORMATION``,
     which succeeds against higher-integrity processes where the wider right is
-    denied. Any failure returns None — the caller treats "unknown" distinctly
-    from "known and different".
+    denied. Passing an existing handle queries that exact process object;
+    callers retain ownership of it. Any failure returns None — the caller
+    treats "unknown" distinctly from "known and different".
     """
+    if not isinstance(process_or_handle, int):
+        return _process_creation_time_from_handle(process_or_handle)
+
     try:
         import ctypes
         import ctypes.wintypes as wt
@@ -325,7 +366,9 @@ def _process_creation_time(pid: int) -> int | None:
         return None
 
     try:
-        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        handle = k32.OpenProcess(
+            _PROCESS_QUERY_LIMITED_INFORMATION, False, int(process_or_handle)
+        )
     except Exception:
         return None
     if not handle:
@@ -377,31 +420,73 @@ def _identity_matches(pid: int) -> bool:
 def terminate_tracked_pid(pid: int, log: Any | None = None) -> bool:
     """Terminate *pid* only when its recorded identity matches. Returns True if killed.
 
-    The recorded ``(PID, creation-time)`` pair is checked first: a PID whose
-    creation time has changed or cannot be read is skipped. An unrecorded PID
-    is also skipped. The recorded identity is always forgotten afterwards.
+    The handle used for the identity check is also used for termination. This
+    closes the PID-reuse window between checking a PID and opening it for
+    ``TerminateProcess``. An unrecorded PID or an identity that cannot be
+    confirmed is skipped.
     """
+    expected = _process_identities.get(pid)
+    if expected is None:
+        if log is not None:
+            log.warning(
+                "skipping TerminateProcess for PID=%d: process identity was not recorded",
+                pid,
+            )
+        return False
+
+    handle: Any | None = None
+    win32api: Any | None = None
+    terminated = False
+    identity_changed = False
     try:
-        if not _identity_matches(pid):
+        import win32api as _win32api  # type: ignore[import]
+        import win32con  # type: ignore[import]
+
+        win32api = _win32api
+        access = win32con.PROCESS_TERMINATE | getattr(
+            win32con, "PROCESS_QUERY_LIMITED_INFORMATION", _PROCESS_QUERY_LIMITED_INFORMATION
+        )
+        handle = win32api.OpenProcess(access, False, pid)
+        if not handle:
             if log is not None:
                 log.warning(
-                    "skipping TerminateProcess for PID=%d: process identity could not "
-                    "be confirmed (missing, unreadable or changed creation time)",
+                    "skipping TerminateProcess for PID=%d: process handle could not be opened",
                     pid,
                 )
             return False
-        try:
-            import win32api  # type: ignore[import]
-            import win32con  # type: ignore[import]
-
-            handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
-            win32api.TerminateProcess(handle, 1)
-            win32api.CloseHandle(handle)
-            return True
-        except Exception:
+        current = _process_creation_time(handle)
+        if current is None or current != expected:
+            identity_changed = current is not None
+            if log is not None:
+                reason = (
+                    "creation time changed" if identity_changed else "creation time is unreadable"
+                )
+                log.warning(
+                    "skipping TerminateProcess for PID=%d: %s; process identity could not "
+                    "be confirmed",
+                    pid,
+                    reason,
+                )
             return False
+        win32api.TerminateProcess(handle, 1)
+        terminated = True
+        return True
+    except Exception as exc:
+        if log is not None:
+            log.warning("Could not terminate tracked process PID=%d: %s", pid, exc)
+        return False
     finally:
-        forget_process_identity(pid)
+        if handle and win32api is not None:
+            try:
+                win32api.CloseHandle(handle)
+            except Exception:
+                pass
+        # Keep a confirmed identity after a transient open/query/termination
+        # failure so the session cleanup can safely retry. Drop it once the
+        # process is terminated or the PID is proven to identify another
+        # process.
+        if terminated or identity_changed:
+            forget_process_identity(pid)
 
 
 def _has_any_signature(names: list[str], signatures: tuple[str, ...]) -> bool:
