@@ -76,6 +76,76 @@ class TestResponseFraming:
         assert client.ping() == "pong"
 
 
+class TestHighLevelMethodPayloads:
+    @pytest.mark.parametrize(
+        ("call", "operation", "payload"),
+        [
+            pytest.param(
+                lambda c: c.find(objectName="save"),
+                "find",
+                {"filter": {"objectName": "save"}},
+                id="find",
+            ),
+            pytest.param(
+                lambda c: c.describe("widget-1"), "describe", {"target": "widget-1"}, id="describe"
+            ),
+            pytest.param(
+                lambda c: c.members("widget-1"), "members", {"target": "widget-1"}, id="members"
+            ),
+            pytest.param(
+                lambda c: c.invoke("widget-1", "setText", "hello"),
+                "invoke",
+                {"target": "widget-1", "method": "setText", "args": ["hello"]},
+                id="invoke",
+            ),
+            pytest.param(
+                lambda c: c.get_property("widget-1", "text"),
+                "get_property",
+                {"target": "widget-1", "property": "text"},
+                id="get-property",
+            ),
+            pytest.param(
+                lambda c: c.set_property("widget-1", "text", "hello"),
+                "set_property",
+                {"target": "widget-1", "property": "text", "value": "hello"},
+                id="set-property",
+            ),
+            pytest.param(lambda c: c.qml_root(), "qml_root", {}, id="qml-root"),
+            pytest.param(
+                lambda c: c.qml_find("save"), "qml_find", {"objectName": "save"}, id="qml-find"
+            ),
+            pytest.param(
+                lambda c: c.qml_item_at("window-1", 3.5, 4.5),
+                "qml_item_at",
+                {"window": "window-1", "x": 3.5, "y": 4.5},
+                id="qml-item-at",
+            ),
+            pytest.param(
+                lambda c: c.qml_click("item-1"), "qml_click", {"target": "item-1"}, id="qml-click"
+            ),
+            pytest.param(
+                lambda c: c.graphics_items("view-1"),
+                "graphics_items",
+                {"view": "view-1"},
+                id="graphics-items",
+            ),
+            pytest.param(
+                lambda c: c.graphics_item_at("view-1", 3.5, 4.5),
+                "graphics_item_at",
+                {"view": "view-1", "x": 3.5, "y": 4.5},
+                id="graphics-item-at",
+            ),
+        ],
+    )
+    def test_method_sends_its_protocol_operation_and_payload(self, call, operation, payload):
+        client = _FakeClient([b'{"id": 1, "ok": true, "result": "result"}\n'])
+
+        assert call(client) == "result"
+        assert [json.loads(request) for request in client.written] == [
+            {"id": 1, "op": operation, **payload}
+        ]
+
+
 class TestIdValidation:
     def test_mismatched_id_raises(self):
         client = _FakeClient([b'{"id": 7, "ok": true, "result": "other widget"}\n'])
@@ -776,6 +846,15 @@ class TestArchitectureGuard:
         with pytest.raises(QtAgentInjectError, match="not a PE file"):
             _qt_inject._pe_machine(dll)
 
+    def test_missing_pe_signature_is_rejected(self, tmp_path):
+        dll = tmp_path / "bad_signature.dll"
+        data = bytearray(b"\x00" * 0x46)
+        data[:2] = b"MZ"
+        data[0x3C:0x40] = (0x40).to_bytes(4, "little")
+        dll.write_bytes(data)
+        with pytest.raises(QtAgentInjectError, match="missing PE signature"):
+            _qt_inject._pe_machine(dll)
+
     def test_mismatched_dll_arch_refuses_injection(self, tmp_path):
         dll = tmp_path / "dolphin_qt6_agent.dll"
         _write_fake_pe(dll, IMAGE_FILE_MACHINE_I386)
@@ -789,6 +868,74 @@ class TestArchitectureGuard:
         _write_fake_pe(dll, host)
         # The guard clears the way by returning: target, DLL and host all match.
         assert _qt_inject._require_matching_arch(_qt_inject._GetCurrentProcess(), 4242, dll) is None
+
+    def test_native_machine_detects_wow64_host(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "_GetCurrentProcess", lambda: 44)
+
+        def wow64(_handle, result):
+            result._obj.value = 1
+            return 1
+
+        monkeypatch.setattr(_qt_inject, "_IsWow64Process", wow64)
+        assert _qt_inject._native_machine() == IMAGE_FILE_MACHINE_AMD64
+
+    @pytest.mark.parametrize(
+        ("pointer_size", "expected"),
+        [(8, IMAGE_FILE_MACHINE_AMD64), (4, IMAGE_FILE_MACHINE_I386)],
+    )
+    def test_native_machine_falls_back_to_pointer_width(self, monkeypatch, pointer_size, expected):
+        monkeypatch.setattr(_qt_inject, "_GetCurrentProcess", lambda: 44)
+
+        def not_wow64(_handle, result):
+            result._obj.value = 0
+            return 1
+
+        monkeypatch.setattr(_qt_inject, "_IsWow64Process", not_wow64)
+        monkeypatch.setattr(_qt_inject.ctypes, "sizeof", lambda _type: pointer_size)
+        assert _qt_inject._native_machine() == expected
+
+    @pytest.mark.parametrize(
+        ("process_machine", "native_machine", "expected"),
+        [
+            (IMAGE_FILE_MACHINE_I386, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_I386),
+            (0, IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_AMD64),
+        ],
+    )
+    def test_process_machine_uses_iswow64process2(
+        self, monkeypatch, process_machine, native_machine, expected
+    ):
+        def wow64_process2(_handle, process, native):
+            process._obj.value = process_machine
+            native._obj.value = native_machine
+            return 1
+
+        monkeypatch.setattr(_qt_inject, "_IsWow64Process2", wow64_process2)
+        assert _qt_inject._process_machine(44) == expected
+
+    def test_process_machine_uses_legacy_wow64_result(self, monkeypatch):
+        def wow64(_handle, result):
+            result._obj.value = 1
+            return 1
+
+        monkeypatch.setattr(_qt_inject, "_IsWow64Process2", None)
+        monkeypatch.setattr(_qt_inject, "_IsWow64Process", wow64)
+        assert _qt_inject._process_machine(44) == IMAGE_FILE_MACHINE_I386
+
+    def test_process_machine_reports_legacy_api_failure(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "_IsWow64Process2", None)
+        monkeypatch.setattr(_qt_inject, "_IsWow64Process", lambda *_args: 0)
+        with pytest.raises(QtAgentInjectError, match="IsWow64Process failed"):
+            _qt_inject._process_machine(44)
+
+    def test_process_machine_uses_native_machine_for_non_wow64(self, monkeypatch):
+        def not_wow64(_handle, result):
+            result._obj.value = 0
+            return 1
+
+        monkeypatch.setattr(_qt_inject, "_IsWow64Process2", None)
+        monkeypatch.setattr(_qt_inject, "_IsWow64Process", not_wow64)
+        monkeypatch.setattr(_qt_inject, "_native_machine", lambda: IMAGE_FILE_MACHINE_AMD64)
+        assert _qt_inject._process_machine(44) == IMAGE_FILE_MACHINE_AMD64
 
 
 def _pipe_server_pid(server_pid: int, *, ok: int = 1):
@@ -1086,6 +1233,63 @@ class TestStartAgentExitCode:
         monkeypatch.setattr(_qt_inject, "_GetExitCodeThread", lambda h, out: 0)
         with pytest.raises(QtAgentInjectError, match="GetExitCodeThread failed"):
             _qt_inject._start_agent(4242, dll, r"\\.\pipe\dolphin_qt_4242")
+
+
+class TestStopAgent:
+    def test_stop_requires_the_original_process_identity(self, monkeypatch):
+        monkeypatch.setattr(
+            _qt_inject,
+            "_OpenProcess",
+            lambda *_args: pytest.fail("must not open a process without a recorded identity"),
+        )
+        with pytest.raises(QtAgentInjectError, match="identity was not recorded"):
+            _qt_inject._stop_agent(4242, Path("agent.dll"))
+
+    def test_stop_closes_the_remote_thread_process_and_identity_pin(self, monkeypatch):
+        opened = iter([11, 22])
+        closed = []
+        remote_threads = []
+        waits = []
+
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: next(opened))
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: 12345)
+        monkeypatch.setattr(_qt_inject, "_remote_export_address", lambda *_args: 0xAABB)
+        monkeypatch.setattr(
+            _qt_inject,
+            "_CreateRemoteThread",
+            lambda process, _sec, _stack, start, _param, _flags, _tid: (
+                remote_threads.append((process, start)) or 33
+            ),
+        )
+        monkeypatch.setattr(
+            _qt_inject,
+            "_WaitForSingleObject",
+            lambda thread, timeout: waits.append((thread, timeout)) or 0,
+        )
+
+        def stop_succeeded(_thread, result):
+            result._obj.value = 0
+            return 1
+
+        monkeypatch.setattr(_qt_inject, "_GetExitCodeThread", stop_succeeded)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda handle: closed.append(handle) or 1)
+
+        _qt_inject._stop_agent(4242, Path("agent.dll"), expected_create_time=12345)
+
+        assert remote_threads == [(22, 0xAABB)]
+        assert waits == [(33, 15_000)]
+        assert closed == [33, 22, 11]
+
+    def test_stop_refuses_a_reused_pid_and_releases_the_pin(self, monkeypatch):
+        closed = []
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: 11)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: 999)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda handle: closed.append(handle) or 1)
+
+        with pytest.raises(QtAgentInjectError, match="process identity changed"):
+            _qt_inject._stop_agent(4242, Path("agent.dll"), expected_create_time=12345)
+
+        assert closed == [11]
 
 
 def _pe_with_exports(names: list[bytes], *, terminate: bool = True) -> bytes:
