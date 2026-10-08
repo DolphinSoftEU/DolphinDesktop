@@ -48,10 +48,11 @@ meta-object system, and dispatch actions through
 
 We use `CreateRemoteThread + LoadLibraryW` (standard, well-documented
 Windows pattern). The agent is built as a regular Qt-linked DLL that
-exports a single C entry point:
+exports authenticated start and stop entry points:
 
 ```c
-__declspec(dllexport) int dolphin_qt_agent_start(const char* pipe_name);
+__declspec(dllexport) int dolphin_qt_agent_start_v2(const char* start_config_json);
+__declspec(dllexport) int dolphin_qt_agent_stop_v2(void);
 ```
 
 The injection helper is `src/dolphin_desktop/_qt_inject.py`. It calls
@@ -73,7 +74,9 @@ WaitForSingleObject(hthread, 30_000)               # bounded, never INFINITE
 ```
 
 After `LoadLibraryW` returns, we find the exported
-`dolphin_qt_agent_start` and call it the same way, passing the pipe name.
+`dolphin_qt_agent_start_v2` and pass a startup JSON containing the random pipe
+name, controller PID and a separate session secret. The native start function
+copies these values before returning.
 Its address is `remote_module_base + rva`, where the RVA comes from parsing
 the DLL's PE export table on disk — the agent links against Qt, so loading
 it locally to resolve the export is not an option.
@@ -86,13 +89,11 @@ Two constraints follow from this design:
   `IsWow64Process2`), the agent DLL's PE `machine` field and the host Python,
   and raises `QtAgentInjectError` when they differ instead of starting a
   remote thread at a foreign address (which terminates the target).
-- **Remote allocations are leaked, not freed, once a remote thread has read
-  them.** `VirtualFreeEx` while the remote thread is still running unmaps the
-  argument it is reading and faults the AUT, so on a wait timeout the
-  allocation is deliberately left behind. The pipe-name buffer is never freed
-  at all — not even on success — because the agent's pipe server outlives a
-  client disconnect (which is what `reattach()` relies on) and may re-read
-  the pointer to re-create the pipe.
+- **Remote allocations are retained on timeout.** `VirtualFreeEx` while a
+  remote thread is still running unmaps the argument it is reading and faults
+  the AUT. The v2 start export copies its config before returning, so a
+  completed call releases the temporary page; a timed-out call leaves it in
+  place until the AUT exits.
 
 The client verifies the pipe's server process id
 (`GetNamedPipeServerProcessId`) matches the injected pid before sending
@@ -106,13 +107,15 @@ test user before the pid check ever runs.
 
 ### IPC
 
-A named pipe (`\\.\pipe\dolphin_qt_<pid>`) with line-delimited JSON:
+A per-attach named pipe (`\\.\pipe\dolphin_qt_<pid>_<random>`) with
+line-delimited JSON. The `auth` value is generated for each attach and is sent
+separately from the pipe name:
 
 ```json
-{"id": 1, "op": "tree", "root": "QMainWindow#main_window"}
+{"id": 1, "op": "tree", "auth": "<session-secret>"}
 {"id": 1, "ok": true, "result": [{"obj": "QPushButton", "name": "btn_ok", ...}]}
 
-{"id": 2, "op": "invoke", "target": "QPushButton#btn_ok", "method": "click()"}
+{"id": 2, "op": "invoke", "auth": "<session-secret>", "target": "QPushButton#btn_ok", "method": "click()"}
 {"id": 2, "ok": true}
 
 {"id": 3, "op": "qml_root"}
@@ -142,9 +145,11 @@ continues. That forgiveness window holds the last 256 abandoned ids —
 beyond it a late reply is indistinguishable from a desync and is treated as
 one.
 
-Requests are bounded before they reach the pipe: the Python client caps each
-serialized request at 1 MiB, JSON nesting at 32 levels, and JSON container
-complexity at 10,000 nodes. Replies are read with a bounded per-request timeout
+Requests are bounded on both sides of the pipe: the Python client caps each
+serialized request at 8 MiB, JSON nesting at 32 levels, and JSON complexity at
+10,000 nodes; the native server enforces the same byte, depth and node limits.
+The server also caps responses at 16 MiB and closes idle or partial requests
+after a bounded interval. Replies are read with a bounded per-request timeout
 (`QtAgentClient.rpc_timeout`, 30 s) and a 16 MiB size cap. Expiry raises
 `QtAgentTimeoutError` and leaves the connection **usable** — a Qt event loop
 blocked behind a native modal dialog is an ordinary, recoverable condition.
@@ -191,7 +196,8 @@ That first access:
 1. Resolves the bundled `dolphin_qt{5,6}_agent.dll`.
 2. Refuses if the target's architecture does not match the DLL and this Python.
 3. Injects via `CreateRemoteThread` + `LoadLibraryW`.
-4. Calls `dolphin_qt_agent_start` remotely with the pipe name.
+4. Calls `dolphin_qt_agent_start_v2` remotely with the pipe name, secret and
+   controller PID.
 5. Connects to the agent's named pipe (with retry loop) after checking the
    pipe's server pid.
 
@@ -202,26 +208,29 @@ when no agent is attached.
 
 ## Build
 
-The agent DLLs are **prebuilt binaries bundled with the wheel**; their C++
-source is not part of this repository. Both are `IMAGE_FILE_MACHINE_AMD64`
-and export `dolphin_qt_agent_start` and `dolphin_qt_agent_stop`.
+The C++ source and pinned build scripts are in `src_cpp/qt_agent/`. The scripts
+build the Qt 5.15.2/MSVC 19.29 and Qt 6.11.1/MSVC 19.44 variants from a clean,
+committed checkout, verify the v2 start/stop exports, and record the source
+commit, toolchain, size and SHA-256 in `agent_manifest.json`.
+
+Newly built DLLs are `IMAGE_FILE_MACHINE_AMD64` and use the authenticated v2
+start and stop exports. Python refuses to call the legacy unauthenticated
+start export.
+
+The DLLs currently checked into this branch still have the legacy exports.
+`QtAgentClient.attach()` rejects them before injection. Rebuild both DLLs from
+the committed native source and review the updated manifest before using or
+publishing this branch.
 
 | File | Target |
 |---|---|
 | `dolphin_qt6_agent.dll` | Qt 6.11.x processes (e.g. PySide6) |
 | `dolphin_qt5_agent.dll` | Qt 5.15.x processes (e.g. PyQt5 / older apps) |
 
-They live in `src/dolphin_desktop/_qt_agent/` and ship with the wheel, so
-end users need no build toolchain. Their SHA-256 hashes are recorded in
-`src/dolphin_desktop/_qt_agent/agent_manifest.json`; `agent_dll_for()`
-verifies each DLL against that manifest before injecting it, so a binary
-swapped on disk is refused. Because the C++ source is not in this
-repository, the manifest is the provenance anchor: a build pipeline can pin
-`hash → approved artifact` against it.
-
-Anything that requires a DLL change — the pipe's security descriptor, or
-whether `dolphin_qt_agent_start` copies its `pipe_name` argument — cannot
-be verified or fixed from this repository.
+They live in `src/dolphin_desktop/_qt_agent/` and ship with the wheel, so end
+users need no build toolchain. `agent_dll_for()` now fails closed if the
+manifest is absent, malformed, incomplete, or if the DLL size or SHA-256 does
+not match. Build instructions are in `src_cpp/qt_agent/README.md`.
 
 ## Limitations
 
@@ -231,31 +240,22 @@ be verified or fixed from this repository.
   never injected into; drive those apps with the UIA backend, which
   needs no agent. Adding 32-bit support means building an x86 agent *and*
   running the tests from an x86 Python.
-- **No detach** — the DLL *does* export `dolphin_qt_agent_stop` alongside
-  `dolphin_qt_agent_start`, but dolphin never calls it: nothing in this
-  repository establishes when the agent's own threads are finished with the
-  module, and a remote `FreeLibrary` that unmaps it under a live thread
-  faults the AUT. So the agent stays loaded, with its thread and pipe, for
-  the lifetime of the target process; `QtAgentClient.close()` closes only the
-  client end. This matters for `Desktop.connect(pid=…)` against an app
-  dolphin did not launch: the injection is permanent until that app exits.
-  Use `QtAgentClient.reattach()` to rebuild a wedged connection instead.
-- **Unauthenticated pipe** — the pipe name now carries an unguessable
-  per-attach random token (`\\.\pipe\dolphin_qt_<pid>_<random>`), so a local
-  process can no longer pre-create it under a predictable name, and the
-  client verifies the server's process id, so a squatter cannot impersonate
-  the agent. The Python side also bounds request size/depth/complexity. The
-  agent's *server-side* security descriptor is still whatever the prebuilt
-  DLL sets: an explicit ACL and `PIPE_REJECT_REMOTE_CLIENTS` would need a
-  DLL rebuild (the C++ source is not in this repository). The bundled DLLs
-  are hash-verified against `agent_manifest.json` before injection.
-  `reattach()` refuses a PID whose creation time changed since the original
-  attach. See `SECURITY.md` for what this means for you in practice.
-  **KAN-470 remains open:** these client-side measures are a partial
-  mitigation. The follow-up requires the agent's C++ source and a
-  reproducible DLL build, a server-side ACL limited to the authorized
-  logon/session, `PIPE_REJECT_REMOTE_CLIENTS`, a per-attach session secret,
-  and tests that reject unauthorized local, other-session and remote clients.
+- **No unload** — `QtAgentClient.close()` asks the v2 agent to stop and join
+  its pipe thread, waiting up to 15 s for the remote stop call. The DLL stays
+  mapped until the AUT exits; the client never calls `FreeLibrary` while Qt
+  callbacks could still be using agent code.
+  `reattach()` starts a new authenticated server with the same per-attach
+  secret.
+- **Authenticated IPC** — the server DACL grants access only to the target
+  process's logon SID and pipe creation includes
+  `PIPE_REJECT_REMOTE_CLIENTS`. The server accepts only the controller PID
+  supplied during injection and authenticates every request with a random
+  per-attach secret transferred through `WriteProcessMemory`, separate from
+  the enumerable pipe name. Unauthorized connections are disconnected before
+  a request is read. Client and server enforce request size, JSON depth and
+  complexity limits; server responses and idle connections are bounded too.
+  The client verifies the server PID and refuses a reused target PID.
+  See `SECURITY.md` for the threat model.
 - **Per-Qt-major-version DLL** — Qt 5 and Qt 6 ABIs differ. We ship both,
   named `dolphin_qt5_agent.dll` and `dolphin_qt6_agent.dll`; the loader
   picks based on `Application.qt_version()`.
