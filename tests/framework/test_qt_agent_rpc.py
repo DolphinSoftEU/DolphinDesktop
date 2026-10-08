@@ -623,7 +623,10 @@ class TestBrokenTransportRecovery:
         assert len(starts) == 2
         assert starts[0][1] == old_dll
         assert starts[1][1] == new_dll
-        assert all(config.session_secret == "session-token" for _, _, config in starts)  # pragma: allowlist secret
+        assert all(
+            config.session_secret == "session-token"  # pragma: allowlist secret
+            for _, _, config in starts
+        )
         assert all(config.client_pid == 777 for _, _, config in starts)
         assert session.server_started is True
         assert opened == [(pipe_name, 4242, 3), (pipe_name, 4242, 3)]
