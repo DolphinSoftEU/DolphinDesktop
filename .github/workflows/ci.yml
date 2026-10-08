@@ -166,7 +166,45 @@ jobs:
           Get-Item -LiteralPath $env:DOLPHIN_WS3270_PATH | Format-List FullName,Length
 
       - name: Component tests
-        run: uv run pytest -m "component or windows_component" -q
+        run: uv run pytest -m "(component or windows_component) and not qt_agent" -q
+
+      - name: Install Qt agent test bindings
+        run: uv pip install "PyQt5==5.15.11" "PySide6==6.10.3"
+
+      - name: Verify Qt agent test bindings
+        run: uv run --no-sync python -c "import PyQt5, PySide6"
+
+      - name: Qt agent integration and security tests
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "qt-agent-results.xml"
+          uv run --no-sync pytest tests/qt/test_qt_agent_v2.py -m qt_agent -q --junitxml $report
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          [xml]$results = Get-Content -Raw -LiteralPath $report
+          $cases = $results.SelectNodes("//testcase")
+          $expected = @(
+            "test_authenticated_agent_attach_auth_and_stop_restart[qt5]",
+            "test_authenticated_agent_attach_auth_and_stop_restart[qt6]",
+            "test_native_object_lifetime_overloads_and_bounded_stop[qt5]",
+            "test_native_object_lifetime_overloads_and_bounded_stop[qt6]",
+            "test_agent_pipe_security_boundaries[qt5]",
+            "test_agent_pipe_security_boundaries[qt6]"
+          )
+          $actual = @{}
+          foreach ($case in $cases) {
+            $actual[$case.GetAttribute("name")] = $true
+          }
+          foreach ($name in $expected) {
+            if (-not $actual.ContainsKey($name)) {
+              throw "Required Qt agent scenario did not run: $name"
+            }
+          }
+          $skipped = $results.SelectNodes("//testcase/skipped")
+          if ($skipped.Count -ne 0) {
+            throw "Qt agent integration scenarios may not be skipped (found $($skipped.Count))"
+          }
 
   package:
     name: Build package
