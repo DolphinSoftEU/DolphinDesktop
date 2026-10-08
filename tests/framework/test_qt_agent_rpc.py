@@ -250,6 +250,13 @@ class TestRequestLimits:
             client._send("set_property", value=float("nan"))
         assert client.written == []
 
+    def test_authenticated_request_includes_the_session_token(self):
+        client = _FakeClient([b'{"id": 1, "ok": true, "result": "pong"}\n'])
+        client._auth_token = "session-secret"
+
+        assert client.ping() == "pong"
+        assert json.loads(client.written[0])["auth"] == "session-secret"
+
 
 class _PipeSim:
     """Scripted stand-in for the agent's end of the pipe.
@@ -344,6 +351,31 @@ class TestReadLoop:
             client.ping()
         assert pipe_sim.bytes_read >= 1
 
+    @pytest.mark.parametrize("failed_call", ["peek", "read"])
+    def test_windows_read_failure_breaks_and_closes_the_pipe(self, monkeypatch, failed_call):
+        closed = []
+        client = _WireClient()
+        monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_args: 1)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda handle: closed.append(handle) or 1)
+        monkeypatch.setattr(_qt_inject.ctypes, "get_last_error", lambda: 109, raising=False)
+        if failed_call == "peek":
+            monkeypatch.setattr(_qt_inject, "_PeekNamedPipe", lambda *_args: 0)
+        else:
+
+            def peek_with_data(_handle, _buffer, _size, _read, available, _left):
+                available._obj.value = 1
+                return 1
+
+            monkeypatch.setattr(_qt_inject, "_PeekNamedPipe", peek_with_data)
+            monkeypatch.setattr(_qt_inject, "_ReadFile", lambda *_args: 0)
+
+        with pytest.raises(QtAgentRpcError, match=r"pipe (peek|read) failed"):
+            client._read_chunk(time.monotonic() + 1, "ping")
+
+        assert client.is_broken
+        assert client._pipe == 0
+        assert closed == [5]
+
 
 class TestTimeoutIsRecoverable:
     def test_timeout_mid_message_keeps_the_stream_intact(self, pipe_sim):
@@ -416,6 +448,16 @@ class TestRequestSizeCap:
 
 
 class TestBrokenTransportRecovery:
+    def test_pipe_operation_fails_when_connection_is_already_closed(self, monkeypatch):
+        client = QtAgentClient(4242, 0)
+        monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_args: 1)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda *_args: 1)
+
+        with pytest.raises(QtAgentRpcError, match="connection was closed"):
+            client._pipe_or_fail("read")
+
+        assert client.is_broken
+
     def test_fail_closes_the_pipe_handle(self, monkeypatch):
         closed: list[int] = []
         monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: closed.append(h) or 1)
@@ -423,6 +465,32 @@ class TestBrokenTransportRecovery:
         client._fail("boom", "boom")
         assert closed == [77]
         assert client._pipe == 0
+
+    def test_fail_suppresses_errors_while_dropping_the_pipe(self, monkeypatch):
+        client = QtAgentClient(4242, 77)
+
+        def fail_close_pipe():
+            raise OSError("close failed")
+
+        monkeypatch.setattr(client, "_close_pipe", fail_close_pipe)
+
+        error = client._fail("broken", "request failed")
+
+        assert isinstance(error, QtAgentRpcError)
+        assert client.broken_reason == "broken"
+        client._pipe = 0
+
+    def test_finalizer_suppresses_errors_while_releasing_local_resources(self, monkeypatch):
+        client = QtAgentClient(4242, 77)
+
+        def fail_close_pipe():
+            raise OSError("close failed")
+
+        monkeypatch.setattr(client, "_close_pipe", fail_close_pipe)
+
+        client.__del__()
+        assert client._closed
+        client._pipe = 0
 
     def test_dropped_client_releases_the_handle(self, monkeypatch):
         closed: list[int] = []
@@ -502,6 +570,67 @@ class TestBrokenTransportRecovery:
         client = QtAgentClient(4242, 5, pipe_name=r"\\.\pipe\dolphin_qt_4242_test", create_time=111)
         client.reattach()
         assert client._pipe == 9
+
+    def test_reattach_restarts_a_stopped_session_and_retries_the_pipe(self, monkeypatch):
+        starts = []
+        opened = []
+        closed = []
+        pipe_name = r"\\.\pipe\dolphin_qt_4242_test"
+        old_dll = Path("old_agent.dll")
+        new_dll = Path("new_agent.dll")
+        session = _qt_inject._AgentSession(
+            pid=4242,
+            qt_version="6",
+            create_time=12345,
+            pipe_name=pipe_name,
+            auth_token="session-token",
+            client_pid=777,
+            agent_dll=old_dll,
+            server_started=False,
+        )
+
+        def open_pipe(name, pid, timeout):
+            opened.append((name, pid, timeout))
+            if len(opened) == 1:
+                raise QtAgentInjectError("server not ready")
+            return 88
+
+        monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_args: 1)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda handle: closed.append(handle) or 1)
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: 555)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: 12345)
+        monkeypatch.setattr(_qt_inject, "_open_pipe", open_pipe)
+        monkeypatch.setattr(
+            _qt_inject,
+            "_start_agent",
+            lambda pid, dll, config: starts.append((pid, dll, config)),
+        )
+        monkeypatch.setattr(_qt_inject, "agent_dll_for", lambda _version: new_dll)
+
+        client = QtAgentClient(
+            4242,
+            71,
+            qt_version="6",
+            pipe_name=pipe_name,
+            create_time=12345,
+            auth_token="session-token",
+            client_pid=777,
+            agent_dll=old_dll,
+            _session=session,
+        )
+        client._reattach_transport(timeout=3)
+
+        assert len(starts) == 2
+        assert starts[0][1] == old_dll
+        assert starts[1][1] == new_dll
+        assert all(config.session_secret == "session-token" for _, _, config in starts)
+        assert all(config.client_pid == 777 for _, _, config in starts)
+        assert session.server_started is True
+        assert opened == [(pipe_name, 4242, 3), (pipe_name, 4242, 3)]
+        assert client._pipe == 88
+        assert client._agent_dll == new_dll
+        monkeypatch.setattr(_qt_inject, "_stop_agent", lambda *_args, **_kwargs: None)
+        client.close()
 
     def test_reattach_requires_a_recorded_pipe_name(self, monkeypatch):
         monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda a, b, c: 555)
@@ -639,6 +768,87 @@ class TestAgentSessionOwnership:
         client.reattach()
         assert client._closed is False
         assert client.ping() == "pong"
+
+    def test_acquire_reinstalls_a_missing_transport_owner(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "_stop_agent", lambda *_args, **_kwargs: None)
+        session = self._session()
+        client = QtAgentClient(4242, 0, _session=session)
+
+        client.close()
+        assert session.transport_owner is None
+        client._acquire_session_ref()
+
+        assert session.clients == 1
+        assert session.transport_owner() is client
+        client.close()
+
+    def test_reattach_reuses_a_live_transport_owned_by_the_same_client(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_args: 1)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda *_args: 1)
+        monkeypatch.setattr(_qt_inject, "_stop_agent", lambda *_args, **_kwargs: None)
+        session = self._session()
+        client = QtAgentClient(4242, 74, _session=session)
+        client._release_session(stop=False)
+
+        assert session.clients == 0
+        assert session.transport_owner() is client
+        assert client.reattach() is client
+        assert session.clients == 1
+        assert client._pipe == 74
+        assert client._closed is False
+        client.close()
+
+    def test_stop_failure_does_not_escape_client_close(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_args: 1)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda *_args: 1)
+
+        def fail_stop(*_args, **_kwargs):
+            raise QtAgentInjectError("native stop failed")
+
+        monkeypatch.setattr(_qt_inject, "_stop_agent", fail_stop)
+        session = self._session()
+        client = QtAgentClient(4242, 73, _session=session)
+
+        client.close()
+
+        assert session.clients == 0
+        assert session.server_started is True
+
+    def test_concurrent_session_release_does_not_decrement_twice(self, monkeypatch):
+        session = self._session()
+        client = QtAgentClient(4242, 0, _session=session)
+
+        class ReleaseWonTheRace:
+            def __enter__(self):
+                client._session_released = True
+
+            def __exit__(self, *_args):
+                return False
+
+        monkeypatch.setattr(_qt_inject, "_sessions_lock", ReleaseWonTheRace())
+        client._release_session(stop=True)
+
+        assert session.clients == 1
+        assert session.server_started is True
+
+    def test_delegate_exposes_its_transport_broken_state(self):
+        owner = QtAgentClient(4242, 1)
+        owner._broken = "transport failed"
+        proxy = QtAgentClient(4242, 0, _delegate=owner)
+
+        assert proxy.is_broken
+        assert proxy.broken_reason == "transport failed"
+
+    def test_context_manager_closes_the_client(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_args: 1)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda *_args: 1)
+        client = QtAgentClient(4242, 73)
+
+        with client as entered:
+            assert entered is client
+
+        assert client._closed
+        assert client._pipe == 0
 
 
 class _AlwaysTimingOutClient(_FakeClient):
@@ -988,6 +1198,25 @@ class TestPipeServerVerification:
             _qt_inject._open_pipe(r"\\.\pipe\dolphin_qt_4242", 4242, timeout_s=0.1)
         assert closed == [61]
 
+    def test_open_pipe_waits_when_busy_then_reports_timeout(self, monkeypatch):
+        errors = iter([_qt_inject.ERROR_PIPE_BUSY, 2])
+        clock = iter([10.0, 10.0, 10.2])
+        waited = []
+        monkeypatch.setattr(
+            _qt_inject,
+            "_CreateFileW",
+            lambda *_args: _qt_inject.INVALID_HANDLE_VALUE,
+        )
+        monkeypatch.setattr(_qt_inject.ctypes, "get_last_error", lambda: next(errors))
+        monkeypatch.setattr(_qt_inject, "_WaitNamedPipeW", lambda *args: waited.append(args) or 0)
+        monkeypatch.setattr(_qt_inject.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(_qt_inject.time, "sleep", lambda _delay: None)
+
+        with pytest.raises(QtAgentInjectError, match="timed out connecting"):
+            _qt_inject._open_pipe(r"\\.\pipe\busy", 4242, timeout_s=0.1)
+
+        assert waited == [(r"\\.\pipe\busy", 1000)]
+
 
 class TestPidCreateTime:
     """``_pid_create_time`` backs the reused-pid guard in ``reattach()``."""
@@ -1072,6 +1301,172 @@ class TestAttach:
             QtAgentClient.attach(4242, "5")
         assert calls.closed == [555]
 
+    def test_attach_checks_the_authenticated_export_before_opening_the_process(
+        self, monkeypatch, tmp_path
+    ):
+        dll = tmp_path / "legacy_agent.dll"
+        dll.touch()
+        monkeypatch.setattr(_qt_inject, "agent_dll_for", lambda _version: dll)
+
+        def reject_legacy(_path):
+            raise QtAgentInjectError("legacy agent")
+
+        monkeypatch.setattr(_qt_inject, "_require_authenticated_agent_v2", reject_legacy)
+        monkeypatch.setattr(
+            _qt_inject, "_OpenProcess", lambda *_args: pytest.fail("must reject the DLL first")
+        )
+
+        with pytest.raises(QtAgentInjectError, match="legacy agent"):
+            QtAgentClient.attach(4242, "6")
+
+    def test_attach_reports_open_process_failure(self, monkeypatch):
+        monkeypatch.setattr(_qt_inject, "agent_dll_for", lambda _version: Path("missing.dll"))
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: 0)
+        monkeypatch.setattr(_qt_inject.ctypes, "get_last_error", lambda: 5, raising=False)
+
+        with pytest.raises(QtAgentInjectError, match=r"OpenProcess\(4242\) failed"):
+            QtAgentClient.attach(4242, "6")
+
+    def test_attach_requires_a_stable_process_creation_time(self, monkeypatch):
+        closed = []
+        monkeypatch.setattr(_qt_inject, "agent_dll_for", lambda _version: Path("missing.dll"))
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: 555)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda handle: closed.append(handle) or 1)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: None)
+
+        with pytest.raises(QtAgentInjectError, match="without a stable process identity"):
+            QtAgentClient.attach(4242, "6")
+
+        assert closed == [555]
+
+    def test_attach_reuses_the_existing_transport_owner(self, monkeypatch):
+        pid, create_time, version = 8123, 67890, "6"
+        pipe_name = r"\\.\pipe\dolphin_qt_8123_existing"
+        session = _qt_inject._AgentSession(
+            pid=pid,
+            qt_version=version,
+            create_time=create_time,
+            pipe_name=pipe_name,
+            auth_token="shared-secret",
+            client_pid=999,
+            agent_dll=Path("agent.dll"),
+        )
+        owner = QtAgentClient(pid, 71, _session=session)
+        monkeypatch.setitem(_qt_inject._sessions, (pid, create_time, version), session)
+        monkeypatch.setattr(_qt_inject, "_stop_agent", lambda *_args, **_kwargs: None)
+        calls = self._install(monkeypatch)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: create_time)
+
+        proxy = QtAgentClient.attach(pid, version)
+
+        assert proxy._delegate is owner
+        assert proxy._pipe == 0
+        assert session.clients == 2
+        assert calls.injected == []
+        assert calls.started == []
+        proxy.close()
+        owner.close()
+
+    def test_attach_reattaches_an_existing_owner_before_delegating(self, monkeypatch):
+        pid, create_time, version = 8126, 67893, "6"
+        session = _qt_inject._AgentSession(
+            pid=pid,
+            qt_version=version,
+            create_time=create_time,
+            pipe_name=r"\\.\pipe\dolphin_qt_8126_existing",
+            auth_token="shared-secret",
+            client_pid=999,
+            agent_dll=Path("agent.dll"),
+        )
+        owner = QtAgentClient(pid, 0, _session=session)
+        reattached = []
+        monkeypatch.setattr(
+            owner, "_reattach_transport", lambda *, timeout: reattached.append(timeout)
+        )
+        monkeypatch.setitem(_qt_inject._sessions, (pid, create_time, version), session)
+        monkeypatch.setattr(_qt_inject, "_stop_agent", lambda *_args, **_kwargs: None)
+        calls = self._install(monkeypatch)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: create_time)
+
+        proxy = QtAgentClient.attach(pid, version, timeout=4)
+
+        assert reattached == [4]
+        assert proxy._delegate is owner
+        assert calls.injected == []
+        proxy.close()
+        owner.close()
+
+    def test_attach_restarts_a_session_without_a_transport_owner(self, monkeypatch):
+        pid, create_time, version = 8124, 67891, "5"
+        session = _qt_inject._AgentSession(
+            pid=pid,
+            qt_version=version,
+            create_time=create_time,
+            pipe_name=r"\\.\pipe\dolphin_qt_8124_existing",
+            auth_token="shared-secret",
+            client_pid=999,
+            agent_dll=Path("agent.dll"),
+            server_started=False,
+        )
+        monkeypatch.setitem(_qt_inject._sessions, (pid, create_time, version), session)
+        monkeypatch.setattr(_qt_inject, "_stop_agent", lambda *_args, **_kwargs: None)
+        calls = self._install(monkeypatch)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: create_time)
+
+        client = QtAgentClient.attach(pid, version)
+
+        assert len(calls.started) == 1
+        assert calls.injected == []
+        assert session.server_started is True
+        client.close()
+
+    def test_attach_restarts_the_server_after_a_pipe_open_error(self, monkeypatch):
+        pid, create_time, version = 8125, 67892, "5"
+        session = _qt_inject._AgentSession(
+            pid=pid,
+            qt_version=version,
+            create_time=create_time,
+            pipe_name=r"\\.\pipe\dolphin_qt_8125_existing",
+            auth_token="shared-secret",
+            client_pid=999,
+            agent_dll=Path("agent.dll"),
+        )
+        monkeypatch.setitem(_qt_inject._sessions, (pid, create_time, version), session)
+        monkeypatch.setattr(_qt_inject, "_stop_agent", lambda *_args, **_kwargs: None)
+        opened = []
+
+        def open_pipe(*args):
+            opened.append(args)
+            if len(opened) == 1:
+                raise QtAgentInjectError("pipe is busy")
+            return 97
+
+        calls = self._install(monkeypatch, open_pipe=open_pipe)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: create_time)
+        client = QtAgentClient.attach(pid, version)
+
+        assert len(calls.started) == 1
+        assert calls.injected == []
+        assert client._pipe == 97
+        assert len(opened) == 2
+        client.close()
+
+    def test_attach_keeps_pipe_error_when_cleanup_also_fails(self, monkeypatch):
+        def pipe_failure(*_args):
+            raise QtAgentInjectError("pipe never appeared")
+
+        calls = self._install(monkeypatch, open_pipe=pipe_failure)
+
+        def stop_failure(*_args, **_kwargs):
+            raise QtAgentInjectError("stop also failed")
+
+        monkeypatch.setattr(_qt_inject, "_stop_agent", stop_failure)
+
+        with pytest.raises(QtAgentInjectError, match="pipe never appeared"):
+            QtAgentClient.attach(4242, "5")
+
+        assert calls.closed == [555]
+
 
 class _Win32Sim:
     """kernel32 stand-ins for the two remote-thread call sites."""
@@ -1148,6 +1543,45 @@ class TestInjectionAllocationLifetime:
         with pytest.raises(QtAgentInjectError, match="LoadLibraryW returned NULL"):
             _qt_inject._inject_dll(4242, tmp_path / "dolphin_qt6_agent.dll")
 
+    def test_open_process_failure_is_reported(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: 0)
+        with pytest.raises(QtAgentInjectError, match=r"OpenProcess\(4242\) failed"):
+            _qt_inject._inject_dll(4242, tmp_path / "dolphin_qt6_agent.dll")
+
+    def test_remote_allocation_failure_releases_process_handle(self, monkeypatch, tmp_path):
+        closed = []
+        monkeypatch.setattr(_qt_inject, "_require_matching_arch", lambda *a: None)
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: 44)
+        monkeypatch.setattr(_qt_inject, "_VirtualAllocEx", lambda *_args: 0)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda handle: closed.append(handle) or 1)
+
+        with pytest.raises(QtAgentInjectError, match="VirtualAllocEx failed"):
+            _qt_inject._inject_dll(4242, tmp_path / "dolphin_qt6_agent.dll")
+
+        assert closed == [44]
+
+    def test_short_process_memory_write_frees_allocation(self, monkeypatch, tmp_path):
+        sim = _Win32Sim()
+        sim.write_ok = False
+        monkeypatch.setattr(_qt_inject, "_require_matching_arch", lambda *a: None)
+        sim.install(monkeypatch)
+
+        with pytest.raises(QtAgentInjectError, match="WriteProcessMemory failed"):
+            _qt_inject._inject_dll(4242, tmp_path / "dolphin_qt6_agent.dll")
+
+        assert sim.freed == [(0x1000, 0)]
+
+    def test_missing_loadlibrary_export_frees_allocation(self, monkeypatch, tmp_path):
+        sim = _Win32Sim()
+        monkeypatch.setattr(_qt_inject, "_require_matching_arch", lambda *a: None)
+        sim.install(monkeypatch)
+        monkeypatch.setattr(_qt_inject, "_GetProcAddress", lambda *_args: 0)
+
+        with pytest.raises(QtAgentInjectError, match=r"GetProcAddress\(LoadLibraryW\) failed"):
+            _qt_inject._inject_dll(4242, tmp_path / "dolphin_qt6_agent.dll")
+
+        assert sim.freed == [(0x1000, 0)]
+
 
 def _install_pywin32(monkeypatch, dll_path, *, open_process=None):
     win32api = types.SimpleNamespace(
@@ -1161,6 +1595,70 @@ def _install_pywin32(monkeypatch, dll_path, *, open_process=None):
     )
     monkeypatch.setitem(sys.modules, "win32api", win32api)
     monkeypatch.setitem(sys.modules, "win32process", win32process)
+
+
+class TestRemoteExportAddress:
+    def test_missing_pywin32_is_reported(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_qt_inject, "_resolve_export_rva", lambda *_args: 0x100)
+        monkeypatch.setitem(sys.modules, "win32api", None)
+        monkeypatch.setitem(sys.modules, "win32process", None)
+
+        with pytest.raises(QtAgentInjectError, match="pywin32 missing"):
+            _qt_inject._remote_export_address(4242, tmp_path / "agent.dll", b"entry")
+
+    def test_module_scan_falls_back_and_skips_unreadable_modules(self, monkeypatch, tmp_path):
+        closed = []
+        dll = tmp_path / "Dolphin_Qt6_Agent.DLL"
+
+        def no_extended_enum(_process, _flags):
+            raise RuntimeError("EnumProcessModulesEx unavailable")
+
+        def module_name(_process, module):
+            if module == 1:
+                raise RuntimeError("module unloaded during enumeration")
+            return f"C:/agents/{dll.name}"
+
+        monkeypatch.setattr(_qt_inject, "_resolve_export_rva", lambda *_args: 0x210)
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            types.SimpleNamespace(OpenProcess=lambda *_args: 88, CloseHandle=closed.append),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "win32process",
+            types.SimpleNamespace(
+                EnumProcessModulesEx=no_extended_enum,
+                EnumProcessModules=lambda _process: [1, 0x4000],
+                GetModuleFileNameEx=module_name,
+            ),
+        )
+
+        assert _qt_inject._remote_export_address(4242, dll, b"entry") == 0x4210
+        assert closed == [88]
+
+    def test_module_scan_reports_when_dll_is_not_loaded(self, monkeypatch, tmp_path):
+        closed = []
+        dll = tmp_path / "agent.dll"
+        monkeypatch.setattr(_qt_inject, "_resolve_export_rva", lambda *_args: 0x100)
+        monkeypatch.setitem(
+            sys.modules,
+            "win32api",
+            types.SimpleNamespace(OpenProcess=lambda *_args: 88, CloseHandle=closed.append),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "win32process",
+            types.SimpleNamespace(
+                EnumProcessModulesEx=lambda *_args: [1],
+                EnumProcessModules=lambda *_args: pytest.fail("extended enum should succeed"),
+                GetModuleFileNameEx=lambda *_args: "C:/agents/other.dll",
+            ),
+        )
+
+        with pytest.raises(QtAgentInjectError, match="not visible in target"):
+            _qt_inject._remote_export_address(4242, dll, b"entry")
+        assert closed == [88]
 
 
 class TestStartAgentAllocationLifetime:
@@ -1220,6 +1718,45 @@ class TestStartAgentAllocationLifetime:
         with pytest.raises(QtAgentInjectError, match="not visible in target"):
             _qt_inject._start_agent(4242, dll, r"\\.\pipe\dolphin_qt_4242")
 
+    def test_start_process_open_failure_is_reported(self, monkeypatch, tmp_path):
+        dll = tmp_path / "dolphin_qt6_agent.dll"
+        monkeypatch.setattr(_qt_inject, "_resolve_export_rva", lambda *_args: 0x100)
+        monkeypatch.setattr(_qt_inject, "_remote_export_address", lambda *_args: 0x200)
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: 0)
+        monkeypatch.setattr(_qt_inject.ctypes, "get_last_error", lambda: 5, raising=False)
+
+        with pytest.raises(QtAgentInjectError, match=r"OpenProcess\(start\) failed"):
+            _qt_inject._start_agent(4242, dll, r"\\.\pipe\dolphin_qt_4242")
+
+    def test_start_allocation_failure_closes_process_handle(self, monkeypatch, tmp_path):
+        dll = tmp_path / "dolphin_qt6_agent.dll"
+        closed = []
+        monkeypatch.setattr(_qt_inject, "_resolve_export_rva", lambda *_args: 0x100)
+        monkeypatch.setattr(_qt_inject, "_remote_export_address", lambda *_args: 0x200)
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: 11)
+        monkeypatch.setattr(_qt_inject, "_VirtualAllocEx", lambda *_args: 0)
+        monkeypatch.setattr(_qt_inject.ctypes, "get_last_error", lambda: 8, raising=False)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda handle: closed.append(handle) or 1)
+
+        with pytest.raises(QtAgentInjectError, match=r"VirtualAllocEx\(start\) failed"):
+            _qt_inject._start_agent(4242, dll, r"\\.\pipe\dolphin_qt_4242")
+
+        assert closed == [11]
+
+    def test_start_write_failure_frees_startup_buffer(self, monkeypatch, tmp_path):
+        dll = tmp_path / "dolphin_qt6_agent.dll"
+        sim = _Win32Sim()
+        sim.write_ok = False
+        monkeypatch.setattr(_qt_inject, "_resolve_export_rva", lambda *_args: 0x100)
+        monkeypatch.setattr(_qt_inject, "_remote_export_address", lambda *_args: 0x200)
+        monkeypatch.setattr(_qt_inject.ctypes, "get_last_error", lambda: 5, raising=False)
+        sim.install(monkeypatch)
+
+        with pytest.raises(QtAgentInjectError, match=r"WriteProcessMemory\(start config\) failed"):
+            _qt_inject._start_agent(4242, dll, r"\\.\pipe\dolphin_qt_4242")
+
+        assert sim.freed == [(0x1000, 0)]
+
 
 class TestStartAgentExitCode:
     """``dolphin_qt_agent_start`` reports success as 0, so an unread exit code
@@ -1233,6 +1770,47 @@ class TestStartAgentExitCode:
         monkeypatch.setattr(_qt_inject, "_GetExitCodeThread", lambda h, out: 0)
         with pytest.raises(QtAgentInjectError, match="GetExitCodeThread failed"):
             _qt_inject._start_agent(4242, dll, r"\\.\pipe\dolphin_qt_4242")
+
+    def test_authenticated_start_config_is_copied_to_the_target(self, monkeypatch, tmp_path):
+        dll = tmp_path / "dolphin_qt6_agent.dll"
+        sim = _Win32Sim(exit_code=0)
+        written = []
+        monkeypatch.setattr(_qt_inject, "_resolve_export_rva", lambda *_args: 0x100)
+        monkeypatch.setattr(_qt_inject, "_remote_export_address", lambda *_args: 0x200)
+        sim.install(monkeypatch)
+
+        def capture_config(_process, _address, data, size, written_count):
+            written.append(data)
+            written_count._obj.value = size
+            return 1
+
+        monkeypatch.setattr(_qt_inject, "_WriteProcessMemory", capture_config)
+        config = _qt_inject._AgentStartConfig(r"\\.\pipe\agent", "secret", 777)
+
+        _qt_inject._start_agent(4242, dll, config)
+
+        assert json.loads(written[0][:-1]) == {
+            "pipe_name": r"\\.\pipe\agent",
+            "session_secret": "secret",
+            "client_pid": 777,
+        }
+        assert sim.freed == [(0x1000, 0)]
+
+    def test_nonzero_start_result_is_reported(self, monkeypatch, tmp_path):
+        dll = tmp_path / "dolphin_qt6_agent.dll"
+        sim = _Win32Sim(exit_code=7)
+        monkeypatch.setattr(_qt_inject, "_resolve_export_rva", lambda *_args: 0x100)
+        monkeypatch.setattr(_qt_inject, "_remote_export_address", lambda *_args: 0x200)
+        sim.install(monkeypatch)
+
+        with pytest.raises(QtAgentInjectError, match="start_v2 returned 7"):
+            _qt_inject._start_agent(
+                4242,
+                dll,
+                _qt_inject._AgentStartConfig(r"\\.\pipe\agent", "secret", 777),
+            )
+
+        assert sim.freed == [(0x1000, 0)]
 
 
 class TestStopAgent:
@@ -1291,6 +1869,67 @@ class TestStopAgent:
 
         assert closed == [11]
 
+    @pytest.mark.parametrize(
+        ("failure", "message", "process_handles", "thread", "wait_rc", "exit_code_ok", "exit_code"),
+        [
+            pytest.param("pin", r"OpenProcess\(stop pin\) failed", [0], 33, 0, True, 0, id="pin"),
+            pytest.param(
+                "process", r"OpenProcess\(stop\) failed", [11, 0], 33, 0, True, 0, id="process"
+            ),
+            pytest.param(
+                "thread", r"CreateRemoteThread\(stop\) failed", [11, 22], 0, 0, True, 0, id="thread"
+            ),
+            pytest.param(
+                "timeout", "agent stop thread timed out", [11, 22], 33, 258, True, 0, id="timeout"
+            ),
+            pytest.param(
+                "exit-query", "GetExitCodeThread failed", [11, 22], 33, 0, False, 0, id="exit-query"
+            ),
+            pytest.param(
+                "exit-code", "stop_v2 returned 9", [11, 22], 33, 0, True, 9, id="exit-code"
+            ),
+        ],
+    )
+    def test_stop_failure_paths_release_acquired_handles(
+        self,
+        monkeypatch,
+        failure,
+        message,
+        process_handles,
+        thread,
+        wait_rc,
+        exit_code_ok,
+        exit_code,
+    ):
+        handles = iter(process_handles)
+        closed = []
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: next(handles))
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: 12345)
+        monkeypatch.setattr(_qt_inject, "_remote_export_address", lambda *_args: 0xAABB)
+        monkeypatch.setattr(_qt_inject, "_CreateRemoteThread", lambda *_args: thread)
+        monkeypatch.setattr(_qt_inject, "_WaitForSingleObject", lambda *_args: wait_rc)
+        monkeypatch.setattr(_qt_inject.ctypes, "get_last_error", lambda: 5, raising=False)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda handle: closed.append(handle) or 1)
+
+        def get_exit_code(_thread, result):
+            result._obj.value = exit_code
+            return int(exit_code_ok)
+
+        monkeypatch.setattr(_qt_inject, "_GetExitCodeThread", get_exit_code)
+
+        with pytest.raises(QtAgentInjectError, match=message):
+            _qt_inject._stop_agent(4242, Path("agent.dll"), expected_create_time=12345)
+
+        expected_closed = {
+            "pin": [],
+            "process": [11],
+            "thread": [22, 11],
+            "timeout": [33, 22, 11],
+            "exit-query": [33, 22, 11],
+            "exit-code": [33, 22, 11],
+        }
+        assert closed == expected_closed[failure]
+
 
 def _pe_with_exports(names: list[bytes], *, terminate: bool = True) -> bytes:
     """Smallest PE whose export table ``_resolve_export_rva`` can walk.
@@ -1342,6 +1981,52 @@ def _pe_with_exports(names: list[bytes], *, terminate: bool = True) -> bytes:
 
 
 class TestExportTableParsing:
+    def test_a_non_pe_file_is_rejected(self, tmp_path):
+        dll = tmp_path / "not_a_pe.dll"
+        dll.write_bytes(b"not a PE file")
+        with pytest.raises(QtAgentInjectError, match="not a PE file"):
+            _qt_inject._resolve_export_rva(dll, b"export")
+
+    def test_a_bad_pe_signature_is_rejected(self, tmp_path):
+        dll = tmp_path / "bad_signature.dll"
+        data = bytearray(_pe_with_exports([b"export"]))
+        data[0x40:0x44] = b"NOPE"
+        dll.write_bytes(data)
+        with pytest.raises(QtAgentInjectError, match="missing PE signature"):
+            _qt_inject._resolve_export_rva(dll, b"export")
+
+    def test_a_missing_export_directory_is_rejected(self, tmp_path):
+        dll = tmp_path / "no_exports.dll"
+        data = bytearray(_pe_with_exports([b"export"]))
+        data[0x58 + 112 : 0x58 + 116] = b"\x00" * 4
+        dll.write_bytes(data)
+        with pytest.raises(QtAgentInjectError, match="no export directory"):
+            _qt_inject._resolve_export_rva(dll, b"export")
+
+    def test_an_unmapped_rva_is_rejected(self, tmp_path):
+        dll = tmp_path / "unmapped_rva.dll"
+        data = bytearray(_pe_with_exports([b"export"]))
+        data[0x58 + 112 : 0x58 + 116] = (0x90000000).to_bytes(4, "little")
+        dll.write_bytes(data)
+        with pytest.raises(QtAgentInjectError, match="RVA 0x90000000 not mapped"):
+            _qt_inject._resolve_export_rva(dll, b"export")
+
+    def test_a_truncated_export_directory_is_rejected(self, tmp_path):
+        dll = tmp_path / "truncated_exports.dll"
+        data = bytearray(_pe_with_exports([b"export"]))
+        data[0x58 + 112 : 0x58 + 116] = (len(data) - 8).to_bytes(4, "little")
+        dll.write_bytes(data)
+        with pytest.raises(QtAgentInjectError, match="has no raw data behind it"):
+            _qt_inject._resolve_export_rva(dll, b"export")
+
+    def test_an_export_ordinal_outside_the_function_table_is_rejected(self, tmp_path):
+        dll = tmp_path / "bad_ordinal.dll"
+        data = bytearray(_pe_with_exports([b"export"]))
+        data[0x340:0x342] = (1).to_bytes(2, "little")
+        dll.write_bytes(data)
+        with pytest.raises(QtAgentInjectError, match="past the 1-entry function table"):
+            _qt_inject._resolve_export_rva(dll, b"export")
+
     def test_a_named_export_resolves_to_its_rva(self, tmp_path):
         dll = tmp_path / "dolphin_qt6_agent.dll"
         dll.write_bytes(_pe_with_exports([b"other", b"dolphin_qt_agent_start"]))
@@ -1359,6 +2044,18 @@ class TestExportTableParsing:
         dll.write_bytes(_pe_with_exports([b"other"], terminate=False))
         with pytest.raises(QtAgentInjectError, match="unterminated export name"):
             _qt_inject._resolve_export_rva(dll, b"dolphin_qt_agent_start")
+
+
+def test_legacy_agent_export_is_refused(tmp_path, monkeypatch):
+    dll = tmp_path / "legacy_agent.dll"
+
+    def missing_export(*_args):
+        raise QtAgentInjectError("legacy export")
+
+    monkeypatch.setattr(_qt_inject, "_resolve_export_rva", missing_export)
+
+    with pytest.raises(QtAgentInjectError, match="does not expose authenticated Qt agent IPC v2"):
+        _qt_inject._require_authenticated_agent_v2(dll)
 
 
 def test_qt_pe_header_parser_accepts_valid_and_rejects_invalid_files(tmp_path: Path) -> None:
