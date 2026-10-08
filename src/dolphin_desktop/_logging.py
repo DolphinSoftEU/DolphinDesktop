@@ -52,6 +52,18 @@ from typing import Any
 # connection string) is masked only up to the semicolon, because there the
 # semicolon really is the delimiter. Quote such values, or expect the tail to
 # survive. Redaction is best-effort — see SECURITY.md.
+_SECRET_KEY_PATTERN = (
+    r"password|passwd|passphrase|pwd|secret|token|api[_\-]?key|apikey"
+    r"|private[_\-]?key|credential|authorization|auth(?!or)|signature"
+    r"|sessionid|sas"
+    # PIN is short and also appears inside ordinary words such as "mapping"
+    # and "shipping". Accept separators, numeric suffixes, and camelCase
+    # boundaries, but reject lowercase continuations that would match those words.
+    r"|(?<![A-Za-z0-9])pin(?!(?-i:[a-z]))"
+    r"|(?<=(?-i:[a-z]))(?-i:P)(?i:in)(?!(?-i:[a-z]))"
+)
+_ADDITIONAL_SECRET_KEY_PATTERN = r"login|username|user[_\-]?id|connection[_\-]?string|clipboard"
+
 _SECRET_RE = re.compile(
     r"("
     # No leading ``[A-Za-z0-9_.-]*`` here, deliberately. It looked necessary to
@@ -60,9 +72,7 @@ _SECRET_RE = re.compile(
     # match simply begins at ``SECRET`` and the prefix stays in the output
     # untouched — while the quantifier itself turned an ordinary long log line
     # into quadratic backtracking (2 MB took minutes).
-    r"(?:password|passwd|passphrase|pwd|secret|token|api[_\-]?key|apikey"
-    r"|private[_\-]?key|credential|authorization|auth(?!or)|signature"
-    r"|sessionid|sas)"
+    rf"(?:{_SECRET_KEY_PATTERN})"
     # Possessive. The suffix carries the rest of a compound name (``_ACCESS_KEY``
     # after ``SECRET``), and letting it backtrack made a long run of identifier
     # characters quadratic: 44 KB of them took 1.7 s, so a 500 KB traceback hung
@@ -109,8 +119,7 @@ _CONNECTION_STRING_RE = re.compile(
 )
 
 _ADDITIONAL_SECRET_RE = re.compile(
-    r"((?<![A-Za-z0-9_])(?:login|username|user[_\-]?id|"
-    r"connection[_\-]?string|clipboard)"
+    rf"((?<![A-Za-z0-9_])(?:{_ADDITIONAL_SECRET_KEY_PATTERN})"
     # Optional closing quote before the separator, same as _SECRET_RE — a
     # dict repr like {'login': 'x'} puts a quote right after the keyword,
     # and without this the separator match (and therefore the whole
@@ -265,10 +274,7 @@ def _redact(text: str) -> str:
 # on the structure lets a sensitive *key* mask its whole value, whatever its
 # type, before anything is serialised.
 _SENSITIVE_KEY_RE = re.compile(
-    r"(?:password|passwd|passphrase|pwd|secret|token|api[_\-]?key|apikey"
-    r"|private[_\-]?key|credential|authorization|auth(?!or)|signature"
-    r"|sessionid|sas|pin"
-    r"|login|username|user[_\-]?id|connection[_\-]?string|clipboard)",
+    rf"(?:{_SECRET_KEY_PATTERN}|{_ADDITIONAL_SECRET_KEY_PATTERN})",
     re.IGNORECASE,
 )
 

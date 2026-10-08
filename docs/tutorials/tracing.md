@@ -96,6 +96,11 @@ captured stdout/stderr and diagnostic logs remain available after secret
 redaction. A failed screenshot capture does not leave a partial PNG or a
 misleading artifact link.
 
+Redaction applies to text, not screenshot or video pixels. A captured desktop
+can show credentials or other private information, including in windows outside
+the application under test. Limit access to these artifacts and set CI
+retention to the shortest period needed; delete local copies after debugging.
+
 ## Fallback HTML Report
 
 When `allure-pytest` is not installed, Dolphin writes `dolphin-report.html` at session finish. Set a custom path with:

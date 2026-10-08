@@ -78,18 +78,26 @@ applications — as plain text in the generated script. Run it with a filter,
 and review generated scripts before committing them.
 
 Failure artifacts (screenshots, videos, crash dumps) capture the whole
-desktop, not just the application under test. Treat them as sensitive
-before attaching them to a public issue tracker or CI artifact store.
+desktop, not just the application under test. Text redaction cannot inspect
+image pixels, so screenshots and videos can still show passwords, PINs, or
+other sensitive values. Treat them as sensitive before attaching them to a
+public issue tracker or CI artifact store. Restrict access to the people who
+need the artifacts, use the shortest practical CI retention period, and remove
+local copies after investigation. The CI example uses seven days as a starting
+point; set a shorter period when your policy requires it. Disable collection
+that is not needed with `--dolphin-trace=off` and `--dolphin-video=off`; the
+separate `--dolphin-screenshot-on-fail` capture is opt-in.
 
 Traces additionally store the failing test's pytest report, which under
 `pytest -l` (`--showlocals`) contains the values of locals in the failing
 frame. That text is passed through the same redaction as logging: a value
 assigned to a name containing `password`, `passwd`, `passphrase`, `pwd`,
 `secret`, `token`, `api_key`, `private_key`, `credential`, `authorization`,
-`auth`, `signature`, `sessionid`, `sas`, `login`, `username`, `user_id`,
+`auth`, `signature`, `sessionid`, `sas`, `pin`, `login`, `username`, `user_id`,
 `connection_string` or `clipboard` is masked, including inside a compound
-name such as `AWS_SECRET_ACCESS_KEY`, including the credential after any
-HTTP auth scheme, and including a value shown inside a Python dict `repr()`
+name such as `AWS_SECRET_ACCESS_KEY`, including camelCase PIN names such as
+`pinCode` and `cardPin`, including the credential after any HTTP auth scheme,
+and including a value shown inside a Python dict `repr()`
 (e.g. `{'login': '…'}`, the shape an unresolved locator's criteria are
 rendered in). The same redaction runs at every artifact boundary — trace
 steps, crash-dump ZIPs, the Allure stdout/stderr attachments, the
@@ -139,6 +147,7 @@ future refactor cannot preserve a prose claim while dropping the regression:
 | --- | --- | --- | --- |
 | KAN-467 | DESKTOP-199 | `tests/framework/test_mainframe.py::test_s3270_rejects_unsafe_host_before_spawn_or_stdin` | s3270 host input cannot inject another emulator action; the process is not spawned. |
 | KAN-468 | DESKTOP-200 | `tests/framework/test_security_mainframe.py::test_tn5250_tls_handshake_verifies_the_certificate`; DESKTOP-200 TLS UAT | Verified TLS is enforced for native TN5250 and the s3270 `L:` path when explicitly requested; remote plaintext requires `allow_plaintext=True`. |
+| KAN-469 | KAN-535 / DESKTOP-201 | `tests/framework/test_security_core.py::test_trace_db_never_stores_a_secret`, `::test_crash_dump_zip_never_stores_a_secret`, `::test_allure_text_attachment_is_redacted`; `tests/framework/test_security_mainframe.py::test_s3270_trace_names_the_action_not_the_typed_text`, `::test_hllapi_payload_functions_are_not_dumped` | Textual `pin=` values and structurally keyed PINs are redacted at trace, crash ZIP, and Allure boundaries; s3270/HLLAPI diagnostic logs hide typed text. |
 | KAN-472 | DESKTOP-203 | `tests/framework/test_security_core.py::test_terminate_skips_when_identity_was_never_recorded`, `::test_terminate_skips_when_current_identity_cannot_be_read` | Cleanup does not terminate a PID unless its recorded creation time can be confirmed. |
 | KAN-473 | DESKTOP-204 | `tests/framework/test_java.py::test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path`; `tests/framework/test_mainframe.py::test_resolve_hllapi_dll_success_and_failure` | JAB and HLLAPI DLL loading use explicit trusted paths; relative and DLL search-order/PATH fallback is refused. |
 | KAN-475 | DESKTOP-205 | `tests/framework/test_desktop.py::test_cdp_rejects_http_endpoint_owned_by_foreign_pid`; `tests/framework/test_security_core.py::test_verify_cdp_port_owner_rejects_unknown_owner` | A live CDP endpoint is accepted only when its listener PID is known and belongs to the launched process tree. |

@@ -701,6 +701,14 @@ class TestRedactionShapesThatLeakedBefore:
         ("text", "secret"),
         [
             ("token=abcd", "abcd"),
+            ("pin=1234", "1234"),
+            ("pinCode=1234", "1234"),
+            ("cardPin=1234", "1234"),
+            ("pin1=1234", "1234"),
+            ("card_pin=KAN469_SYNTHETIC_PIN_CANARY", "KAN469_SYNTHETIC_PIN_CANARY"),
+            ("pin-code=1234", "1234"),
+            ("PIN_CODE=1234", "1234"),
+            ("card.pin=1234", "1234"),
             ("password=12345", "12345"),
             ("secret=abcde", "abcde"),
             ("Password=P@ss,w0rd", "P@ss,w0rd"),
@@ -761,6 +769,8 @@ class TestRedactionShapesThatLeakedBefore:
             "auth failed for host example.com",
             "token expired 3 minutes ago",
             "authorization denied by policy",
+            "mapping=the value is visible",
+            "shipping=the value is visible",
         ],
     )
     def test_prose_and_line_boundaries_are_untouched(self, text: str) -> None:
