@@ -548,9 +548,14 @@ class TestBrokenTransportRecovery:
         no longer matches — the pid was recycled onto a different process,
         possibly one that is itself dolphin-injected and would otherwise pass
         ``_verify_pipe_server`` for the wrong application."""
+        checked_handles = []
         monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda a, b, c: 555)
         monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: 1)
-        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda pid: 999)
+        monkeypatch.setattr(
+            _qt_inject,
+            "_process_handle_create_time",
+            lambda handle: checked_handles.append(handle) or 999,
+        )
         monkeypatch.setattr(
             _qt_inject,
             "_open_pipe",
@@ -559,17 +564,23 @@ class TestBrokenTransportRecovery:
         client = QtAgentClient(4242, 5, pipe_name=r"\\.\pipe\dolphin_qt_4242_test", create_time=111)
         with pytest.raises(QtAgentInjectError, match="PID was reused"):
             client.reattach()
+        assert checked_handles == [555]
 
-    def test_reattach_tolerates_an_unreadable_creation_time(self, monkeypatch):
-        """``_pid_create_time`` returning ``None`` (a transient query failure)
-        must not be mistaken for proof that the pid was recycled."""
+    def test_reattach_fails_closed_when_creation_time_is_unreadable(self, monkeypatch):
+        """A transient identity query failure must not permit a stale client to reconnect."""
+        closed = []
         monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda a, b, c: 555)
-        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: 1)
-        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda pid: None)
-        monkeypatch.setattr(_qt_inject, "_open_pipe", lambda name, pid, timeout: 9)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda h: closed.append(h) or 1)
+        monkeypatch.setattr(_qt_inject, "_process_handle_create_time", lambda handle: None)
+        monkeypatch.setattr(
+            _qt_inject,
+            "_open_pipe",
+            lambda *args: pytest.fail("must not reconnect without confirming process identity"),
+        )
         client = QtAgentClient(4242, 5, pipe_name=r"\\.\pipe\dolphin_qt_4242_test", create_time=111)
-        client.reattach()
-        assert client._pipe == 9
+        with pytest.raises(QtAgentInjectError, match="creation time could not be confirmed"):
+            client.reattach()
+        assert closed == [5, 555]
 
     def test_reattach_restarts_a_stopped_session_and_retries_the_pipe(self, monkeypatch):
         starts = []
@@ -598,7 +609,7 @@ class TestBrokenTransportRecovery:
         monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_args: 1)
         monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda handle: closed.append(handle) or 1)
         monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_args: 555)
-        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: 12345)
+        monkeypatch.setattr(_qt_inject, "_process_handle_create_time", lambda handle: 12345)
         monkeypatch.setattr(_qt_inject, "_open_pipe", open_pipe)
         monkeypatch.setattr(
             _qt_inject,
@@ -708,7 +719,11 @@ class TestAgentSessionOwnership:
         monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_: 1)
         monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda *_: 1)
         monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_: 555)
-        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: None)
+        monkeypatch.setattr(
+            _qt_inject,
+            "_process_handle_create_time",
+            lambda _handle: session.create_time,
+        )
         monkeypatch.setattr(_qt_inject, "_open_pipe", lambda *_: 88)
         monkeypatch.setattr(_qt_inject, "_start_agent", lambda *args: started.append(args))
         monkeypatch.setattr(

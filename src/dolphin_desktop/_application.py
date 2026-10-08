@@ -366,9 +366,7 @@ def _process_creation_time(process_or_handle: Any) -> int | None:
         return None
 
     try:
-        handle = k32.OpenProcess(
-            _PROCESS_QUERY_LIMITED_INFORMATION, False, int(process_or_handle)
-        )
+        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(process_or_handle))
     except Exception:
         return None
     if not handle:

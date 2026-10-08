@@ -243,7 +243,11 @@ def _fake_win32(monkeypatch) -> list[tuple]:
             CloseHandle=lambda *a: calls.append(("close", *a)),
         ),
     )
-    monkeypatch.setitem(sys.modules, "win32con", types.SimpleNamespace(PROCESS_TERMINATE=1))
+    monkeypatch.setitem(
+        sys.modules,
+        "win32con",
+        types.SimpleNamespace(PROCESS_TERMINATE=1, PROCESS_QUERY_LIMITED_INFORMATION=0x1000),
+    )
     return calls
 
 
@@ -253,10 +257,19 @@ def test_terminate_skips_a_reused_pid(monkeypatch) -> None:
     calls = _fake_win32(monkeypatch)
     monkeypatch.setattr(_application, "_process_identities", {4242: 111})
     # The PID now reports a different creation time — it was reused.
-    monkeypatch.setattr(_application, "_process_creation_time", lambda pid: 999)
+    monkeypatch.setattr(
+        _application,
+        "_process_creation_time_from_handle",
+        lambda handle: calls.append(("times", handle)) or 999,
+    )
     killed = _application.terminate_tracked_pid(4242, log=Mock())
     assert killed is False
     assert not any(c[0] == "terminate" for c in calls)
+    assert calls == [
+        ("open", 0x1001, False, 4242),
+        ("times", "H"),
+        ("close", "H"),
+    ]
     assert 4242 not in _application._process_identities  # identity forgotten
 
 
@@ -265,10 +278,19 @@ def test_terminate_kills_a_matching_identity(monkeypatch) -> None:
 
     calls = _fake_win32(monkeypatch)
     monkeypatch.setattr(_application, "_process_identities", {4242: 111})
-    monkeypatch.setattr(_application, "_process_creation_time", lambda pid: 111)
+    monkeypatch.setattr(
+        _application,
+        "_process_creation_time_from_handle",
+        lambda handle: calls.append(("times", handle)) or 111,
+    )
     killed = _application.terminate_tracked_pid(4242, log=Mock())
     assert killed is True
-    assert ("terminate", "H", 1) in calls
+    assert calls == [
+        ("open", 0x1001, False, 4242),
+        ("times", "H"),
+        ("terminate", "H", 1),
+        ("close", "H"),
+    ]
 
 
 def test_terminate_skips_when_identity_was_never_recorded(monkeypatch) -> None:
@@ -276,7 +298,7 @@ def test_terminate_skips_when_identity_was_never_recorded(monkeypatch) -> None:
 
     calls = _fake_win32(monkeypatch)
     monkeypatch.setattr(_application, "_process_identities", {})
-    monkeypatch.setattr(_application, "_process_creation_time", lambda pid: 111)
+    monkeypatch.setattr(_application, "_process_creation_time_from_handle", lambda handle: 111)
     killed = _application.terminate_tracked_pid(9001, log=Mock())
     assert killed is False
     assert calls == []
@@ -287,9 +309,18 @@ def test_terminate_skips_when_current_identity_cannot_be_read(monkeypatch) -> No
 
     calls = _fake_win32(monkeypatch)
     monkeypatch.setattr(_application, "_process_identities", {9001: 111})
-    monkeypatch.setattr(_application, "_process_creation_time", lambda pid: None)
+    monkeypatch.setattr(
+        _application,
+        "_process_creation_time_from_handle",
+        lambda handle: calls.append(("times", handle)) or None,
+    )
     assert _application.terminate_tracked_pid(9001, log=Mock()) is False
-    assert calls == []
+    assert calls == [
+        ("open", 0x1001, False, 9001),
+        ("times", "H"),
+        ("close", "H"),
+    ]
+    assert _application._process_identities == {9001: 111}
 
 
 # --------------------------------------------------------------------------- #
