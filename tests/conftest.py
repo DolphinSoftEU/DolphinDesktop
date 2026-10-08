@@ -167,7 +167,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if not relative.parts:
             raise pytest.UsageError(f"Could not classify test: {item.nodeid}")
 
-        if relative.parts[0] == "mainframe":
+        # The Qt v2 agent smoke suite launches controlled Qt child processes,
+        # so it belongs in the required Windows component job rather than the
+        # legacy system-test bucket that CI does not select.
+        if relative.as_posix() == "qt/test_qt_agent_v2.py":
+            category = "windows_component"
+        elif relative.parts[0] == "mainframe":
             category = {
                 "hllapi_mock": "unit",
                 "mock_tn3270": "component",

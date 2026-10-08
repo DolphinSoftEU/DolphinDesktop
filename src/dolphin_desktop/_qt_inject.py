@@ -126,6 +126,9 @@ class _AgentStartConfig(str):
     the injected start routine and never appears in the pipe namespace.
     """
 
+    session_secret: str
+    client_pid: int
+
     def __new__(cls, pipe_name: str, session_secret: str, client_pid: int) -> _AgentStartConfig:
         instance = super().__new__(cls, pipe_name)
         instance.session_secret = session_secret
@@ -614,10 +617,11 @@ class QtAgentClient:
         self._session = _session
         self._delegate = _delegate
         self._session_released = _session is None
+        self._closed = False
         if _session is not None:
             with _sessions_lock:
                 _session.clients += 1
-                if _session.transport_owner is None:
+                if _delegate is None and _session.transport_owner is None:
                     _session.transport_owner = weakref.ref(self)
 
     # ----- lifecycle --------------------------------------------------
@@ -679,10 +683,7 @@ class QtAgentClient:
                     if owner is not None:
                         delegate = owner
                         if delegate._pipe == 0 or delegate.is_broken:
-                            owner_was_released = delegate._session_released
-                            delegate.reattach(timeout=timeout)
-                            if owner_was_released:
-                                delegate._release_session(stop=False)
+                            delegate._reattach_transport(timeout=timeout)
                         handle = 0
                     else:
                         start_config = _AgentStartConfig(pipe_name, auth_token, client_pid)
@@ -760,11 +761,9 @@ class QtAgentClient:
         """
         if self._delegate is not None:
             if self._delegate._pipe == 0 or self._delegate.is_broken:
-                owner_was_released = self._delegate._session_released
-                self._delegate.reattach(timeout=timeout)
-                if owner_was_released:
-                    self._delegate._release_session(stop=False)
+                self._delegate._reattach_transport(timeout=timeout)
             self._acquire_session_ref()
+            self._closed = False
             return self
         if (
             self._session is not None
@@ -774,8 +773,21 @@ class QtAgentClient:
             and self._pipe != 0
         ):
             self._acquire_session_ref()
+            self._closed = False
             return self
 
+        self._reattach_transport(timeout=timeout)
+        self._acquire_session_ref()
+        self._closed = False
+        return self
+
+    def _reattach_transport(self, *, timeout: float) -> None:
+        """Restore the shared pipe without acquiring a client session lease.
+
+        A proxy may need its transport owner to reconnect after the last
+        explicit close. That reconnect restores the transport only; the proxy
+        then acquires exactly its own client lease.
+        """
         self._close_pipe()
         with self._lock:
             # Same pin as attach(): without a handle open, Windows may have
@@ -837,11 +849,12 @@ class QtAgentClient:
                 _CloseHandle(hpin)
             with self._pipe_lock:
                 self._pipe = handle
-            self._acquire_session_ref()
+            if self._session is not None and self._delegate is None:
+                with _sessions_lock:
+                    self._session.transport_owner = weakref.ref(self)
             self._pending = b""
             self._abandoned.clear()
             self._broken = None
-        return self
 
     @property
     def is_broken(self) -> bool:
@@ -879,6 +892,7 @@ class QtAgentClient:
         session keep the server alive; :meth:`reattach` can restart a server
         stopped by the last explicit close using the same private token.
         """
+        self._closed = True
         if self._session is None:
             self._close_pipe()
         self._release_session(stop=True)
@@ -887,6 +901,7 @@ class QtAgentClient:
         # Finalization only drops this object's local resources. A global native
         # server may still be in use by another client or an active Qt call.
         try:
+            self._closed = True
             self._close_pipe()
             self._release_session(stop=False)
         except Exception:
@@ -899,7 +914,9 @@ class QtAgentClient:
         with _sessions_lock:
             session.clients += 1
             self._session_released = False
-            if session.transport_owner is None or session.transport_owner() is None:
+            if self._delegate is None and (
+                session.transport_owner is None or session.transport_owner() is None
+            ):
                 session.transport_owner = weakref.ref(self)
 
     def _release_session(self, *, stop: bool) -> None:
@@ -1045,8 +1062,15 @@ class QtAgentClient:
     def _send(self, op: str, **kwargs: Any) -> Any:
         # The lock spans write → read: two unserialised callers would each read
         # the other's reply off the shared pipe.
+        if self._closed:
+            raise QtAgentRpcError(
+                "Qt agent client is closed. Call reattach() before making more requests."
+            )
         if self._delegate is not None:
-            return self._delegate._send(op, **kwargs)
+            return self._delegate._send_transport(op, **kwargs)
+        return self._send_transport(op, **kwargs)
+
+    def _send_transport(self, op: str, **kwargs: Any) -> Any:
         with self._lock:
             if self._broken is not None:
                 raise QtAgentRpcError(

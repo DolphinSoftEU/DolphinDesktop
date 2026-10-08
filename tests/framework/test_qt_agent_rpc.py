@@ -500,6 +500,76 @@ class TestAgentSessionOwnership:
         assert session.clients == 0
         assert session.server_started is True
 
+    def test_proxy_reattach_reacquires_only_its_own_lease(self, monkeypatch):
+        stopped = []
+        started = []
+        monkeypatch.setattr(_qt_inject, "_CancelIoEx", lambda *_: 1)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda *_: 1)
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_: 555)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: None)
+        monkeypatch.setattr(_qt_inject, "_open_pipe", lambda *_: 88)
+        monkeypatch.setattr(_qt_inject, "_start_agent", lambda *args: started.append(args))
+        monkeypatch.setattr(
+            _qt_inject,
+            "_stop_agent",
+            lambda pid, dll, *, expected_create_time: stopped.append(
+                (pid, dll, expected_create_time)
+            ),
+        )
+        session = self._session()
+        owner = QtAgentClient(
+            4242,
+            71,
+            qt_version=session.qt_version,
+            pipe_name=session.pipe_name,
+            create_time=session.create_time,
+            auth_token=session.auth_token,
+            client_pid=session.client_pid,
+            agent_dll=session.agent_dll,
+            _session=session,
+        )
+        proxy = QtAgentClient(4242, 0, _session=session, _delegate=owner)
+        monkeypatch.setattr(owner, "_send_transport", lambda op, **kwargs: "pong")
+
+        owner.close()
+        assert session.clients == 1
+        assert proxy.ping() == "pong"
+
+        # Both clients release the session. Reattaching the proxy restores the
+        # owner's transport, then counts only the proxy's active lease.
+        proxy.close()
+        assert session.clients == 0
+        assert session.server_started is False
+        assert len(stopped) == 1
+
+        proxy.reattach()
+        assert len(started) == 1
+        assert session.clients == 1
+        assert owner._session_released is True
+        assert session.transport_owner is not None
+        assert session.transport_owner() is owner
+
+        proxy.close()
+        assert len(stopped) == 2
+        assert session.clients == 0
+        assert session.server_started is False
+
+    def test_closed_client_requires_reattach_before_rpc(self, monkeypatch):
+        client = _FakeClient([_reply(1)])
+        client._pipe_name = r"\\.\pipe\dolphin_qt_4242_test"
+        client.close()
+
+        with pytest.raises(QtAgentRpcError, match=r"closed.*reattach"):
+            client.ping()
+
+        monkeypatch.setattr(_qt_inject, "_OpenProcess", lambda *_: 555)
+        monkeypatch.setattr(_qt_inject, "_CloseHandle", lambda *_: 1)
+        monkeypatch.setattr(_qt_inject, "_pid_create_time", lambda _pid: None)
+        monkeypatch.setattr(_qt_inject, "_open_pipe", lambda *_: 9)
+        client.reattach()
+        assert client._closed is False
+        assert client.ping() == "pong"
+
 
 class _AlwaysTimingOutClient(_FakeClient):
     def _read_chunk(self, deadline: float, op: str) -> bytes:
