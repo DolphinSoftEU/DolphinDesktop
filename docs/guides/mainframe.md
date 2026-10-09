@@ -128,7 +128,9 @@ brew install x3270
 The emulator vendor ships an `EHLAPI32.DLL` (or `PCSHLL32.DLL` for IBM
 PCOMM). For security, dolphin_desktop does not search CWD, the application
 directory, or the ambient `PATH` for these names. Pass the vendor DLL through
-`hllapi_dll_path` as an existing absolute path:
+`hllapi_dll_path` as an existing absolute path. This argument is required for
+`backend="hllapi"`; no DLL is automatically discovered in Program Files or
+System32. Missing, relative or unusable paths raise `MainframeError`:
 
 | DLL name | Vendor |
 |---|---|

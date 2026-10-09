@@ -1175,53 +1175,29 @@ _EHLLAPI_PF_MNEMONICS: dict[int, str] = {n: f"@{n}" for n in range(1, 10)} | {
 # PA1-PA3.
 _EHLLAPI_PA_MNEMONICS: dict[int, str] = {1: "@x", 2: "@y", 3: "@z"}
 
-_HLLAPI_DLL_CANDIDATES = (
-    # (DLL name, exported function name)
-    ("PCSHLL32.DLL", "hllapi"),  # IBM PCOMM
-    ("EHLAPI32.DLL", "hllapi"),  # Attachmate / Rocket Reflection
-    ("WHLAPI32.DLL", "hllapi"),  # Older Rocket
-    ("PCSHLL.DLL", "HLLAPI"),  # Legacy
-)
-
-#: Vendor install directories, relative to each Program Files root. The DLL
-#: is looked up here and in System32 — never by bare name, which would let
-#: the Windows loader pick a copy planted in the working directory or PATH.
-_HLLAPI_VENDOR_SUBDIRS = (
-    r"IBM\Personal Communications",
-    r"Micro Focus\Reflection",
-    r"Micro Focus\RUMBA",
-    r"Attachmate\Reflection",
-    r"Attachmate\EXTRA!",
-    r"Rocket Software\Reflection",
-)
-
 
 def _trusted_hllapi_paths(explicit: str | None) -> list[str]:
-    """Return absolute DLL paths to try, most specific first.
+    """Validate the required explicit absolute DLL path, without discovery."""
+    from ._native import NativeLibraryError
 
-    An explicit path is the only candidate when given; it must be absolute
-    and exist, otherwise the error says so instead of silently searching.
-    """
-    from ._native import NativeLibraryError, existing_candidates, program_files_dirs, system32_dir
-
-    if explicit:
-        if not os.path.isabs(explicit):
-            raise NativeLibraryError(
-                f"hllapi_dll_path={explicit!r} must be an absolute path — a bare DLL name "
-                "would be resolved through the Windows search order"
-            )
-        if not os.path.isfile(explicit):
-            raise NativeLibraryError(f"hllapi_dll_path={explicit!r} does not exist")
-        return [explicit]
-    directories = [
-        os.path.join(root, sub) for root in program_files_dirs() for sub in _HLLAPI_VENDOR_SUBDIRS
-    ]
-    directories.append(system32_dir())
-    return existing_candidates(directories, (name for name, _ in _HLLAPI_DLL_CANDIDATES))
+    if not explicit:
+        raise NativeLibraryError(
+            "hllapi_dll_path is required for backend='hllapi'; pass an existing "
+            "absolute path to a trusted HLLAPI-compatible DLL. Automatic DLL "
+            "discovery in Program Files, System32, the working directory and PATH is disabled."
+        )
+    if not os.path.isabs(explicit):
+        raise NativeLibraryError(
+            f"hllapi_dll_path={explicit!r} must be an absolute path — a bare DLL name "
+            "would be resolved through the Windows search order"
+        )
+    if not os.path.isfile(explicit):
+        raise NativeLibraryError(f"hllapi_dll_path={explicit!r} does not exist")
+    return [explicit]
 
 
 def _resolve_hllapi_dll(explicit: str | None) -> tuple[Any, Any]:
-    """Load the first available HLLAPI DLL. Returns ``(dll, hllapi_fn)``.
+    """Load the explicitly configured HLLAPI DLL. Returns ``(dll, hllapi_fn)``.
 
     Only absolute paths in trusted locations are loaded — see
     :func:`_trusted_hllapi_paths` and :mod:`dolphin_desktop._native`.
@@ -1262,16 +1238,14 @@ def _resolve_hllapi_dll(explicit: str | None) -> tuple[Any, Any]:
         fn.restype = None
         return dll, fn
 
-    names = ", ".join(name for name, _ in _HLLAPI_DLL_CANDIDATES)
     raise MainframeError(
-        "No HLLAPI-compatible DLL found in a trusted location. Looked for "
-        f"{names} under the vendor directories in Program Files and in System32"
+        f"No HLLAPI-compatible DLL found at hllapi_dll_path={explicit!r}"
         + (f"; tried: {'; '.join(tried)}" if tried else "")
         + ". Install IBM Personal Communications, Attachmate/Rocket "
         "Reflection, or another EHLLAPI-capable emulator, then pass the absolute "
         "hllapi_dll_path='C:\\\\path\\\\to\\\\PCSHLL32.DLL' to "
         "Desktop.mainframe(backend='hllapi'). The working directory and PATH are "
-        "deliberately not searched."
+        "deliberately not searched; no alternative DLL is loaded."
     )
 
 
