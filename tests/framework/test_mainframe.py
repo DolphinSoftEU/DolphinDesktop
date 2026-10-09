@@ -612,8 +612,57 @@ def test_resolve_hllapi_dll_reports_when_nothing_trusted_is_found(
     monkeypatch.setattr(mf, "_trusted_hllapi_paths", lambda explicit: [])
     with pytest.raises(mf.MainframeError, match="No HLLAPI-compatible DLL found") as exc:
         mf._resolve_hllapi_dll(None)
-    assert "System32" in str(exc.value)
+    assert "hllapi_dll_path" in str(exc.value)
     assert "PATH are deliberately not searched" in str(exc.value)
+
+
+@pytest.mark.parametrize("explicit", [None, "", "PCSHLL32.DLL", r"relative\PCSHLL32.DLL"])
+def test_hllapi_requires_explicit_absolute_path_despite_fallback_dlls(
+    monkeypatch, tmp_path, explicit
+) -> None:
+    from dolphin_desktop import _native
+
+    vendor = tmp_path / "Program Files" / "IBM" / "Personal Communications"
+    for folder in (vendor, tmp_path / "System32", tmp_path / "cwd", tmp_path / "path"):
+        folder.mkdir(parents=True)
+        (folder / "PCSHLL32.DLL").write_bytes(b"MZ")
+    monkeypatch.chdir(tmp_path / "cwd")
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+    monkeypatch.setattr(_native, "system32_dir", lambda: str(tmp_path / "System32"))
+    loader = Mock()
+    monkeypatch.setattr(mf.ctypes, "WinDLL", loader)
+
+    with pytest.raises(mf.MainframeError, match="hllapi_dll_path"):
+        mf._HLLAPIBackend(dll_path=explicit)
+    loader.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["missing", "load", "export"])
+def test_hllapi_does_not_fallback_when_explicit_dll_is_unusable(
+    monkeypatch, tmp_path, failure
+) -> None:
+    from dolphin_desktop import _native
+
+    explicit = tmp_path / "configured.dll"
+    if failure != "missing":
+        explicit.write_bytes(b"MZ")
+    fallback = tmp_path / "System32"
+    fallback.mkdir()
+    (fallback / "PCSHLL32.DLL").write_bytes(b"MZ")
+    monkeypatch.setattr(_native, "system32_dir", lambda: str(fallback))
+    loader = Mock(return_value=SimpleNamespace())
+    if failure == "load":
+        loader.side_effect = OSError("invalid DLL")
+    monkeypatch.setattr(mf.ctypes, "WinDLL", loader)
+
+    with pytest.raises(mf.MainframeError, match="hllapi_dll_path") as exc:
+        mf._resolve_hllapi_dll(str(explicit))
+    assert repr(str(explicit)) in str(exc.value)
+    if failure == "missing":
+        loader.assert_not_called()
+    else:
+        loader.assert_called_once_with(str(explicit), winmode=_native.TRUSTED_LOAD_FLAGS)
 
 
 def test_hllapi_backend_delegates_to_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1711,7 +1760,7 @@ def test_s3270_supports_cafile_probes_help_output_and_caches(
     assert mf._s3270_supports_cafile("missing.exe") is False
 
 
-def test_trusted_hllapi_paths_explicit_missing_file_and_default_search(
+def test_trusted_hllapi_paths_explicit_missing_file_and_no_discovery(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     from dolphin_desktop import _native
@@ -1725,10 +1774,10 @@ def test_trusted_hllapi_paths_explicit_missing_file_and_default_search(
     found = Mock(return_value=[r"C:\Windows\System32\PCSHLL32.DLL"])
     monkeypatch.setattr(_native, "existing_candidates", found)
 
-    result = mf._trusted_hllapi_paths(None)
-
-    assert result == [r"C:\Windows\System32\PCSHLL32.DLL"]
-    found.assert_called_once()
+    for explicit in (None, ""):
+        with pytest.raises(_native.NativeLibraryError, match="hllapi_dll_path is required"):
+            mf._trusted_hllapi_paths(explicit)
+    found.assert_not_called()
 
 
 def test_resolve_hllapi_dll_skips_paths_that_fail_to_load_or_lack_an_export(
