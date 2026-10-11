@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+_MSO_AUTOMATION_SECURITY_LOW = 1
+_MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
+
 
 def _require_win32com() -> Any:
     """Import win32com.client or raise a clear RuntimeError."""
@@ -148,8 +151,26 @@ class ExcelApp:
         self._opened: list[Any] = []
 
     @classmethod
-    def open(cls, path: str | Path, *, visible: bool = True) -> ExcelApp:
-        """Open a workbook from *path* in a private Excel instance."""
+    def open(
+        cls, path: str | Path, *, visible: bool = True, allow_macros: bool = False
+    ) -> ExcelApp:
+        """Open a workbook from *path* in a private Excel instance.
+
+        Args:
+            path: Workbook path, resolved against the process cwd.
+            visible: Show the private Excel instance.
+            allow_macros: Explicit, risky opt-in to VBA macro execution. Macros
+                can execute arbitrary code as the current user. Use only with
+                trusted files; Office policies can still block execution.
+
+        VBA macros are disabled and external links are not updated by default.
+        The previous AutomationSecurity setting is restored after Open, even
+        on failure. ForceDisable does not block Excel 4.0/XLM macros or every
+        type of active content; enforce XLM restrictions through Office policy.
+        Workbooks remain editable for compatibility with save operations.
+        """
+        if not isinstance(allow_macros, bool):
+            raise TypeError("allow_macros must be a bool")
         client = _require_win32com()
         # DispatchEx forces a fresh out-of-process server. A plain Dispatch
         # binds to the operator's already-running Excel through the running
@@ -158,17 +179,21 @@ class ExcelApp:
         xl = client.DispatchEx("Excel.Application")
         app = cls(xl, owned=True)
         try:
-            # msoAutomationSecurityForceDisable: macros in the opened
-            # workbook never run, regardless of the user's own Trust Center
-            # setting — a test driving an arbitrary/untrusted .xlsm must not
-            # be able to execute code through it.
-            xl.AutomationSecurity = 3
             xl.AskToUpdateLinks = False
             xl.Visible = visible
-            # Second positional arg is UpdateLinks (0 = never update external
-            # links silently) — a workbook opened for automation must not
-            # reach out to another file/URL on open.
-            app._opened.append(xl.Workbooks.Open(str(Path(path).resolve()), 0))
+            # Second positional arg is UpdateLinks (0 = do not update workbook
+            # external links). Other active content is governed by Office policy.
+            resolved_path = str(Path(path).resolve())
+            previous_security = xl.AutomationSecurity
+            try:
+                xl.AutomationSecurity = (
+                    _MSO_AUTOMATION_SECURITY_LOW
+                    if allow_macros
+                    else _MSO_AUTOMATION_SECURITY_FORCE_DISABLE
+                )
+                app._opened.append(xl.Workbooks.Open(resolved_path, 0))
+            finally:
+                xl.AutomationSecurity = previous_security
         except BaseException:
             # Nothing outside this call holds the private instance, so a
             # failing Open (missing, locked, corrupt, password-prompted)
@@ -313,8 +338,23 @@ class WordApp:
         self._opened: list[Any] = []
 
     @classmethod
-    def open(cls, path: str | Path, *, visible: bool = True) -> WordApp:
-        """Open a document from *path* in a private Word instance."""
+    def open(cls, path: str | Path, *, visible: bool = True, allow_macros: bool = False) -> WordApp:
+        """Open a document from *path* in a private Word instance.
+
+        Args:
+            path: Document path, resolved against the process cwd.
+            visible: Show the private Word instance.
+            allow_macros: Explicit, risky opt-in to VBA macro execution. Macros
+                can execute arbitrary code as the current user. Use only with
+                trusted files; Office policies can still block execution.
+
+        VBA macros are disabled by default. The previous AutomationSecurity
+        setting is restored after Open, even on failure. This setting is not
+        a sandbox for other active content. Documents remain editable for
+        compatibility with save operations.
+        """
+        if not isinstance(allow_macros, bool):
+            raise TypeError("allow_macros must be a bool")
         client = _require_win32com()
         # DispatchEx forces a fresh out-of-process server. A plain Dispatch
         # binds to the operator's already-running Word through the running
@@ -323,13 +363,18 @@ class WordApp:
         wd = client.DispatchEx("Word.Application")
         app = cls(wd, owned=True)
         try:
-            # msoAutomationSecurityForceDisable: macros in the opened
-            # document never run, regardless of the user's own Trust Center
-            # setting — a test driving an arbitrary/untrusted .docm must not
-            # be able to execute code through it.
-            wd.AutomationSecurity = 3
             wd.Visible = visible
-            app._opened.append(wd.Documents.Open(str(Path(path).resolve())))
+            resolved_path = str(Path(path).resolve())
+            previous_security = wd.AutomationSecurity
+            try:
+                wd.AutomationSecurity = (
+                    _MSO_AUTOMATION_SECURITY_LOW
+                    if allow_macros
+                    else _MSO_AUTOMATION_SECURITY_FORCE_DISABLE
+                )
+                app._opened.append(wd.Documents.Open(resolved_path))
+            finally:
+                wd.AutomationSecurity = previous_security
         except BaseException:
             # Nothing outside this call holds the private instance, so a
             # failing Open (missing, locked, corrupt, password-prompted)
