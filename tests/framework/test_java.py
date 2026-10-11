@@ -293,7 +293,7 @@ def test_java_home_uses_a_valid_registry_installation(monkeypatch, tmp_path) -> 
     assert java.JavaAccessBridge.java_home() == str(tmp_path)
 
 
-def test_java_home_falls_back_to_where_and_swallows_discovery_errors(monkeypatch, tmp_path) -> None:
+def test_java_home_never_executes_where_from_cwd_or_path(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("JAVA_HOME", str(tmp_path / "not-a-directory"))
     winreg = SimpleNamespace(
         HKEY_CURRENT_USER=1,
@@ -301,22 +301,15 @@ def test_java_home_falls_back_to_where_and_swallows_discovery_errors(monkeypatch
         OpenKey=lambda *_args: (_ for _ in ()).throw(OSError("no registry")),
     )
     monkeypatch.setitem(sys.modules, "winreg", winreg)
-    java_exe = tmp_path / "jdk" / "bin" / "java.exe"
-    java_exe.parent.mkdir(parents=True)
-    with patch.object(
-        java.subprocess,
-        "run",
-        return_value=SimpleNamespace(returncode=0, stdout=str(java_exe).encode()),
-    ) as run:
-        assert java.JavaAccessBridge.java_home() == str(tmp_path / "jdk")
-    run.assert_called_once_with(["where.exe", "java"], capture_output=True, timeout=5)
-
-    with patch.object(
-        java.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout=b"")
-    ):
+    for folder in (tmp_path / "cwd", tmp_path / "path"):
+        folder.mkdir()
+        (folder / "where.exe").write_bytes(b"MZ")
+        (folder / "java.exe").write_bytes(b"MZ")
+    monkeypatch.chdir(tmp_path / "cwd")
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    with patch.object(java.subprocess, "run") as run:
         assert java.JavaAccessBridge.java_home() is None
-    with patch.object(java.subprocess, "run", side_effect=OSError("where unavailable")):
-        assert java.JavaAccessBridge.java_home() is None
+    run.assert_not_called()
 
 
 def test_java_home_ignores_registry_value_errors(monkeypatch, tmp_path) -> None:
@@ -336,15 +329,12 @@ def test_java_home_ignores_registry_value_errors(monkeypatch, tmp_path) -> None:
         QueryValueEx=lambda *_args: (_ for _ in ()).throw(OSError("bad value")),
     )
     monkeypatch.setitem(sys.modules, "winreg", winreg)
-    with patch.object(
-        java.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout=b"")
-    ):
+    with patch.object(java.subprocess, "run") as run:
         assert java.JavaAccessBridge.java_home() is None
+    run.assert_not_called()
 
 
-def test_java_home_skips_an_invalid_registry_home_and_invalid_where_home(
-    monkeypatch, tmp_path
-) -> None:
+def test_java_home_skips_an_invalid_registry_home(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("JAVA_HOME", str(tmp_path / "not-a-directory"))
 
     class _Key:
@@ -364,9 +354,9 @@ def test_java_home_skips_an_invalid_registry_home_and_invalid_where_home(
     )
     monkeypatch.setitem(sys.modules, "winreg", winreg)
     monkeypatch.setattr(java.os.path, "isdir", lambda _path: False)
-    where = SimpleNamespace(returncode=0, stdout=b"C:\\jdk\\bin\\java.exe\n")
-    with patch.object(java.subprocess, "run", return_value=where):
+    with patch.object(java.subprocess, "run") as run:
         assert java.JavaAccessBridge.java_home() is None
+    run.assert_not_called()
 
 
 def test_trusted_java_home_fails_closed_when_path_normalization_fails(
@@ -427,11 +417,63 @@ def test_enable_never_falls_back_to_bare_jabswitch_from_path(monkeypatch, tmp_pa
     run.assert_not_called()
 
 
-def test_ensure_enabled_calls_enable_only_when_probe_is_false(monkeypatch) -> None:
+def test_ensure_enabled_calls_enable_only_when_probe_is_false(monkeypatch, tmp_path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "windowsaccessbridge-64.dll").write_bytes(b"MZ")
+    monkeypatch.setenv("JAVA_HOME", str(tmp_path))
     monkeypatch.setattr(java.JavaAccessBridge, "is_enabled", staticmethod(lambda: False))
     with patch.object(java.JavaAccessBridge, "enable") as enable:
         java.JavaAccessBridge.ensure_enabled()
     enable.assert_called_once_with()
+
+
+@pytest.mark.parametrize("configured_home", [None, "relative-jdk", "missing-jdk", "jdk"])
+def test_registry_discovery_and_activation_do_not_replace_jab_configuration(
+    monkeypatch, tmp_path, configured_home
+) -> None:
+    class _Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    registered_home = tmp_path / "registered-jdk"
+    (registered_home / "bin").mkdir(parents=True)
+    (registered_home / "bin" / "windowsaccessbridge-64.dll").write_bytes(b"MZ")
+    (tmp_path / "jdk").mkdir()
+    winreg = SimpleNamespace(
+        HKEY_CURRENT_USER=1,
+        HKEY_LOCAL_MACHINE=2,
+        OpenKey=lambda *_args: _Key(),
+        EnumValue=lambda *_args: ("jabswitch", "", 1),
+        QueryValueEx=lambda _key, name: (
+            ("17", 1) if name == "CurrentVersion" else (str(registered_home), 1)
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+    if configured_home is None:
+        monkeypatch.delenv("JAVA_HOME", raising=False)
+    else:
+        value = configured_home
+        if value in ("jdk", "missing-jdk"):
+            value = str(tmp_path / value)
+        monkeypatch.setenv("JAVA_HOME", value)
+
+    expected_home = str(tmp_path / "jdk") if configured_home == "jdk" else str(registered_home)
+    assert java.JavaAccessBridge.java_home() == expected_home
+    assert java.JavaAccessBridge.is_enabled() is True
+    with (
+        patch.object(java.subprocess, "run") as run,
+        patch.object(java.ctypes, "WinDLL") as loader,
+    ):
+        with pytest.raises(RuntimeError, match="JAVA_HOME"):
+            java.JavaAccessBridge.validate_configuration()
+        with pytest.raises(RuntimeError, match="JAVA_HOME"):
+            java.JavaAccessBridge.ensure_enabled()
+    run.assert_not_called()
+    loader.assert_not_called()
 
 
 # Session construction, ctypes prototypes, and low-level calls
@@ -1654,9 +1696,11 @@ def test_java_access_bridge_checks_environment_and_runs_enable(monkeypatch, tmp_
     import dolphin_desktop._java as java
 
     java_home = tmp_path / "jdk"
-    java_home.mkdir()
+    (java_home / "bin").mkdir(parents=True)
+    (java_home / "bin" / "windowsaccessbridge-64.dll").write_bytes(b"MZ")
     monkeypatch.setenv("JAVA_HOME", str(java_home))
     assert java.JavaAccessBridge.java_home() == str(java_home)
+    assert java.JavaAccessBridge.validate_configuration() == str(java_home)
 
     class _Key:
         def __enter__(self):

@@ -22,6 +22,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Java discovery no longer runs `where.exe` by name. JAB configuration can be
+  checked separately with `JavaAccessBridge.validate_configuration()`, and
+  `ensure_enabled()` validates it before accepting the Windows activation state.
+
 * Hidden-desktop `Locator.press_key()` now focuses the element after activating
   `DolphinHidden`, reports a clear `DolphinError` instead of using system-wide
   modifier events when activation fails, and `Locator.text()` preserves the
