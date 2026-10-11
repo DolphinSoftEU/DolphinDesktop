@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Skipped pytest reports retain their structured representation while secrets
+  are redacted, preventing terminal/JUnit reporting errors during CDP retests.
+  The required Windows component suite now verifies a real Chromium handshake,
+  parallel profile isolation, session shutdown and debug-port reuse (KAN-475).
+
 * Java discovery no longer runs `where.exe` by name. JAB configuration can be
   checked separately with `JavaAccessBridge.validate_configuration()`, and
   `ensure_enabled()` validates it before accepting the Windows activation state.

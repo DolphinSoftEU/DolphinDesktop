@@ -323,6 +323,43 @@ class TestHtmlReportEscaping:
 
 
 class TestMakereportIsolation:
+    def test_skip_reporting_preserves_tuple_and_redacts_reason(self):
+        report = SimpleNamespace(longrepr=("test_cdp.py", 12, "Skipped: token=CDP_SECRET_123"))
+        plugin._redact_report(report)
+        assert report.longrepr == ("test_cdp.py", 12, "Skipped: token=***")
+
+    def test_skips_reach_terminal_and_junit_reporters(self, tmp_path):
+        test_file = tmp_path / "test_skip.py"
+        test_file.write_text(
+            "import pytest\ndef test_optional_cdp():\n    pytest.skip('token=CDP_SECRET_123')\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:dolphin-desktop",
+                "-p",
+                "dolphin_desktop.pytest_plugin",
+                str(test_file),
+                "-rs",
+                "--junitxml",
+                str(tmp_path / "result.xml"),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "1 skipped" in result.stdout
+        assert "token=***" in result.stdout
+        assert "CDP_SECRET_123" not in result.stdout + result.stderr
+        assert "CDP_SECRET_123" not in (tmp_path / "result.xml").read_text(encoding="utf-8")
+
     def test_makereport_redacts_longrepr_before_reporters_serialize_it(self, monkeypatch):
         monkeypatch.setattr(plugin, "_collect_artifacts", lambda *_args: None)
         report = SimpleNamespace(
