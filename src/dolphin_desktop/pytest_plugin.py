@@ -404,10 +404,10 @@ def _dolphin_marker_config(request: pytest.FixtureRequest) -> Iterator[None]:
             ) from exc
 
     video_mode = marker_kwargs.get("video_mode")
-    if video_mode is not None:
+    if "video_mode" in marker_kwargs:
         valid_video_modes = _cfg._video_modes()
         if not isinstance(video_mode, str) or video_mode not in valid_video_modes:
-            raise pytest.UsageError(
+            raise ValueError(
                 "Invalid @pytest.mark.dolphin "
                 f"video_mode={video_mode!r}: expected one of {valid_video_modes}."
             )
@@ -520,8 +520,8 @@ def _dolphin_trace(request: pytest.FixtureRequest) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _dolphin_video(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Per-test video recording lifecycle."""
+def _dolphin_video(request: pytest.FixtureRequest, _dolphin_marker_config: None) -> Iterator[None]:
+    """Per-test video recording lifecycle, after marker validation and overrides."""
     from . import _config as _cfg
     from . import _video
 
