@@ -2,6 +2,44 @@
 
 This checklist takes a `master` branch commit to a PyPI release.
 
+The normal publishing path is `.github/workflows/release.yml`: push a version
+tag or dispatch the workflow with the desired target. CVE, secrets and SAST
+checks on the exact release commit must pass on Windows and Linux before
+building; only the publishing jobs receive an OIDC token. See the
+[CI security and retest policy](SECURITY.md#github-actions-and-release-gates-kan-474).
+The manual commands below are maintainer operations and do not enforce those
+workflow gates.
+
+Production PyPI publication requires a canonical final `X.Y.Z` version and
+either `master` or the matching `vX.Y.Z` tag. The checked-out production commit
+must be an ancestor of `origin/master`; an unmerged feature commit cannot be
+published by attaching a release tag. Development, alpha, beta, RC, post and
+local versions are rejected for PyPI. TestPyPI accepts `master`,
+`testpypi-preview`, or a matching final/RC tag. An RC tag uses `vX.Y.Z-rc.N`
+and must match the project's `X.Y.ZrcN` version.
+
+Before using the workflow, an administrator must configure both environments
+in [GitHub Settings → Environments](https://github.com/DolphinSoftEU/DolphinDesktop/settings/environments):
+
+| Environment | Allowed branches | Allowed tags |
+| --- | --- | --- |
+| `pypi` | `master` | `v*.*.*` |
+| `testpypi` | `master`, `testpypi-preview` | `v*.*.*` |
+
+Select **Selected branches and tags** and create separate branch and tag rules;
+remove any broader existing rules. The tag glob is supplemented by the stricter
+version and source validation in the workflow. Enable **Prevent self-review**
+with the existing required reviewer and disable **Allow administrators to bypass
+configured protection rules** if approval must always be independent. The sole
+current required reviewer is `DolphinSoftEU`: that account cannot approve a run
+it initiates when self-review is prevented. Another collaborator must initiate
+the run, or an administrator must appoint another trusted reviewer.
+
+On 2026-10-11, applying these environment changes through the available GitHub
+credentials failed with HTTP 403 (`Must have admin rights to Repository`). The
+workflow validation is implemented locally, but the environment settings still
+require an administrator. See [GitHub's environment configuration instructions](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
+
 ## 1 — Pre-flight
 
 - [ ] All tests pass on the release commit (`pytest -q`).
@@ -40,14 +78,15 @@ git diff --stat
 # Clean any previous builds
 Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
 
-# Build sdist + wheel with hatchling
-python -m build
+# Install the locked build tools and build without resolving a new backend
+uv sync --locked --only-group build
+uv run --no-sync python -m build --no-isolation
 
 # Inspect the wheel contents
 python -m zipfile -l dist\dolphin_desktop-$new-py3-none-any.whl
 
 # Twine dry-run — validates the metadata
-python -m twine check dist\*
+uv run --no-sync twine check dist\*
 ```
 
 Both `twine check` lines should print `PASSED`.

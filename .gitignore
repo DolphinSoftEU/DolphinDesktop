@@ -14,10 +14,12 @@ htmlcov/
 
 # Dolphin telemetry / generated artifacts
 .dolphin-selfheal.jsonl
+.dolphin-selfheal.jsonl.lock
 dolphin-screenshots/
 dolphin-traces/
 dolphin-videos/
 dolphin-report.html
+dolphin-report-gw*.html
 
 # MkDocs build output
 site/

@@ -128,6 +128,134 @@ credentials in scope without reading them first; `--dolphin-trace=off`
 disables trace capture entirely, and the surest option remains not putting a
 production credential in a test run.
 
+## GitHub Actions and release gates (KAN-474)
+
+The product repository is `DolphinSoftEU/DolphinDesktop`. Its tracked
+`.github/workflows/`, `pyproject.toml` and `uv.lock` are the inputs for retesting
+KAN-474; the separate `dolphin-desktop.ta` repository cannot establish these
+acceptance criteria.
+
+| Workflow / jobs | Events | Token permissions |
+| --- | --- | --- |
+| CI: unit, component, package, security | PR and push to master/testpypi-preview | `contents: read` |
+| Docs: build | PR and push for docs, source, dependency or workflow changes | `contents: read` |
+| Docs: deploy | Push to master only, after build succeeds | `contents: write` for mike's gh-pages commits |
+| Release: security, build, smoke | Version tag push or manual dispatch | `contents: read` |
+| Release: publish-testpypi, publish-pypi | After security and build succeed, selected target only | `id-token: write` only, protected target environment |
+
+All external Actions use full commit SHAs. Dependabot proposes reviewed updates
+in `.github/dependabot.yml`. Read-only checkouts do not persist repository
+credentials. PRs run on hosted runners using `pull_request`, without a write
+token or OIDC. Only the master documentation deploy persists a token to push
+gh-pages. Production validation allows only a final `X.Y.Z` version from
+`master` or a matching final tag whose commit is already in `origin/master`.
+TestPyPI allows `master`, `testpypi-preview` and matching final/RC tags. Full
+checkout history supports the production ancestry check; validation fails
+before build outputs are written if the source, target, ref or version is
+invalid. Configure matching environment rules and independent approval as
+described in [RELEASING.md](RELEASING.md); these settings are outside the repository.
+
+uv itself is pinned to 0.11.9. Dependency installation and export use `--locked`,
+which rejects stale project metadata without rewriting the lock. Security and
+build tools (including the hatchling backend), docs and Qt test bindings come
+from `uv.lock`. Package builds use `--no-isolation` with the locked backend,
+so build does not resolve a new backend in a separate environment. `--no-sync`
+commands use the environment installed by the immediately preceding locked
+sync; normal CI commands use `--locked`.
+
+Both CI and release run the following checks on Windows and Linux to evaluate
+platform-specific dependency markers:
+
+- pip-audit checks the locked dependencies, all extras and dependency groups;
+  any known vulnerability or strict audit failure blocks the job.
+- Bandit checks the shipped Python source; medium and high severity findings
+  block the job (`-ll`).
+- detect-secrets checks tracked files against the reviewed `.secrets.baseline`;
+  new findings block the job. Baseline changes require review of each finding,
+  rather than automatic regeneration to make the gate pass.
+
+Release's build job depends on the complete security matrix. Both publishing
+jobs depend on build and download only that run's `dolphin-desktop-dist`
+artifact. Security and build check out the default revision of the same run;
+publication cannot reuse a successful check from a different commit. Package
+smoke tests intentionally install from the public index to validate distribution
+behavior, rather than replacing the user's dependency resolution with the CI lock.
+
+Run the configuration regressions from the product repository:
+
+```powershell
+uv lock --check
+uv run --locked pytest tests/framework/test_ci_security.py -q
+```
+
+These cover event triggers, effective job permissions, action SHA pins, release
+gate dependencies and a deliberately stale lockfile rejected by real uv. A full
+retest additionally needs GitHub Actions run URLs and commit SHAs for a PR, a
+branch push and a release/dispatch run. Verify that a failing security matrix
+skips build and publication, and that a successful approved run publishes the
+artifact from that same run. Local configuration tests do not establish hosted
+runner, environment approval or Trusted Publisher behavior.
+
+### Retest observations, 2026-10-11
+
+The GitHub environment API was checked for both `pypi` and `testpypi`.
+Both require approval by `DolphinSoftEU`, but `prevent_self_review` is false
+and `deployment_branch_policy` is null: allowed deployment branches/tags are
+unrestricted. Approval therefore does not enforce a separate reviewer or an
+approved release ref. Before treating these environments as protected release
+boundaries, restrict the allowed refs and enable prevention of self-review
+according to the maintainer's release policy.
+
+The follow-up attempted to enable selected branches/tags and Prevent
+self-review in both environments, preserving their current required reviewer.
+Both environment update requests were rejected with HTTP 403 (`Must have admin
+rights to Repository`), so those settings remain unchanged. Administrator
+action is required; the exact desired settings and the implications of the
+single existing reviewer are documented in [RELEASING.md](RELEASING.md).
+
+Local follow-up validation: 47 CI policy tests passed, including rejected
+manual production deployments from preview/feature branches, non-final versions,
+wrong tag versions, and real Git repositories with unmerged tagged commits.
+The workflow validates the full `github.ref` and fetches history for the
+ancestry check. This does not replace GitHub Environment rules: an unapproved
+ref can contain a modified workflow or validator. Production deployment remains
+dependent on administrator configuration of the server-side restrictions.
+
+The latest available [release run](https://github.com/DolphinSoftEU/DolphinDesktop/actions/runs/37151851015)
+used commit `71fe568a06d09575c37f8f87b150e2600b3891c4` and had no separate
+security matrix. It does not prove that the new `build → security` dependency
+blocks publication on failure. A hosted run of the updated workflow with a
+failing security check remains required; both build and publishing jobs must
+be skipped. Do not approve an actual publication as part of that negative test.
+
+The local lock regression now creates a minimal project with a local path
+dependency and an isolated cache. It first creates and checks a valid lock,
+then changes dependencies and requires the specific `uv lock --check` stale
+lock diagnostic without rewriting the file. Updating and checking the lock
+again must succeed offline, ruling out unavailable registry packages as the
+cause of the negative result. The CI policy regressions also reject mutated
+workflows with ignored job/step failures, shell failure masking, removed job
+dependencies or `always()` conditions around the release gate.
+
+Windows Qt tests constrain `PyQt5-Qt5` to 5.15.2 because newer releases may
+lack Windows wheels. The lock includes a Windows x64 wheel; the regression
+checks its presence, and the six authenticated Qt5/Qt6 agent integration
+scenarios passed after installation from the updated lock on Windows with
+Python 3.12 and 3.13. All 19 CI policy tests passed on Windows with Python
+3.11, 3.12 and 3.13; Ruff lint/format and mypy also passed.
+
+Broader local checks did not establish a completely passing suite:
+
+- `pytest tests/qt -q --maxfail=1`: 61 passed, then
+  `test_qt_core.py::test_get_by_object_name_finds_widget` failed to locate the
+  Qt6 widget `qt_btn_ok` through UIA. The same failure reproduced in the
+  existing `.venv` with the unchanged PySide6 6.10.3 version.
+- `pytest -m unit -n 4 -q --maxfail=1`: 2150 passed, one skipped, then
+  `TestReportCollection::test_reports_with_failures_are_serializable_under_xdist`
+  failed because its nested pytest run encountered `FileNotFoundError`.
+  Running that test alone passed in both the new and existing environments;
+  the failure under concurrent execution remains unexplained.
+
 ## Security regression mapping
 
 The table below maps each Jira item to its corresponding regression test; it
