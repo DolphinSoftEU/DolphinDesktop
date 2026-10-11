@@ -23,7 +23,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 ### Fixed
 
 * Invalid `@pytest.mark.dolphin(video_mode=...)` values now raise `ValueError`
-  with the rejected value before the test body or video recorder starts (KAN-572).
+  with the rejected value, including explicit `None`. Video recording explicitly
+  depends on marker validation, so it cannot start before validation (KAN-572).
 
 * Skipped pytest reports retain their structured representation while secrets
   are redacted, preventing terminal/JUnit reporting errors during CDP retests.

@@ -253,7 +253,7 @@ class TestVideoFailuresAreReported:
         monkeypatch.setattr(_video, "find_ffmpeg", lambda: ffmpeg)
         request = SimpleNamespace(node=SimpleNamespace(stash=pytest.Stash()))
         with caplog.at_level("DEBUG", logger="dolphin_desktop.plugin"):
-            fixture = plugin._dolphin_video.__wrapped__(request)
+            fixture = plugin._dolphin_video.__wrapped__(request, None)
             next(fixture)
             fixture.close()
         return caplog.records
@@ -995,6 +995,7 @@ class TestFixtures:
             ({"video_mode": "keep-everything", "timeout": 1}, "keep-everything", ValueError),
             ({"video_mode": 1}, "video_mode=1", ValueError),
             ({"video_mode": []}, "video_mode", ValueError),
+            ({"video_mode": None, "timeout": 1}, "video_mode=None", ValueError),
             ({"headless": "yes"}, "headless", pytest.UsageError),
         ),
     )
@@ -1011,11 +1012,21 @@ class TestFixtures:
         assert _config._defaults == {"timeout": 10.0, "video_mode": "off"}
 
     @pytest.mark.parametrize("video_mode", ("off", "keepall"))
-    def test_invalid_marker_value_fails_before_video_recorder_starts(self, tmp_path, video_mode):
+    @pytest.mark.parametrize("marker_value", ("keep-everything", None))
+    def test_invalid_marker_value_fails_before_video_recorder_starts(
+        self, tmp_path, video_mode, marker_value
+    ):
         (tmp_path / "conftest.py").write_text(
             """
 from pathlib import Path
-from dolphin_desktop import _video
+import pytest
+from dolphin_desktop import _video, pytest_plugin
+
+
+# Remove autouse scheduling to verify the recorder's explicit dependency.
+@pytest.fixture
+def _dolphin_marker_config(request):
+    yield from pytest_plugin._dolphin_marker_config.__wrapped__(request)
 
 
 def recorder_started(self):
@@ -1029,12 +1040,12 @@ _video.VideoRecorder.start = recorder_started
         )
         test_file = tmp_path / "test_invalid_marker.py"
         test_file.write_text(
-            """
+            f"""
 from pathlib import Path
 import pytest
 
 
-@pytest.mark.dolphin(video_mode="keep-everything")
+@pytest.mark.dolphin(video_mode={marker_value!r})
 def test_invalid_marker_value():
     Path("test-body-ran").touch()
 """,
@@ -1063,7 +1074,7 @@ def test_invalid_marker_value():
         output = result.stdout + result.stderr
         assert result.returncode == 1, output
         assert "1 error" in output
-        assert "ValueError: Invalid @pytest.mark.dolphin video_mode='keep-everything'" in output
+        assert f"ValueError: Invalid @pytest.mark.dolphin video_mode={marker_value!r}" in output
         assert not (tmp_path / "recorder-started").exists()
         assert not (tmp_path / "test-body-ran").exists()
 
@@ -1141,7 +1152,7 @@ class TestTraceAndVideoFixtures:
         monkeypatch.setattr(_config, "get_video_mode", lambda: "off")
         monkeypatch.setattr(_video, "VideoRecorder", lambda **_kwargs: pytest.fail("not created"))
         request = _request(tmp_path)
-        generator = plugin._dolphin_video.__wrapped__(request)
+        generator = plugin._dolphin_video.__wrapped__(request, None)
         next(generator)
         with pytest.raises(StopIteration):
             next(generator)
@@ -1160,7 +1171,7 @@ class TestTraceAndVideoFixtures:
 
         monkeypatch.setattr(_video, "VideoRecorder", Recorder)
         monkeypatch.setattr(_video, "find_ffmpeg", lambda: None)
-        generator = plugin._dolphin_video.__wrapped__(_request(tmp_path))
+        generator = plugin._dolphin_video.__wrapped__(_request(tmp_path), None)
         next(generator)
         with pytest.raises(StopIteration):
             next(generator)
@@ -1188,7 +1199,7 @@ class TestTraceAndVideoFixtures:
 
         monkeypatch.setattr(_video, "VideoRecorder", Recorder)
         request = _request(tmp_path)
-        generator = plugin._dolphin_video.__wrapped__(request)
+        generator = plugin._dolphin_video.__wrapped__(request, None)
         next(generator)
         assert request.node.stash.get(plugin._VIDEO_RECORDER_KEY, None) is not None
         generator.close()
@@ -1231,7 +1242,7 @@ class TestTraceAndVideoFixtures:
         monkeypatch.setattr(_video, "VideoRecorder", Recorder)
         request = _request(tmp_path)
         request.node.stash = Stash()
-        generator = plugin._dolphin_video.__wrapped__(request)
+        generator = plugin._dolphin_video.__wrapped__(request, None)
         next(generator)
         generator.close()
 
