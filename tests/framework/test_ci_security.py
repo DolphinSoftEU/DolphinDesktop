@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -16,6 +18,8 @@ import yaml
 pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
+RELEASE_SCRIPT = ROOT / ".github" / "scripts" / "validate_release.py"
+release_target = runpy.run_path(str(RELEASE_SCRIPT))["release_target"]
 
 
 def load(name: str) -> dict:
@@ -215,3 +219,106 @@ def test_locked_qt5_runtime_has_a_windows_wheel() -> None:
     assert any("win_amd64.whl" in wheel["url"] for wheel in windows_runtime["wheels"])
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert "PyQt5-Qt5==5.15.2; sys_platform == 'win32'" in project["dependency-groups"]["qt-tests"]
+
+
+@pytest.mark.parametrize(
+    ("version", "event", "ref", "requested", "expected"),
+    [
+        ("0.2.0", "workflow_dispatch", "refs/heads/master", "pypi", "pypi"),
+        ("0.2.0", "workflow_dispatch", "refs/tags/v0.2.0", "pypi", "pypi"),
+        ("0.2.0", "push", "refs/tags/v0.2.0", "", "pypi"),
+        ("0.2.0rc1", "push", "refs/tags/v0.2.0-rc.1", "", "testpypi"),
+        ("0.2.0.dev7", "workflow_dispatch", "refs/heads/testpypi-preview", "testpypi", "testpypi"),
+        ("0.2.0rc1", "workflow_dispatch", "refs/tags/v0.2.0-rc.1", "testpypi", "testpypi"),
+        ("0.2.0", "workflow_dispatch", "refs/tags/v0.2.0", "testpypi", "testpypi"),
+    ],
+)
+def test_approved_release_refs(version, event, ref, requested, expected) -> None:
+    assert release_target(version, event, ref, requested) == expected
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["0.2.0.dev7", "0.2.0a1", "0.2.0b1", "0.2.0rc1", "0.2.0.post1", "0.2.0+local", "1!0.2.0"],
+)
+def test_production_rejects_non_final_versions(version: str) -> None:
+    with pytest.raises(ValueError, match=r"final X\.Y\.Z"):
+        release_target(version, "workflow_dispatch", "refs/heads/master", "pypi")
+
+
+@pytest.mark.parametrize(
+    ("version", "event", "ref", "requested"),
+    [
+        ("0.2.0", "workflow_dispatch", "refs/heads/testpypi-preview", "pypi"),
+        ("0.2.0", "workflow_dispatch", "refs/heads/feature/fix", "pypi"),
+        ("0.2.0", "workflow_dispatch", "refs/heads/v0.2.0", "pypi"),
+        ("0.2.0", "workflow_dispatch", "refs/tags/preview", "pypi"),
+        ("0.2.0", "workflow_dispatch", "refs/tags/v0.2.1", "pypi"),
+        ("0.2.0rc1", "workflow_dispatch", "refs/tags/v0.2.0-rc.1", "pypi"),
+        ("0.2.0rc2", "push", "refs/tags/v0.2.0-rc.1", ""),
+        ("0.2.0", "push", "refs/heads/master", ""),
+        ("0.2.0", "workflow_dispatch", "refs/heads/feature/fix", "testpypi"),
+        ("0.2.0", "workflow_dispatch", "refs/heads/master", "unknown"),
+        ("0.2.0", "pull_request", "refs/heads/master", "pypi"),
+    ],
+)
+def test_unapproved_release_is_rejected(version, event, ref, requested) -> None:
+    with pytest.raises(ValueError):
+        release_target(version, event, ref, requested)
+
+
+@pytest.mark.parametrize("approved_commit", [True, False])
+def test_production_tag_requires_a_master_commit(tmp_path: Path, approved_commit: bool) -> None:
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init")
+    git("config", "user.name", "Release policy test")
+    git("config", "user.email", "release-policy@example.invalid")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "release-fixture"\nversion = "0.2.0"\n', encoding="utf-8"
+    )
+    git("add", "pyproject.toml")
+    git("commit", "-m", "Approved release source")
+    git("update-ref", "refs/remotes/origin/master", "HEAD")
+    if not approved_commit:
+        (tmp_path / "unmerged.txt").write_text("Unapproved source", encoding="utf-8")
+        git("add", "unmerged.txt")
+        git("commit", "-m", "Unmerged feature source")
+    output = tmp_path / "outputs.txt"
+    result = subprocess.run(
+        [sys.executable, str(RELEASE_SCRIPT)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "EVENT_NAME": "workflow_dispatch",
+            "RELEASE_REF": "refs/tags/v0.2.0",
+            "DISPATCH_TARGET": "pypi",
+            "GITHUB_OUTPUT": str(output),
+        },
+        check=False,
+    )
+    if approved_commit:
+        assert result.returncode == 0, result.stderr
+        assert output.read_text(encoding="utf-8") == "version=0.2.0\ntarget=pypi\n"
+    else:
+        assert result.returncode == 1
+        assert "Release rejected" in result.stderr
+        assert not output.exists()
+
+
+def test_release_workflow_enforces_validation_before_building() -> None:
+    steps = load("release.yml")["jobs"]["build"]["steps"]
+    validation = next(step for step in steps if step.get("id") == "meta")
+    assert validation["run"] == "python .github/scripts/validate_release.py"
+    assert validation["env"]["RELEASE_REF"] == "${{ github.ref }}"
+    assert validation["env"]["EVENT_NAME"] == "${{ github.event_name }}"
+    assert validation["env"]["DISPATCH_TARGET"] == "${{ inputs.target }}"
+    assert "if" not in validation and "continue-on-error" not in validation
+    assert steps[0]["with"]["fetch-depth"] == "0"
+    build_index = next(
+        i for i, step in enumerate(steps) if step.get("name") == "Build wheel and sdist"
+    )
+    assert steps.index(validation) < build_index

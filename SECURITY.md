@@ -147,8 +147,13 @@ All external Actions use full commit SHAs. Dependabot proposes reviewed updates
 in `.github/dependabot.yml`. Read-only checkouts do not persist repository
 credentials. PRs run on hosted runners using `pull_request`, without a write
 token or OIDC. Only the master documentation deploy persists a token to push
-gh-pages. Configure environment approval and allowed release refs in GitHub's
-`pypi` and `testpypi` environments; these settings are outside the repository.
+gh-pages. Production validation allows only a final `X.Y.Z` version from
+`master` or a matching final tag whose commit is already in `origin/master`.
+TestPyPI allows `master`, `testpypi-preview` and matching final/RC tags. Full
+checkout history supports the production ancestry check; validation fails
+before build outputs are written if the source, target, ref or version is
+invalid. Configure matching environment rules and independent approval as
+described in [RELEASING.md](RELEASING.md); these settings are outside the repository.
 
 uv itself is pinned to 0.11.9. Dependency installation and export use `--locked`,
 which rejects stale project metadata without rewriting the lock. Security and
@@ -200,6 +205,21 @@ unrestricted. Approval therefore does not enforce a separate reviewer or an
 approved release ref. Before treating these environments as protected release
 boundaries, restrict the allowed refs and enable prevention of self-review
 according to the maintainer's release policy.
+
+The follow-up attempted to enable selected branches/tags and Prevent
+self-review in both environments, preserving their current required reviewer.
+Both environment update requests were rejected with HTTP 403 (`Must have admin
+rights to Repository`), so those settings remain unchanged. Administrator
+action is required; the exact desired settings and the implications of the
+single existing reviewer are documented in [RELEASING.md](RELEASING.md).
+
+Local follow-up validation: 47 CI policy tests passed, including rejected
+manual production deployments from preview/feature branches, non-final versions,
+wrong tag versions, and real Git repositories with unmerged tagged commits.
+The workflow validates the full `github.ref` and fetches history for the
+ancestry check. This does not replace GitHub Environment rules: an unapproved
+ref can contain a modified workflow or validator. Production deployment remains
+dependent on administrator configuration of the server-side restrictions.
 
 The latest available [release run](https://github.com/DolphinSoftEU/DolphinDesktop/actions/runs/37151851015)
 used commit `71fe568a06d09575c37f8f87b150e2600b3891c4` and had no separate

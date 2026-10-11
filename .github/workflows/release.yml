@@ -76,6 +76,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -95,46 +96,9 @@ jobs:
         id: meta
         env:
           EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
+          RELEASE_REF: ${{ github.ref }}
           DISPATCH_TARGET: ${{ inputs.target }}
-        run: |
-          python - <<'PY'
-          import os
-          import pathlib
-          import re
-          import sys
-
-          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-          version = re.search(r'^version = "([^"]+)"$', text, re.MULTILINE).group(1)
-          event_name = os.environ["EVENT_NAME"]
-          ref_name = os.environ["REF_NAME"]
-
-          if event_name == "push":
-              rc = re.fullmatch(r"v(\d+\.\d+\.\d+)-rc\.(\d+)", ref_name)
-              prod = re.fullmatch(r"v(\d+\.\d+\.\d+)", ref_name)
-              if rc:
-                  expected_version = f"{rc.group(1)}rc{rc.group(2)}"
-                  target = "testpypi"
-              elif prod:
-                  expected_version = prod.group(1)
-                  target = "pypi"
-              else:
-                  print(f"Unsupported release tag: {ref_name}", file=sys.stderr)
-                  sys.exit(1)
-              if version != expected_version:
-                  print(
-                      f"pyproject.toml version {version!r} does not match tag "
-                      f"{ref_name!r} (expected {expected_version!r})",
-                      file=sys.stderr,
-                  )
-                  sys.exit(1)
-          else:
-              target = os.environ["DISPATCH_TARGET"]
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write(f"version={version}\n")
-              fh.write(f"target={target}\n")
-          PY
+        run: python .github/scripts/validate_release.py
 
       - name: Build wheel and sdist
         run: uv run --no-sync python -m build --no-isolation
