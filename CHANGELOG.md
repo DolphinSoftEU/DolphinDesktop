@@ -22,6 +22,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Invalid `@pytest.mark.dolphin(video_mode=...)` values now raise `ValueError`
+  with the rejected value before the test body or video recorder starts (KAN-572).
+
 * Skipped pytest reports retain their structured representation while secrets
   are redacted, preventing terminal/JUnit reporting errors during CDP retests.
   The required Windows component suite now verifies a real Chromium handshake,

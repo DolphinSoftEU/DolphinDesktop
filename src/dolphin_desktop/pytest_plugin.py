@@ -407,7 +407,7 @@ def _dolphin_marker_config(request: pytest.FixtureRequest) -> Iterator[None]:
     if video_mode is not None:
         valid_video_modes = _cfg._video_modes()
         if not isinstance(video_mode, str) or video_mode not in valid_video_modes:
-            raise pytest.UsageError(
+            raise ValueError(
                 "Invalid @pytest.mark.dolphin "
                 f"video_mode={video_mode!r}: expected one of {valid_video_modes}."
             )

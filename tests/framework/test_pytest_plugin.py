@@ -987,26 +987,85 @@ class TestFixtures:
         assert _config._defaults["video_mode"] == "off"
 
     @pytest.mark.parametrize(
-        ("kwargs", "message"),
+        ("kwargs", "message", "exception"),
         (
-            ({"timeout": "not-a-number"}, "timeout"),
-            ({"timeout": "nan"}, "timeout"),
-            ({"timeout": -1}, "timeout"),
-            ({"video_mode": "invalid-video"}, "video_mode"),
-            ({"headless": "yes"}, "headless"),
+            ({"timeout": "not-a-number"}, "timeout", pytest.UsageError),
+            ({"timeout": "nan"}, "timeout", pytest.UsageError),
+            ({"timeout": -1}, "timeout", pytest.UsageError),
+            ({"video_mode": "keep-everything", "timeout": 1}, "keep-everything", ValueError),
+            ({"video_mode": 1}, "video_mode=1", ValueError),
+            ({"video_mode": []}, "video_mode", ValueError),
+            ({"headless": "yes"}, "headless", pytest.UsageError),
         ),
     )
     def test_marker_config_rejects_invalid_values_before_mutation(
-        self, monkeypatch, tmp_path, kwargs, message
+        self, monkeypatch, tmp_path, kwargs, message, exception
     ):
         from dolphin_desktop import _config
 
         monkeypatch.setattr(_config, "_defaults", {"timeout": 10.0, "video_mode": "off"})
         request = _request(tmp_path, **{"--dolphin-headless": False})
         request.node.get_closest_marker = lambda _name: SimpleNamespace(kwargs=kwargs)
-        with pytest.raises(pytest.UsageError, match=message):
+        with pytest.raises(exception, match=message):
             next(plugin._dolphin_marker_config.__wrapped__(request))
         assert _config._defaults == {"timeout": 10.0, "video_mode": "off"}
+
+    @pytest.mark.parametrize("video_mode", ("off", "keepall"))
+    def test_invalid_marker_value_fails_before_video_recorder_starts(self, tmp_path, video_mode):
+        (tmp_path / "conftest.py").write_text(
+            """
+from pathlib import Path
+from dolphin_desktop import _video
+
+
+def recorder_started(self):
+    Path("recorder-started").touch()
+    raise AssertionError("recorder must not start")
+
+
+_video.VideoRecorder.start = recorder_started
+""",
+            encoding="utf-8",
+        )
+        test_file = tmp_path / "test_invalid_marker.py"
+        test_file.write_text(
+            """
+from pathlib import Path
+import pytest
+
+
+@pytest.mark.dolphin(video_mode="keep-everything")
+def test_invalid_marker_value():
+    Path("test-body-ran").touch()
+""",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:dolphin-desktop",
+                "-p",
+                "dolphin_desktop.pytest_plugin",
+                "--dolphin-trace=off",
+                f"--dolphin-video={video_mode}",
+                str(test_file),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 1, output
+        assert "1 error" in output
+        assert "ValueError: Invalid @pytest.mark.dolphin video_mode='keep-everything'" in output
+        assert not (tmp_path / "recorder-started").exists()
+        assert not (tmp_path / "test-body-ran").exists()
 
     def test_marker_config_covers_active_headless_and_absent_marker_options(
         self, monkeypatch, tmp_path
