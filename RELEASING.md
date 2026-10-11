@@ -2,6 +2,14 @@
 
 This checklist takes a `master` branch commit to a PyPI release.
 
+The normal publishing path is `.github/workflows/release.yml`: push a version
+tag or dispatch the workflow with the desired target. CVE, secrets and SAST
+checks on the exact release commit must pass on Windows and Linux before
+building; only the publishing jobs receive an OIDC token. See the
+[CI security and retest policy](SECURITY.md#github-actions-and-release-gates-kan-474).
+The manual commands below are maintainer operations and do not enforce those
+workflow gates.
+
 ## 1 — Pre-flight
 
 - [ ] All tests pass on the release commit (`pytest -q`).
@@ -40,14 +48,15 @@ git diff --stat
 # Clean any previous builds
 Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue
 
-# Build sdist + wheel with hatchling
-python -m build
+# Install the locked build tools and build without resolving a new backend
+uv sync --locked --only-group build
+uv run --no-sync python -m build --no-isolation
 
 # Inspect the wheel contents
 python -m zipfile -l dist\dolphin_desktop-$new-py3-none-any.whl
 
 # Twine dry-run — validates the metadata
-python -m twine check dist\*
+uv run --no-sync twine check dist\*
 ```
 
 Both `twine check` lines should print `PASSED`.

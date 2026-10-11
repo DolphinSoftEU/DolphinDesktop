@@ -26,6 +26,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -35,6 +37,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.11.9"
           enable-cache: true
 
       - name: Check lockfile
@@ -43,20 +46,23 @@ jobs:
         run: uv lock --check
 
       - name: Install dependencies
-        run: uv sync --group dev --extra vision
+        run: uv sync --locked --group dev --extra vision
+
+      - name: Check workflow security policy
+        run: uv run --locked pytest tests/framework/test_ci_security.py -q
 
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --locked ruff check .
 
       - name: Format check
-        run: uv run ruff format --check .
+        run: uv run --locked ruff format --check .
 
       - name: Type check
-        run: uv run mypy src/
+        run: uv run --locked mypy src/
 
       - name: Unit tests
         run: >
-          uv run pytest
+          uv run --locked pytest
           -m unit
           --cov=dolphin_desktop
           --cov-report=xml
@@ -76,15 +82,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked build tools
+        run: uv sync --locked --only-group build
+
       - name: Build wheel
-        run: |
-          python -m pip install --upgrade build
-          python -m build --wheel
+        run: uv run --no-sync python -m build --no-isolation --wheel
 
       - name: Install wheel and verify Windows-only dependencies stay absent
         shell: bash
@@ -122,6 +137,8 @@ jobs:
       DOLPHIN_COMPONENT_PREFLIGHT: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -130,10 +147,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.11.9"
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --group dev --extra vision
+        run: uv sync --locked --group dev --extra vision
 
       - name: Install wc3270
         shell: pwsh
@@ -166,10 +184,10 @@ jobs:
           Get-Item -LiteralPath $env:DOLPHIN_WS3270_PATH | Format-List FullName,Length
 
       - name: Component tests
-        run: uv run pytest -m "(component or windows_component) and not qt_agent" -q
+        run: uv run --locked pytest -m "(component or windows_component) and not qt_agent" -q
 
       - name: Install Qt agent test bindings
-        run: uv pip install "PyQt5==5.15.11" "PySide6==6.10.3"
+        run: uv sync --locked --group dev --group qt-tests --extra vision
 
       - name: Verify Qt agent test bindings
         run: uv run --no-sync python -c "import PyQt5, PySide6"
@@ -213,6 +231,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -222,13 +242,17 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.11.9"
           enable-cache: true
 
+      - name: Install locked build tools
+        run: uv sync --locked --only-group build
+
       - name: Build wheel and sdist
-        run: uv run --with build python -m build
+        run: uv run --no-sync python -m build --no-isolation
 
       - name: Check distribution metadata
-        run: uv run --with twine twine check dist/*
+        run: uv run --no-sync twine check dist/*
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -238,13 +262,18 @@ jobs:
           if-no-files-found: error
 
   security:
-    name: "Security gate (CVE / secrets / SAST)"
-    runs-on: ubuntu-latest
-    # Read-only: this job inspects the tree, it never writes to it.
+    name: "Security gate (CVE / secrets / SAST) / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -253,27 +282,21 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.11.9"
           enable-cache: true
 
+      - name: Install locked security tools
+        run: uv sync --locked --only-group security
+
       - name: Dependency audit (CVE)
-        # Audits the exact locked versions. A known-vulnerable dependency
-        # fails the gate. Exported without hashes because pip-audit resolves
-        # the pinned versions directly.
+        shell: bash
         run: |
-          uv export --no-hashes --format requirements-txt --all-extras \
+          uv export --locked --no-hashes --format requirements-txt --all-extras --all-groups \
             --no-emit-project > requirements.audit.txt
-          uvx --from pip-audit pip-audit -r requirements.audit.txt --no-deps --strict
+          uv run --no-sync pip-audit -r requirements.audit.txt --no-deps --disable-pip --strict
 
       - name: Static analysis (SAST)
-        # Bandit over the shipped package. -ll: report medium+ severity;
-        # the build fails if any is found.
-        run: uvx bandit -r src/dolphin_desktop -ll
+        run: uv run --no-sync bandit -r src/dolphin_desktop -ll
 
       - name: Secret scan
-        # Scans every git-tracked file for committed credentials, comparing
-        # against .secrets.baseline. The baseline records the known, reviewed
-        # matches (test fixtures, the throwaway localhost test key, commit
-        # SHAs); the hook fails only on a NEW secret that is not in it. Refresh
-        # the baseline with:
-        #   uvx detect-secrets scan > .secrets.baseline
-        run: uvx --from detect-secrets detect-secrets-hook --baseline .secrets.baseline $(git ls-files)
+        run: uv run --no-sync python .github/scripts/scan_secrets.py

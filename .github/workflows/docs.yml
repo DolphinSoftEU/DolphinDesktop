@@ -6,11 +6,17 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
       - "src/dolphin_desktop/**"
   pull_request:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
       - "src/dolphin_desktop/**"
 
 # Default to read-only. Only the Pages deploy job needs to write (mike
@@ -31,18 +37,24 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           fetch-depth: 0   # needed for mike versioning
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
-          cache: pip
 
-      - name: Install docs dependencies
-        run: pip install -e ".[docs]"
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked docs dependencies
+        run: uv sync --locked --extra docs
 
       - name: Build MkDocs
-        run: mkdocs build --strict
+        run: uv run --locked mkdocs build --strict
 
       - name: Upload build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -63,15 +75,21 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: true
           fetch-depth: 0
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
-          cache: pip
 
-      - name: Install docs dependencies
-        run: pip install -e ".[docs]"
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked docs dependencies
+        run: uv sync --locked --extra docs
 
       - name: Configure git
         run: |
@@ -80,5 +98,5 @@ jobs:
 
       - name: Deploy with mike
         run: |
-          mike deploy --push --update-aliases latest
-          mike set-default --push latest
+          uv run --locked mike deploy --push --update-aliases latest
+          uv run --locked mike set-default --push latest

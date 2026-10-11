@@ -22,8 +22,49 @@ permissions:
   contents: read
 
 jobs:
+  security:
+    name: "Security gate (CVE / secrets / SAST) / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked security tools
+        run: uv sync --locked --only-group security
+
+      - name: Dependency audit (CVE)
+        shell: bash
+        run: |
+          uv export --locked --no-hashes --format requirements-txt --all-extras --all-groups \
+            --no-emit-project > requirements.audit.txt
+          uv run --no-sync pip-audit -r requirements.audit.txt --no-deps --disable-pip --strict
+
+      - name: Static analysis (SAST)
+        run: uv run --no-sync bandit -r src/dolphin_desktop -ll
+
+      - name: Secret scan
+        run: uv run --no-sync python .github/scripts/scan_secrets.py
+
   build:
     name: Build distributions
+    needs: security
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,14 +74,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
-      - name: Install build tools
-        run: python -m pip install --upgrade build twine
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked build tools
+        run: uv sync --locked --only-group build
 
       - name: Validate release target
         id: meta
@@ -87,21 +136,11 @@ jobs:
               fh.write(f"target={target}\n")
           PY
 
-      - name: Security gate (CVE audit of the locked dependencies)
-        # A release is blocked if any locked dependency has a known
-        # vulnerability. This runs on the exact commit being published, so the
-        # audited dependency set is the one that ships.
-        run: |
-          python -m pip install --upgrade uv
-          uv export --no-hashes --format requirements-txt --all-extras \
-            --no-emit-project > requirements.audit.txt
-          uvx --from pip-audit pip-audit -r requirements.audit.txt --no-deps --strict
-
       - name: Build wheel and sdist
-        run: python -m build
+        run: uv run --no-sync python -m build --no-isolation
 
       - name: Check distribution metadata
-        run: twine check dist/*
+        run: uv run --no-sync twine check dist/*
 
       - name: Upload distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
