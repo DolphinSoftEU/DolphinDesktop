@@ -8,7 +8,10 @@ Dolphin automates Excel and Word through COM wrappers. These helpers require Mic
 They set `AutomationSecurity=3` immediately before opening the file to disable
 VBA macros, then restore the previous value in `finally`, including when opening
 fails. Excel also sets `AskToUpdateLinks=False` and opens with `UpdateLinks=0`;
-enabling macros does not enable external link updates.
+Word sets `Options.UpdateLinksAtOpen=False` to prevent automatic OLE link
+updates and restores its previous value in `finally`. Enabling macros does
+not enable these external link updates.
+See Microsoft's [UpdateLinksAtOpen documentation](https://learn.microsoft.com/en-us/office/vba/api/word.options.updatelinksatopen).
 
 !!! warning "Macro execution requires explicit trust"
 
@@ -53,26 +56,36 @@ default blocking, explicit opt-in, link arguments, restoration after errors,
 rejected security settings, a simulated policy block and an XLM prompt.
 These checks verify the wrapper contract, not the Office macro engine.
 
-The real Office suite generates harmless marker-only macro documents and a link
-to a controlled local workbook in pytest's temporary directory:
+The real Office suite generates harmless marker-only macro documents and links
+to controlled local Excel/Word documents in pytest's temporary directory:
 
 ```powershell
-uv run pytest tests/office -q -rs
+uv run pytest tests/office -q -rs --junitxml artifacts/KAN-574-office-retest.xml
 ```
 
 It requires registered Excel/Word COM servers. Creating macro fixtures also
 requires **existing** trusted access to the VBA project object model; when that
 is blocked, the macro cases report skips without changing security settings.
-An opt-in case also reports a skip if Office still blocks execution. The local
-external-link case does not require VBA project access. A skip is not evidence
-that the corresponding security criterion passed.
+Each macro case first opens a separate copy with `allow_macros=True` and requires
+the marker to change. Only then does it open a fresh copy with
+`allow_macros=False` and assert that the marker stays unchanged. If policy blocks
+the positive control, the entire case is skipped; the default open cannot be
+reported as a security pass. The local external-link cases do not require VBA
+project access. The Word case also explicitly updates the field afterwards to
+prove that the source is reachable and changed. A skip is not evidence that the
+corresponding security criterion passed.
+
+The mandatory CI unit job runs the COM stand-in tests with `pytest -m unit`.
+It does not run this `system` / `integration` suite or verify the real Office
+macro engine. Record a separate Windows/Office run, listing passed, failed and
+skipped cases; see the [KAN-574 retest record](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/SecurityTasks/KAN-574-retest.md).
 
 For a real Office retest, use an isolated Windows account with reviewed `.xlsm`
 and `.docm` fixtures whose `Workbook_Open` / `Document_Open` handlers only write
-a fixed marker in the document (for example, cell A1 / document text). Open a
-fresh copy with defaults and assert that the marker stays unchanged. A separate
-trusted-copy run with `allow_macros=True` should change it if policy permits;
-record a policy block separately from successful execution. For Excel, use a
+a fixed marker in the document (for example, cell A1 / document text). First
+open a separate trusted copy with `allow_macros=True` and require the marker to
+change, then open a fresh copy with defaults and require it to stay unchanged.
+Skip the entire scenario if the positive control is blocked. For Excel, use a
 link to a controlled local workbook with a changed value and verify that the
 cached value is retained on open. Test XLM separately under a policy that blocks
 XLM. Never weaken Trust Center or organization policies to make a test pass.

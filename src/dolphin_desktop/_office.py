@@ -348,9 +348,10 @@ class WordApp:
                 can execute arbitrary code as the current user. Use only with
                 trusted files; Office policies can still block execution.
 
-        VBA macros are disabled by default. The previous AutomationSecurity
-        setting is restored after Open, even on failure. This setting is not
-        a sandbox for other active content. Documents remain editable for
+        VBA macros and automatic OLE link updates are disabled by default.
+        The previous AutomationSecurity and Options.UpdateLinksAtOpen settings
+        are restored after Open, even on failure. These settings are not a
+        sandbox for other active content. Documents remain editable for
         compatibility with save operations.
         """
         if not isinstance(allow_macros, bool):
@@ -366,7 +367,10 @@ class WordApp:
             wd.Visible = visible
             resolved_path = str(Path(path).resolve())
             previous_security = wd.AutomationSecurity
+            options = wd.Options
+            previous_update_links = options.UpdateLinksAtOpen
             try:
+                options.UpdateLinksAtOpen = False
                 wd.AutomationSecurity = (
                     _MSO_AUTOMATION_SECURITY_LOW
                     if allow_macros
@@ -374,7 +378,10 @@ class WordApp:
                 )
                 app._opened.append(wd.Documents.Open(resolved_path))
             finally:
-                wd.AutomationSecurity = previous_security
+                try:
+                    wd.AutomationSecurity = previous_security
+                finally:
+                    options.UpdateLinksAtOpen = previous_update_links
         except BaseException:
             # Nothing outside this call holds the private instance, so a
             # failing Open (missing, locked, corrupt, password-prompted)

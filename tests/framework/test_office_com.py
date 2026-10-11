@@ -47,6 +47,7 @@ class _FakeCollection:
 
     def Open(self, path: str, *args) -> _FakeDoc:  # noqa: N802
         self.security_during_open = self._app.AutomationSecurity
+        self.update_links_during_open = self._app.Options.UpdateLinksAtOpen
         self.last_open_args = args
         self._app.events.append(("open", self.security_during_open))
         if self.open_error is not None:
@@ -62,6 +63,26 @@ class _FakeCollection:
         return iter(self._app.documents)
 
 
+class _FakeOptions:
+    """Word options recording link updates and rejecting simulated policy changes."""
+
+    def __init__(self) -> None:
+        self._update_links = True
+        self.rejected_value: bool | None = None
+        self.changes: list[bool] = []
+
+    @property
+    def UpdateLinksAtOpen(self) -> bool:  # noqa: N802
+        return self._update_links
+
+    @UpdateLinksAtOpen.setter
+    def UpdateLinksAtOpen(self, value: bool) -> None:  # noqa: N802
+        self.changes.append(value)
+        if value is self.rejected_value:
+            raise RuntimeError("link setting rejected")
+        self._update_links = value
+
+
 class _FakeApp:
     """Excel.Application / Word.Application stand-in."""
 
@@ -71,6 +92,7 @@ class _FakeApp:
         self.security_error: int | None = None
         self.macro_runs = 0
         self.policy_blocks_macros = False
+        self.Options = _FakeOptions()
         self.Visible = False
         self.DisplayAlerts = True
         self.quit_calls = 0
@@ -147,6 +169,52 @@ def test_word_open_force_disables_macros(monkeypatch) -> None:
     assert app.Documents.security_during_open == 3
     assert app.AutomationSecurity == 2
     assert app.macro_runs == 0
+
+
+@pytest.mark.parametrize("previous_links", [False, True])
+@pytest.mark.parametrize("allow_macros", [False, True])
+@pytest.mark.parametrize("open_fails", [False, True])
+def test_word_disables_link_updates_during_open_and_restores_options(
+    monkeypatch, previous_links, allow_macros, open_fails
+):
+    app = _client(monkeypatch)
+    app.Options._update_links = previous_links
+    if open_fails:
+        app.Documents.open_error = RuntimeError("Open failed")
+        with pytest.raises(RuntimeError, match="Open failed"):
+            WordApp.open("linked.docx", allow_macros=allow_macros)
+        assert app.quit_calls == 1
+    else:
+        WordApp.open("linked.docx", allow_macros=allow_macros)
+    assert app.Documents.update_links_during_open is False
+    assert app.Options.UpdateLinksAtOpen is previous_links
+    assert app.Options.changes == [False, previous_links]
+    assert app.AutomationSecurity == 2
+
+
+@pytest.mark.parametrize("rejected_links", [False, True])
+def test_word_link_setting_failure_fails_closed_and_quits(monkeypatch, rejected_links):
+    app = _client(monkeypatch)
+    app.Options.rejected_value = rejected_links
+    with pytest.raises(RuntimeError, match="link setting rejected"):
+        WordApp.open("linked.docx")
+    assert app.AutomationSecurity == 2
+    assert app.quit_calls == 1
+    assert app.macro_runs == 0
+    if rejected_links is False:
+        assert not app.documents
+    else:
+        assert app.documents[0].close_arg == 0
+
+
+def test_word_restores_link_options_even_if_security_restoration_fails(monkeypatch):
+    app = _client(monkeypatch)
+    app.security_error = 2
+    with pytest.raises(RuntimeError, match="security setting rejected"):
+        WordApp.open("linked.docx")
+    assert app.Options.UpdateLinksAtOpen is True
+    assert app.Options.changes == [False, True]
+    assert app.quit_calls == 1
 
 
 @pytest.mark.parametrize("wrapper", [ExcelApp, WordApp])

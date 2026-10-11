@@ -67,8 +67,11 @@ Addresses further findings from a follow-up security review
   before opening a document. The explicitly risky `allow_macros=True` opt-in
   permits macros subject to Office policies. Both restore the previous
   `AutomationSecurity` after opening, including on error; Excel keeps
-  `UpdateLinks=0` even with the opt-in. Regression tests cover the COM contract,
-  errors and simulated policy/XLM limitations. ForceDisable does not block
+  `UpdateLinks=0` even with the opt-in. Word disables `Options.UpdateLinksAtOpen`
+  during opening and restores it even on error. Real macro tests require a
+  passing opt-in control before testing the default block. Regression tests
+  cover the COM contract, errors and simulated policy/XLM limitations, with
+  a separate Windows/Office retest record. ForceDisable does not block
   Excel 4.0/XLM macros or all active content (KAN-574).
 * **TN5250 receive buffer is bounded and its deadline is unconditional.**
   A host that never sends a terminating record (or streams complete
