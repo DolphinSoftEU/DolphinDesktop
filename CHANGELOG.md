@@ -8,6 +8,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Breaking changes
 
+* Java Access Bridge now requires an explicitly configured absolute `JAVA_HOME`
+  and loads its DLL exclusively from `JAVA_HOME\bin`. HLLAPI requires an explicit
+  absolute `hllapi_dll_path`; automatic DLL discovery has been removed (KAN-473).
+
 * `Desktop.mainframe()` now refuses plaintext connections to remote hosts
   unless `allow_plaintext=True` is set. The former `tls_ca_file` argument is
   now `tls_cafile`; `server_hostname` and `insecure_tls` have been removed.
@@ -17,6 +21,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   `allow_plaintext=True`. Port 992 does not select TLS automatically.
 
 ### Fixed
+
+* Java discovery no longer runs `where.exe` by name. JAB configuration can be
+  checked separately with `JavaAccessBridge.validate_configuration()`, and
+  `ensure_enabled()` validates it before accepting the Windows activation state.
 
 * Hidden-desktop `Locator.press_key()` now focuses the element after activating
   `DolphinHidden`, reports a clear `DolphinError` instead of using system-wide
@@ -137,7 +145,7 @@ Addresses further findings from a follow-up security review
   matches or cannot be read, as well as any PID with no recorded identity.
 * **DLL search-order hijacking removed (KAN-473).** The Java Access
   Bridge and HLLAPI DLLs load only from absolute, trusted locations
-  (`JAVA_HOME`/registry/vendor dirs, then `System32`) via
+  (`JAVA_HOME\bin` for JAB, explicit `hllapi_dll_path` for HLLAPI) via
   `LoadLibraryEx` with `LOAD_LIBRARY_SEARCH_*` flags. The working
   directory and `PATH` are never searched.
 * **CI least privilege and supply chain (KAN-474).** All GitHub Actions

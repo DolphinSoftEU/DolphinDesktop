@@ -1185,7 +1185,8 @@ class Desktop:
                 (the emulator's own configuration wins).
             session_id: HLLAPI session letter (A, B, C, …). Ignored by
                 the s3270 backend.
-            hllapi_dll_path: Absolute path to an HLLAPI-compatible DLL
+            hllapi_dll_path: Required for ``backend="hllapi"``: an existing
+                absolute path to a trusted HLLAPI-compatible DLL
                 (``PCSHLL32.DLL``, ``EHLAPI32.DLL``, …). Ignored by the
                 s3270 backend.
             extra_args: Additional command-line arguments for the s3270

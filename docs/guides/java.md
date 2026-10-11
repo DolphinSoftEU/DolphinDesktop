@@ -5,10 +5,11 @@ Dolphin includes Java Access Bridge helpers for Swing and AWT applications on Wi
 ## Requirements
 
 - A JRE or JDK with Java Access Bridge tools.
-- `JAVA_HOME` must be a trusted absolute JRE/JDK path containing
-  `bin\jabswitch.exe` and `bin\windowsaccessbridge-64.dll`, or Java Access
-  Bridge must already be enabled. Dolphin does not execute a bare
-  `jabswitch.exe` from `PATH`.
+- `JAVA_HOME` must be explicitly set to a trusted absolute JRE/JDK path
+  containing `bin\windowsaccessbridge-64.dll`, even when Java Access Bridge
+  is already enabled. Enabling it also requires `bin\jabswitch.exe`.
+  Dolphin loads JAB exclusively from this `JAVA_HOME\bin`: registry discovery,
+  `System32`, the working directory and `PATH` do not supply a fallback DLL.
 - A 64-bit Java runtime is recommended.
 
 ## Launch
@@ -21,7 +22,15 @@ app = desktop.launch_java("java -jar MySwingApp.jar")
 win = app.window(class_name="SunAwtFrame")
 ```
 
-`launch_java()` calls `JavaAccessBridge.ensure_enabled()` before starting the process and initializes the JAB client session.
+`launch_java()` calls `JavaAccessBridge.ensure_enabled()` before starting the
+process and initializes the JAB client session. `ensure_enabled()` first validates
+`JAVA_HOME` and the bridge DLL, even when Windows reports JAB as already enabled.
+
+`JavaAccessBridge.java_home()` discovers a Java installation from `JAVA_HOME` or
+the registry without executing a search program or inspecting `PATH`. Discovery
+does not configure JAB. Use `JavaAccessBridge.validate_configuration()` to check
+the required explicit `JAVA_HOME` and DLL without loading or enabling the bridge;
+it returns the configured home or raises `RuntimeError`.
 
 ## Selectors
 

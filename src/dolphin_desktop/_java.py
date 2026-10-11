@@ -28,7 +28,7 @@ _JAB_ATTRIBUTES: tuple[str, ...] = (
 def _trusted_java_home(path: str | None) -> str | None:
     """Return a usable absolute JRE/JDK home, or ``None``.
 
-    ``JAVA_HOME`` and the output of ``where.exe`` are process inputs. They
+    ``JAVA_HOME`` and registry values are configuration inputs. They
     may select a relative directory (and therefore a DLL or executable from
     the current working directory), so every path used for JAB discovery and
     activation must be absolute before it reaches Win32 or ``subprocess``.
@@ -86,19 +86,11 @@ class JavaAccessBridge:
         except OSError:
             pass
 
-        # Fallback: check for windowsaccessbridge-64.dll in common locations
-        java_home = _trusted_java_home(JavaAccessBridge.java_home())
+        # Only the explicitly configured JRE/JDK may supply the bridge DLL.
+        java_home = _trusted_java_home(os.environ.get("JAVA_HOME"))
         if java_home:
             for name in ("WindowsAccessBridge-64.dll", "windowsaccessbridge-64.dll"):
                 if os.path.isfile(os.path.join(java_home, "bin", name)):
-                    return True
-
-        windir = os.environ.get("WINDIR", r"C:\Windows")
-        if not os.path.isabs(windir):
-            return False
-        for sub in ("SysWOW64", "System32"):
-            for name in ("WindowsAccessBridge-64.dll", "windowsaccessbridge-64.dll"):
-                if os.path.isfile(os.path.join(windir, sub, name)):
                     return True
 
         return False
@@ -106,7 +98,7 @@ class JavaAccessBridge:
     @staticmethod
     def enable() -> None:
         """Run jabswitch.exe /enable; raises RuntimeError on failure."""
-        java_home = _trusted_java_home(JavaAccessBridge.java_home())
+        java_home = _trusted_java_home(os.environ.get("JAVA_HOME"))
         if java_home is None:
             raise RuntimeError(
                 "Cannot enable Java Access Bridge without a trusted absolute "
@@ -133,14 +125,44 @@ class JavaAccessBridge:
             raise RuntimeError(f"jabswitch.exe /enable failed (exit {result.returncode}): {stderr}")
 
     @staticmethod
+    def validate_configuration() -> str:
+        """Return the configured JAB home or raise RuntimeError.
+
+        Requires an absolute JAVA_HOME with the bridge DLL in its bin directory.
+        This validates configuration without loading a DLL or enabling JAB.
+        Java installation discovery and the Windows activation state are separate
+        checks: neither supplies a replacement for JAVA_HOME.
+        """
+        java_home = _trusted_java_home(os.environ.get("JAVA_HOME"))
+        if java_home is None:
+            raise RuntimeError(
+                "Java Access Bridge requires JAVA_HOME pointing at a trusted absolute "
+                "JRE/JDK directory; discovering Java in the registry is not sufficient."
+            )
+        if not any(
+            os.path.isfile(os.path.join(java_home, "bin", name)) for name in _JABSession._DLL_NAMES
+        ):
+            raise RuntimeError(
+                f"Java Access Bridge DLL is missing from JAVA_HOME\\bin ({java_home!r}); "
+                "configure a JRE/JDK containing windowsaccessbridge-64.dll."
+            )
+        return java_home
+
+    @staticmethod
     def ensure_enabled() -> None:
-        """Enable Java Access Bridge only if it is not already enabled."""
+        """Validate JAB configuration, then enable it if not already enabled."""
+        JavaAccessBridge.validate_configuration()
         if not JavaAccessBridge.is_enabled():
             JavaAccessBridge.enable()
 
     @staticmethod
     def java_home() -> str | None:
-        """Return the JRE/JDK home directory, or None if not found."""
+        """Discover a JRE/JDK home from JAVA_HOME or the registry.
+
+        Does not execute a discovery program or search PATH. A discovered home
+        does not imply that JAB is configured: set JAVA_HOME explicitly and use
+        validate_configuration() to check readiness for JAB initialization.
+        """
         env_home = os.environ.get("JAVA_HOME")
         trusted_env_home = _trusted_java_home(env_home)
         if trusted_env_home:
@@ -169,22 +191,6 @@ class JavaAccessBridge:
                             pass
                 except OSError:
                     pass
-
-        try:
-            result = subprocess.run(
-                ["where.exe", "java"],
-                capture_output=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                java_exe = result.stdout.decode(errors="replace").splitlines()[0].strip()
-                if os.path.isabs(java_exe):
-                    home = os.path.dirname(os.path.dirname(java_exe))
-                    trusted_home = _trusted_java_home(home)
-                    if trusted_home:
-                        return trusted_home
-        except Exception:
-            pass
 
         return None
 
@@ -277,20 +283,17 @@ class _JABSession:
             cls._instance = cls()
         return cls._instance
 
-    #: Where the bridge DLL is looked for, in order: the JRE/JDK that
-    #: ``JAVA_HOME`` / the registry name, then System32. The bare DLL name
-    #: is never handed to the loader — see :mod:`dolphin_desktop._native`.
+    #: The bridge DLL is loaded exclusively from the configured JAVA_HOME\bin.
     _DLL_NAMES = ("windowsaccessbridge-64.dll", "WindowsAccessBridge-64.dll")
 
     @classmethod
     def _trusted_dll_paths(cls) -> list[str]:
-        from ._native import existing_candidates, system32_dir
+        from ._native import existing_candidates
 
         directories: list[str] = []
-        java_home = _trusted_java_home(JavaAccessBridge.java_home())
+        java_home = _trusted_java_home(os.environ.get("JAVA_HOME"))
         if java_home:
             directories.append(os.path.join(java_home, "bin"))
-        directories.append(system32_dir())
         return existing_candidates(directories, cls._DLL_NAMES)
 
     def __init__(self) -> None:
@@ -308,9 +311,8 @@ class _JABSession:
 
         if self._wab is None:
             raise RuntimeError(
-                "Could not load windowsaccessbridge-64.dll from a trusted location "
-                "(JAVA_HOME\\bin, the registered JRE/JDK, or System32). "
-                "Install a JRE/JDK with Java Access Bridge and set JAVA_HOME; the "
+                "Could not load windowsaccessbridge-64.dll from JAVA_HOME\\bin. "
+                "Set JAVA_HOME to a trusted absolute JRE/JDK path containing the DLL; the "
                 "working directory and PATH are deliberately not searched."
                 + (f" Tried: {'; '.join(tried)}" if tried else "")
             )

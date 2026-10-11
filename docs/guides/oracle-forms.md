@@ -133,7 +133,7 @@ The JVM the Forms client uses must be launched with
 flag by default) so the JVM loads the JAB helper on startup.
 
 The bridge DLL and `jabswitch.exe` are loaded/run only from the absolute
-`JAVA_HOME\bin` location reported by Java discovery. Dolphin does not load a
+`JAVA_HOME\bin` location configured explicitly in the environment. Dolphin does not load a
 bare `windowsaccessbridge-64.dll` or `jabswitch.exe` name from the current
 directory or ambient `PATH`; keep `JAVA_HOME` pointed at a trusted JRE/JDK
 installation. If that absolute JDK path or executable is unavailable,
