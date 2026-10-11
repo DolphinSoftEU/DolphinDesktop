@@ -939,18 +939,22 @@ def test_child_resolution_passes_its_deadline_to_a_locator_parent():
     assert resolve.call_args.kwargs["deadline"] < time.monotonic() + 0.5
 
 
-def test_locator_resolve_direct_wrapper_and_window_spec_paths():
+@pytest.mark.parametrize("elapsed", [0, 0.016, 0.25])
+def test_locator_resolve_direct_wrapper_and_window_spec_paths(elapsed):
     raw = FakeElement()
-    with patch.object(locator_module, "_find_under_wrapper", return_value="found") as finder:
+    with (
+        monotonic_values(100, 100 + elapsed, 100 + elapsed),
+        patch.object(locator_module, "_find_under_wrapper", return_value="found") as finder,
+    ):
         loc = locator_module.Locator(SimpleNamespace(_get_spec=Mock(return_value=raw)), title="x")
         assert loc._resolve() == "found"
         finder.assert_called_once()
         args, kwargs = finder.call_args
         assert args[:2] == (raw, {"title": "x"})
         assert 0 < args[2] <= loc._timeout
-        assert args[2] == pytest.approx(loc._timeout, abs=0.01)
+        assert args[2] == pytest.approx(loc._timeout - elapsed)
         assert kwargs.keys() == {"deadline", "enforce_deadline"}
-        assert kwargs["deadline"] > time.monotonic()
+        assert kwargs["deadline"] == pytest.approx(100 + loc._timeout)
         assert kwargs["enforce_deadline"] is True
 
     spec = FakeSpec()
