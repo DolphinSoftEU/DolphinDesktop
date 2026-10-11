@@ -13,6 +13,7 @@ htmlcov/
 .ruff_cache/
 
 # Dolphin telemetry / generated artifacts
+/artifacts/
 .dolphin-selfheal.jsonl
 .dolphin-selfheal.jsonl.lock
 dolphin-screenshots/

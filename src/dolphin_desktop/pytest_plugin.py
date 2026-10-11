@@ -767,8 +767,13 @@ def _capture_failure_screenshot(item: pytest.Item, phase: str = "call") -> Path 
 def _redact_report(report: pytest.TestReport) -> None:
     """Sanitise every text sink before pytest reporters serialize a report."""
     if getattr(report, "longrepr", None) is not None:
-        redacted = _redact(str(report.longrepr))
-        report.longrepr = redacted
+        if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
+            # pytest's terminal and JUnit reporters unpack skipped reports as
+            # (path, line, reason). Keep that shape while redacting text.
+            path, line, reason = report.longrepr
+            report.longrepr = (_redact(str(path)), line, _redact(str(reason)))
+        else:
+            report.longrepr = _redact(str(report.longrepr))
 
     sections = getattr(report, "sections", None)
     if sections is not None:
