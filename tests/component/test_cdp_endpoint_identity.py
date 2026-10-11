@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from tests.component._cdp_fixture import (
     ChromiumSession,
+    assert_port_owned_by_tree,
     chromium_executable,
     local_pages,
     unused_port,
@@ -35,8 +36,8 @@ def test_parallel_sessions_keep_real_target_and_profile_isolation(tmp_path) -> N
                 executable, tmp_path / "first", first_port, f"{origin}/first"
             ) as first:
                 assert first.pid != second.pid
-                assert loopback_listener_pids(first_port) == {first.pid}
-                assert loopback_listener_pids(second_port) == {second.pid}
+                assert_port_owned_by_tree(first_port, first.pid)
+                assert_port_owned_by_tree(second_port, second.pid)
                 assert first.evaluate("document.title") == "/first"
                 assert second.evaluate("document.title") == "/second"
 
@@ -57,7 +58,7 @@ def test_parallel_sessions_keep_real_target_and_profile_isolation(tmp_path) -> N
             assert second.evaluate("document.title") == "/second"
             assert second.evaluate("localStorage.getItem('owner')") == "second"
             assert second.evaluate("document.cookie") == "owner=second"
-            assert loopback_listener_pids(second_port) == {second.pid}
+            assert_port_owned_by_tree(second_port, second.pid)
 
             # A new HTTP 200 server on the closed session's port is foreign.
             # Reusing a port cannot inherit trust from the previous browser.
@@ -76,7 +77,7 @@ def test_parallel_sessions_keep_real_target_and_profile_isolation(tmp_path) -> N
             with ChromiumSession(
                 executable, tmp_path / "replacement", first_port, f"{origin}/replacement"
             ) as replacement:
-                assert loopback_listener_pids(first_port) == {replacement.pid}
+                assert_port_owned_by_tree(first_port, replacement.pid)
                 assert replacement.evaluate("document.title") == "/replacement"
                 assert replacement.evaluate("localStorage.getItem('owner')") is None
                 assert replacement.evaluate("document.cookie") == ""

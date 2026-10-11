@@ -12,6 +12,8 @@ from pathlib import Path
 from threading import Thread
 
 from dolphin_desktop import Desktop
+from dolphin_desktop._application import _enumerate_descendant_pids
+from dolphin_desktop._netinfo import loopback_listener_pids
 
 
 def chromium_executable() -> str:
@@ -36,6 +38,12 @@ def wait_until(predicate, *, timeout: float) -> None:
     while not predicate():
         assert time.monotonic() < deadline, "Listener did not close before the timeout"
         time.sleep(0.05)
+
+
+def assert_port_owned_by_tree(port: int, pid: int) -> None:
+    owners = loopback_listener_pids(port)
+    allowed = {pid} | _enumerate_descendant_pids(pid)
+    assert owners and owners <= allowed, f"Port {port}: owners {owners}, allowed {allowed}"
 
 
 @contextmanager
@@ -66,7 +74,15 @@ def local_pages(port: int = 0):
 class ChromiumSession:
     """Keep each parallel worker's Playwright objects on their owning thread."""
 
-    def __init__(self, executable: str, profile: Path, port: int, url: str) -> None:
+    def __init__(
+        self,
+        executable: str,
+        profile: Path,
+        port: int,
+        url: str,
+        *,
+        startup_timeout: float = 30,
+    ) -> None:
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.app = None
         self.session = None
@@ -83,33 +99,45 @@ class ChromiumSession:
         )
 
         def launch() -> int:
-            self.app, self.session = Desktop(hidden=False).launch_electron_cdp(
-                command, debug_port=port, timeout=20, startup_delay=0
-            )
-            return self.app.process_id
+            try:
+                self.app, self.session = Desktop(hidden=False).launch_electron_cdp(
+                    command, debug_port=port, timeout=20, startup_delay=0
+                )
+                return self.app.process_id
+            except BaseException:
+                self._cleanup()
+                raise
 
         try:
-            self.pid = self.executor.submit(launch).result(timeout=30)
+            self.pid = self.executor.submit(launch).result(timeout=startup_timeout)
         except BaseException:
-            self.executor.shutdown(wait=True)
+            # This task runs after launch, even if result() timed out before
+            # the worker acquired the session. Never cancel the queued cleanup
+            # or wait here for a stalled launch to finish.
+            try:
+                self.executor.submit(self._cleanup)
+            finally:
+                self.executor.shutdown(wait=False)
             raise
 
     def evaluate(self, script: str):
         return self.executor.submit(self.session.evaluate, script).result(timeout=10)
 
-    def close(self) -> None:
-        def cleanup() -> None:
-            try:
-                if self.session is not None:
-                    self.session.close()
-            finally:
-                if self.app is not None:
-                    self.app.kill()
-
+    def _cleanup(self) -> None:
+        session, self.session = self.session, None
+        app, self.app = self.app, None
         try:
-            self.executor.submit(cleanup).result(timeout=15)
+            if session is not None:
+                session.close()
         finally:
-            self.executor.shutdown(wait=True)
+            if app is not None:
+                app.kill()
+
+    def close(self) -> None:
+        try:
+            self.executor.submit(self._cleanup).result(timeout=15)
+        finally:
+            self.executor.shutdown(wait=False)
 
     def __enter__(self):
         return self
