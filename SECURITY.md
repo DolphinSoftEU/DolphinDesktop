@@ -191,6 +191,51 @@ skips build and publication, and that a successful approved run publishes the
 artifact from that same run. Local configuration tests do not establish hosted
 runner, environment approval or Trusted Publisher behavior.
 
+### Retest observations, 2026-10-11
+
+The GitHub environment API was checked for both `pypi` and `testpypi`.
+Both require approval by `DolphinSoftEU`, but `prevent_self_review` is false
+and `deployment_branch_policy` is null: allowed deployment branches/tags are
+unrestricted. Approval therefore does not enforce a separate reviewer or an
+approved release ref. Before treating these environments as protected release
+boundaries, restrict the allowed refs and enable prevention of self-review
+according to the maintainer's release policy.
+
+The latest available [release run](https://github.com/DolphinSoftEU/DolphinDesktop/actions/runs/37151851015)
+used commit `71fe568a06d09575c37f8f87b150e2600b3891c4` and had no separate
+security matrix. It does not prove that the new `build → security` dependency
+blocks publication on failure. A hosted run of the updated workflow with a
+failing security check remains required; both build and publishing jobs must
+be skipped. Do not approve an actual publication as part of that negative test.
+
+The local lock regression now creates a minimal project with a local path
+dependency and an isolated cache. It first creates and checks a valid lock,
+then changes dependencies and requires the specific `uv lock --check` stale
+lock diagnostic without rewriting the file. Updating and checking the lock
+again must succeed offline, ruling out unavailable registry packages as the
+cause of the negative result. The CI policy regressions also reject mutated
+workflows with ignored job/step failures, shell failure masking, removed job
+dependencies or `always()` conditions around the release gate.
+
+Windows Qt tests constrain `PyQt5-Qt5` to 5.15.2 because newer releases may
+lack Windows wheels. The lock includes a Windows x64 wheel; the regression
+checks its presence, and the six authenticated Qt5/Qt6 agent integration
+scenarios passed after installation from the updated lock on Windows with
+Python 3.12 and 3.13. All 19 CI policy tests passed on Windows with Python
+3.11, 3.12 and 3.13; Ruff lint/format and mypy also passed.
+
+Broader local checks did not establish a completely passing suite:
+
+- `pytest tests/qt -q --maxfail=1`: 61 passed, then
+  `test_qt_core.py::test_get_by_object_name_finds_widget` failed to locate the
+  Qt6 widget `qt_btn_ok` through UIA. The same failure reproduced in the
+  existing `.venv` with the unchanged PySide6 6.10.3 version.
+- `pytest -m unit -n 4 -q --maxfail=1`: 2150 passed, one skipped, then
+  `TestReportCollection::test_reports_with_failures_are_serializable_under_xdist`
+  failed because its nested pytest run encountered `FileNotFoundError`.
+  Running that test alone passed in both the new and existing environments;
+  the failure under concurrent execution remains unexplained.
+
 ## Security regression mapping
 
 The table below maps each Jira item to its corresponding regression test; it

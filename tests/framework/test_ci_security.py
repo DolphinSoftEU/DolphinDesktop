@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -48,7 +50,10 @@ def test_permissions_and_immutable_actions(name: str) -> None:
 
 @pytest.mark.parametrize("name", ["ci.yml", "release.yml"])
 def test_security_checks_block_publication_for_the_same_revision(name: str) -> None:
-    workflow = load(name)
+    assert_security_gate(load(name), release=name == "release.yml")
+
+
+def assert_security_gate(workflow: dict, *, release: bool) -> None:
     security = workflow["jobs"]["security"]
     assert set(security["strategy"]["matrix"]["os"]) == {"ubuntu-latest", "windows-latest"}
     assert "if" not in security
@@ -64,15 +69,60 @@ def test_security_checks_block_publication_for_the_same_revision(name: str) -> N
         assert "if" not in step
         assert "continue-on-error" not in step
         assert "ref" not in step.get("with", {})
-    if name == "release.yml":
+        command = step.get("run", "")
+        assert "||" not in command, "Security checks must not mask shell failures"
+        assert not re.search(r"\bexit\s+0\b|\bset\s+\+e\b|\$LASTEXITCODE\s*=", command)
+    if release:
         jobs = workflow["jobs"]
         assert jobs["build"]["needs"] == "security"
+        assert "continue-on-error" not in jobs["build"]
+        assert "if" not in jobs["build"]
         assert "ref" not in jobs["build"]["steps"][0]["with"]
         for job_id in ("publish-pypi", "publish-testpypi"):
             assert jobs[job_id]["needs"] == "build"
-            assert "always()" not in jobs[job_id]["if"]
+            target = "pypi" if job_id == "publish-pypi" else "testpypi"
+            assert jobs[job_id]["if"] == f"needs.build.outputs.target == '{target}'"
             assert not any("run" in step for step in jobs[job_id]["steps"])
             assert jobs[job_id]["steps"][0]["with"]["name"] == "dolphin-desktop-dist"
+
+
+@pytest.mark.parametrize(
+    "bypass",
+    [
+        "job-ignore",
+        "step-ignore",
+        "shell-ignore",
+        "exit-zero",
+        "build-needs",
+        "publish-needs",
+        "publish-always",
+        "build-always",
+    ],
+)
+def test_security_policy_rejects_gate_bypasses(bypass: str) -> None:
+    workflow = deepcopy(load("release.yml"))
+    jobs = workflow["jobs"]
+    scan = next(
+        step for step in jobs["security"]["steps"] if step.get("name") == "Static analysis (SAST)"
+    )
+    if bypass == "job-ignore":
+        jobs["security"]["continue-on-error"] = "true"
+    elif bypass == "step-ignore":
+        scan["continue-on-error"] = "true"
+    elif bypass == "shell-ignore":
+        scan["run"] += " || true"
+    elif bypass == "exit-zero":
+        scan["run"] += "\nexit 0"
+    elif bypass == "build-needs":
+        jobs["build"]["needs"] = []
+    elif bypass == "publish-needs":
+        jobs["publish-pypi"]["needs"] = "security"
+    elif bypass == "publish-always":
+        jobs["publish-pypi"]["if"] = "always()"
+    elif bypass == "build-always":
+        jobs["build"]["if"] = "always()"
+    with pytest.raises(AssertionError):
+        assert_security_gate(workflow, release=True)
 
 
 def test_event_coverage() -> None:
@@ -105,25 +155,63 @@ def test_dependency_commands_cannot_update_the_lock(name: str) -> None:
 def test_stale_lockfile_fails_without_being_rewritten(tmp_path: Path) -> None:
     uv = shutil.which("uv")
     assert uv, "The CI policy tests require uv"
-    for filename in ("pyproject.toml", "uv.lock"):
-        shutil.copy2(ROOT / filename, tmp_path / filename)
-    lock = tmp_path / "uv.lock"
-    original = lock.read_bytes()
-    project = tmp_path / "pyproject.toml"
-    current_version = tomllib.loads(project.read_text(encoding="utf-8"))["project"]["version"]
-    project.write_text(
-        project.read_text(encoding="utf-8").replace(
-            f'version = "{current_version}"', 'version = "0.0.0"'
-        ),
+    # No registry packages, build backend, shared cache or interpreter downloads.
+    # A path dependency makes the metadata change resolvable even while offline.
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    (dependency / "pyproject.toml").write_text(
+        '[project]\nname = "lock-fixture-dependency"\nversion = "1.0.0"\n',
         encoding="utf-8",
     )
-    result = subprocess.run(
-        [uv, "sync", "--locked", "--only-group", "security", "--offline"],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
+    project = tmp_path / "pyproject.toml"
+    metadata = (
+        '[project]\nname = "lock-fixture"\nversion = "1.0.0"\n'
+        'requires-python = ">=3.11"\ndependencies = []\n'
+        '[tool.uv.sources]\nlock-fixture-dependency = { path = "dependency" }\n'
     )
-    assert result.returncode != 0
-    assert "lockfile" in result.stderr.lower()
+    project.write_text(metadata, encoding="utf-8")
+    command = [
+        uv,
+        "--no-config",
+        "--cache-dir",
+        str(tmp_path / "empty-cache"),
+        "lock",
+        "--offline",
+        "--python",
+        sys.executable,
+    ]
+
+    def run(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [*command, *arguments], cwd=tmp_path, capture_output=True, text=True, check=False
+        )
+
+    generated = run()
+    assert generated.returncode == 0, generated.stderr
+    valid = run("--check")
+    assert valid.returncode == 0, valid.stderr
+    lock = tmp_path / "uv.lock"
+    original = lock.read_bytes()
+    project.write_text(
+        metadata.replace("dependencies = []", 'dependencies = ["lock-fixture-dependency==1.0.0"]'),
+        encoding="utf-8",
+    )
+    result = run("--check")
+    assert result.returncode == 1, result.stderr
+    assert re.search(r"lockfile.*needs to be updated.*--check", result.stderr), result.stderr
     assert lock.read_bytes() == original
+    # Updating the lock succeeds in the same offline environment: the failure
+    # above cannot be attributed to unavailable packages or a broken fixture.
+    updated = run()
+    assert updated.returncode == 0, updated.stderr
+    assert lock.read_bytes() != original
+    assert run("--check").returncode == 0
+
+
+def test_locked_qt5_runtime_has_a_windows_wheel() -> None:
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    runtimes = [package for package in lock["package"] if package["name"] == "pyqt5-qt5"]
+    windows_runtime = next(package for package in runtimes if package["version"] == "5.15.2")
+    assert any("win_amd64.whl" in wheel["url"] for wheel in windows_runtime["wheels"])
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "PyQt5-Qt5==5.15.2; sys_platform == 'win32'" in project["dependency-groups"]["qt-tests"]
