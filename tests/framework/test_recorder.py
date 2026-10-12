@@ -976,6 +976,10 @@ def test_start_logs_scope_and_starts_both_daemon_threads(monkeypatch, app, expec
     assert made[0][0] == rec._hook_loop
     assert made[1][0] == rec._process_loop
     assert not rec._stopped.is_set()
+    if app:
+        code = rec.generate_code()
+        assert f"desktop.connect(title_re={_recorder._title_re_literal(app)})" in code
+        assert "process=100" not in code
 
 
 def test_stop_posts_quit_only_for_a_hook_thread_and_is_idempotent(monkeypatch) -> None:
@@ -1577,8 +1581,8 @@ def test_native_focus_uses_pointer_sized_handles_and_checks_api_failure(monkeypa
 
 
 def test_mouse_selector_is_discarded_if_context_changes_during_hit_test(monkeypatch):
-    original = _recorder._InputContext(1, 100, 2, "Login", "Dialog")
-    changed = _recorder._InputContext(3, 200, 4, "Other", "Dialog")
+    original = _recorder._InputContext(1, 100, 2, "Login", "Dialog", target=2)
+    changed = _recorder._InputContext(3, 200, 4, "Other", "Dialog", target=4)
     contexts = iter([original, changed])
     monkeypatch.setattr(_recorder, "_capture_mouse_context", lambda x, y: next(contexts))
     monkeypatch.setattr(_recorder, "_element_at_point", lambda x, y: {"auto_id": "wrong"})
@@ -1594,3 +1598,161 @@ def test_clicks_in_different_processes_are_not_merged(monkeypatch):
             "click", 10, 20, ts, context=_recorder._InputContext(pid, pid, 0, "Same", "Dialog")
         )
     assert [a.kind for a in rec.actions()] == ["click", "click"]
+
+
+def test_explicit_pid_is_supplied_at_replay_time() -> None:
+    rec = Recorder(pid=12345)
+    code = rec.generate_code()
+    assert "12345" not in code
+    namespace = {}
+    exec(compile(code, "recorded.py", "exec"), namespace)
+    desktop = Mock()
+    namespace["Desktop"] = Mock(return_value=desktop)
+    namespace["test_recorded"](54321)
+    desktop.connect.assert_called_once_with(process=54321)
+
+
+@pytest.fixture
+def native_capture(monkeypatch):
+    """Exercise real snapshot/selector code with controlled native boundaries."""
+    from dolphin_desktop import _spy
+
+    state = SimpleNamespace(focus=3, target=2, pid=100, password=False, field_class="Edit")
+    gui = SimpleNamespace(
+        WindowFromPoint=lambda point: state.target,
+        GetForegroundWindow=lambda: 1,
+        GetWindowText=lambda hwnd: "Login",
+        GetClassName=lambda hwnd: "Dialog" if hwnd == 1 else state.field_class,
+        GetWindowLong=lambda hwnd, index: 0x20 if state.password else 0,
+    )
+    monkeypatch.setitem(sys.modules, "win32gui", gui)
+    monkeypatch.setitem(
+        sys.modules,
+        "win32process",
+        SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: (10, state.pid)),
+    )
+    monkeypatch.setattr(_recorder, "_get_root_hwnd", lambda hwnd: 1)
+    monkeypatch.setattr(_recorder, "_native_focus", lambda thread: (1, state.focus))
+    monkeypatch.setattr(
+        _recorder,
+        "_to_unicode",
+        lambda vk, scan, shift, ctrl=False, alt=False: chr(vk).lower(),
+    )
+    monkeypatch.setattr(
+        _spy,
+        "_element_info_from_point",
+        lambda x, y: SimpleNamespace(
+            automation_id=f"field{state.target}", name="", class_name="Edit", control_type="Edit"
+        ),
+    )
+    return state
+
+
+@pytest.mark.parametrize("backspace", [False, True])
+def test_native_capture_click_then_typing_preserves_verified_selector(native_capture, backspace):
+    state = native_capture
+    rec = Recorder(pid=100)
+    click = _recorder._capture_mouse_context(10, 20)
+    assert click.focus == 3 and click.target == 2
+    state.focus = 2  # The click moves focus before the worker processes it.
+    key = _recorder._capture_context()
+    assert not key.selector_items  # Production snapshots do not contain UIA selectors.
+    rec._evt_queue.put(("mouse", "click", 10, 20, 1.0, click))
+    keys = [0x41, 0x08, 0x42] if backspace else [0x41, 0x42]
+    for vk in keys:
+        rec._evt_queue.put(("key", vk, 0, False, False, False, False, 2.0, key))
+    rec._evt_queue.put(None)
+    rec._process_loop()
+    actions = rec.actions()
+    assert actions[0].selector == {"auto_id": "field2"}
+    assert all(action.selector == {"auto_id": "field2"} for action in actions)
+    assert "get_by_automation_id('field2').type_text(" in rec.generate_code()
+
+
+@pytest.mark.parametrize("change", ["focus", "pid", "unknown", "tab"])
+def test_native_capture_never_reuses_selector_after_unverified_focus(native_capture, change):
+    state = native_capture
+    state.focus = 2
+    rec = Recorder(pid=100)
+    rec._handle_mouse("click", 10, 20, 1.0, context=_recorder._capture_mouse_context(10, 20))
+    if change == "focus":
+        state.focus = 3
+    elif change == "pid":
+        state.pid = 200
+    elif change == "unknown":
+        state.field_class = "CustomUIA"
+    else:
+        rec._handle_key(0x09, 0, False, False, False, 2.0, context=_recorder._capture_context())
+    rec._handle_key(0x41, 0, False, False, False, 3.0, context=_recorder._capture_context())
+    typed = [action for action in rec.actions() if action.kind == "type_text"]
+    if change == "pid":
+        assert typed == []
+    else:
+        assert typed[0].selector == {}
+        assert typed[0].data == (_PASSWORD_PLACEHOLDER if change == "unknown" else "a")
+
+
+@pytest.mark.parametrize("change", ["target", "pid"])
+def test_native_mouse_hit_test_rejects_target_changes(native_capture, monkeypatch, change):
+    from dolphin_desktop import _spy
+
+    state = native_capture
+    context = _recorder._capture_mouse_context(10, 20)
+    original = _spy._element_info_from_point
+
+    def hit_test(x, y):
+        info = original(x, y)
+        if change == "target":
+            state.target = 3
+        else:
+            state.pid = 200
+        return info
+
+    monkeypatch.setattr(_spy, "_element_info_from_point", hit_test)
+    assert _recorder._mouse_selector(context, 10, 20) == {}
+
+
+@pytest.mark.parametrize("pid", [0, -1, True, False])
+def test_recorder_refuses_invalid_process_ids(pid):
+    with pytest.raises(ValueError, match="pid must be a positive process ID"):
+        Recorder(pid=pid)
+
+
+def test_mouse_capture_failure_discards_unverifiable_event(native_capture, monkeypatch):
+    monkeypatch.setattr(
+        sys.modules["win32gui"], "WindowFromPoint", Mock(side_effect=OSError("hit test failed"))
+    )
+    context = _recorder._capture_mouse_context(10, 20)
+    assert context == _recorder._InputContext()
+    rec = Recorder(pid=100)
+    rec._handle_mouse("click", 10, 20, 1.0, context=context)
+    assert rec.actions() == []
+
+
+@pytest.mark.parametrize("change", ["root", "pid"])
+def test_native_capture_discards_inconsistent_mouse_target(native_capture, monkeypatch, change):
+    if change == "pid":
+        monkeypatch.setattr(
+            sys.modules["win32process"],
+            "GetWindowThreadProcessId",
+            lambda hwnd: (10, 200 if hwnd == 2 else 100),
+        )
+    else:
+        target_roots = iter([1, 4])
+        monkeypatch.setattr(
+            _recorder, "_get_root_hwnd", lambda hwnd: next(target_roots) if hwnd == 2 else 1
+        )
+    assert _recorder._capture_mouse_context(10, 20) == _recorder._InputContext()
+
+
+def test_native_modifier_only_key_keeps_verified_click_selector(native_capture):
+    native_capture.focus = 2
+    rec = Recorder(pid=100)
+    rec._handle_mouse("click", 10, 20, 1.0, context=_recorder._capture_mouse_context(10, 20))
+    rec._handle_key(
+        _recorder._VK_SHIFT, 0, False, False, False, 2.0, context=_recorder._capture_context()
+    )
+    assert [action.kind for action in rec.actions()] == ["click"]
+    rec._handle_key(0x41, 0, False, False, False, 3.0, context=_recorder._capture_context())
+    typed = rec.actions()[-1]
+    assert (typed.kind, typed.selector, typed.data) == ("type_text", {"auto_id": "field2"}, "a")

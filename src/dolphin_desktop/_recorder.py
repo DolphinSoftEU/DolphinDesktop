@@ -512,6 +512,7 @@ class _InputContext:
     window_class: str = ""
     password: bool | None = None
     selector_items: tuple[tuple[str, str], ...] = ()
+    target: int = 0  # Native child HWND under the mouse, independent of focus.
 
     @property
     def selector(self) -> dict[str, str]:
@@ -552,7 +553,13 @@ def _capture_context(hwnd: int | None = None) -> _InputContext:
                 and win32process.GetWindowThreadProcessId(focus)[1] == pid
             ):
                 password = bool(style & 0x20)  # ES_PASSWORD
-        return _InputContext(root, pid, focus, title, cls, password)
+        target = int(hwnd or 0)
+        if target and (
+            _get_root_hwnd(target) != root
+            or win32process.GetWindowThreadProcessId(target)[1] != pid
+        ):
+            return _InputContext()
+        return _InputContext(root, pid, focus, title, cls, password, target=target)
     except Exception:
         return _InputContext()
 
@@ -566,13 +573,23 @@ def _capture_mouse_context(x: int, y: int) -> _InputContext:
         return _InputContext()
 
 
+def _same_mouse_target(first: _InputContext, second: _InputContext) -> bool:
+    return bool(first.hwnd and first.pid and first.target) and (
+        first.hwnd,
+        first.pid,
+        first.target,
+        first.window_class,
+    ) == (second.hwnd, second.pid, second.target, second.window_class)
+
+
 def _mouse_selector(context: _InputContext, x: int, y: int) -> dict[str, str]:
     # Hit-testing belongs on the worker. Discard its result if the native
-    # window/process/focus changed before or during the UIA call.
-    if _capture_mouse_context(x, y) != context:
+    # target window/process changed before or during the UIA call. The click
+    # itself may move focus, which does not change the hit-tested target.
+    if not _same_mouse_target(context, _capture_mouse_context(x, y)):
         return {}
     selector = _element_at_point(x, y)
-    return selector if _capture_mouse_context(x, y) == context else {}
+    return selector if _same_mouse_target(context, _capture_mouse_context(x, y)) else {}
 
 
 def _resolve_app_pid(app: str) -> int:
@@ -632,6 +649,7 @@ class Recorder:
         if pid is not None and (isinstance(pid, bool) or pid <= 0):
             raise ValueError("pid must be a positive process ID")
         self.pid = pid
+        self._explicit_pid = pid
         self.global_recording = global_recording
         self.app = app
         self.backend = backend
@@ -645,6 +663,8 @@ class Recorder:
         self._pending_is_password: bool = False
         self._pending_context: _InputContext | None = None
         self._last_mouse_context: _InputContext | None = None
+        self._clicked_context: _InputContext | None = None
+        self._clicked_selector: dict[str, str] = {}
         self._dbl_click_interval: float = _double_click_interval()
 
         self._evt_queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
@@ -910,15 +930,22 @@ class Recorder:
     ) -> None:
         context = context or _InputContext()
         if not self._in_scope(context):
+            self._clicked_context = None
+            self._clicked_selector = {}
             return
         win_title, win_class = context.title, context.window_class
         # Resolve selectors only while the captured native context remains stable.
         selector = _mouse_selector(context, x, y)
+        self._clicked_context = context if selector else None
+        self._clicked_selector = dict(selector)
 
         # Upgrade the preceding single-click to double_click when this press
         # completes a double-click the low-level hook cannot report as one.
         prev = self._actions[-1] if self._actions else None
-        same_context = self._last_mouse_context == context
+        same_context = self._last_mouse_context == context or (
+            self._last_mouse_context is not None
+            and _same_mouse_target(self._last_mouse_context, context)
+        )
         self._last_mouse_context = context
         if (
             same_context
@@ -971,7 +998,21 @@ class Recorder:
         win_title, win_class = context.title, context.window_class
         if not self._in_scope(context):
             self._flush_text()
+            self._clicked_context = None
+            self._clicked_selector = {}
             return
+        clicked = self._clicked_context
+        same_clicked_focus = (
+            clicked is not None
+            and context.password is not None
+            and (context.hwnd, context.pid, context.focus)
+            == (clicked.hwnd, clicked.pid, clicked.target)
+            and bool(context.focus)
+        )
+        if not same_clicked_focus:
+            self._clicked_context = None
+            self._clicked_selector = {}
+        selector = context.selector or self._clicked_selector
         if self._pending_context is not None and (context.hwnd, context.pid, context.focus) != (
             self._pending_context.hwnd,
             self._pending_context.pid,
@@ -990,7 +1031,7 @@ class Recorder:
         if not altgr and (ctrl or alt or vk in _SPECIAL_KEY_MAP):
             # Shortcut or focus-changing key → flush accumulated text, emit press_key.
             # The selector belongs to the original event, independent of live focus.
-            sel = context.selector
+            sel = selector
             self._flush_text()
             self._actions.append(
                 RecordedAction(
@@ -1006,6 +1047,8 @@ class Recorder:
             # context is dropped here as well: this key moved focus, and the next run
             # must re-resolve it instead of inheriting the previous control's selector.
             if ctrl or alt or vk in _FOCUS_CHANGING_VKS:
+                self._clicked_context = None
+                self._clicked_selector = {}
                 self._pending_selector = {}
                 self._pending_win_title = ""
                 self._pending_win_class = ""
@@ -1022,8 +1065,9 @@ class Recorder:
                 self._flush_text()
 
         if not self._pending_text:
-            # Only the event snapshot can supply the keyboard selector.
-            self._pending_selector = context.selector
+            # Reuse a click selector only when this native event proves that
+            # focus still belongs to the same captured child HWND and process.
+            self._pending_selector = selector
             self._pending_win_title = win_title
             self._pending_win_class = win_class
             self._pending_is_password = is_password
@@ -1059,12 +1103,13 @@ class Recorder:
 
     def _build_code(self, actions: list[RecordedAction], func_name: str) -> list[str]:
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        parameters = "process_id: int" if self._explicit_pid is not None else ""
         lines = [
             f"# Generated by dolphin recorder on {now}",
             "from dolphin_desktop import Desktop",
             "",
             "",
-            f"def {func_name}() -> None:",
+            f"def {func_name}({parameters}) -> None:",
             f'    """Recorded test — generated by dolphin on {now}."""',
         ]
 
@@ -1079,8 +1124,9 @@ class Recorder:
 
         # Connection boilerplate
         lines.append(f"    desktop = Desktop(backend={self.backend!r})")
-        if self.pid is not None:
-            lines.append(f"    app = desktop.connect(process={self.pid})")
+        if self._explicit_pid is not None:
+            lines.append("    # Supply the current process_id at runtime or via a pytest fixture.")
+            lines.append("    app = desktop.connect(process=process_id)")
         elif self.app:
             lines.append(f"    app = desktop.connect(title_re={_title_re_literal(self.app)})")
         elif windows:

@@ -28,6 +28,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   `--app` is pinned to a unique process; `--pid` selects one directly. Global
   capture now requires `--global` / `global_recording=True`. Plaintext capture
   is limited to stable native Windows Edit controls (KAN-576).
+  Generated tests reconnect by title for `--app` and accept a runtime `process_id`
+  for `--pid`, avoiding recorded PIDs that become stale after an application
+  restart. Click selectors survive focus changes caused by the click, and typing
+  reuses them only for the same verified native child control, window and process.
 
 * Invalid `@pytest.mark.dolphin(video_mode=...)` values now raise `ValueError`
   with the rejected value, including explicit `None`. Video recording explicitly
