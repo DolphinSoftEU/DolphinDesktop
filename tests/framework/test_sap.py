@@ -247,7 +247,10 @@ def keyboard_login_ui(monkeypatch):
 
         return SimpleNamespace(
             has_keyboard_focus=lambda: state.focus == name,
-            element_info=SimpleNamespace(element=SimpleNamespace(CurrentIsPassword=is_password)),
+            element_info=SimpleNamespace(
+                automation_id="wnd[0]/usr/ctxtRSYST-BNAME" if name == "user" else name,
+                element=SimpleNamespace(CurrentIsPassword=is_password),
+            ),
             iface_value=SimpleNamespace(CurrentIsReadOnly=False, SetValue=write),
         )
 
@@ -293,8 +296,7 @@ def test_keyboard_login_writes_literal_credentials(keyboard_login_ui, text):
     state = keyboard_login_ui
     sap.SapGui.keyboard_login("SAP", text, text)
     assert state.sent == ["{TAB}", "{ENTER}"]
-    assert [value for name, value in state.writes if name == "user"][-1] == text
-    assert [value for name, value in state.writes if name == "password"][-1] == text
+    assert state.writes == [("user", text), ("password", text)]
     state.factory.assert_called_once_with(backend="uia")
 
 
@@ -321,7 +323,7 @@ def test_keyboard_login_stops_after_focus_changes_during_write(keyboard_login_ui
     with pytest.raises(ApplicationError, match="Cannot safely"):
         sap.SapGui.keyboard_login("SAP", "user", "secret")
     assert [value for target, value in state.writes if target == name] == [
-        "u" if name == "user" else "s"
+        "user" if name == "user" else "secret"
     ]
     assert "{ENTER}" not in state.sent
 
@@ -330,7 +332,8 @@ def test_keyboard_login_stops_after_focus_changes_during_write(keyboard_login_ui
 @pytest.mark.parametrize("name", ["user", "password"])
 def test_keyboard_login_rejects_controls_before_any_input(keyboard_login_ui, char, name):
     state = keyboard_login_ui
-    credentials = {"user": "user", "password": "secret"}
+    # Synthetic values used solely to exercise control-character rejection.
+    credentials = {"user": "user", "password": "secret"}  # pragma: allowlist secret
     credentials[name] += char
     with pytest.raises(ValueError, match="control characters"):
         sap.SapGui.keyboard_login("SAP", **credentials)
@@ -362,7 +365,8 @@ def test_keyboard_login_provider_error_does_not_disclose_password(keyboard_login
     with pytest.raises(ApplicationError) as error:
         sap.SapGui.keyboard_login("SAP", "user", "secret")
     assert "secret" not in str(error.value)
-    assert error.value.__suppress_context__
+    assert error.value.__context__ is None
+    assert error.value.__cause__ is None
     assert "{ENTER}" not in state.sent
 
 
@@ -376,21 +380,66 @@ def test_keyboard_login_stops_if_password_field_becomes_visible(keyboard_login_u
     state.on_write = unmask
     with pytest.raises(ApplicationError, match="Cannot safely"):
         sap.SapGui.keyboard_login("SAP", "user", "secret")
-    assert [value for name, value in state.writes if name == "password"] == ["s"]
+    assert [value for name, value in state.writes if name == "password"] == ["secret"]
     assert "{ENTER}" not in state.sent
 
 
-def test_keyboard_login_checks_focus_after_last_pause(keyboard_login_ui, monkeypatch):
+def test_keyboard_login_checks_focus_after_tab_pause(keyboard_login_ui, monkeypatch):
     state = keyboard_login_ui
 
     def lose_focus(seconds):
-        if state.writes and state.writes[-1] == ("password", "s"):
+        if seconds == 0.1:
             state.focus = "decoy"
 
     monkeypatch.setattr(sap.time, "sleep", lose_focus)
     with pytest.raises(ApplicationError, match="Cannot safely"):
         sap.SapGui.keyboard_login("SAP", "user", "s")
+    assert state.writes == [("user", "user")]
     assert "{ENTER}" not in state.sent
+
+
+@pytest.mark.parametrize("control", ["Client", "Language"])
+def test_keyboard_login_does_not_overwrite_other_focused_edits(keyboard_login_ui, control):
+    state = keyboard_login_ui
+    decoy = SimpleNamespace(
+        has_keyboard_focus=lambda: state.focus == control,
+        element_info=SimpleNamespace(
+            automation_id=control, element=SimpleNamespace(CurrentIsPassword=False)
+        ),
+        iface_value=SimpleNamespace(CurrentIsReadOnly=False, SetValue=Mock()),
+    )
+    state.fields.insert(0, decoy)
+    state.focus = control
+    state.after_tab = "password"
+    with pytest.raises(ApplicationError, match="Cannot safely"):
+        sap.SapGui.keyboard_login("SAP", "user", "secret")
+    decoy.iface_value.SetValue.assert_not_called()
+    assert state.writes == state.sent == []
+
+
+@pytest.mark.parametrize("identifier", ["", "Client", "Language", "otherRSYST-BNAME"])
+def test_keyboard_login_rejects_unidentified_user(keyboard_login_ui, identifier):
+    state = keyboard_login_ui
+    state.user.element_info.automation_id = identifier
+    with pytest.raises(ApplicationError, match="Cannot safely"):
+        sap.SapGui.keyboard_login("SAP", "user", "secret")
+    assert state.writes == state.sent == []
+
+
+def test_keyboard_login_rejects_ambiguous_user_ids(keyboard_login_ui):
+    state = keyboard_login_ui
+    state.fields.append(state.user)
+    with pytest.raises(ApplicationError, match="Cannot safely"):
+        sap.SapGui.keyboard_login("SAP", "user", "secret")
+    assert state.writes == state.sent == []
+
+
+@pytest.mark.parametrize("identifier", ["RSYST-BNAME", "txtRSYST-BNAME", "ctxtRSYST-BNAME"])
+def test_keyboard_login_accepts_exact_sap_user_id(keyboard_login_ui, identifier):
+    state = keyboard_login_ui
+    state.user.element_info.automation_id = identifier
+    sap.SapGui.keyboard_login("SAP", "user", "secret")
+    assert state.writes == [("user", "user"), ("password", "secret")]
 
 
 def test_sap_gui_failure_and_open_connection_fallbacks(monkeypatch):

@@ -583,8 +583,10 @@ class SapGui:
     def keyboard_login(win_title: str, user: str, password: str) -> None:
         """Fill SAP login credentials without mouse movement, then press Enter.
 
-        The User field must initially have focus. UI Automation must expose it
-        and exactly one password Edit control with writable Value patterns.
+        The User field must initially have focus and expose the SAP automation
+        ID ``RSYST-BNAME``, ``txtRSYST-BNAME`` or ``ctxtRSYST-BNAME`` (optionally
+        in a component path). UIA must expose exactly one password Edit control.
+        Both fields must have writable Value patterns.
         Credentials are set literally on those controls, never sent as global
         keystrokes. Unsupported controls or lost focus abort the login; use SAP
         GUI Scripting instead when the login screen lacks these UIA patterns.
@@ -618,7 +620,9 @@ class SapGui:
             users = [
                 field
                 for field in fields
-                if field.has_keyboard_focus() and not field.element_info.element.CurrentIsPassword
+                if field.element_info.automation_id.rsplit("/", 1)[-1]
+                in {"RSYST-BNAME", "txtRSYST-BNAME", "ctxtRSYST-BNAME"}
+                and not field.element_info.element.CurrentIsPassword
             ]
             passwords = [field for field in fields if field.element_info.element.CurrentIsPassword]
             if len(users) != 1 or len(passwords) != 1:
@@ -638,29 +642,23 @@ class SapGui:
                     ):
                         raise ApplicationError("SAP login focus changed; login aborted")
 
-                for index in range(1, len(text) + 1):
-                    verify()
-                    # Targeted UIA writes cannot redirect a character to another
-                    # control even if focus changes between the check and write.
-                    pattern.SetValue(text[:index])
-                    verify()
-                    time.sleep(0.05)
                 verify()
-                if not text:
-                    pattern.SetValue("")
-                    verify()
+                # One targeted write cannot redirect any part of the credential
+                # even if focus changes between the check and SetValue.
+                pattern.SetValue(text)
+                verify()
 
             fill(user_field, user_value, user)
             _send_keys("{TAB}")
             time.sleep(0.1)
             fill(password_field, password_value, password)
             _send_keys("{ENTER}")
+            return
         except Exception:
-            # Provider errors may contain the SetValue argument. Do not expose
-            # that exception (including its chained traceback) to diagnostics.
-            raise ApplicationError(
-                "Cannot safely complete SAP login; fields or focus unavailable"
-            ) from None
+            # Provider errors may contain the SetValue argument. Leave the
+            # handler before raising so the safe error has no secret context.
+            pass
+        raise ApplicationError("Cannot safely complete SAP login; fields or focus unavailable")
 
     def connection(self, index: int = 0) -> SapConnection:
         """Return a SAP GUI connection by zero-based index."""

@@ -23,10 +23,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 ### Fixed
 
 * SAP `keyboard_login()` writes literal credentials through verified UIA Value
-  patterns, checks focus between writes, and aborts without submitting after
+  patterns, identifies User by its SAP automation ID, and checks focus before
+  and after each single credential write. It aborts without submitting after
   focus loss. Passwords never enter the global SendKeys stream. Control
   characters are rejected before any input; screens without a unique password
-  Edit control and writable UIA patterns now fail closed (KAN-577).
+  Edit control and writable UIA patterns now fail closed. Provider exceptions
+  are discarded before raising a safe error without a chained context (KAN-577).
 
 * Recorder events carry window/PID/native focus and password classification from
   capture time, preventing delayed keys from being classified using later UIA
