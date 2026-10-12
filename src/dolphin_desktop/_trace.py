@@ -362,6 +362,12 @@ class TraceSession:
 
 _LATEST_RUN_SQL = "SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT 1"
 
+_TRACE_READ_SQL = {
+    "schema_version": ("PRAGMA table_xinfo(schema_version)", "SELECT * FROM schema_version"),
+    "runs": ("PRAGMA table_xinfo(runs)", "SELECT * FROM runs"),
+    "steps": ("PRAGMA table_xinfo(steps)", "SELECT * FROM steps"),
+}
+
 
 _TRACE_COLUMNS = {
     "schema_version": {"version": "INTEGER"},
@@ -399,7 +405,8 @@ def _validate_trace_db(db: sqlite3.Connection) -> None:
         kind = db.execute("SELECT type FROM sqlite_master WHERE name=?", (table,)).fetchone()
         if kind is None or kind[0] != "table":
             raise ValueError(f"Invalid trace.db: missing table {table}")
-        metadata = list(db.execute(f"PRAGMA table_xinfo({table})"))
+        metadata_sql, rows_sql = _TRACE_READ_SQL[table]
+        metadata = list(db.execute(metadata_sql))
         declared = {r[1]: r[2].upper() for r in metadata}
         if declared != columns:
             raise ValueError(f"Invalid trace.db: incompatible schema for {table}")
@@ -413,7 +420,7 @@ def _validate_trace_db(db: sqlite3.Connection) -> None:
             foreign_keys = list(db.execute("PRAGMA foreign_key_list(steps)"))
             if len(foreign_keys) != 1 or tuple(foreign_keys[0][2:5]) != ("runs", "run_id", "id"):
                 raise ValueError("Invalid trace.db: incompatible steps foreign key")
-        for row in db.execute(f"SELECT * FROM {table}"):
+        for row in db.execute(rows_sql):
             for name, sql_type in columns.items():
                 value = row[name]
                 if value is None and name in _NULLABLE_COLUMNS.get(table, set()):
@@ -655,10 +662,20 @@ def _render_steps(steps: list[dict[str, Any]], screenshot_dir: Path | None = Non
     return "\n".join(parts)
 
 
+_MAX_UIA_DISPLAY_DEPTH = 32
+
+
 def _nodes_to_text(nodes: list[dict[str, Any]]) -> str:
+    if not isinstance(nodes, list):
+        raise ValueError("UIA tree must be a list of nodes")
     lines: list[str] = []
     for n in nodes:
+        if not isinstance(n, dict):
+            raise ValueError("UIA tree nodes must be objects")
         depth = n.get("d", 0)
+        if type(depth) is not int:
+            raise ValueError("UIA tree depth must be an integer")
+        depth = max(0, min(depth, _MAX_UIA_DISPLAY_DEPTH))
         ctrl = n.get("ctrl", "?")
         name = n.get("name", "")
         auto_id = n.get("id", "")

@@ -698,6 +698,29 @@ class TestHtmlRenderingBranches:
 
 
 class TestUntrustedTraceDatabase:
+    @pytest.mark.parametrize("depth, expected", [(0, 0), (2, 2), (-1, 0), (10**100, 32)])
+    def test_uia_tree_indentation_is_bounded(self, depth, expected):
+        text = _trace._nodes_to_text([{"d": depth, "ctrl": "Button"}])
+        assert text == "  " * expected + "Button"
+
+    @pytest.mark.parametrize(
+        "nodes",
+        [
+            {},
+            [None],
+            [{"d": "<img src=x onerror=alert(1)>"}],
+            [{"d": 1.5}],
+            [{"d": True}],
+            [{"d": None}],
+        ],
+    )
+    def test_malformed_uia_tree_is_displayed_as_escaped_text(self, nodes):
+        with pytest.raises(ValueError):
+            _trace._nodes_to_text(nodes)
+        html = _trace._render_steps([{"seq": 1, "action": "click", "uia_tree": json.dumps(nodes)}])
+        assert "UIA tree (? nodes)" in html
+        assert "<img " not in html
+
     @pytest.fixture(autouse=True)
     def deterministic_screenshot(self, monkeypatch):
         monkeypatch.setattr(_trace, "_capture_screenshot", lambda path: path.write_bytes(b"image"))
