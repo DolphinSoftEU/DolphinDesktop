@@ -10,7 +10,7 @@ from typing import Any
 
 from ._config import get_poll_interval, get_timeout
 from ._exceptions import ApplicationError, ElementNotFoundError, WaitTimeoutError
-from ._helpers import _MISSING, _escape_keys
+from ._helpers import _MISSING
 from ._logging import get_logger
 
 _LOG = get_logger("sap")
@@ -581,43 +581,84 @@ class SapGui:
 
     @staticmethod
     def keyboard_login(win_title: str, user: str, password: str) -> None:
-        """Type SAP login credentials via keyboard — no mouse movement.
+        """Fill SAP login credentials without mouse movement, then press Enter.
 
-        SAP login auto-advances focus from the pre-filled Client field directly
-        to the User (BNAME) field.  We type *user* into BNAME, Tab to BCODE
-        (Password), type *password*, then Enter.
+        The User field must initially have focus and expose the SAP automation
+        ID ``RSYST-BNAME``, ``txtRSYST-BNAME`` or ``ctxtRSYST-BNAME`` (optionally
+        in a component path). UIA must expose exactly one password Edit control.
+        Both fields must have writable Value patterns.
+        Credentials are set literally on those controls, never sent as global
+        keystrokes. Unsupported controls or lost focus abort the login; use SAP
+        GUI Scripting instead when the login screen lacks these UIA patterns.
 
-        Raises ApplicationError if the SAP login window cannot be found.
+        Raises:
+            ValueError: A credential contains a control character.
+            ApplicationError: The window, fields or focus cannot be verified.
         """
+        # Validate both values before connecting or sending any input. In a
+        # single-line login field tabs/newlines must not navigate or disappear.
+        for value in (user, password):
+            if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+                raise ValueError("SAP login credentials cannot contain control characters")
         try:
             from pywinauto import Application as _PwApp
             from pywinauto.keyboard import send_keys as _send_keys
         except ImportError as exc:
             raise ApplicationError("pywinauto not available") from exc
 
-        app = _PwApp(backend="win32")
+        app = _PwApp(backend="uia")
         try:
             app.connect(title=win_title, timeout=15)
         except Exception as exc:
             raise ApplicationError(f"Cannot connect to '{win_title}': {exc}") from exc
 
-        dlg = app.window(title=win_title)
-        # Bring to foreground — pywinauto uses AttachThreadInput internally.
-        dlg.set_focus()
-        time.sleep(1.0)
+        try:
+            dlg = app.window(title=win_title).wrapper_object()
+            dlg.set_focus()
+            time.sleep(1.0)
+            fields = dlg.descendants(control_type="Edit")
+            users = [
+                field
+                for field in fields
+                if field.element_info.automation_id.rsplit("/", 1)[-1]
+                in {"RSYST-BNAME", "txtRSYST-BNAME", "ctxtRSYST-BNAME"}
+                and not field.element_info.element.CurrentIsPassword
+            ]
+            passwords = [field for field in fields if field.element_info.element.CurrentIsPassword]
+            if len(users) != 1 or len(passwords) != 1:
+                raise ApplicationError("Cannot verify SAP login fields")
+            user_field, password_field = users[0], passwords[0]
+            # Resolve both patterns before changing either field. Calling
+            # set_edit_text would also log the credential in pywinauto.
+            user_value = user_field.iface_value
+            password_value = password_field.iface_value
+            if user_value.CurrentIsReadOnly or password_value.CurrentIsReadOnly:
+                raise ApplicationError("SAP login fields are read-only")
 
-        # Focus is on BNAME (User) — SAP auto-advances past pre-filled Client.
-        # Type user → Tab → type password → Enter. Both are escaped as literal
-        # text — send_keys() treats +^%~(){} as SendKeys modifiers/delimiters,
-        # so an unescaped credential containing them (e.g. a password like
-        # "{ENTER}pwd") would act as control keys instead of being typed.
-        _send_keys(_escape_keys(user), with_spaces=True, pause=0.05)
-        time.sleep(0.1)
-        _send_keys("{TAB}")
-        time.sleep(0.1)
-        _send_keys(_escape_keys(password), with_spaces=True, pause=0.05)
-        time.sleep(0.1)
-        _send_keys("{ENTER}")
+            def fill(field: Any, pattern: Any, text: str) -> None:
+                def verify() -> None:
+                    if not field.has_keyboard_focus() or (
+                        field is password_field and not field.element_info.element.CurrentIsPassword
+                    ):
+                        raise ApplicationError("SAP login focus changed; login aborted")
+
+                verify()
+                # One targeted write cannot redirect any part of the credential
+                # even if focus changes between the check and SetValue.
+                pattern.SetValue(text)
+                verify()
+
+            fill(user_field, user_value, user)
+            _send_keys("{TAB}")
+            time.sleep(0.1)
+            fill(password_field, password_value, password)
+            _send_keys("{ENTER}")
+            return
+        except Exception:
+            # Provider errors may contain the SetValue argument. Leave the
+            # handler before raising so the safe error has no secret context.
+            pass
+        raise ApplicationError("Cannot safely complete SAP login; fields or focus unavailable")
 
     def connection(self, index: int = 0) -> SapConnection:
         """Return a SAP GUI connection by zero-based index."""
