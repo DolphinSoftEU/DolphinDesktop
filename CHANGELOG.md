@@ -73,10 +73,14 @@ Addresses further findings from a follow-up security review
   cover the COM contract, errors and simulated policy/XLM limitations, with
   a separate Windows/Office retest record. ForceDisable does not block
   Excel 4.0/XLM macros or all active content (KAN-574).
-* **TN5250 receive buffer is bounded and its deadline is unconditional.**
-  A host that never sends a terminating record (or streams complete
-  records continuously) can no longer grow the client's buffer without
-  bound or keep a read call alive past its own timeout.
+* **TN5250 parser limits completed (KAN-575).** Records must match their
+  two-byte GDS length and fit the 65,535-byte protocol limit. Receive backlog
+  and escaped frames are bounded; invalid input closes the connection and
+  clears buffered data. Reads check their deadline while scanning and between
+  records, cap work and record count, and retain pending data for later polls.
+  Negotiation exceeding its time or byte budget now raises `MainframeError`
+  and closes the connection.
+
 * **SAP `keyboard_login()` types credentials literally.** `user`/`password`
   are escaped the same way every other typed-text path in the library is,
   so a credential containing SendKeys metacharacters (`{`, `}`, `%`, …) is
