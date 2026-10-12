@@ -1024,7 +1024,7 @@ def test_tn5250_read_records_handles_escaping_negotiation_and_timeouts(
     backend._sock = unknown_telnet
     backend._rx_backlog = b""
     backend._process_record = Mock()  # type: ignore[method-assign]
-    assert backend._read_records(1) == [b"\xff\xf1x"]
+    assert backend._read_records(1) == [b"x"]
 
     # No record before the deadline and a peer closing the socket both retain
     # whatever bytes were already buffered.
@@ -2035,3 +2035,145 @@ def test_tn5250_push_rx_cannot_exceed_backlog_limit() -> None:
         backend._push_rx(b"x")
     assert sock.closed
     assert backend._rx_backlog == b""
+
+
+@pytest.mark.parametrize("position", [0, 1, 10, 14, 18])
+@pytest.mark.parametrize("split", [False, True])
+def test_tn5250_nop_does_not_change_gds_data(position, split) -> None:
+    backend = mf._Tn5250Backend()
+    data = _record(b"\x04\x11\x00\x00\x11\x01\x01\xc1")
+    wire = data[:position] + b"\xff\xf1" + data[position:] + b"\xff\xef"
+    chunks = [wire[: position + 1], wire[position + 1 :]] if split else [wire]
+    sock = _Socket(chunks)
+    backend._sock = sock
+    backend._connected = True
+    assert backend._read_records(1) == [data]
+    assert backend._screen[0][0] == "A"
+    assert backend.is_connected()
+    assert not sock.closed
+
+
+@pytest.mark.parametrize("prefix_length", [0, 1, 3])
+def test_tn5250_maximum_gds_survives_negotiation(prefix_length) -> None:
+    backend = mf._Tn5250Backend()
+    data = b"\xff\xff" + b"\x00" * 8 + b"\xff" * (mf._MAX_GDS_RECORD - 10)
+    wire = data.replace(b"\xff", b"\xff\xff") + b"\xff\xef"
+    chunks = [wire[:prefix_length]] if prefix_length else []
+    chunks.extend(wire[i : i + 1024] for i in range(prefix_length, len(wire), 1024))
+    sock = _Socket([b"\xff\xfd\x19\xff\xf1", *chunks])
+    backend._sock = sock
+    backend._negotiate()
+    assert backend._rx_backlog.startswith(b"\xff\xff")
+    assert backend._read_records(10) == [data]
+    assert backend._rx_backlog == b""
+    assert not sock.closed
+
+
+@pytest.mark.parametrize("send_number", [1, 7, 8])
+@pytest.mark.parametrize("error_type", [TimeoutError, OSError])
+def test_tn5250_negotiation_send_failure_is_mainframe_error(monkeypatch, send_number, error_type):
+    class SendFailureSocket(_Socket):
+        def sendall(self, data):
+            if len(self.sent) + 1 == send_number:
+                raise error_type("send failed")
+            super().sendall(data)
+
+    sock = SendFailureSocket([b"\xff\xfd\x19\xff\xfa\x18\x01\xff\xf0"])
+    backend = mf._Tn5250Backend(allow_plaintext=True)
+    monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=sock))
+    with pytest.raises(mf.MainframeError, match="negotiation did not complete: send failed"):
+        backend.connect("ibmi", 23, session_type="5250")
+    assert sock.closed
+    assert backend._sock is None
+    assert not backend.is_connected()
+    assert backend._rx_backlog == b""
+
+
+@pytest.mark.parametrize("phase", ["advertise", "receive"])
+def test_tn5250_negotiation_deadline_after_socket_work(monkeypatch, phase) -> None:
+    clock = [0.0]
+
+    class DelayedSocket(_Socket):
+        def sendall(self, data):
+            super().sendall(data)
+            if phase == "advertise":
+                clock[0] = mf._NEGOTIATION_TIMEOUT
+
+        def recv(self, size):
+            chunk = super().recv(size)
+            clock[0] = mf._NEGOTIATION_TIMEOUT
+            return chunk
+
+    sock = DelayedSocket([b"\xff\xfd\x19"])
+    backend = mf._Tn5250Backend()
+    backend._sock = sock
+    monkeypatch.setattr(mf.time, "monotonic", lambda: clock[0])
+    with pytest.raises(mf.MainframeError, match="negotiation deadline"):
+        backend._negotiate()
+    assert sock.closed
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"\xff\xfd\x19",  # Reply to a complete option command.
+        b"\xff\xfa\x18\x01\xff\xf0",  # Reply to subnegotiation.
+        _record() + b"\xff\xef",  # Dispatch a complete GDS record.
+        b"partial",  # Wait for the remaining frame bytes.
+    ],
+)
+def test_tn5250_expired_deadline_preserves_pending_work(monkeypatch, data) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket()
+    backend._sock = sock
+    backend._rx_backlog = data
+    ticks = iter([0.0, 0.0, 1.0])
+    monkeypatch.setattr(mf.time, "monotonic", lambda: next(ticks, 1.0))
+    assert backend._read_records(0.005) == []
+    assert backend._rx_backlog == data
+    assert not sock.sent
+    assert not sock.closed
+
+
+def test_tn5250_subnegotiation_work_limit_preserves_pending_work(monkeypatch) -> None:
+    backend = mf._Tn5250Backend()
+    backend._sock = _Socket()
+    backend._rx_backlog = b"\xff\xfa" + b"x" * 100
+    monkeypatch.setattr(mf, "_MAX_SCAN_WORK_PER_READ", 10)
+    assert backend._read_records(1) == []
+    assert backend._rx_backlog == b"\xff\xfa" + b"x" * 100
+    assert not backend._sock.sent
+
+
+@pytest.mark.parametrize(
+    "data, error",
+    [
+        (b"x" * (mf._MAX_WIRE_RECORD + 1) + b"\xff\xef", "frame length limit"),
+        (
+            b"\xff\xfa" + b"x" * mf._MAX_NEGOTIATION_BYTES + b"\xff\xf0",
+            "subnegotiation byte limit",
+        ),
+    ],
+    ids=["oversized-frame", "oversized-subnegotiation"],
+)
+def test_tn5250_oversized_framed_input_closes_socket(data, error) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket()
+    backend._sock = sock
+    backend._rx_backlog = data
+    with pytest.raises(mf.MainframeError, match=error):
+        backend._read_records(10)
+    assert sock.closed
+    assert backend._rx_backlog == b""
+
+
+def test_tn5250_long_field_control_sequence_within_deadline() -> None:
+    backend = mf._Tn5250Backend()
+    payload = b"\x04\x11\x00\x00\x1d\x40\x00" + b"\x00\x00" * 200 + b"\x20\x00\x04"
+    data = (len(payload) + 10).to_bytes(2, "big") + b"\x12\xa0" + b"\x00" * 6 + payload
+    sock = _Socket([data + b"\xff\xef"])
+    backend._sock = sock
+    assert backend._read_records(1) == [data]
+    assert len(backend._fields) == 1
+    assert backend._fields[0].length == 4
+    assert not sock.closed

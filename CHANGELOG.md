@@ -79,7 +79,10 @@ Addresses further findings from a follow-up security review
   clears buffered data. Reads check their deadline while scanning and between
   records, cap work and record count, and retain pending data for later polls.
   Negotiation exceeding its time or byte budget now raises `MainframeError`
-  and closes the connection.
+  and closes the connection. Telnet NOP and other two-byte commands are
+  removed before GDS validation; escaped IAC at the start of the first record
+  survives negotiation, including the 65,535-byte record. Negotiation send
+  failures consistently close the connection and raise `MainframeError`.
 
 * **SAP `keyboard_login()` types credentials literally.** `user`/`password`
   are escaped the same way every other typed-text path in the library is,

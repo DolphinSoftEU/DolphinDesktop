@@ -1713,6 +1713,13 @@ class _Tn5250Backend(_TerminalBackend):
         server sees us as a proper TN5250 client; we accept (DO) EOR
         and BINARY in both directions.
         """
+        try:
+            self._negotiate_telnet()
+        except OSError as exc:
+            self._protocol_error(f"negotiation did not complete: {exc}")
+
+    def _negotiate_telnet(self) -> None:
+        """Negotiate Telnet options until the first encoded data byte."""
         deadline = time.monotonic() + _NEGOTIATION_TIMEOUT
         # Send our advertisements first so IBM i sees a real 5250 client.
         for verb, opt in (
@@ -1761,6 +1768,11 @@ class _Tn5250Backend(_TerminalBackend):
                 if i + 1 >= len(rx):
                     break
                 cmd = rx[i + 1]
+                if cmd == _T_IAC:
+                    # Escaped IAC is the start of GDS data, not a command.
+                    # Preserve both wire bytes for _read_records() to decode.
+                    self._push_rx(bytes(rx[i:]))
+                    return
                 if cmd == _T_SB:
                     # Sub-negotiation: seek IAC SE.
                     j = i + 2
@@ -1910,7 +1922,9 @@ class _Tn5250Backend(_TerminalBackend):
                         self._on_subneg(bytes(buf[i + 2 : j]))
                         del buf[i : j + 2]
                         continue
-                    i += 2
+                    # Other two-byte Telnet commands (including NOP) carry
+                    # no GDS data and must not affect its declared length.
+                    del buf[i : i + 2]
                     continue
                 i += 1
             if record_end >= 0:
@@ -1929,15 +1943,6 @@ class _Tn5250Backend(_TerminalBackend):
                 continue
             if len(buf) > _MAX_WIRE_RECORD:
                 self._protocol_error("frame length limit exceeded")
-            if time.monotonic() >= deadline:
-                # Past the deadline — return whatever was parsed so far (even
-                # none) so the caller can keep polling instead of blocking
-                # past its own timeout budget. Unconditional: a host that
-                # keeps streaming complete records forever must not be able
-                # to keep this call alive past *timeout* just by never
-                # pausing long enough for the "no record yet" branch below.
-                self._rx_backlog = bytes(buf)
-                return records
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self._rx_backlog = bytes(buf)
