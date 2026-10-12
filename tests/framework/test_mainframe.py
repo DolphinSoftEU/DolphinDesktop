@@ -1970,6 +1970,31 @@ def test_tn5250_valid_maximum_gds_with_escaped_iac() -> None:
     assert backend._rx_backlog == b""
 
 
+@pytest.mark.parametrize("header", [b"\x00" * 8, b"\xff" * 8], ids=["zero-header", "iac-header"])
+def test_tn5250_maximum_frame_split_eor(header) -> None:
+    backend = mf._Tn5250Backend()
+    data = b"\xff\xff" + header + b"\xff" * (mf._MAX_GDS_RECORD - 10)
+    wire = data.replace(b"\xff", b"\xff\xff") + b"\xff\xef"
+    backend._rx_backlog = wire[:-1]
+    sock = _Socket([wire[-1:]])
+    backend._sock = sock
+    assert backend._read_records(10) == [data]
+    assert backend._rx_backlog == b""
+    assert not sock.closed
+
+
+@pytest.mark.parametrize("extra", [b"x", b"\xff\xff"], ids=["ordinary-byte", "escaped-iac"])
+def test_tn5250_maximum_frame_rejects_extra_data(extra) -> None:
+    backend = mf._Tn5250Backend()
+    backend._rx_backlog = b"\xff\xff" * mf._MAX_GDS_RECORD + extra[:1]
+    sock = _Socket([extra[1:]])
+    backend._sock = sock
+    with pytest.raises(mf.MainframeError, match="frame length limit"):
+        backend._read_records(10)
+    assert sock.closed
+    assert backend._rx_backlog == b""
+
+
 def test_tn5250_oversized_existing_backlog_is_rejected() -> None:
     backend = mf._Tn5250Backend()
     sock = _Socket()

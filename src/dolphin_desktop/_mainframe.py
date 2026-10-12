@@ -1941,7 +1941,10 @@ class _Tn5250Backend(_TerminalBackend):
                 del buf[: record_end + 2]
                 i = 0
                 continue
-            if len(buf) > _MAX_WIRE_RECORD:
+            # A trailing, unpaired IAC may be the first byte of IAC EOR.
+            # Count it only after the next receive identifies its meaning.
+            pending_iac = i == len(buf) - 1 and buf[i] == _T_IAC
+            if len(buf) > _MAX_WIRE_RECORD + int(pending_iac):
                 self._protocol_error("frame length limit exceeded")
             remaining = deadline - time.monotonic()
             if remaining <= 0:

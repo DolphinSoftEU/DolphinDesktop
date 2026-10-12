@@ -83,6 +83,8 @@ Addresses further findings from a follow-up security review
   removed before GDS validation; escaped IAC at the start of the first record
   survives negotiation, including the 65,535-byte record. Negotiation send
   failures consistently close the connection and raise `MainframeError`.
+  A maximum-size escaped frame also accepts an EOR terminator split between
+  TCP reads without treating its pending IAC byte as excess GDS data.
 
 * **SAP `keyboard_login()` types credentials literally.** `user`/`password`
   are escaped the same way every other typed-text path in the library is,
