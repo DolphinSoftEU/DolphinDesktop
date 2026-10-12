@@ -21,6 +21,9 @@ class LaunchProbe:
     def process_id(self) -> int:
         return 123
 
+    def wait_for_url(self, url: str, *, timeout: float) -> None:
+        assert get_ident() == self.launch_thread
+
     def close(self) -> None:
         self.cleanup_calls.append(("close", get_ident()))
 

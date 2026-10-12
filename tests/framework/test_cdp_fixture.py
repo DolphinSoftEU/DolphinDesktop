@@ -65,3 +65,18 @@ def test_launch_error_without_resources_is_propagated(monkeypatch, tmp_path):
     monkeypatch.setattr(fixture.Desktop, "launch_electron_cdp", fail)
     with pytest.raises(RuntimeError, match="handshake failed"):
         fixture.ChromiumSession("chrome.exe", tmp_path, 9222, "http://local")
+
+
+def test_initial_navigation_failure_cleans_acquired_session(monkeypatch, tmp_path):
+    class NavigationFailure(LaunchProbe):
+        def wait_for_url(self, url: str, *, timeout: float) -> None:
+            super().wait_for_url(url, timeout=timeout)
+            raise RuntimeError("initial navigation timed out")
+
+    probe = NavigationFailure()
+    probe.release.set()
+    monkeypatch.setattr(fixture.Desktop, "launch_electron_cdp", probe.launch)
+    with pytest.raises(RuntimeError, match="initial navigation timed out"):
+        fixture.ChromiumSession("chrome.exe", tmp_path, 9222, "http://local")
+    assert probe.cleaned.wait(2)
+    assert probe.cleanup_calls == [("close", probe.launch_thread), ("kill", probe.launch_thread)]
