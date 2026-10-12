@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Trace HTML generation validates the complete v1 schema and stored column types
+  before rendering, reports invalid databases with a controlled error, rejects
+  nonfinite sequence/timestamp values, confines screenshots to their directory,
+  and adds a CSP allowing only the viewer script (KAN-578).
+
 * SAP `keyboard_login()` writes literal credentials through verified UIA Value
   patterns, identifies User by its SAP automation ID, and checks focus before
   and after each single credential write. It aborts without submitting after

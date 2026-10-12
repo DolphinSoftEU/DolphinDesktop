@@ -380,6 +380,8 @@ class TestRunSelection:
         run_dir.mkdir()
         db = sqlite3.connect(str(run_dir / "trace.db"))
         db.executescript(_trace._DDL)
+        db.execute("INSERT INTO schema_version VALUES (?)", (_trace.SCHEMA_VERSION,))
+        db.commit()
         db.close()
         with pytest.raises(FileNotFoundError):
             _trace.generate_html(run_dir)
@@ -649,7 +651,7 @@ class TestHtmlRenderingBranches:
 
         assert "&lt;click&gt;" in html
         assert "selector" not in html  # the selector value itself is rendered, not its field name
-        assert 'src="screenshots/shot&quot;&amp;.jpg"' in html
+        assert 'src="screenshots/shot%22%26.jpg"' in html
         assert '<span class="ok">ok</span>' in html
         assert '<span class="er">err</span>' in html
         assert "&lt;bad&gt;&amp;" in html
@@ -693,6 +695,173 @@ class TestHtmlRenderingBranches:
         assert "Dolphin Trace: tests/test_&lt;x&gt;" in html
         assert "— &bull; 0 steps" in html
         assert '<div class="err-box"><pre>&lt;failure&gt;&amp;</pre></div>' in html
+
+
+class TestUntrustedTraceDatabase:
+    @pytest.fixture(autouse=True)
+    def deterministic_screenshot(self, monkeypatch):
+        monkeypatch.setattr(_trace, "_capture_screenshot", lambda path: path.write_bytes(b"image"))
+
+    def _run(self, tmp_path):
+        session = _trace.TraceSession("test_report", tmp_path / "run", mode="always")
+        session.record_step("click", "button")
+        session.finish("passed")
+        return session.run_dir
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "<img src=x onerror=alert(1)>",
+            '" onerror=alert(1) x="',
+            float("inf"),
+            float("-inf"),
+            1.5,
+            b"payload",
+            -1,
+        ],
+    )
+    def test_invalid_seq_is_rejected_before_writing_html(self, tmp_path, value):
+        run_dir = self._run(tmp_path)
+        with sqlite3.connect(str(run_dir / "trace.db")) as db:
+            db.execute("UPDATE steps SET seq=?", (value,))
+        with pytest.raises(ValueError, match=r"Invalid trace\.db.*steps\.seq"):
+            _trace.generate_html(run_dir)
+        assert not (run_dir / "trace.html").exists()
+
+    @pytest.mark.parametrize(
+        "value", [float("inf"), float("-inf"), float("nan"), '" onerror=alert(1) x="']
+    )
+    def test_renderer_normalizes_invalid_seq_in_text_and_alt(self, value):
+        html = _trace._render_steps(
+            [
+                {
+                    "seq": value,
+                    "action": "click",
+                    "screenshot_file": "shot.jpg",
+                }
+            ]
+        )
+        assert '<span class="seq">#?</span>' in html
+        assert 'alt="step ?"' in html
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "../../outside.jpg",
+            r"..\..\outside.jpg",
+            "/outside.jpg",
+            r"C:\outside.jpg",
+            "//example.com/shot.jpg",
+            "https://example.com/shot.jpg",
+            "shot.jpg:stream",
+            "..",
+            "shot.jpg\n",
+            "shot.jpg.",
+            "shot.jpg ",
+        ],
+    )
+    def test_screenshot_paths_cannot_escape_directory(self, tmp_path, filename):
+        run_dir = self._run(tmp_path)
+        with sqlite3.connect(str(run_dir / "trace.db")) as db:
+            db.execute("UPDATE steps SET screenshot_file=?", (filename,))
+        html = _trace.generate_html(run_dir).read_text(encoding="utf-8")
+        assert "<img " not in html
+
+    def test_screenshot_attribute_payload_and_encoded_traversal_are_url_encoded(self, tmp_path):
+        run_dir = self._run(tmp_path)
+        with sqlite3.connect(str(run_dir / "trace.db")) as db:
+            db.execute("UPDATE steps SET screenshot_file=?", ('%2e%2e%2f" onerror=alert(1).jpg',))
+        html = _trace.generate_html(run_dir).read_text(encoding="utf-8")
+        assert 'src="screenshots/%252e%252e%252f%22%20onerror%3Dalert%281%29.jpg"' in html
+        assert '" onerror=' not in html
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "DROP TABLE steps",
+            "DROP TABLE schema_version",
+            "ALTER TABLE steps DROP COLUMN ts",
+            "UPDATE schema_version SET version=999",
+            "INSERT INTO schema_version VALUES (1)",
+            "DROP TABLE steps; CREATE VIEW steps AS SELECT * FROM runs",
+            "ALTER TABLE steps RENAME TO old_steps; CREATE TABLE steps AS SELECT * FROM old_steps",
+            "DROP TABLE steps; CREATE TABLE steps (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, "
+            "seq INTEGER NOT NULL, ts REAL NOT NULL, action TEXT NOT NULL, selector TEXT, "
+            "result TEXT, error TEXT, screenshot_file TEXT, uia_tree TEXT)",
+            "DROP TABLE schema_version; CREATE TABLE schema_version (version INTEGER); "
+            "INSERT INTO schema_version VALUES (1)",
+        ],
+    )
+    def test_invalid_schema_has_controlled_error(self, tmp_path, sql):
+        run_dir = self._run(tmp_path)
+        with sqlite3.connect(str(run_dir / "trace.db")) as db:
+            db.executescript(sql)
+        with pytest.raises(ValueError, match=r"Invalid trace\.db"):
+            _trace.generate_html(run_dir)
+        assert not (run_dir / "trace.html").exists()
+
+    @pytest.mark.parametrize(
+        "sql, value",
+        [
+            ("UPDATE runs SET test_nodeid=?", b"blob"),
+            ("UPDATE runs SET started_at=?", float("inf")),
+            ("UPDATE runs SET started_at=?", 1e100),
+            ("UPDATE runs SET finished_at=?", "bad"),
+            ("UPDATE steps SET ts=?", float("inf")),
+            ("UPDATE steps SET action=?", b"blob"),
+            ("UPDATE steps SET uia_tree=?", b"blob"),
+        ],
+    )
+    def test_invalid_column_values_are_rejected(self, tmp_path, sql, value):
+        run_dir = self._run(tmp_path)
+        with sqlite3.connect(str(run_dir / "trace.db")) as db:
+            db.execute(sql, (value,))
+        with pytest.raises(ValueError, match=r"Invalid trace\.db"):
+            _trace.generate_html(run_dir)
+        assert not (run_dir / "trace.html").exists()
+
+    def test_text_payloads_are_escaped_and_csp_allows_only_viewer_script(self, tmp_path):
+        run_dir = self._run(tmp_path)
+        payload = '<script>alert(1)</script><img src=x onerror="alert(1)">'
+        with sqlite3.connect(str(run_dir / "trace.db")) as db:
+            db.execute(
+                "UPDATE runs SET test_nodeid=?, status=?, error_message=?",
+                (payload, payload, payload),
+            )
+            db.execute(
+                "UPDATE steps SET action=?, selector=?, error=?, uia_tree=?",
+                (payload, payload, payload, payload),
+            )
+        html = _trace.generate_html(run_dir).read_text(encoding="utf-8")
+        assert payload not in html
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+        script = html.split("<script>")[1].split("</script>")[0]
+        digest = _trace.base64.b64encode(_trace.hashlib.sha256(script.encode()).digest()).decode()
+        assert f"script-src 'sha256-{digest}'" in html
+        assert "default-src 'none'" in html
+        assert "base-uri 'none'" in html
+
+    @pytest.mark.parametrize("link_directory", [False, True])
+    def test_screenshot_symlinks_cannot_escape_directory(self, tmp_path, link_directory):
+        run_dir = self._run(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "shot.jpg").write_bytes(b"outside")
+        shots = run_dir / "screenshots"
+        try:
+            if link_directory:
+                for path in shots.iterdir():
+                    path.unlink()
+                shots.rmdir()
+                shots.symlink_to(outside, target_is_directory=True)
+            else:
+                (shots / "shot.jpg").symlink_to(outside / "shot.jpg")
+        except OSError:
+            pytest.skip("Creating symlinks requires Windows developer mode or privileges")
+        with sqlite3.connect(str(run_dir / "trace.db")) as db:
+            db.execute("UPDATE steps SET screenshot_file='shot.jpg'")
+        html = _trace.generate_html(run_dir).read_text(encoding="utf-8")
+        assert "<img " not in html
 
 
 class TestRunListingBranches:

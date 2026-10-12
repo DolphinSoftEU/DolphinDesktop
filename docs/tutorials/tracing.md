@@ -38,6 +38,14 @@ an unknown duration. Directories without a readable `trace.db`, including a
 corrupted trace copy, are skipped by `trace list`; `trace view` reports an
 error and does not create a viewer for them.
 
+The viewer checks the complete v1 database schema and stored column types before
+rendering. Invalid values (including nonfinite numbers) produce an
+`Invalid trace.db` error. Screenshot references must be flat filenames inside
+`screenshots/`; unsafe paths and links outside that directory are omitted.
+Generated HTML includes a Content Security Policy allowing only the fixed viewer
+script. When publishing traces received from others, serve them from a separate
+origin without application cookies or access to other sensitive reports.
+
 Use `--dir PATH` if your project writes traces somewhere else:
 
 ```bash
