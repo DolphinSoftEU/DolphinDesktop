@@ -150,6 +150,7 @@ _CATEGORY_BY_PATH = {
     "delphi": "system",
     "electron": "system",
     "oracle_forms": "system",
+    "office": "system",
     "powerbuilder": "system",
     "qt": "system",
     "sap": "external",
