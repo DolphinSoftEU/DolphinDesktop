@@ -887,6 +887,53 @@ class TestUntrustedTraceDatabase:
         html = _trace.generate_html(run_dir).read_text(encoding="utf-8")
         assert "<img " not in html
 
+    @pytest.mark.parametrize("link_directory", [False, True])
+    def test_resolved_screenshot_paths_cannot_escape_directory(
+        self, tmp_path, monkeypatch, link_directory
+    ):
+        run_dir = self._run(tmp_path)
+        shots = run_dir / "screenshots"
+        outside = tmp_path / "outside"
+        redirected = shots if link_directory else shots / "shot.jpg"
+        resolve = Path.resolve
+
+        def redirected_resolve(path, *args, **kwargs):
+            if path == redirected:
+                return outside if link_directory else outside / "shot.jpg"
+            return resolve(path, *args, **kwargs)
+
+        with closing(sqlite3.connect(str(run_dir / "trace.db"))) as db, db:
+            db.execute("UPDATE steps SET screenshot_file='shot.jpg'")
+        # Model a resolved junction/symlink without requiring Windows privileges.
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "resolve", redirected_resolve)
+            report = _trace.generate_html(run_dir)
+        assert "<img " not in report.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("error", [OSError, RuntimeError, ValueError])
+    @pytest.mark.parametrize("stage", ["directory", "parent", "file"])
+    def test_unresolvable_screenshot_is_omitted_without_losing_report(
+        self, tmp_path, monkeypatch, error, stage
+    ):
+        run_dir = self._run(tmp_path)
+        shots = run_dir / "screenshots"
+        unresolved = {"directory": shots, "parent": run_dir, "file": shots / "shot.jpg"}[stage]
+        resolve = Path.resolve
+
+        def failing_resolve(path, *args, **kwargs):
+            if path == unresolved:
+                raise error("Cannot resolve screenshot path")
+            return resolve(path, *args, **kwargs)
+
+        with closing(sqlite3.connect(str(run_dir / "trace.db"))) as db, db:
+            db.execute("UPDATE steps SET screenshot_file='shot.jpg'")
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "resolve", failing_resolve)
+            report = _trace.generate_html(run_dir)
+        html = report.read_text(encoding="utf-8")
+        assert "<img " not in html
+        assert '<span class="act">click</span>' in html
+
 
 class TestRunListingBranches:
     def test_list_runs_ignores_missing_dirs_files_empty_dbs_and_corrupt_dbs(self, tmp_path):
