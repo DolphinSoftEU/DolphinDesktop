@@ -22,6 +22,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder events carry window/PID/native focus and password classification from
+  capture time, preventing delayed keys from being classified using later UIA
+  focus. Unknown and password controls are masked without retaining secret text.
+  `--app` is pinned to a unique process; `--pid` selects one directly. Global
+  capture now requires `--global` / `global_recording=True`. Plaintext capture
+  is limited to stable native Windows Edit controls (KAN-576).
+  Generated tests reconnect by title for `--app` and accept a runtime `process_id`
+  for `--pid`, avoiding recorded PIDs that become stale after an application
+  restart. Click selectors survive focus changes caused by the click, and typing
+  reuses them only for the same verified native child control, window and process.
+
 * Invalid `@pytest.mark.dolphin(video_mode=...)` values now raise `ValueError`
   with the rejected value, including explicit `None`. Video recording explicitly
   depends on marker validation, so it cannot start before validation (KAN-572).

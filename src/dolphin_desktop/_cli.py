@@ -818,10 +818,13 @@ def _record_cmd(args: argparse.Namespace) -> None:
     backend: str = args.backend
     func_name: str = args.func_name
 
-    rec = Recorder(app=app, backend=backend)
+    rec = Recorder(app=app, backend=backend, pid=args.pid, global_recording=args.global_recording)
     rec.start()
 
-    if app:
+    if rec.pid is not None:
+        app_hint = f"  process filter: PID {rec.pid}"
+        scope = f"keyboard and mouse input in process PID {rec.pid}"
+    elif app:
         app_hint = f'  app filter: "{app}"'
         scope = f'keyboard and mouse input in windows matching "{app}"'
     else:
@@ -1330,7 +1333,7 @@ def main() -> None:
         help="Record interactions and generate a Python test",
         description=(
             "Record interactions and generate a Python test. "
-            "Recording installs a low-level keyboard hook: without --app it "
+            "Choose --app, --pid or explicitly --global. Global recording "
             "captures every keystroke on the desktop, including text typed "
             "into other applications, and writes it to the generated script "
             "in plain text. Password fields are redacted best-effort only. "
@@ -1344,12 +1347,20 @@ def main() -> None:
         metavar="FILE",
         help="Output .py file path",
     )
-    record_p.add_argument(
+    record_scope = record_p.add_mutually_exclusive_group(required=True)
+    record_scope.add_argument("--pid", type=int, help="Record only this process ID")
+    record_scope.add_argument(
+        "--global",
+        dest="global_recording",
+        action="store_true",
+        help="Explicitly record input across all applications",
+    )
+    record_scope.add_argument(
         "--app",
         "-a",
         default=None,
         metavar="TITLE",
-        help="Filter: record only events in windows whose title contains TITLE",
+        help="Resolve TITLE to one running process and record only its PID",
     )
     record_p.add_argument(
         "--backend",

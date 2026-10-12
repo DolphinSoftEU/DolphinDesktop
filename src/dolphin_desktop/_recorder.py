@@ -9,11 +9,12 @@
     translated to real characters and written **in plaintext** into the generated
     ``.py`` file.
 
-    * Always pass ``app=`` (CLI: ``--app``) so keystrokes outside the matching window
-      are discarded before they are ever turned into text.
-    * Password fields are redacted via the UI Automation "is password" flag, and a
-      field the platform cannot classify at all is redacted too. A password typed
-      into a control the platform reports as ordinary text is still recorded verbatim.
+    * Pass ``app=`` (CLI: ``--app``) or ``pid=`` (CLI: ``--pid``) to pin the
+      recording to one process. Global capture requires ``global_recording=True``
+      (CLI: ``--global``).
+    * Only stable native Windows Edit fields without ES_PASSWORD release text.
+      Password and unknown fields (including UIA-only controls) are redacted.
+      A secret typed in a native ordinary text field is still recorded verbatim.
     * Review the generated file before committing or sharing it.
 
 Usage (headless)::
@@ -478,6 +479,139 @@ def _focused_element_selector() -> dict[str, str]:
         return {}
 
 
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", _wt.DWORD),
+        ("flags", _wt.DWORD),
+        ("hwndActive", _wt.HWND),
+        ("hwndFocus", _wt.HWND),
+        ("hwndCapture", _wt.HWND),
+        ("hwndMenuOwner", _wt.HWND),
+        ("hwndMoveSize", _wt.HWND),
+        ("hwndCaret", _wt.HWND),
+        ("rcCaret", _wt.RECT),
+    ]
+
+
+def _native_focus(thread: int) -> tuple[int, int]:
+    info = _GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(info)
+    if not _user32.GetGUIThreadInfo(thread, ctypes.byref(info)):
+        raise OSError("GetGUIThreadInfo failed")
+    return int(info.hwndActive or 0), int(info.hwndFocus or 0)
+
+
+@dataclass(frozen=True)
+class _InputContext:
+    """Immutable native focus snapshot; no queued event consults live UIA focus."""
+
+    hwnd: int = 0
+    pid: int = 0
+    focus: int = 0
+    title: str = ""
+    window_class: str = ""
+    password: bool | None = None
+    selector_items: tuple[tuple[str, str], ...] = ()
+    target: int = 0  # Native child HWND under the mouse, independent of focus.
+
+    @property
+    def selector(self) -> dict[str, str]:
+        return dict(self.selector_items)
+
+
+def _capture_context(hwnd: int | None = None) -> _InputContext:
+    """Use bounded native queries only. Non-native/UIA-only fields fail closed.
+
+    UIA's current focused element cannot classify a past input event. Until a
+    trusted UIA focus history is available, only standard native Edit controls
+    with stable foreground/focus/PID and style can release plaintext.
+    """
+    try:
+        import win32gui
+        import win32process
+
+        root = _get_root_hwnd(hwnd or win32gui.GetForegroundWindow())
+        thread, pid = win32process.GetWindowThreadProcessId(root)
+        active, focus = _native_focus(thread)
+        title, cls = _get_window_info(root)
+        password = None
+        if (
+            focus
+            and active == root
+            and _get_root_hwnd(focus) == root
+            and win32process.GetWindowThreadProcessId(focus)[1] == pid
+            and win32gui.GetClassName(focus) == "Edit"
+        ):
+            style = win32gui.GetWindowLong(focus, -16)  # GWL_STYLE
+            again_active, again_focus = _native_focus(thread)
+            if (
+                again_focus == focus
+                and again_active == root
+                and win32gui.GetForegroundWindow() == root
+                and win32gui.GetWindowLong(focus, -16) == style
+                and win32process.GetWindowThreadProcessId(root) == (thread, pid)
+                and win32process.GetWindowThreadProcessId(focus)[1] == pid
+            ):
+                password = bool(style & 0x20)  # ES_PASSWORD
+        target = int(hwnd or 0)
+        if target and (
+            _get_root_hwnd(target) != root
+            or win32process.GetWindowThreadProcessId(target)[1] != pid
+        ):
+            return _InputContext()
+        return _InputContext(root, pid, focus, title, cls, password, target=target)
+    except Exception:
+        return _InputContext()
+
+
+def _capture_mouse_context(x: int, y: int) -> _InputContext:
+    try:
+        import win32gui
+
+        return _capture_context(win32gui.WindowFromPoint((x, y)))
+    except Exception:
+        return _InputContext()
+
+
+def _same_mouse_target(first: _InputContext, second: _InputContext) -> bool:
+    return bool(first.hwnd and first.pid and first.target) and (
+        first.hwnd,
+        first.pid,
+        first.target,
+        first.window_class,
+    ) == (second.hwnd, second.pid, second.target, second.window_class)
+
+
+def _mouse_selector(context: _InputContext, x: int, y: int) -> dict[str, str]:
+    # Hit-testing belongs on the worker. Discard its result if the native
+    # target window/process changed before or during the UIA call. The click
+    # itself may move focus, which does not change the hit-tested target.
+    if not _same_mouse_target(context, _capture_mouse_context(x, y)):
+        return {}
+    selector = _element_at_point(x, y)
+    return selector if _same_mouse_target(context, _capture_mouse_context(x, y)) else {}
+
+
+def _resolve_app_pid(app: str) -> int:
+    """Resolve a title fragment once, refusing missing or ambiguous processes."""
+    import win32gui
+    import win32process
+
+    pids: set[int] = set()
+
+    def visit(hwnd: int, extra: Any) -> None:
+        if (
+            win32gui.IsWindowVisible(hwnd)
+            and app.casefold() in win32gui.GetWindowText(hwnd).casefold()
+        ):
+            pids.add(win32process.GetWindowThreadProcessId(hwnd)[1])
+
+    win32gui.EnumWindows(visit, None)
+    if len(pids) != 1 or 0 in pids:
+        raise ValueError("--app must identify exactly one running process; use --pid")
+    return pids.pop()
+
+
 # Recorder
 
 
@@ -490,9 +624,12 @@ class Recorder:
     Parameters
     ----------
     app:
-        Optional title fragment — only events in windows whose title contains
-        this string are recorded.  If ``None``, **all** windows are captured,
-        including every keystroke typed outside the application under test.
+        Title fragment resolved to exactly one running process at start. All
+        subsequent events are filtered by that PID, irrespective of title changes.
+    pid:
+        Explicit process ID to capture instead of resolving a title.
+    global_recording:
+        Explicit opt-in to capture every process (default False).
     backend:
         pywinauto backend used in the generated code (default ``"uia"``).
     stop_key:
@@ -506,7 +643,14 @@ class Recorder:
         *,
         backend: str = "uia",
         stop_key: int = 0x7B,
+        pid: int | None = None,
+        global_recording: bool = False,
     ) -> None:
+        if pid is not None and (isinstance(pid, bool) or pid <= 0):
+            raise ValueError("pid must be a positive process ID")
+        self.pid = pid
+        self._explicit_pid = pid
+        self.global_recording = global_recording
         self.app = app
         self.backend = backend
         self._stop_vk = stop_key
@@ -517,6 +661,10 @@ class Recorder:
         self._pending_win_title: str = ""
         self._pending_win_class: str = ""
         self._pending_is_password: bool = False
+        self._pending_context: _InputContext | None = None
+        self._last_mouse_context: _InputContext | None = None
+        self._clicked_context: _InputContext | None = None
+        self._clicked_selector: dict[str, str] = {}
         self._dbl_click_interval: float = _double_click_interval()
 
         self._evt_queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
@@ -544,11 +692,13 @@ class Recorder:
         Emits the privacy warning first — the hooks are system-wide, so this is the
         one point at which the user is told what is about to be captured.
         """
-        scope = (
-            f"windows whose title contains {self.app!r}"
-            if self.app
-            else "EVERY window on this desktop — no app filter was given"
-        )
+        if not self.app and self.pid is None and not self.global_recording:
+            raise ValueError("Recording requires app, pid, or explicit global_recording=True")
+        if self.global_recording and (self.app or self.pid is not None):
+            raise ValueError("global_recording cannot be combined with app or pid")
+        if self.app and self.pid is None:
+            self.pid = _resolve_app_pid(self.app)
+        scope = f"process PID {self.pid}" if self.pid else "EVERY window on this desktop"
         _log.warning(
             "RECORDING GLOBAL INPUT. Mouse actions and keystrokes are captured from %s "
             "and written as plaintext into the generated .py file. Password fields are "
@@ -682,7 +832,16 @@ class Recorder:
                     _WM_RBUTTONDOWN: "right_click",
                 }[w_param]
                 try:
-                    evt_queue.put_nowait(("mouse", kind, ms.pt.x, ms.pt.y, time.time()))
+                    evt_queue.put_nowait(
+                        (
+                            "mouse",
+                            kind,
+                            ms.pt.x,
+                            ms.pt.y,
+                            time.time(),
+                            _capture_mouse_context(ms.pt.x, ms.pt.y),
+                        )
+                    )
                 except queue.Full:
                     pass
             return _user32.CallNextHookEx(None, n_code, w_param, l_param)
@@ -703,18 +862,12 @@ class Recorder:
                 # the side the recorder cannot tell a third-level character
                 # from a genuine Ctrl+Alt shortcut pressed with the left Alt.
                 ralt = bool(_user32.GetAsyncKeyState(_VK_RMENU) & 0x8000)
-                # The foreground window is captured HERE, at the instant the
-                # key fired, not later on the processor thread. The queue can
-                # lag behind real input, and re-reading GetForegroundWindow()
-                # at processing time races a focus change: a keystroke typed
-                # in the scoped app right before an unrelated window steals
-                # focus would otherwise be classified (app filter, password
-                # detection) against that other window instead of the one it
-                # actually landed in.
-                hwnd = _user32.GetForegroundWindow()
+                # Capture native process/focus/classification before queueing.
+                # No UIA or COM work runs in the low-level hook.
+                context = _capture_context()
                 try:
                     evt_queue.put_nowait(
-                        ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time(), hwnd)
+                        ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time(), context)
                     )
                 except queue.Full:
                     pass
@@ -757,33 +910,48 @@ class Recorder:
             if evt is None:
                 break
             if evt[0] == "mouse":
-                _, kind, x, y, ts = evt
+                _, kind, x, y, ts, context = evt
                 self._flush_text()
-                self._handle_mouse(kind, x, y, ts)
+                self._handle_mouse(kind, x, y, ts, context=context)
             elif evt[0] == "key":
-                _, vk, scan, shift, ctrl, alt, ralt, ts, hwnd = evt
-                self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt, hwnd=hwnd)
+                _, vk, scan, shift, ctrl, alt, ralt, ts, context = evt
+                self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt, context=context)
             self._processed += 1
 
-    def _handle_mouse(self, kind: str, x: int, y: int, ts: float) -> None:
-        try:
-            import win32gui
+    def _in_scope(self, context: _InputContext) -> bool:
+        if not context.hwnd or not context.pid:
+            return False
+        if self.pid is not None:
+            return context.pid == self.pid
+        return self.global_recording
 
-            hwnd = win32gui.WindowFromPoint((x, y))
-            root = _get_root_hwnd(hwnd)
-            win_title, win_class = _get_window_info(root)
-        except Exception:
-            win_title, win_class = "", ""
-
-        if self.app and self.app.lower() not in win_title.lower():
+    def _handle_mouse(
+        self, kind: str, x: int, y: int, ts: float, *, context: _InputContext | None = None
+    ) -> None:
+        context = context or _InputContext()
+        if not self._in_scope(context):
+            self._clicked_context = None
+            self._clicked_selector = {}
             return
-
-        selector = _element_at_point(x, y)
+        win_title, win_class = context.title, context.window_class
+        # Resolve selectors only while the captured native context remains stable.
+        selector = _mouse_selector(context, x, y)
+        self._clicked_context = context if selector else None
+        self._clicked_selector = dict(selector)
 
         # Upgrade the preceding single-click to double_click when this press
         # completes a double-click the low-level hook cannot report as one.
         prev = self._actions[-1] if self._actions else None
-        if prev is not None and _is_double_click(prev, kind, x, y, ts, self._dbl_click_interval):
+        same_context = self._last_mouse_context == context or (
+            self._last_mouse_context is not None
+            and _same_mouse_target(self._last_mouse_context, context)
+        )
+        self._last_mouse_context = context
+        if (
+            same_context
+            and prev is not None
+            and _is_double_click(prev, kind, x, y, ts, self._dbl_click_interval)
+        ):
             self._actions[-1] = RecordedAction(
                 kind="double_click",
                 window_title=win_title,
@@ -824,26 +992,34 @@ class Recorder:
         ts: float,
         *,
         ralt: bool = True,
-        hwnd: int = 0,
+        context: _InputContext | None = None,
     ) -> None:
-        try:
-            import win32gui
-
-            # hwnd, when given, was captured on the hook thread at the moment
-            # this key fired — see _kbd_proc. Falling back to a live
-            # GetForegroundWindow() read here would reintroduce the race it
-            # exists to avoid, so 0 (not provided) is the only case that does.
-            fg = hwnd or win32gui.GetForegroundWindow()
-            root = _get_root_hwnd(fg)
-            win_title, win_class = _get_window_info(root)
-        except Exception:
-            win_title, win_class = "", ""
-
-        # Resolve scope before translating: a keystroke in a window outside the app
-        # filter must never be turned into a character in the first place.
-        if self.app and self.app.lower() not in win_title.lower():
+        context = context or _InputContext()
+        win_title, win_class = context.title, context.window_class
+        if not self._in_scope(context):
             self._flush_text()
+            self._clicked_context = None
+            self._clicked_selector = {}
             return
+        clicked = self._clicked_context
+        same_clicked_focus = (
+            clicked is not None
+            and context.password is not None
+            and (context.hwnd, context.pid, context.focus)
+            == (clicked.hwnd, clicked.pid, clicked.target)
+            and bool(context.focus)
+        )
+        if not same_clicked_focus:
+            self._clicked_context = None
+            self._clicked_selector = {}
+        selector = context.selector or self._clicked_selector
+        if self._pending_context is not None and (context.hwnd, context.pid, context.focus) != (
+            self._pending_context.hwnd,
+            self._pending_context.pid,
+            self._pending_context.focus,
+        ):
+            self._flush_text()
+            self._pending_selector = {}
 
         # AltGr is reported as Ctrl+Alt, so the layout — not the modifier flags —
         # decides whether this keystroke is typed text or a shortcut.
@@ -854,8 +1030,8 @@ class Recorder:
 
         if not altgr and (ctrl or alt or vk in _SPECIAL_KEY_MAP):
             # Shortcut or focus-changing key → flush accumulated text, emit press_key.
-            # The selector is read before the flush, which clears the pending context.
-            sel = self._pending_selector or _focused_element_selector()
+            # The selector belongs to the original event, independent of live focus.
+            sel = selector
             self._flush_text()
             self._actions.append(
                 RecordedAction(
@@ -870,44 +1046,35 @@ class Recorder:
             # _flush_text() clears nothing when no text had accumulated, so the pending
             # context is dropped here as well: this key moved focus, and the next run
             # must re-resolve it instead of inheriting the previous control's selector.
-            #
-            # Only for keys that actually move focus. This branch also handles
-            # Backspace, the arrows and F-keys now, and those leave the caret
-            # where it is — dropping the selector for them made the run after a
-            # corrected typo re-resolve through _focused_element_selector(),
-            # which answers {} on any failure, so a Qt or JAB control with weak
-            # UIA focus reporting lost the known-good clicked-element selector
-            # and the generated script got a bare locator().
             if ctrl or alt or vk in _FOCUS_CHANGING_VKS:
+                self._clicked_context = None
+                self._clicked_selector = {}
                 self._pending_selector = {}
                 self._pending_win_title = ""
                 self._pending_win_class = ""
             return
 
-        # Printable character → accumulate for type_text. The password flag is sampled
-        # on every keystroke, not once per run: a run that starts in a plain field can
-        # end in a password field, and that is the flow redaction exists for.
-        is_password = _focused_is_password()
+        # Classify from the immutable event snapshot, never from current UIA focus.
+        is_password = context.password is not False
         if self._pending_text:
             if is_password and not self._pending_is_password:
-                # Focus is sampled on this thread, one queue hop behind the keystroke,
-                # so a run that turns out to reach a password field is redacted whole
-                # rather than split at a boundary that may already be too late.
+                # Uncertainty within a run masks the whole pending sequence.
                 self._pending_is_password = True
                 self._flush_text()
             elif win_title != self._pending_win_title or is_password != self._pending_is_password:
                 self._flush_text()
 
         if not self._pending_text:
-            # A fresh run inherits the clicked element's selector only when the
-            # keystroke landed in the window that click belonged to.
-            if win_title != self._pending_win_title or not self._pending_selector:
-                self._pending_selector = _focused_element_selector()
+            # Reuse a click selector only when this native event proves that
+            # focus still belongs to the same captured child HWND and process.
+            self._pending_selector = selector
             self._pending_win_title = win_title
             self._pending_win_class = win_class
             self._pending_is_password = is_password
 
-        self._pending_text.append(char)
+        self._pending_context = context
+        # Never retain secret characters in the pending text buffer.
+        self._pending_text.append(_PASSWORD_PLACEHOLDER if is_password else char)
 
     def _flush_text(self) -> None:
         if not self._pending_text:
@@ -926,6 +1093,7 @@ class Recorder:
             )
         )
         self._pending_text.clear()
+        self._pending_context = None
         self._pending_is_password = False
         self._pending_win_title = ""
         self._pending_win_class = ""
@@ -935,12 +1103,13 @@ class Recorder:
 
     def _build_code(self, actions: list[RecordedAction], func_name: str) -> list[str]:
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        parameters = "process_id: int" if self._explicit_pid is not None else ""
         lines = [
             f"# Generated by dolphin recorder on {now}",
             "from dolphin_desktop import Desktop",
             "",
             "",
-            f"def {func_name}() -> None:",
+            f"def {func_name}({parameters}) -> None:",
             f'    """Recorded test — generated by dolphin on {now}."""',
         ]
 
@@ -955,7 +1124,10 @@ class Recorder:
 
         # Connection boilerplate
         lines.append(f"    desktop = Desktop(backend={self.backend!r})")
-        if self.app:
+        if self._explicit_pid is not None:
+            lines.append("    # Supply the current process_id at runtime or via a pytest fixture.")
+            lines.append("    app = desktop.connect(process=process_id)")
+        elif self.app:
             lines.append(f"    app = desktop.connect(title_re={_title_re_literal(self.app)})")
         elif windows:
             title, cls = windows[0]
