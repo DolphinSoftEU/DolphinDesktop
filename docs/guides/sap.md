@@ -65,6 +65,20 @@ def test_sap_from_desktop(desktop):
     session.transaction("VA03")
 ```
 
+## Login without mouse input
+
+`SapGui.keyboard_login(win_title, user, password)` requires the User field to
+have focus and UI Automation to expose exactly one password Edit control. Both
+fields must support writable Value patterns. Credentials are written directly
+to those fields as literal Unicode text, including SendKeys metacharacters.
+Tabs, newlines and other C0/C1 control characters raise `ValueError` before
+any input is sent.
+
+The method checks focus before and after each write. Lost or unrecognizable
+focus, ambiguous password fields and missing Value patterns raise
+`ApplicationError` and abort submission. SAP screens that are opaque to UIA
+must use SAP GUI Scripting with their explicit User and Password component IDs.
+
 ## Locators
 
 SAP component IDs are the preferred selector. They are the same IDs visible in
