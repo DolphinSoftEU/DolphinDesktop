@@ -103,7 +103,12 @@ class ChromiumSession:
                 self.app, self.session = Desktop(hidden=False).launch_electron_cdp(
                     command, debug_port=port, timeout=20, startup_delay=0
                 )
-                return self.app.process_id
+                pid = self.app.process_id
+                # A live CDP target can still be loading its initial document.
+                # Wait on the owning thread for this URL and its load event
+                # before title, cookie and storage assertions use the session.
+                self.session.wait_for_url(url, timeout=20)
+                return pid
             except BaseException:
                 self._cleanup()
                 raise

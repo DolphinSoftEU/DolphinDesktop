@@ -44,12 +44,14 @@ def _wtd_record(banner: str) -> bytes:
     ``ESC(0x04) WTD(0x11)``, two control-character bytes, an SBA order placing
     the cursor at row 3 col 2, then the banner in EBCDIC (cp037).
     """
-    body = bytes(10)  # GDS header — parser starts scanning at offset 10
-    body += bytes([0x04, 0x11])  # ESC + Write-To-Display
+    body = bytes([0x04, 0x11])  # ESC + Write-To-Display
     body += bytes([0x00, 0x00])  # 2 control-character bytes
     body += bytes([0x11, 3, 2])  # SBA -> row 3, col 2
     body += banner.encode("cp037")
-    return body.replace(b"\xff", b"\xff\xff") + bytes([_IAC, _EOR])
+    # GDS length includes the header, before Telnet escaping and IAC EOR.
+    header = (len(body) + 10).to_bytes(2, "big") + b"\x12\xa0" + bytes(6)
+    record = header + body
+    return record.replace(b"\xff", b"\xff\xff") + bytes([_IAC, _EOR])
 
 
 class _Tls5250Mock:

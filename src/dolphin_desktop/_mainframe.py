@@ -48,7 +48,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, NoReturn
 
 from ._exceptions import DolphinError
 from ._logging import Secret, get_logger, unwrap_secret
@@ -1471,12 +1471,14 @@ class _HLLAPIBackend(_TerminalBackend):
 # --------------------------------------------------------------------------- #
 
 
-#: Largest unterminated receive buffer _read_records() will accumulate while
-#: looking for IAC-EOR. A host (or a network attacker) that never sends EOR
-#: would otherwise let this grow without bound — a legitimate 5250 screen
-#: record is a few KB at most, so 1 MiB is generous headroom, not a limit a
-#: real host is expected to hit.
+#: Total pending receive data, including complete records deferred to a later poll.
 _MAX_RX_BACKLOG = 1024 * 1024
+_MAX_GDS_RECORD = 0xFFFF  # Two-byte GDS length, including its header.
+_MAX_WIRE_RECORD = 2 * _MAX_GDS_RECORD  # Every data byte may escape IAC.
+_MAX_RECORDS_PER_READ = 64
+_MAX_SCAN_WORK_PER_READ = 262144
+_MAX_NEGOTIATION_BYTES = 4096
+_NEGOTIATION_TIMEOUT = 5.0
 
 # Telnet
 _T_IAC = 0xFF
@@ -1684,6 +1686,8 @@ class _Tn5250Backend(_TerminalBackend):
             raise
 
     def disconnect(self) -> None:
+        self._rx_backlog = b""
+        self._connected = False
         if self._sock is None:
             return
         try:
@@ -1709,28 +1713,53 @@ class _Tn5250Backend(_TerminalBackend):
         server sees us as a proper TN5250 client; we accept (DO) EOR
         and BINARY in both directions.
         """
+        try:
+            self._negotiate_telnet()
+        except OSError as exc:
+            self._protocol_error(f"negotiation did not complete: {exc}")
+
+    def _negotiate_telnet(self) -> None:
+        """Negotiate Telnet options until the first encoded data byte."""
+        deadline = time.monotonic() + _NEGOTIATION_TIMEOUT
         # Send our advertisements first so IBM i sees a real 5250 client.
-        self._send_raw(bytes([_T_IAC, _T_WILL, _TOPT_NEWENV]))
-        self._send_raw(bytes([_T_IAC, _T_WILL, _TOPT_TERMTYPE]))
-        self._send_raw(bytes([_T_IAC, _T_DO, _TOPT_EOR]))
-        self._send_raw(bytes([_T_IAC, _T_WILL, _TOPT_EOR]))
-        self._send_raw(bytes([_T_IAC, _T_DO, _TOPT_BINARY]))
-        self._send_raw(bytes([_T_IAC, _T_WILL, _TOPT_BINARY]))
+        for verb, opt in (
+            (_T_WILL, _TOPT_NEWENV),
+            (_T_WILL, _TOPT_TERMTYPE),
+            (_T_DO, _TOPT_EOR),
+            (_T_WILL, _TOPT_EOR),
+            (_T_DO, _TOPT_BINARY),
+            (_T_WILL, _TOPT_BINARY),
+        ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._protocol_error("negotiation deadline exceeded")
+            self._sock.settimeout(remaining)
+            self._send_raw(bytes([_T_IAC, verb, opt]))
 
         # Read + answer telnet commands until we see the first record.
-        deadline_bytes = 4096
+        deadline_bytes = _MAX_NEGOTIATION_BYTES
         rx = bytearray()
         while deadline_bytes > 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._protocol_error("negotiation deadline exceeded")
+            self._sock.settimeout(remaining)
             try:
-                chunk = self._sock.recv(1024)
-            except (self._socket.timeout, OSError):
-                break
+                chunk = self._sock.recv(min(1024, deadline_bytes))
+            except (self._socket.timeout, OSError) as exc:
+                self._protocol_error(f"negotiation did not complete: {exc}")
             if not chunk:
-                break
+                self._protocol_error("connection closed during negotiation")
+            if len(chunk) > deadline_bytes:
+                self._protocol_error("negotiation byte limit exceeded")
             rx += chunk
             deadline_bytes -= len(chunk)
             i = 0
             while i < len(rx):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._protocol_error("negotiation deadline exceeded")
+                self._sock.settimeout(remaining)
                 if rx[i] != _T_IAC:
                     # Non-telnet byte — start of 5250 data. Push back
                     # to the read buffer.
@@ -1739,6 +1768,11 @@ class _Tn5250Backend(_TerminalBackend):
                 if i + 1 >= len(rx):
                     break
                 cmd = rx[i + 1]
+                if cmd == _T_IAC:
+                    # Escaped IAC is the start of GDS data, not a command.
+                    # Preserve both wire bytes for _read_records() to decode.
+                    self._push_rx(bytes(rx[i:]))
+                    return
                 if cmd == _T_SB:
                     # Sub-negotiation: seek IAC SE.
                     j = i + 2
@@ -1760,8 +1794,7 @@ class _Tn5250Backend(_TerminalBackend):
                 # Any other 2-byte command — skip.
                 i += 2
             del rx[:i]
-        # Push back whatever we still have.
-        self._push_rx(bytes(rx))
+        self._protocol_error("negotiation byte limit exceeded")
 
     def _on_negotiation(self, verb: int, opt: int) -> None:
         # DO X → WILL X (if we support it) else WONT.
@@ -1794,8 +1827,20 @@ class _Tn5250Backend(_TerminalBackend):
     # ---- socket + record IO --------------------------------------------- #
 
     _rx_backlog: bytes = b""
+    _record_deadline: float | None = None
+
+    def _check_record_deadline(self) -> None:
+        if self._record_deadline is not None and time.monotonic() >= self._record_deadline:
+            # A partially applied screen update cannot be replayed safely.
+            self._protocol_error("record processing deadline exceeded")
+
+    def _protocol_error(self, message: str) -> NoReturn:
+        self.disconnect()
+        raise MainframeError(f"tn5250: {message}; closing the connection")
 
     def _push_rx(self, data: bytes) -> None:
+        if len(data) + len(self._rx_backlog) > _MAX_RX_BACKLOG:
+            self._protocol_error(f"exceeded the {_MAX_RX_BACKLOG}-byte limit")
         self._rx_backlog = data + self._rx_backlog
 
     def _send_raw(self, data: bytes) -> None:
@@ -1806,14 +1851,34 @@ class _Tn5250Backend(_TerminalBackend):
     def _read_records(self, timeout: float) -> list[bytes]:
         """Consume telnet-framed records; return list of 5250 payloads."""
         records: list[bytes] = []
+        if len(self._rx_backlog) > _MAX_RX_BACKLOG:
+            self._protocol_error(f"exceeded the {_MAX_RX_BACKLOG}-byte limit")
         buf = bytearray(self._rx_backlog)
         self._rx_backlog = b""
         deadline = time.monotonic() + timeout
+        i = 0
+        work = 0
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or len(records) >= _MAX_RECORDS_PER_READ:
+                self._rx_backlog = bytes(buf)
+                return records
+            self._sock.settimeout(remaining)
             # Look for IAC EOR in buf, handling IAC IAC escape.
             record_end = -1
-            i = 0
+            scan_work = 0
             while i < len(buf) - 1:
+                if i > _MAX_WIRE_RECORD:
+                    self._protocol_error("frame length limit exceeded")
+                # Also bound work on command-only streams and long frames.
+                scan_work += 1
+                work += 1
+                if work >= _MAX_SCAN_WORK_PER_READ:
+                    self._rx_backlog = bytes(buf)
+                    return records
+                if scan_work % 256 == 0 and time.monotonic() >= deadline:
+                    self._rx_backlog = bytes(buf)
+                    return records
                 if buf[i] == _T_IAC:
                     if buf[i + 1] == _T_EOR:
                         record_end = i
@@ -1824,6 +1889,11 @@ class _Tn5250Backend(_TerminalBackend):
                     if buf[i + 1] in (_T_DO, _T_DONT, _T_WILL, _T_WONT):
                         if i + 2 >= len(buf):
                             break
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            self._rx_backlog = bytes(buf)
+                            return records
+                        self._sock.settimeout(remaining)
                         # Handle mid-stream negotiation.
                         self._on_negotiation(buf[i + 1], buf[i + 2])
                         del buf[i : i + 3]
@@ -1833,34 +1903,54 @@ class _Tn5250Backend(_TerminalBackend):
                         j = i + 2
                         while j < len(buf) - 1 and not (buf[j] == _T_IAC and buf[j + 1] == _T_SE):
                             j += 1
+                            work += 1
+                            if work >= _MAX_SCAN_WORK_PER_READ:
+                                self._rx_backlog = bytes(buf)
+                                return records
+                            if j - i > _MAX_NEGOTIATION_BYTES:
+                                self._protocol_error("subnegotiation byte limit exceeded")
+                            if (j - i) % 256 == 0 and time.monotonic() >= deadline:
+                                self._rx_backlog = bytes(buf)
+                                return records
                         if j >= len(buf) - 1:
                             break
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            self._rx_backlog = bytes(buf)
+                            return records
+                        self._sock.settimeout(remaining)
                         self._on_subneg(bytes(buf[i + 2 : j]))
                         del buf[i : j + 2]
                         continue
-                    i += 2
+                    # Other two-byte Telnet commands (including NOP) carry
+                    # no GDS data and must not affect its declared length.
+                    del buf[i : i + 2]
                     continue
                 i += 1
             if record_end >= 0:
+                if time.monotonic() >= deadline:
+                    self._rx_backlog = bytes(buf)
+                    return records
                 raw = bytes(buf[:record_end]).replace(b"\xff\xff", b"\xff")
+                self._record_deadline = deadline
+                try:
+                    self._process_record(raw)
+                finally:
+                    self._record_deadline = None
                 records.append(raw)
                 del buf[: record_end + 2]
-                self._process_record(raw)
+                i = 0
                 continue
-            if time.monotonic() >= deadline:
-                # Past the deadline — return whatever was parsed so far (even
-                # none) so the caller can keep polling instead of blocking
-                # past its own timeout budget. Unconditional: a host that
-                # keeps streaming complete records forever must not be able
-                # to keep this call alive past *timeout* just by never
-                # pausing long enough for the "no record yet" branch below.
+            # A trailing, unpaired IAC may be the first byte of IAC EOR.
+            # Count it only after the next receive identifies its meaning.
+            pending_iac = i == len(buf) - 1 and buf[i] == _T_IAC
+            if len(buf) > _MAX_WIRE_RECORD + int(pending_iac):
+                self._protocol_error("frame length limit exceeded")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 self._rx_backlog = bytes(buf)
                 return records
-            if records:
-                # We already got at least one record; drain briefly.
-                self._sock.settimeout(0.2)
-            else:
-                self._sock.settimeout(max(0.05, deadline - time.monotonic()))
+            self._sock.settimeout(min(0.2, remaining) if records else remaining)
             try:
                 chunk = self._sock.recv(4096)
             except (self._socket.timeout, OSError):
@@ -1869,15 +1959,9 @@ class _Tn5250Backend(_TerminalBackend):
             if not chunk:
                 self._rx_backlog = bytes(buf)
                 return records
+            if len(buf) + len(chunk) > _MAX_RX_BACKLOG:
+                self._protocol_error(f"exceeded the {_MAX_RX_BACKLOG}-byte limit")
             buf += chunk
-            if len(buf) > _MAX_RX_BACKLOG:
-                self.disconnect()
-                raise MainframeError(
-                    f"tn5250: {len(buf)} bytes received without a complete record "
-                    f"(IAC EOR) — exceeded the {_MAX_RX_BACKLOG}-byte limit, closing "
-                    "the connection",
-                    hint="the host may be misbehaving or the network path may be corrupting data",
-                )
 
     # ---- 5250 record parsing -------------------------------------------- #
 
@@ -1888,8 +1972,13 @@ class _Tn5250Backend(_TerminalBackend):
         spelled out as ``_C_*`` constants above rather than inline here —
         see those constants for the authoritative set.
         """
-        if len(data) < 10:
-            return
+        if len(data) < 10 or len(data) > _MAX_GDS_RECORD:
+            self._protocol_error("invalid GDS record length")
+        declared_length = int.from_bytes(data[:2], "big")
+        if declared_length != len(data):
+            self._protocol_error(
+                f"invalid GDS length: declared {declared_length}, received {len(data)}"
+            )
         if self._trace:
             # Length and GDS header only. The body is the host's screen
             # write, which may carry account data the operator just typed
@@ -1897,6 +1986,7 @@ class _Tn5250Backend(_TerminalBackend):
             _LOG.info("tn5250 ← record %d bytes, gds=%s", len(data), data[:10].hex())
         cursor = 10
         while cursor < len(data):
+            self._check_record_deadline()
             b = data[cursor]
             # Any byte before ESC is header padding / continuation; skip.
             if b != 0x04:
@@ -1952,6 +2042,7 @@ class _Tn5250Backend(_TerminalBackend):
         row = 1
         col = 1
         while cursor < len(data):
+            self._check_record_deadline()
             b = data[cursor]
             if b == 0x04:
                 # Next command escape — return so caller resumes.
@@ -1986,6 +2077,8 @@ class _Tn5250Backend(_TerminalBackend):
                 target_end = (end_row - 1) * self._cols + (end_col - 1)
                 start = (row - 1) * self._cols + (col - 1)
                 while start < target_end:
+                    if start % 256 == 0:
+                        self._check_record_deadline()
                     r = start // self._cols
                     c = start % self._cols
                     if 0 <= r < self._rows and 0 <= c < self._cols:
@@ -2024,6 +2117,8 @@ class _Tn5250Backend(_TerminalBackend):
                     # An FCW is two bytes — a truncated record holding only
                     # the first must not push the cursor past the end.
                     while cursor + 1 < len(data) and (data[cursor] & 0xE0) != 0x20:
+                        if cursor % 256 < 2:
+                            self._check_record_deadline()
                         cursor += 2
                 # Capture the attribute byte value HERE (while cursor still
                 # points at it) — otherwise a truncated WTD stream that

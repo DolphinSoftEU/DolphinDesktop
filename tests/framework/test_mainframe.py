@@ -856,26 +856,30 @@ def test_tn5250_connect_disconnect_and_telnet_negotiation(monkeypatch: pytest.Mo
     timeout_sock = _Socket([TimeoutError()])
     backend._sock = timeout_sock
     backend._rx_backlog = b""
-    backend._negotiate()
-    assert len(timeout_sock.sent) == 6
+    with pytest.raises(mf.MainframeError, match="negotiation did not complete"):
+        backend._negotiate()
+    assert timeout_sock.closed
 
     command_only = _Socket([bytes([mf._T_IAC, 0xF1])])
     backend._sock = command_only
     backend._rx_backlog = b""
-    backend._negotiate()
-    assert backend._rx_backlog == b""
+    with pytest.raises(mf.MainframeError, match=r"connection closed|did not complete"):
+        backend._negotiate()
+    assert command_only.closed
 
     huge_command_stream = _Socket([bytes([mf._T_IAC, 0xF1]) * 512] * 4)
     backend._sock = huge_command_stream
     backend._rx_backlog = b""
-    backend._negotiate()
-    assert backend._rx_backlog == b""
+    with pytest.raises(mf.MainframeError, match="negotiation byte limit"):
+        backend._negotiate()
+    assert huge_command_stream.closed
 
     empty_sock = _Socket([b""])
     backend._sock = empty_sock
     backend._rx_backlog = b""
-    backend._negotiate()
-    assert len(empty_sock.sent) == 6
+    with pytest.raises(mf.MainframeError, match="closed during negotiation"):
+        backend._negotiate()
+    assert empty_sock.closed
 
     split_neg = _Socket([bytes([mf._T_IAC, mf._T_DO]), bytes([mf._TOPT_EOR, 0])])
     backend._sock = split_neg
@@ -1020,7 +1024,7 @@ def test_tn5250_read_records_handles_escaping_negotiation_and_timeouts(
     backend._sock = unknown_telnet
     backend._rx_backlog = b""
     backend._process_record = Mock()  # type: ignore[method-assign]
-    assert backend._read_records(1) == [b"\xff\xf1x"]
+    assert backend._read_records(1) == [b"x"]
 
     # No record before the deadline and a peer closing the socket both retain
     # whatever bytes were already buffered.
@@ -1029,7 +1033,7 @@ def test_tn5250_read_records_handles_escaping_negotiation_and_timeouts(
     backend._rx_backlog = b"partial"
     assert backend._read_records(1) == []
     assert backend._rx_backlog == b"partial"
-    monkeypatch.setattr(mf.time, "monotonic", Mock(side_effect=[0, 0, 0]))
+    monkeypatch.setattr(mf.time, "monotonic", Mock(return_value=0))
     backend._sock = _Socket([b""])
     backend._rx_backlog = b""
     assert backend._read_records(1) == []
@@ -1051,9 +1055,10 @@ def test_tn5250_read_records_enforces_deadline_even_with_records_already_parsed(
     backend._sock = _Socket([record1, record2])
     backend._process_record = Mock()  # type: ignore[method-assign]
 
-    # deadline=1.0; monotonic() calls: start, pre-recv deadline check (<1),
-    # settimeout's own read (<1), then past-deadline on the next pass.
-    monkeypatch.setattr(mf.time, "monotonic", Mock(side_effect=[0.0, 0.0, 0.0, 2.0]))
+    # Processing the first record consumes the remaining time budget.
+    clock = [0.0]
+    backend._process_record.side_effect = lambda data: clock.__setitem__(0, 2.0)
+    monkeypatch.setattr(mf.time, "monotonic", lambda: clock[0])
 
     records = backend._read_records(1.0)
 
@@ -1080,7 +1085,8 @@ def test_tn5250_read_records_rejects_unbounded_backlog_without_eor(
 
 def test_tn5250_record_dispatch_and_wtd_orders() -> None:
     backend = mf._Tn5250Backend(rows=2, cols=5, trace=True)
-    backend._process_record(b"short")
+    with pytest.raises(mf.MainframeError, match="GDS record length"):
+        backend._process_record(b"short")
     backend._process_record(_record(b"\x00\x00", bytes([0x04])))
     backend._process_record(_record(bytes([0x04, 0x40]), bytes([0x04, 0x20])))
     assert all(cell == " " for row in backend._screen for cell in row)
@@ -1842,3 +1848,357 @@ def test_tn5250_send_aid_logs_a_trace_line_for_the_input_record() -> None:
     backend.send_aid("Enter")
 
     assert sock.sent
+
+
+@pytest.mark.parametrize("declared, actual", [(0, 10), (9, 10), (11, 10), (65535, 10), (10, 9)])
+@pytest.mark.parametrize("framed", [False, True])
+def test_tn5250_rejects_invalid_gds_length(declared, actual, framed) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket()
+    backend._sock = sock
+    backend._connected = True
+    data = declared.to_bytes(2, "big") + b"\x00" * (actual - 2)
+    backend._rx_backlog = data.replace(b"\xff", b"\xff\xff") + b"\xff\xef"
+    with pytest.raises(mf.MainframeError, match=r"GDS.*length"):
+        if framed:
+            backend._read_records(1)
+        else:
+            backend._process_record(data)
+    assert sock.closed
+    assert not backend.is_connected()
+    assert backend._rx_backlog == b""
+
+
+def test_tn5250_buffered_records_stop_at_deadline_and_resume(monkeypatch) -> None:
+    backend = mf._Tn5250Backend()
+    backend._sock = _Socket()
+    record = _record()
+    wire = record + b"\xff\xef"
+    backend._rx_backlog = wire * 5000
+    clock = [0.0]
+    original = backend._process_record
+
+    def process(data):
+        original(data)
+        clock[0] += 0.001
+
+    monkeypatch.setattr(mf.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(backend, "_process_record", process)
+    assert backend._read_records(0.005) == [record] * 5
+    assert clock[0] == pytest.approx(0.005)
+    assert backend._rx_backlog == wire * 4995
+    assert backend._read_records(0.005) == [record] * 5
+    assert backend._rx_backlog == wire * 4990
+
+
+def test_tn5250_record_work_limit_preserves_remaining_records(monkeypatch) -> None:
+    backend = mf._Tn5250Backend()
+    backend._sock = _Socket()
+    wire = _record() + b"\xff\xef"
+    backend._rx_backlog = wire * 5000
+    monkeypatch.setattr(mf.time, "monotonic", lambda: 0.0)
+    assert len(backend._read_records(1)) == mf._MAX_RECORDS_PER_READ
+    assert backend._rx_backlog == wire * (5000 - mf._MAX_RECORDS_PER_READ)
+
+
+@pytest.mark.parametrize("data", [b"x", b"\xff\xff"])
+def test_tn5250_unterminated_frame_limit_closes_socket(data) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket([data * 2048] * 80)
+    backend._sock = sock
+    with pytest.raises(mf.MainframeError, match="frame length limit"):
+        backend._read_records(10)
+    assert sock.closed
+    assert backend._rx_backlog == b""
+
+
+def test_tn5250_empty_eor_is_invalid_gds() -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket([b"\xff\xef" * 5000])
+    backend._sock = sock
+    with pytest.raises(mf.MainframeError, match="GDS record length"):
+        backend._read_records(1)
+    assert sock.closed
+
+
+@pytest.mark.parametrize("stream", [b"\xff\xfd\x19" * 341, b"\xff\xfa" + b"x" * 1021])
+def test_tn5250_endless_negotiation_closes_socket(stream) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket([stream] * 5)
+    backend._sock = sock
+    with pytest.raises(mf.MainframeError, match="negotiation byte limit"):
+        backend._negotiate()
+    assert sock.closed
+    assert backend._sock is None
+    assert backend._rx_backlog == b""
+
+
+def test_tn5250_negotiation_enforces_time_budget(monkeypatch) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket([b"\xff\xfd\x19"] * 10)
+    backend._sock = sock
+    clock = [0.0]
+    original = backend._on_negotiation
+
+    def negotiate(verb, opt):
+        original(verb, opt)
+        clock[0] += 1.0
+
+    monkeypatch.setattr(mf.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(backend, "_on_negotiation", negotiate)
+    with pytest.raises(mf.MainframeError, match="negotiation deadline"):
+        backend._negotiate()
+    assert clock[0] == mf._NEGOTIATION_TIMEOUT
+    assert sock.closed
+
+
+def test_tn5250_read_socket_timeout_never_exceeds_deadline(monkeypatch) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket([_record() + b"\xff\xef", TimeoutError()])
+    backend._sock = sock
+    monkeypatch.setattr(mf.time, "monotonic", lambda: 0.0)
+    assert backend._read_records(0.005) == [_record()]
+    assert all(0 < timeout <= 0.005 for timeout in sock.timeouts)
+
+
+def test_tn5250_valid_maximum_gds_with_escaped_iac() -> None:
+    backend = mf._Tn5250Backend()
+    data = b"\xff\xff" + b"\x00" * 8 + b"\xff" * (mf._MAX_GDS_RECORD - 10)
+    backend._sock = _Socket()
+    backend._rx_backlog = data.replace(b"\xff", b"\xff\xff") + b"\xff\xef"
+    assert backend._read_records(10) == [data]
+    assert backend._rx_backlog == b""
+
+
+@pytest.mark.parametrize("header", [b"\x00" * 8, b"\xff" * 8], ids=["zero-header", "iac-header"])
+def test_tn5250_maximum_frame_split_eor(header) -> None:
+    backend = mf._Tn5250Backend()
+    data = b"\xff\xff" + header + b"\xff" * (mf._MAX_GDS_RECORD - 10)
+    wire = data.replace(b"\xff", b"\xff\xff") + b"\xff\xef"
+    backend._rx_backlog = wire[:-1]
+    sock = _Socket([wire[-1:]])
+    backend._sock = sock
+    assert backend._read_records(10) == [data]
+    assert backend._rx_backlog == b""
+    assert not sock.closed
+
+
+@pytest.mark.parametrize("extra", [b"x", b"\xff\xff"], ids=["ordinary-byte", "escaped-iac"])
+def test_tn5250_maximum_frame_rejects_extra_data(extra) -> None:
+    backend = mf._Tn5250Backend()
+    backend._rx_backlog = b"\xff\xff" * mf._MAX_GDS_RECORD + extra[:1]
+    sock = _Socket([extra[1:]])
+    backend._sock = sock
+    with pytest.raises(mf.MainframeError, match="frame length limit"):
+        backend._read_records(10)
+    assert sock.closed
+    assert backend._rx_backlog == b""
+
+
+def test_tn5250_oversized_existing_backlog_is_rejected() -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket()
+    backend._sock = sock
+    backend._rx_backlog = b"x" * (mf._MAX_RX_BACKLOG + 1)
+    with pytest.raises(mf.MainframeError, match="byte limit"):
+        backend._read_records(1)
+    assert sock.closed
+    assert backend._rx_backlog == b""
+
+
+@pytest.mark.parametrize("data", [b"x" * 4000, b"\xff\xfa" + b"x" * 4000])
+def test_tn5250_deadline_interrupts_frame_scan(monkeypatch, data) -> None:
+    backend = mf._Tn5250Backend()
+    backend._sock = _Socket()
+    backend._rx_backlog = data
+    ticks = iter([0.0, 0.0, 1.0])
+    monkeypatch.setattr(mf.time, "monotonic", lambda: next(ticks))
+    assert backend._read_records(0.005) == []
+    assert backend._rx_backlog == data
+
+
+def test_tn5250_deadline_interrupts_single_wtd_record(monkeypatch) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket()
+    backend._sock = sock
+    backend._rx_backlog = _record(b"\x04\x11\x00\x00" + b"\xc1" * 20) + b"\xff\xef"
+    clock = [0.0]
+    original = backend._check_record_deadline
+
+    def check():
+        clock[0] += 0.001
+        original()
+
+    monkeypatch.setattr(mf.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(backend, "_check_record_deadline", check)
+    with pytest.raises(mf.MainframeError, match="record processing deadline"):
+        backend._read_records(0.005)
+    assert clock[0] == pytest.approx(0.005)
+    assert sock.closed
+    assert backend._rx_backlog == b""
+    assert backend._record_deadline is None
+
+
+def test_tn5250_scan_work_limit_bounds_midstream_negotiations(monkeypatch) -> None:
+    backend = mf._Tn5250Backend()
+    backend._sock = _Socket()
+    command = b"\xff\xfd\x19"
+    backend._rx_backlog = command * 100
+    monkeypatch.setattr(mf, "_MAX_SCAN_WORK_PER_READ", 10)
+    monkeypatch.setattr(mf.time, "monotonic", lambda: 0.0)
+    assert backend._read_records(1) == []
+    assert backend._rx_backlog == command * 91
+    assert len(backend._sock.sent) == 9
+
+
+def test_tn5250_push_rx_cannot_exceed_backlog_limit() -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket()
+    backend._sock = sock
+    backend._rx_backlog = b"x" * mf._MAX_RX_BACKLOG
+    with pytest.raises(mf.MainframeError, match="byte limit"):
+        backend._push_rx(b"x")
+    assert sock.closed
+    assert backend._rx_backlog == b""
+
+
+@pytest.mark.parametrize("position", [0, 1, 10, 14, 18])
+@pytest.mark.parametrize("split", [False, True])
+def test_tn5250_nop_does_not_change_gds_data(position, split) -> None:
+    backend = mf._Tn5250Backend()
+    data = _record(b"\x04\x11\x00\x00\x11\x01\x01\xc1")
+    wire = data[:position] + b"\xff\xf1" + data[position:] + b"\xff\xef"
+    chunks = [wire[: position + 1], wire[position + 1 :]] if split else [wire]
+    sock = _Socket(chunks)
+    backend._sock = sock
+    backend._connected = True
+    assert backend._read_records(1) == [data]
+    assert backend._screen[0][0] == "A"
+    assert backend.is_connected()
+    assert not sock.closed
+
+
+@pytest.mark.parametrize("prefix_length", [0, 1, 3])
+def test_tn5250_maximum_gds_survives_negotiation(prefix_length) -> None:
+    backend = mf._Tn5250Backend()
+    data = b"\xff\xff" + b"\x00" * 8 + b"\xff" * (mf._MAX_GDS_RECORD - 10)
+    wire = data.replace(b"\xff", b"\xff\xff") + b"\xff\xef"
+    chunks = [wire[:prefix_length]] if prefix_length else []
+    chunks.extend(wire[i : i + 1024] for i in range(prefix_length, len(wire), 1024))
+    sock = _Socket([b"\xff\xfd\x19\xff\xf1", *chunks])
+    backend._sock = sock
+    backend._negotiate()
+    assert backend._rx_backlog.startswith(b"\xff\xff")
+    assert backend._read_records(10) == [data]
+    assert backend._rx_backlog == b""
+    assert not sock.closed
+
+
+@pytest.mark.parametrize("send_number", [1, 7, 8])
+@pytest.mark.parametrize("error_type", [TimeoutError, OSError])
+def test_tn5250_negotiation_send_failure_is_mainframe_error(monkeypatch, send_number, error_type):
+    class SendFailureSocket(_Socket):
+        def sendall(self, data):
+            if len(self.sent) + 1 == send_number:
+                raise error_type("send failed")
+            super().sendall(data)
+
+    sock = SendFailureSocket([b"\xff\xfd\x19\xff\xfa\x18\x01\xff\xf0"])
+    backend = mf._Tn5250Backend(allow_plaintext=True)
+    monkeypatch.setattr(backend._socket, "create_connection", Mock(return_value=sock))
+    with pytest.raises(mf.MainframeError, match="negotiation did not complete: send failed"):
+        backend.connect("ibmi", 23, session_type="5250")
+    assert sock.closed
+    assert backend._sock is None
+    assert not backend.is_connected()
+    assert backend._rx_backlog == b""
+
+
+@pytest.mark.parametrize("phase", ["advertise", "receive"])
+def test_tn5250_negotiation_deadline_after_socket_work(monkeypatch, phase) -> None:
+    clock = [0.0]
+
+    class DelayedSocket(_Socket):
+        def sendall(self, data):
+            super().sendall(data)
+            if phase == "advertise":
+                clock[0] = mf._NEGOTIATION_TIMEOUT
+
+        def recv(self, size):
+            chunk = super().recv(size)
+            clock[0] = mf._NEGOTIATION_TIMEOUT
+            return chunk
+
+    sock = DelayedSocket([b"\xff\xfd\x19"])
+    backend = mf._Tn5250Backend()
+    backend._sock = sock
+    monkeypatch.setattr(mf.time, "monotonic", lambda: clock[0])
+    with pytest.raises(mf.MainframeError, match="negotiation deadline"):
+        backend._negotiate()
+    assert sock.closed
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"\xff\xfd\x19",  # Reply to a complete option command.
+        b"\xff\xfa\x18\x01\xff\xf0",  # Reply to subnegotiation.
+        _record() + b"\xff\xef",  # Dispatch a complete GDS record.
+        b"partial",  # Wait for the remaining frame bytes.
+    ],
+)
+def test_tn5250_expired_deadline_preserves_pending_work(monkeypatch, data) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket()
+    backend._sock = sock
+    backend._rx_backlog = data
+    ticks = iter([0.0, 0.0, 1.0])
+    monkeypatch.setattr(mf.time, "monotonic", lambda: next(ticks, 1.0))
+    assert backend._read_records(0.005) == []
+    assert backend._rx_backlog == data
+    assert not sock.sent
+    assert not sock.closed
+
+
+def test_tn5250_subnegotiation_work_limit_preserves_pending_work(monkeypatch) -> None:
+    backend = mf._Tn5250Backend()
+    backend._sock = _Socket()
+    backend._rx_backlog = b"\xff\xfa" + b"x" * 100
+    monkeypatch.setattr(mf, "_MAX_SCAN_WORK_PER_READ", 10)
+    assert backend._read_records(1) == []
+    assert backend._rx_backlog == b"\xff\xfa" + b"x" * 100
+    assert not backend._sock.sent
+
+
+@pytest.mark.parametrize(
+    "data, error",
+    [
+        (b"x" * (mf._MAX_WIRE_RECORD + 1) + b"\xff\xef", "frame length limit"),
+        (
+            b"\xff\xfa" + b"x" * mf._MAX_NEGOTIATION_BYTES + b"\xff\xf0",
+            "subnegotiation byte limit",
+        ),
+    ],
+    ids=["oversized-frame", "oversized-subnegotiation"],
+)
+def test_tn5250_oversized_framed_input_closes_socket(data, error) -> None:
+    backend = mf._Tn5250Backend()
+    sock = _Socket()
+    backend._sock = sock
+    backend._rx_backlog = data
+    with pytest.raises(mf.MainframeError, match=error):
+        backend._read_records(10)
+    assert sock.closed
+    assert backend._rx_backlog == b""
+
+
+def test_tn5250_long_field_control_sequence_within_deadline() -> None:
+    backend = mf._Tn5250Backend()
+    payload = b"\x04\x11\x00\x00\x1d\x40\x00" + b"\x00\x00" * 200 + b"\x20\x00\x04"
+    data = (len(payload) + 10).to_bytes(2, "big") + b"\x12\xa0" + b"\x00" * 6 + payload
+    sock = _Socket([data + b"\xff\xef"])
+    backend._sock = sock
+    assert backend._read_records(1) == [data]
+    assert len(backend._fields) == 1
+    assert backend._fields[0].length == 4
+    assert not sock.closed
