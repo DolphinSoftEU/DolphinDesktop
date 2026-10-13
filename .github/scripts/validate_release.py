@@ -35,8 +35,8 @@ def release_target(version: str, event: str, ref: str, requested: str) -> str:
     if target == "pypi":
         if not re.fullmatch(FINAL_VERSION, version):
             raise ValueError("PyPI requires a final X.Y.Z version")
-        if ref != "refs/heads/master" and not final_tag:
-            raise ValueError("PyPI requires master or a matching final release tag")
+        if not final_tag:
+            raise ValueError("PyPI requires a matching final release tag")
     elif ref not in {"refs/heads/master", "refs/heads/testpypi-preview"} and not (
         final_tag or rc_tag
     ):
