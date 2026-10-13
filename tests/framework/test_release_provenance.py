@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
 import runpy
+import shutil
+import subprocess
+import time
 import zipfile
 from copy import deepcopy
 from pathlib import Path
@@ -43,7 +47,7 @@ class API:
         ]
         self.artifact = {
             "id": 7,
-            "name": "dolphin-desktop-dist",
+            "name": "dolphin-desktop-dist-attempt-2",
             "expired": False,
             "digest": "sha256:" + "b" * 64,
             "workflow_run": {"id": 42, "head_sha": SHA, "head_branch": "master"},
@@ -69,7 +73,16 @@ class API:
                 },
             },
         ]
-        self.ruleset = {"enforcement": "active", "bypass_actors": []}
+        self.ruleset = {
+            "id": 1,
+            "target": "branch",
+            "enforcement": "active",
+            "bypass_actors": [],
+            "conditions": {"ref_name": {"include": ["refs/heads/master"], "exclude": []}},
+            "rules": self.rules,
+            "updated_at": "2026-10-13T12:00:00Z",
+        }
+        self.attested_rulesets = None
         self.environment = {
             "can_admins_bypass": False,
             "protection_rules": [
@@ -86,11 +99,20 @@ class API:
         }
         self.policies = [{"type": "tag", "name": "v*.*.*"}]
         self.tag = {
+            "id": 2,
+            "target": "tag",
+            "updated_at": "2026-10-13T12:00:00Z",
             "enforcement": "active",
             "bypass_actors": [],
             "conditions": {"ref_name": {"include": ["refs/tags/v*.*.*"], "exclude": []}},
-            "rules": [{"type": "update"}, {"type": "deletion"}, {"type": "creation"}],
+            "rules": [{"type": "update"}, {"type": "deletion"}],
         }
+        self.creation = deepcopy(self.tag)
+        self.creation["id"] = 3
+        self.creation["rules"] = [{"type": "creation"}]
+        self.creation["bypass_actors"] = [
+            {"actor_type": "Team", "actor_id": 7, "bypass_mode": "always"},
+        ]
         self.protected = True
 
     def get(self, path):
@@ -102,6 +124,8 @@ class API:
             return self.ruleset
         if path == "/rulesets/2":
             return self.tag
+        if path == "/rulesets/3":
+            return self.creation
         if path == "/environments/pypi":
             return self.environment
         raise AssertionError(path)
@@ -117,7 +141,7 @@ class API:
         if path == "/environments/pypi/deployment-branch-policies":
             return self.policies
         if path == "/rulesets?includes_parents=true":
-            return [{"id": 2, "target": "tag", "enforcement": "active"}]
+            return [{"id": n, "target": "tag", "enforcement": "active"} for n in (2, 3)]
         raise AssertionError(path)
 
 
@@ -270,7 +294,7 @@ def test_mutable_or_unprotected_tags_are_rejected(change):
     elif change == "no-deletion":
         api.tag["rules"].pop(1)
     elif change == "no-creation":
-        api.tag["rules"].pop(2)
+        api.creation["rules"] = []
     elif change == "exclude":
         api.tag["conditions"]["ref_name"]["exclude"] = ["refs/tags/v0.2.0"]
     elif change == "wrong-ref":
@@ -415,6 +439,15 @@ def test_ci_artifact_is_built_only_after_required_checks_and_smoke_test():
     )
     for step in package["steps"]:
         assert "if" not in step and "continue-on-error" not in step
+    upload = package["steps"][-1]
+    assert upload["with"]["name"] == "dolphin-desktop-dist-attempt-${{ github.run_attempt }}"
+    assert "overwrite" not in upload["with"]
+    release = yaml.load(
+        (root / ".github/workflows/release.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+    )
+    prepared = release["jobs"]["build"]["steps"][-1]
+    assert prepared["with"]["name"] == "dolphin-desktop-dist-attempt-${{ github.run_attempt }}"
+    assert "overwrite" not in prepared["with"]
 
 
 @pytest.mark.parametrize("substituted", [False, True])
@@ -441,3 +474,265 @@ def test_publish_cannot_replace_both_manifest_and_wheel(tmp_path, monkeypatch, s
     monkeypatch.setattr(manifest["sys"], "argv", ["distribution_manifest.py", "verify"])
     assert manifest["main"]() == (1 if substituted else 0)
     assert (tmp_path / "output").exists() is not substituted
+
+
+@pytest.mark.parametrize("area", ["branch", "tag"])
+@pytest.mark.parametrize("actors", [[], None, [{"actor_type": "RepositoryRole", "actor_id": 5}]])
+def test_empty_missing_and_nonempty_bypasses_are_distinct(area, actors):
+    api = API()
+    ruleset = api.ruleset if area == "branch" else api.tag
+    if actors is None:
+        ruleset.pop("bypass_actors")
+    else:
+        ruleset["bypass_actors"] = actors
+
+    def validate():
+        if area == "branch":
+            policy["validate_branch"](api, "master")
+        else:
+            policy["validate_tag"](api, "refs/tags/v0.2.0")
+
+    if actors == []:
+        validate()
+    else:
+        with pytest.raises(ValueError):
+            validate()
+
+
+@pytest.mark.parametrize("area", ["branch", "tag"])
+@pytest.mark.parametrize(
+    "change",
+    ["none", "policy", "hidden-bypass-update", "null", "bypass", "null-time", "missing-time"],
+)
+def test_hidden_bypasses_require_matching_admin_evidence(area, change):
+    api = API()
+    ruleset = api.ruleset if area == "branch" else api.tag
+    api.attested_rulesets = {
+        str(ruleset["id"]): {
+            "policy_sha256": policy["ruleset_digest"](ruleset),
+            "bypass_actors": [],
+        }
+    }
+    ruleset.pop("bypass_actors")
+    if change == "policy":
+        ruleset["conditions"]["ref_name"]["exclude"] = ["refs/heads/other"]
+    elif change == "hidden-bypass-update":
+        ruleset["updated_at"] = "2026-10-13T12:05:00Z"
+    elif change == "null-time":
+        ruleset["updated_at"] = None
+    elif change == "missing-time":
+        ruleset.pop("updated_at")
+    elif change == "null":
+        api.attested_rulesets[str(ruleset["id"])]["bypass_actors"] = None
+    elif change == "bypass":
+        api.attested_rulesets[str(ruleset["id"])]["bypass_actors"] = [{"actor_id": 5}]
+    if change == "none":
+        if area == "branch":
+            policy["validate_branch"](api, "master")
+        else:
+            policy["validate_tag"](api, "refs/tags/v0.2.0")
+    else:
+        with pytest.raises(ValueError):
+            if area == "branch":
+                policy["validate_branch"](api, "master")
+            else:
+                policy["validate_tag"](api, "refs/tags/v0.2.0")
+
+
+@pytest.mark.parametrize("change", ["none", "empty", "missing", "write-role", "pull-request-only"])
+def test_tag_creation_and_immutability_are_independent(change):
+    api = API()
+    assert api.tag["bypass_actors"] == []
+    assert {r["type"] for r in api.tag["rules"]} == {"update", "deletion"}
+    if change == "empty":
+        api.creation["bypass_actors"] = []
+    elif change == "missing":
+        api.creation.pop("bypass_actors")
+    elif change == "write-role":
+        api.creation["bypass_actors"] = [
+            {"actor_type": "RepositoryRole", "actor_id": 4, "bypass_mode": "always"}
+        ]
+    elif change == "pull-request-only":
+        api.creation["bypass_actors"][0]["bypass_mode"] = "pull_request"
+    if change == "none":
+        policy["validate_tag"](api, "refs/tags/v0.2.0")
+    else:
+        with pytest.raises(ValueError):
+            policy["validate_tag"](api, "refs/tags/v0.2.0")
+
+
+@pytest.mark.parametrize("latest_exists", [True, False])
+def test_ci_rerun_selects_only_the_verified_attempt_artifact(latest_exists):
+    api = API()
+    old = deepcopy(api.artifact)
+    old["id"] = 6
+    old["name"] = "dolphin-desktop-dist-attempt-1"
+    original = api.pages
+    api.pages = lambda path, key=None: (
+        ([old, api.artifact] if latest_exists else [old])
+        if path == "/actions/runs/42/artifacts"
+        else original(path, key)
+    )
+    if latest_exists:
+        assert policy["select_artifact"](api, REPO, SHA, "master")["artifact_id"] == 7
+    else:
+        with pytest.raises(ValueError, match="exactly one CI distribution artifact"):
+            policy["select_artifact"](api, REPO, SHA, "master")
+
+
+@pytest.fixture(scope="module")
+def signing_keys(tmp_path_factory):
+    openssl = shutil.which("openssl")
+    if not openssl:
+        candidate = Path("C:/Program Files/Git/usr/bin/openssl.exe")
+        openssl = str(candidate) if candidate.is_file() else None
+    assert openssl, "Attestation security tests require OpenSSL"
+    root = tmp_path_factory.mktemp("rulesets-signing")
+    private = root / "private.pem"
+    public = root / "public.pem"
+    subprocess.run(
+        [
+            openssl,
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+            str(private),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [openssl, "pkey", "-in", str(private), "-pubout", "-out", str(public)],
+        check=True,
+        capture_output=True,
+    )
+    return openssl, root, private, public
+
+
+@pytest.mark.parametrize(
+    "change", ["none", "expired", "future", "wrong-repo", "long-lived", "tampered", "unsigned"]
+)
+def test_admin_attestation_signature_repository_and_expiry(signing_keys, change):
+    openssl, root, private, public = signing_keys
+    now = int(time.time())
+    evidence = {
+        "schema": 1,
+        "repository": REPO,
+        "issued_at": now - 60,
+        "expires_at": now + 3600,
+        "rulesets": {"1": {"bypass_actors": []}},
+    }
+    if change == "expired":
+        evidence["expires_at"] = now - 1
+    elif change == "future":
+        evidence["issued_at"] = now + 60
+    elif change == "wrong-repo":
+        evidence["repository"] = "attacker/fork"
+    elif change == "long-lived":
+        evidence["expires_at"] = now + 86401
+    payload = json.dumps(evidence).encode()
+    source = root / "payload"
+    signature = root / "signature"
+    source.write_bytes(payload)
+    subprocess.run(
+        [openssl, "dgst", "-sha256", "-sign", str(private), "-out", str(signature), str(source)],
+        check=True,
+        capture_output=True,
+    )
+    if change == "tampered":
+        evidence["rulesets"]["2"] = {"bypass_actors": []}
+        payload = json.dumps(evidence).encode()
+    signed = signature.read_bytes() if change != "unsigned" else b""
+    envelope = json.dumps(
+        {
+            "payload": base64.b64encode(payload).decode(),
+            "signature": base64.b64encode(signed).decode(),
+        }
+    )
+    if change == "none":
+        assert (
+            policy["load_ruleset_attestation"](envelope, public, REPO, openssl=openssl)
+            == (evidence["rulesets"])
+        )
+    else:
+        with pytest.raises((ValueError, subprocess.CalledProcessError)):
+            policy["load_ruleset_attestation"](envelope, public, REPO, openssl=openssl)
+
+
+@pytest.mark.parametrize("actors", [[], "missing", None, [{"actor_type": "Team", "actor_id": 7}]])
+def test_admin_collector_cannot_attest_hidden_or_null_bypasses(monkeypatch, actors):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    audit = runpy.run_path(str(SCRIPTS / "audit_release_rulesets.py"))
+    api = API()
+    if actors == "missing":
+        api.tag.pop("bypass_actors")
+    else:
+        api.tag["bypass_actors"] = actors
+    if isinstance(actors, list):
+        evidence = audit["collect_rulesets"](api)
+        assert evidence["2"]["bypass_actors"] == actors
+        assert evidence["2"]["policy_sha256"] == policy["ruleset_digest"](api.tag)
+        assert evidence["3"]["bypass_actors"] == api.creation["bypass_actors"]
+    else:
+        with pytest.raises(ValueError, match="cannot attest"):
+            audit["collect_rulesets"](api)
+
+
+def test_signed_admin_audit_validates_hidden_branch_and_both_tag_rulesets(
+    monkeypatch, signing_keys
+):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    audit = runpy.run_path(str(SCRIPTS / "audit_release_rulesets.py"))
+    api = API()
+    original = api.pages
+    api.pages = lambda path, key=None: (
+        [
+            {"id": 1, "target": "branch", "enforcement": "active"},
+            {"id": 2, "target": "tag", "enforcement": "active"},
+            {"id": 3, "target": "tag", "enforcement": "active"},
+        ]
+        if path == "/rulesets?includes_parents=true"
+        else original(path, key)
+    )
+    now = int(time.time())
+    payload = json.dumps(
+        {
+            "schema": 1,
+            "repository": REPO,
+            "issued_at": now - 1,
+            "expires_at": now + 3600,
+            "rulesets": audit["collect_rulesets"](api),
+        }
+    ).encode()
+    openssl, root, private, public = signing_keys
+    (root / "payload").write_bytes(payload)
+    subprocess.run(
+        [
+            openssl,
+            "dgst",
+            "-sha256",
+            "-sign",
+            str(private),
+            "-out",
+            str(root / "signature"),
+            str(root / "payload"),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    envelope = json.dumps(
+        {
+            "payload": base64.b64encode(payload).decode(),
+            "signature": base64.b64encode((root / "signature").read_bytes()).decode(),
+        }
+    )
+    api.attested_rulesets = policy["load_ruleset_attestation"](
+        envelope, public, REPO, openssl=openssl
+    )
+    for ruleset in (api.ruleset, api.tag, api.creation):
+        ruleset.pop("bypass_actors")
+    policy["validate_branch"](api, "master")
+    policy["validate_tag"](api, "refs/tags/v0.2.0")

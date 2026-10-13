@@ -176,7 +176,7 @@ platform-specific dependency markers:
   rather than automatic regeneration to make the gate pass.
 
 Release's build job depends on the complete security matrix. Both publishing
-jobs depend on build and download only that run's `dolphin-desktop-dist`
+jobs depend on build and download only that run's `dolphin-desktop-dist-attempt-N`
 artifact. Security and build check out the default revision of the same run;
 publication cannot reuse a successful check from a different commit. Package
 smoke tests intentionally install from the public index to validate distribution
@@ -277,6 +277,17 @@ on both indexes, then record hosted positive/negative run evidence. See
 The new validator blocks publication under the observed settings. Local mocked
 API and artifact tests establish rejection behavior, not completed deployment
 configuration or a successful hosted release.
+
+Read-only GitHub ruleset responses can hide `bypass_actors`. An omitted/null
+field is rejected unless signed administrative evidence matches the current
+policy and update timestamp. Evidence has a maximum 24-hour lifetime, is bound
+to this repository, and is verified against a public key committed through
+review to the protected source. The independent workstation audit alone receives
+an administrator credential; the release `GITHUB_TOKEN` remains read-only.
+Tag tests model separate creation and immutability rulesets. CI and release
+artifact names include their run attempt; selection never falls back to a
+package built in an earlier attempt. See the administrative attestation procedure
+in [RELEASING.md](RELEASING.md).
 
 ## Security regression mapping
 

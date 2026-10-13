@@ -31,8 +31,10 @@ Required check names (must match CI job names):
 Create an active tag ruleset matching `refs/tags/v*.*.*` with update and deletion
 restrictions and an empty bypass list. A separate creation ruleset must restrict
 release tagging to a designated team/integration or repository administrators;
-do not give those actors bypass rights
-on the update/deletion ruleset. The release validator checks the effective branch
+use `always` bypass mode for those designated creators, and do not give them
+bypass rights on the update/deletion ruleset. A creation restriction with no
+allowed creator is rejected because it would prevent every release tag.
+The release validator checks the effective branch
 rules, tag immutability, and an independent approval for the exact merged PR
 head whose merge result is the release SHA. Classic branch protection alone is
 not accepted by this validator.
@@ -67,6 +69,47 @@ environment hardening returned HTTP 403, `Must have admin rights to Repository`.
 These server-side changes and Trusted Publisher verification remain outstanding.
 The new release validator refuses publication under the observed configuration.
 
+## Administrative ruleset attestation
+
+GitHub [omits `bypass_actors` from read-only ruleset responses](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset).
+An omitted or null field does not establish that bypasses are disabled. Release
+accepts an explicit empty list for branch and tag-immutability rulesets; otherwise
+hidden actors require signed administrative evidence. Nonempty bypasses on those
+rulesets still reject publication, including when revealed by the audit.
+
+The release `GITHUB_TOKEN` retains its read permissions. An administrator performs
+the independent audit on a trusted workstation with Python and OpenSSL:
+
+1. Generate an RSA signing key outside the checkout (for example,
+   `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /secure/release-audit.pem`).
+   Keep the private key under administrator control. Export its public key with
+   `openssl pkey -in /secure/release-audit.pem -pubout -out .github/release-rulesets-public.pem`
+   and add that public key through a reviewed PR to the protected release branch.
+   The public key is pinned in the released source; a mutable variable cannot
+   replace the trust anchor. No private key or admin token belongs in CI.
+2. Configure a short-lived `RULESETS_ADMIN_TOKEN` for the audit process, scoped to
+   this repository and able to expose ruleset bypasses. Run:
+
+   ```bash
+   python .github/scripts/audit_release_rulesets.py \
+     --repository DolphinSoftEU/DolphinDesktop \
+     --private-key /secure/release-audit.pem --output /secure/rulesets-attestation.json
+   ```
+
+3. Set repository variable `RELEASE_RULESETS_ATTESTATION` to the exact JSON envelope
+   from that file. Only the signed public evidence enters Release. The helper
+   refuses to sign if its own API response omits/nulls `bypass_actors`.
+4. Run release preparation within the evidence lifetime (one hour by default;
+   `--valid-hours` can extend it to at most 24 hours). Refresh the administrative
+   audit after expiry or any ruleset change. The signature binds repository,
+   expiry, visible policy fields and `updated_at` to the observed bypass lists.
+   Release compares the live policy digest, including the update timestamp, so
+   evidence for an older configuration cannot supply the missing bypass data.
+
+Missing evidence/key, signature failure, wrong repository, expired evidence or a
+configuration mismatch blocks preparation. The audit supplies visibility; it
+does not waive source, review, checks, environment or Trusted Publisher gates.
+
 ## Release procedure
 
 1. Update `pyproject.toml`, `src/dolphin_desktop/__init__.py`, and `CHANGELOG.md`
@@ -77,7 +120,7 @@ The new release validator refuses publication under the observed configuration.
    successful run, skipped jobs, or a run for another SHA cannot authorize release.
 3. CI builds with locked tools only after all required test/security jobs pass,
    checks distribution metadata, installs the wheel in a fresh Windows venv,
-   and tests import/CLI. It uploads `dolphin-desktop-dist` containing
+   and tests import/CLI. It uploads `dolphin-desktop-dist-attempt-N` containing
    `dist/*.whl`, `dist/*.tar.gz`, and `provenance.json` with SHA, CI run/attempt
    identity and SHA256 hashes of both files.
 4. For production, create and push the matching `vX.Y.Z` tag on that exact merge
@@ -86,7 +129,10 @@ The new release validator refuses publication under the observed configuration.
    If CI is still running when the tag is pushed, release fails; retry after CI.
 5. Release validates source review/protection and environments, then selects the
    latest successful push CI run for the exact SHA and approved branch. It checks
-   every required job in the latest run attempt. The immutable artifact ID and
+   every required job in the latest run attempt and selects only that attempt's
+   artifact name. Older artifacts remain distinct; no overwrite is used. A partial
+   rerun that does not rebuild the package for the new attempt requires rerunning
+   the package job or the complete CI workflow. The immutable artifact ID and
    GitHub archive digest are verified before extracting the distributions.
    Manifest hashes and run/attempt identity must match. A missing or expired
    artifact is a hard failure; rerun CI instead of rebuilding in Release.

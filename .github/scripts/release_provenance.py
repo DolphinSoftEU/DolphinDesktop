@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import base64
 import fnmatch
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.request
+from pathlib import Path
 
 REQUIRED_JOBS = {
     "Unit / Python 3.11 / Windows",
@@ -23,9 +28,10 @@ REQUIRED_JOBS = {
 
 
 class GitHub:
-    def __init__(self, repository: str, token: str) -> None:
+    def __init__(self, repository: str, token: str, attested_rulesets: dict | None = None) -> None:
         self.base = f"https://api.github.com/repos/{repository}"
         self.token = token
+        self.attested_rulesets = attested_rulesets
 
     def get(self, path: str):
         request = urllib.request.Request(
@@ -51,6 +57,81 @@ class GitHub:
         raise ValueError("GitHub pagination limit exceeded")
 
 
+def ruleset_digest(ruleset: dict) -> str:
+    # updated_at binds the signed bypass list to this live configuration,
+    # including updates that affect only the otherwise hidden bypass list.
+    fields = ("id", "target", "enforcement", "conditions", "rules", "updated_at")
+    if any(field not in ruleset for field in fields):
+        raise ValueError("Ruleset lacks the configuration required for administrative attestation")
+    if not isinstance(ruleset["updated_at"], str) or not ruleset["updated_at"]:
+        raise ValueError("Ruleset lacks a usable update timestamp for administrative attestation")
+    projection = {field: ruleset[field] for field in fields}
+    return hashlib.sha256(json.dumps(projection, sort_keys=True).encode()).hexdigest()
+
+
+def load_ruleset_attestation(
+    envelope: str, public_key: Path, repository: str, *, openssl: str = "openssl"
+) -> dict:
+    signed = json.loads(envelope)
+    if not isinstance(signed, dict):
+        raise ValueError("Administrative attestation envelope must be an object")
+    payload = base64.b64decode(signed["payload"], validate=True)
+    signature = base64.b64decode(signed["signature"], validate=True)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        (root / "payload.json").write_bytes(payload)
+        (root / "signature").write_bytes(signature)
+        subprocess.run(
+            [
+                openssl,
+                "dgst",
+                "-sha256",
+                "-verify",
+                str(public_key.resolve()),
+                "-signature",
+                str(root / "signature"),
+                str(root / "payload.json"),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    evidence = json.loads(payload)
+    if not isinstance(evidence, dict):
+        raise ValueError("Administrative attestation payload must be an object")
+    now = time.time()
+    if (
+        evidence.get("schema") != 1
+        or evidence.get("repository") != repository
+        or not isinstance(evidence.get("issued_at"), int)
+        or not isinstance(evidence.get("expires_at"), int)
+        or not evidence["issued_at"] <= now < evidence["expires_at"]
+        or not 0 < evidence["expires_at"] - evidence["issued_at"] <= 86400
+        or not isinstance(evidence.get("rulesets"), dict)
+    ):
+        raise ValueError(
+            "Administrative ruleset attestation is invalid, expired or for another repo"
+        )
+    return evidence["rulesets"]
+
+
+def ruleset_bypass_actors(api: GitHub, ruleset: dict) -> list:
+    if "bypass_actors" in ruleset:
+        actors = ruleset["bypass_actors"]
+    else:
+        attested = getattr(api, "attested_rulesets", None) or {}
+        evidence = attested.get(str(ruleset.get("id")))
+        if not isinstance(evidence, dict) or evidence.get("policy_sha256") != ruleset_digest(
+            ruleset
+        ):
+            raise ValueError(
+                "Ruleset bypass actors are hidden; matching signed admin audit required"
+            )
+        actors = evidence.get("bypass_actors")
+    if not isinstance(actors, list) or any(not isinstance(actor, dict) for actor in actors):
+        raise ValueError("Ruleset bypass actors must be an explicit list")
+    return actors
+
+
 def validate_branch(api: GitHub, branch: str) -> None:
     if api.get(f"/branches/{branch}").get("protected") is not True:
         raise ValueError(f"Unprotected release source: {branch}")
@@ -60,7 +141,7 @@ def validate_branch(api: GitHub, branch: str) -> None:
     trusted = []
     for rule in rules:
         ruleset = api.get(f"/rulesets/{rule['ruleset_id']}")
-        if ruleset.get("enforcement") == "active" and not ruleset.get("bypass_actors"):
+        if ruleset.get("enforcement") == "active" and ruleset_bypass_actors(api, ruleset) == []:
             trusted.append(rule)
     if not any(
         rule["type"] == "pull_request"
@@ -114,6 +195,8 @@ def validate_tag(api: GitHub, ref: str) -> None:
         if entry["target"] != "tag" or entry["enforcement"] != "active":
             continue
         ruleset = api.get(f"/rulesets/{entry['id']}")
+        if ruleset.get("enforcement") != "active":
+            continue
         conditions = ruleset.get("conditions", {}).get("ref_name", {})
         included = any(
             pattern == "~ALL" or fnmatch.fnmatchcase(ref, pattern)
@@ -121,15 +204,25 @@ def validate_tag(api: GitHub, ref: str) -> None:
         )
         excluded = any(fnmatch.fnmatchcase(ref, p) for p in conditions.get("exclude", []))
         if included and not excluded:
-            actors = ruleset.get("bypass_actors", [])
+            actors = ruleset_bypass_actors(api, ruleset)
             types = {rule["type"] for rule in ruleset["rules"]}
             if not actors:
                 rules.update(types)
             # Creation may have dedicated releasers; immutability may not.
-            if "creation" in types and all(
-                actor.get("actor_type") in {"Team", "Integration"}
-                or (actor.get("actor_type") == "RepositoryRole" and actor.get("actor_id") == 5)
-                for actor in actors
+            if (
+                "creation" in types
+                and actors
+                and all(
+                    actor.get("bypass_mode") == "always"
+                    and (
+                        actor.get("actor_type") in {"Team", "Integration"}
+                        or (
+                            actor.get("actor_type") == "RepositoryRole"
+                            and actor.get("actor_id") == 5
+                        )
+                    )
+                    for actor in actors
+                )
             ):
                 creation_restricted = True
     if not {"update", "deletion"} <= rules or not creation_restricted:
@@ -194,7 +287,8 @@ def select_artifact(api: GitHub, repository: str, sha: str, branch: str) -> dict
     if not REQUIRED_JOBS <= passed:
         raise ValueError("Required Windows CI/security jobs did not pass for this SHA")
     artifacts = api.pages(f"/actions/runs/{run['id']}/artifacts", "artifacts")
-    artifacts = [a for a in artifacts if a["name"] == "dolphin-desktop-dist"]
+    name = f"dolphin-desktop-dist-attempt-{run['run_attempt']}"
+    artifacts = [a for a in artifacts if a["name"] == name]
     if len(artifacts) != 1:
         raise ValueError("Expected exactly one CI distribution artifact")
     artifact = artifacts[0]
@@ -221,7 +315,15 @@ def main() -> int:
         sha = os.environ["RELEASE_SHA"]
         ref = os.environ["RELEASE_REF"]
         target = os.environ["RELEASE_TARGET"]
-        api = GitHub(repository, os.environ["GH_TOKEN"])
+        envelope = os.environ.get("RULESETS_ATTESTATION", "")
+        attested = (
+            load_ruleset_attestation(
+                envelope, Path(".github/release-rulesets-public.pem"), repository
+            )
+            if envelope
+            else None
+        )
+        api = GitHub(repository, os.environ["GH_TOKEN"], attested)
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise ValueError("Invalid release SHA")
         checked_out = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -240,7 +342,7 @@ def main() -> int:
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             for key, value in result.items():
                 output.write(f"{key}={value}\n")
-    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+    except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError) as error:
         print(f"Release provenance rejected: {error}", file=sys.stderr)
         return 1
     return 0
