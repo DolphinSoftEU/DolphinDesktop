@@ -478,6 +478,9 @@ class CDPSession:
         """
         sync_api = _require_playwright()
         pw = sync_api.sync_playwright().start()
+        import time as _t
+
+        deadline = _t.monotonic() + timeout
         try:
             browser = pw.chromium.connect_over_cdp(endpoint, timeout=timeout * 1000)
         except Exception as exc:
@@ -491,7 +494,9 @@ class CDPSession:
         # exit, which on long-running test runs shows up as zombie
         # ``node.exe`` processes.
         try:
-            context, page = cls._pick_stable_page(browser, timeout=timeout)
+            context, page = cls._pick_stable_page(
+                browser, timeout=max(0.0, deadline - _t.monotonic())
+            )
             if page is None:
                 # Last-resort fallback: open a fresh page so the caller at least
                 # gets a live target. In Electron this is unusual — the app's
@@ -528,7 +533,11 @@ class CDPSession:
 
         deadline = _t.monotonic() + timeout
         while _t.monotonic() < deadline:
+            wait_page = None
+            wait_context = None
             for ctx in browser.contexts:
+                if wait_context is None:
+                    wait_context = ctx
                 for p in ctx.pages:
                     try:
                         if p.is_closed():
@@ -538,7 +547,25 @@ class CDPSession:
                         continue
                     if url and url != "about:blank" and not url.startswith("chrome://"):
                         return ctx, p
-            _t.sleep(0.25)
+                    if wait_page is None:
+                        wait_page = p
+            remaining = deadline - _t.monotonic()
+            if remaining <= 0 or wait_context is None:
+                break
+            poll_ms = min(0.25, remaining) * 1000
+            # These sync API calls dispatch navigation/page events. Sleeping
+            # blocks Playwright's event loop and leaves the cached URLs blank.
+            if wait_page is not None:
+                try:
+                    wait_page.wait_for_timeout(poll_ms)
+                except Exception:
+                    if not wait_page.is_closed():
+                        raise
+            else:
+                try:
+                    wait_context.wait_for_event("page", timeout=poll_ms)
+                except _require_playwright().TimeoutError:
+                    pass
         # Fallback: any live page at all, even blank.
         for ctx in browser.contexts:
             for p in ctx.pages:

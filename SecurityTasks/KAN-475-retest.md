@@ -37,3 +37,30 @@ the locked CDP extra and Chromium and checks that this scenario exists in its
 JUnit results and passes without a skip. The pytest plugin also preserves the
 tuple representation of skipped reports while redacting their contents, fixing
 the `_folded_skips` assertion mentioned in the retest comment.
+
+## Chromium startup timeout correction
+
+The reported hosted failure occurred during the replacement Chromium session,
+after the foreign-listener rejection and the parallel-profile checks passed.
+It surfaced as the fixture's 30-second `Future.result()` timeout. That hosted
+timing did not reproduce locally before the change.
+
+Inspection found that stable-page selection polled cached Playwright URLs while
+using `time.sleep()`. That blocks the sync API's event dispatch, so a navigation
+from `about:blank` may remain invisible until the selection timeout expires.
+The corrected loop dispatches events through bounded Playwright waits, including
+page-creation events when a context is empty. CDP connection and page selection
+share one time budget; fixture launch and initial navigation also consume the
+same startup budget. Watchdog errors identify the startup phase, port and profile.
+
+A deterministic delayed-navigation reproduction left the previous picker at
+`about:blank`; the corrected picker observed `app://ready`. New unit regressions
+cover navigation/page event delivery and the remaining timeout budget. Cleanup
+after a late worker remains on the Playwright owner thread.
+
+The unchanged real Windows component regression passed three consecutive runs
+after the correction (8.44s, 8.99s and 8.48s). Port ownership, collision rejection,
+profile/cookie/localStorage isolation and final listener cleanup remain required.
+The focused CDP session/fixture unit suite passed all 218 tests.
+Ruff lint/format and mypy passed. A new hosted Windows run is still needed to
+confirm the correction on the originally failing runner.

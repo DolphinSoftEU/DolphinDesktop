@@ -1143,15 +1143,70 @@ class TestSessionConstructionAndLifecycle:
         browser = SimpleNamespace(contexts=[ctx])
         assert CDPSession._pick_stable_page(browser, timeout=0.1) == (ctx, stable)
 
-    def test_pick_stable_page_sleeps_then_falls_back_to_blank(self):
+    def test_pick_stable_page_pumps_events_then_falls_back_to_blank(self):
         blank = MagicMock()
         blank.is_closed.return_value = False
         blank.url = "about:blank"
         ctx = SimpleNamespace(pages=[blank])
         browser = SimpleNamespace(contexts=[ctx])
-        with patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]), patch("time.sleep") as sleep:
+        with (
+            patch("time.monotonic", side_effect=[0.0, 0.0, 0.0, 1.0]),
+            patch("time.sleep") as sleep,
+        ):
             assert CDPSession._pick_stable_page(browser, timeout=0.1) == (ctx, blank)
-        sleep.assert_called_once_with(0.25)
+        blank.wait_for_timeout.assert_called_once_with(100.0)
+        sleep.assert_not_called()
+
+    def test_pick_stable_page_observes_navigation_dispatched_by_playwright(self):
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.url = "about:blank"
+        page.wait_for_timeout.side_effect = lambda _timeout: setattr(page, "url", "app://ready")
+        context = SimpleNamespace(pages=[page])
+        with patch("time.sleep", side_effect=AssertionError("Blocks Playwright events")):
+            assert CDPSession._pick_stable_page(
+                SimpleNamespace(contexts=[context]), timeout=0.1
+            ) == (context, page)
+        assert page.url == "app://ready"
+
+    def test_pick_stable_page_dispatches_new_page_events_when_context_is_empty(self):
+        class EventTimeout(Exception):
+            pass
+
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.url = "app://new-page"
+        context = MagicMock(pages=[])
+
+        def deliver_page(_event, *, timeout):
+            assert 0 < timeout <= 250
+            context.pages = [page]
+            raise EventTimeout()
+
+        context.wait_for_event.side_effect = deliver_page
+        with patch.object(
+            cdp, "_require_playwright", return_value=SimpleNamespace(TimeoutError=EventTimeout)
+        ):
+            assert CDPSession._pick_stable_page(
+                SimpleNamespace(contexts=[context]), timeout=0.1
+            ) == (context, page)
+
+    def test_connect_spends_remaining_budget_on_target_selection(self):
+        page = MagicMock()
+        browser = MagicMock()
+        context = MagicMock()
+        playwright = MagicMock()
+        playwright.chromium.connect_over_cdp.return_value = browser
+        sync_api = SimpleNamespace(
+            sync_playwright=lambda: SimpleNamespace(start=lambda: playwright)
+        )
+        with (
+            patch.object(cdp, "_require_playwright", return_value=sync_api),
+            patch("time.monotonic", side_effect=[0.0, 1.75]),
+            patch.object(CDPSession, "_pick_stable_page", return_value=(context, page)) as pick,
+        ):
+            CDPSession.connect("http://localhost:9222", timeout=2.5)
+        pick.assert_called_once_with(browser, timeout=0.75)
 
     def test_pick_stable_page_returns_none_when_every_fallback_page_is_dead(self):
         closed = MagicMock()
