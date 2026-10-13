@@ -772,7 +772,7 @@ def _trace_view_cmd(args: argparse.Namespace) -> None:
 
     try:
         html_path = generate_html(run_dir)
-    except (FileNotFoundError, sqlite3.DatabaseError) as exc:
+    except (FileNotFoundError, ValueError, sqlite3.DatabaseError) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
 

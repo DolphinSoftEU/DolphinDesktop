@@ -6,7 +6,10 @@ Schema version history:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import math
 import shutil
 import sqlite3
 import threading
@@ -15,6 +18,7 @@ import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from ._logging import _redact, get_logger, redact_value
 
@@ -358,6 +362,112 @@ class TraceSession:
 
 _LATEST_RUN_SQL = "SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT 1"
 
+_TRACE_READ_SQL = {
+    "schema_version": ("PRAGMA table_xinfo(schema_version)", "SELECT * FROM schema_version"),
+    "runs": ("PRAGMA table_xinfo(runs)", "SELECT * FROM runs"),
+    "steps": ("PRAGMA table_xinfo(steps)", "SELECT * FROM steps"),
+}
+
+
+_TRACE_COLUMNS = {
+    "schema_version": {"version": "INTEGER"},
+    "runs": {
+        "id": "TEXT",
+        "test_nodeid": "TEXT",
+        "started_at": "REAL",
+        "finished_at": "REAL",
+        "status": "TEXT",
+        "error_message": "TEXT",
+        "error_traceback": "TEXT",
+    },
+    "steps": {
+        "id": "INTEGER",
+        "run_id": "TEXT",
+        "seq": "INTEGER",
+        "ts": "REAL",
+        "action": "TEXT",
+        "selector": "TEXT",
+        "result": "TEXT",
+        "error": "TEXT",
+        "screenshot_file": "TEXT",
+        "uia_tree": "TEXT",
+    },
+}
+_NULLABLE_COLUMNS = {
+    "runs": {"finished_at", "status", "error_message", "error_traceback"},
+    "steps": {"selector", "result", "error", "screenshot_file", "uia_tree"},
+}
+
+
+def _validate_trace_db(db: sqlite3.Connection) -> None:
+    """Validate schema and actual SQLite values before querying report data."""
+    for table, columns in _TRACE_COLUMNS.items():
+        kind = db.execute("SELECT type FROM sqlite_master WHERE name=?", (table,)).fetchone()
+        if kind is None or kind[0] != "table":
+            raise ValueError(f"Invalid trace.db: missing table {table}")
+        metadata_sql, rows_sql = _TRACE_READ_SQL[table]
+        metadata = list(db.execute(metadata_sql))
+        declared = {r[1]: r[2].upper() for r in metadata}
+        if declared != columns:
+            raise ValueError(f"Invalid trace.db: incompatible schema for {table}")
+        for column in metadata:
+            name = column[1]
+            required = name not in _NULLABLE_COLUMNS.get(table, set()) and name != "id"
+            primary_key = table != "schema_version" and name == "id"
+            if column[3] != int(required) or column[5] != int(primary_key) or column[6] != 0:
+                raise ValueError(f"Invalid trace.db: incompatible constraints for {table}.{name}")
+        if table == "steps":
+            foreign_keys = list(db.execute("PRAGMA foreign_key_list(steps)"))
+            if len(foreign_keys) != 1 or tuple(foreign_keys[0][2:5]) != ("runs", "run_id", "id"):
+                raise ValueError("Invalid trace.db: incompatible steps foreign key")
+        for row in db.execute(rows_sql):
+            for name, sql_type in columns.items():
+                value = row[name]
+                if value is None and name in _NULLABLE_COLUMNS.get(table, set()):
+                    continue
+                if sql_type == "TEXT":
+                    valid = isinstance(value, str)
+                elif sql_type == "INTEGER":
+                    valid = type(value) is int
+                else:
+                    valid = isinstance(value, (int, float)) and math.isfinite(value)
+                if not valid:
+                    raise ValueError(f"Invalid trace.db: invalid value for {table}.{name}")
+                if name in {"seq", "ts"} and value < 0:
+                    raise ValueError(f"Invalid trace.db: negative value for {table}.{name}")
+                if table == "runs" and name in {"started_at", "finished_at"}:
+                    import datetime
+
+                    try:
+                        datetime.datetime.fromtimestamp(value)
+                    except (ValueError, OverflowError, OSError):
+                        raise ValueError(f"Invalid trace.db: invalid timestamp {name}") from None
+    versions = [r[0] for r in db.execute("SELECT version FROM schema_version")]
+    if versions != [SCHEMA_VERSION]:
+        raise ValueError("Invalid trace.db: unsupported schema version")
+
+
+def _screenshot_url(filename: Any, screenshot_dir: Path | None) -> str | None:
+    """Allow only a single filename, encoded as a URL path component."""
+    if not isinstance(filename, str) or not filename or filename in {".", ".."}:
+        return None
+    # The writer emits flat filenames. Reject both OS separators, drive/ADS
+    # syntax and control characters rather than relying on browser URL cleanup.
+    if any(c in filename for c in "/\\:") or any(ord(c) < 32 for c in filename):
+        return None
+    if filename.endswith((".", " ")):
+        return None
+    if screenshot_dir is not None:
+        try:
+            root = screenshot_dir.resolve()
+            if root != screenshot_dir.parent.resolve() / "screenshots":
+                return None
+            if not (screenshot_dir / filename).resolve().is_relative_to(root):
+                return None
+        except (OSError, RuntimeError, ValueError):
+            return None
+    return "screenshots/" + quote(filename, safe="")
+
 
 def generate_html(run_dir: Path) -> Path:
     """Read trace.db in *run_dir*, write trace.html, and return its path.
@@ -367,15 +477,19 @@ def generate_html(run_dir: Path) -> Path:
 
     Raises:
         FileNotFoundError: if *run_dir* holds no ``trace.db``.
+        ValueError: if the database schema or stored values are invalid.
     """
     db_path = run_dir / "trace.db"
     # sqlite3.connect() creates the file it cannot open, so an unchecked connect
     # would leave an empty trace.db behind in the caller's tree.
     if not db_path.is_file():
         raise FileNotFoundError(f"No trace data found in {run_dir}")
-    db = sqlite3.connect(str(db_path))
+    db = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
     try:
+        db.execute("PRAGMA query_only=ON")
+        db.execute("BEGIN")
+        _validate_trace_db(db)
         run_row = db.execute(_LATEST_RUN_SQL).fetchone()
         if run_row is None:
             raise FileNotFoundError(f"No trace data found in {run_dir}")
@@ -386,16 +500,20 @@ def generate_html(run_dir: Path) -> Path:
                 "SELECT * FROM steps WHERE run_id=? ORDER BY seq", (run["id"],)
             ).fetchall()
         ]
+    except sqlite3.DatabaseError:
+        raise ValueError("Invalid trace.db: unreadable or incompatible database") from None
     finally:
         db.close()
 
-    html = _render_html(run, steps)
+    html = _render_html(run, steps, run_dir / "screenshots")
     out = run_dir / "trace.html"
     out.write_text(html, encoding="utf-8")
     return out
 
 
-def _render_html(run: dict[str, Any], steps: list[dict[str, Any]]) -> str:
+def _render_html(
+    run: dict[str, Any], steps: list[dict[str, Any]], screenshot_dir: Path | None = None
+) -> str:
     import datetime
     import html as _h
 
@@ -413,9 +531,9 @@ def _render_html(run: dict[str, Any], steps: list[dict[str, Any]]) -> str:
             '<div class="err-box"><pre>' + _h.escape(str(run["error_message"])) + "</pre></div>"
         )
 
-    steps_html = _render_steps(steps)
+    steps_html = _render_steps(steps, screenshot_dir)
 
-    return f"""<!DOCTYPE html>
+    document = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -470,9 +588,22 @@ if(errs.length)errs[errs.length-1].closest('.step').querySelector('.step-bd').cl
 </script>
 </body>
 </html>"""
+    # Hash only the fixed viewer script; event-handler payloads and arbitrary
+    # injected scripts remain blocked while expanding steps still works.
+    script = document.split("<script>", 1)[1].split("</script>", 1)[0]
+    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
+    policy = (
+        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; "
+        f"script-src 'sha256-{digest}'; base-uri 'none'; form-action 'none'; object-src 'none'"
+    )
+    return document.replace(
+        '<meta charset="utf-8">',
+        f'<meta charset="utf-8">\n<meta http-equiv="Content-Security-Policy" content="{policy}">',
+        1,
+    )
 
 
-def _render_steps(steps: list[dict[str, Any]]) -> str:
+def _render_steps(steps: list[dict[str, Any]], screenshot_dir: Path | None = None) -> str:
     import html as _h
 
     parts: list[str] = []
@@ -482,7 +613,7 @@ def _render_steps(steps: list[dict[str, Any]]) -> str:
         seq: int | str
         try:
             seq = int(s["seq"])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             seq = "?"
         act = _h.escape(s["action"])
         sel = _h.escape(s.get("selector") or "")
@@ -492,8 +623,9 @@ def _render_steps(steps: list[dict[str, Any]]) -> str:
         status_txt = "err" if is_err else "ok"
 
         img_html = ""
-        if s.get("screenshot_file"):
-            rel = f"screenshots/{_h.escape(s['screenshot_file'])}"
+        rel = _screenshot_url(s.get("screenshot_file"), screenshot_dir)
+        if rel is not None:
+            rel = _h.escape(rel, quote=True)
             img_html = f'<img src="{rel}" alt="step {seq}" loading="lazy">'
 
         err_html = ""
@@ -530,10 +662,20 @@ def _render_steps(steps: list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
+_MAX_UIA_DISPLAY_DEPTH = 32
+
+
 def _nodes_to_text(nodes: list[dict[str, Any]]) -> str:
+    if not isinstance(nodes, list):
+        raise ValueError("UIA tree must be a list of nodes")
     lines: list[str] = []
     for n in nodes:
+        if not isinstance(n, dict):
+            raise ValueError("UIA tree nodes must be objects")
         depth = n.get("d", 0)
+        if type(depth) is not int:
+            raise ValueError("UIA tree depth must be an integer")
+        depth = max(0, min(depth, _MAX_UIA_DISPLAY_DEPTH))
         ctrl = n.get("ctrl", "?")
         name = n.get("name", "")
         auto_id = n.get("id", "")

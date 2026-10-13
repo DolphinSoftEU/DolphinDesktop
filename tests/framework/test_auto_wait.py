@@ -455,6 +455,7 @@ class TestWaitForUsesFallbacks:
         primary = MagicMock()
         primary.wrapper_object.side_effect = Exception("primary never becomes visible")
         fallback = MagicMock()
+        fallback.wrapper_object.return_value.is_visible.return_value = True
         spec = MagicMock()
         spec.children.return_value = []
         spec.child_window.side_effect = lambda **kw: (
@@ -465,7 +466,14 @@ class TestWaitForUsesFallbacks:
     def test_fallback_selector_satisfies_wait_for(self):
         spec = self._spec_where_only_the_fallback_resolves()
         loc = Locator(_window(spec), title="OK", fallback=[{"auto_id": "btnOk"}]).timeout(0.05)
-        assert loc.wait_for() is loc
+        # This tests selector fallback, not elapsed time. Coverage and a busy
+        # CI worker must not consume the deadline before the fallback probe.
+        with patch.object(locator_module.time, "monotonic", return_value=100.0):
+            assert loc.wait_for() is loc
+        assert [call.kwargs for call in spec.child_window.call_args_list] == [
+            {"title": "OK"},
+            {"auto_id": "btnOk"},
+        ]
 
     def test_missing_element_raises_the_same_error_as_click(self):
         loc = _window(_failing_spec()).get_by_role("Button").timeout(0.05)

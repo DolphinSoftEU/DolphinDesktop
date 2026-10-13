@@ -1482,9 +1482,15 @@ def test_regular_failure_report():
                 str(tmp_path / "dolphin-report.html"),
                 "-c",
                 str(REPO_ROOT / "pyproject.toml"),
+                # Collect only the generated suite. Walking ancestors outside
+                # the repository can race with other tests removing temp dirs.
+                "--rootdir",
+                str(tmp_path),
+                "--confcutdir",
+                str(tmp_path),
                 str(test_file),
             ],
-            cwd=REPO_ROOT,
+            cwd=tmp_path,
             capture_output=True,
             text=True,
             timeout=60,
@@ -1492,7 +1498,7 @@ def test_regular_failure_report():
         output = result.stdout + result.stderr
 
         assert result.returncode == 1, output
-        assert "2 failed" in output
+        assert "2 failed" in output, output
         assert "DumpError" not in output
         assert "can't serialize" not in output
 

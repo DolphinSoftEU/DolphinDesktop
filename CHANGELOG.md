@@ -22,6 +22,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Trace HTML generation validates v1 tables, column types, NOT NULL and primary
+  key constraints, foreign key targets, and stored values
+  before rendering, reports invalid databases with a controlled error, rejects
+  nonfinite sequence/timestamp values, confines screenshots to their directory,
+  and adds a CSP allowing only the viewer script (KAN-578).
+  Validation uses fixed SQL queries compatible with Bandit B608, and UIA tree
+  rendering validates depth types and limits indentation to 32 levels.
+
 * SAP `keyboard_login()` writes literal credentials through verified UIA Value
   patterns, identifies User by its SAP automation ID, and checks focus before
   and after each single credential write. It aborts without submitting after
