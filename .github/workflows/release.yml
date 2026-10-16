@@ -306,6 +306,14 @@ jobs:
       - name: Download dolphin-desktop from TestPyPI
         shell: pwsh
         run: |
+          # Match the wheel smoke: an explicit index alone does not disable
+          # inherited extra indexes, find-links, or pip configuration files.
+          Get-ChildItem Env: | Where-Object {
+            $_.Name -like 'PIP_*' -or $_.Name -in @('PYTHONPATH', 'PYTHONHOME')
+          } | ForEach-Object {
+            Remove-Item -LiteralPath "Env:$($_.Name)"
+          }
+          $env:PIP_CONFIG_FILE = if ($IsWindows) { 'nul' } else { '/dev/null' }
           $version = "${{ needs.build.outputs.version }}"
           # Printed because a Requires-Python mismatch and a missing upload
           # fail identically -- pip just says "no matching distribution". The

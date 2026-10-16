@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import runpy
+import shutil
 import subprocess
 import sys
 from copy import deepcopy
@@ -101,6 +103,78 @@ def test_testpypi_download_is_separate_and_hash_checked_before_install():
     for job in (jobs["publish-testpypi"], jobs["publish-pypi"]):
         publish = job["steps"][-1]
         assert publish["with"].get("skip-existing", "false") == "false"
+
+
+@pytest.mark.parametrize("prefix", ["PIP_", "pip_"])
+def test_testpypi_download_ignores_inherited_indexes_and_config(tmp_path, prefix):
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("The TestPyPI download step requires PowerShell")
+    configuration = tmp_path / "pip.ini"
+    configuration.write_text(
+        "[global]\nextra-index-url = https://config.invalid/simple/\n"
+        "find-links = https://config.invalid/wheels/\n",
+        encoding="utf-8",
+    )
+    log = tmp_path / "pip-invocations.jsonl"
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import json, os, sys\n"
+        "with open(os.environ['TEST_PIP_LOG'], 'a', encoding='utf-8') as output:\n"
+        "    output.write(json.dumps({'args': sys.argv[1:], 'env': {\n"
+        "        key.upper(): value for key, value in os.environ.items()\n"
+        "        if key.upper().startswith('PIP_')\n"
+        "        or key.upper() == 'PYTHONPATH'\n"
+        "    }}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    step = next(
+        step
+        for step in workflow("release.yml")["jobs"]["smoke-testpypi"]["steps"]
+        if step.get("name") == "Download dolphin-desktop from TestPyPI"
+    )
+    # Run the actual workflow script, substituting a recorder for Python so no
+    # network access is needed. All pip calls must see the sanitized environment.
+    python_path = str(Path(sys.executable)).replace("'", "''")
+    probe_path = str(probe).replace("'", "''")
+    script = tmp_path / "download.ps1"
+    script.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"function python {{ & '{python_path}' '{probe_path}' @args }}\n"
+        + step["run"].replace("${{ needs.build.outputs.version }}", "0.2.0.dev7"),
+        encoding="utf-8",
+    )
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("PIP_") and key.upper() != "PYTHONPATH"
+    }
+    environment.update(
+        {
+            f"{prefix}EXTRA_INDEX_URL": "https://extra.invalid/simple/",
+            f"{prefix}FIND_LINKS": "https://links.invalid/wheels/",
+            f"{prefix}INDEX_URL": "https://primary.invalid/simple/",
+            f"{prefix}CONFIG_FILE": str(configuration),
+            "PYTHONPATH": str(tmp_path / "untrusted-python"),
+            "TEST_PIP_LOG": str(log),
+        }
+    )
+    subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        cwd=tmp_path,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    pip_calls = [call for call in calls if call["args"][:2] == ["-m", "pip"]]
+    assert {call["args"][2] for call in pip_calls} == {"--version", "index", "download"}
+    for call in pip_calls:
+        assert call["env"] == {"PIP_CONFIG_FILE": os.devnull}
+        if call["args"][2] in {"index", "download"}:
+            index = call["args"].index("--index-url")
+            assert call["args"][index + 1] == "https://test.pypi.org/simple/"
 
 
 def test_preview_identity_uses_originating_ci_attempt():

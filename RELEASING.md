@@ -172,6 +172,8 @@ must all pass. Import/CLI checks run outside the source checkout.
 
 After publication, TestPyPI provides only the DolphinDesktop wheel through
 `pip download --no-deps --only-binary=:all:` with its single explicit index.
+The download step also clears inherited `PIP_*` settings and disables pip
+configuration files before any pip command, including the diagnostic index query.
 The downloaded wheel's SHA256 must match the prepared CI artifact before smoke.
 Dependencies are never resolved from TestPyPI or a combination of indexes.
 
