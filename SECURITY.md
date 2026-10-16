@@ -140,15 +140,16 @@ acceptance criteria.
 | CI: unit, component, package, security | PR and push to master/testpypi-preview | `contents: read` |
 | Docs: build | PR and push for docs, source, dependency or workflow changes | `contents: read` |
 | Docs: deploy | Push to master only, after build succeeds | `contents: write` for mike's gh-pages commits |
-| Release: security, build, smoke | Version tag push or manual dispatch | `contents: read` |
-| Release: publish-testpypi, publish-pypi | After security and build succeed, selected target only | `id-token: write` only, protected target environment |
+| Release: security, smoke | Version tag push or manual dispatch | `contents: read` |
+| Release: prepare CI distributions | After release security checks | `contents: read`, `actions: read`, `pull-requests: read` |
+| Release: publish-testpypi, publish-pypi | After security and build succeed, selected target only | `id-token: write`, `contents: read`, protected target environment |
 
 All external Actions use full commit SHAs. Dependabot proposes reviewed updates
 in `.github/dependabot.yml`. Read-only checkouts do not persist repository
 credentials. PRs run on hosted runners using `pull_request`, without a write
 token or OIDC. Only the master documentation deploy persists a token to push
 gh-pages. Production validation allows only a final `X.Y.Z` version from
-`master` or a matching final tag whose commit is already in `origin/master`.
+a matching final tag whose commit is already in `origin/master`.
 TestPyPI allows `master`, `testpypi-preview` and matching final/RC tags. Full
 checkout history supports the production ancestry check; validation fails
 before build outputs are written if the source, target, ref or version is
@@ -175,7 +176,7 @@ platform-specific dependency markers:
   rather than automatic regeneration to make the gate pass.
 
 Release's build job depends on the complete security matrix. Both publishing
-jobs depend on build and download only that run's `dolphin-desktop-dist`
+jobs depend on build and download only that run's `dolphin-desktop-dist-attempt-N`
 artifact. Security and build check out the default revision of the same run;
 publication cannot reuse a successful check from a different commit. Package
 smoke tests intentionally install from the public index to validate distribution
@@ -216,8 +217,8 @@ single existing reviewer are documented in [RELEASING.md](RELEASING.md).
 Local follow-up validation: 47 CI policy tests passed, including rejected
 manual production deployments from preview/feature branches, non-final versions,
 wrong tag versions, and real Git repositories with unmerged tagged commits.
-The workflow validates the full `github.ref` and fetches history for the
-ancestry check. This does not replace GitHub Environment rules: an unapproved
+The workflow validates the full `github.ref`, fetches history for the
+ancestry check, and enforces the additional KAN-579 gates below. This does not replace GitHub Environment rules: an unapproved
 ref can contain a modified workflow or validator. Production deployment remains
 dependent on administrator configuration of the server-side restrictions.
 
@@ -255,6 +256,38 @@ Broader local checks did not establish a completely passing suite:
   failed because its nested pytest run encountered `FileNotFoundError`.
   Running that test alone passed in both the new and existing environments;
   the failure under concurrent execution remains unexplained.
+
+## Protected-source publication (KAN-579)
+
+Release now consumes the exact distributions produced and smoke-tested on
+Windows by a completed push CI run for the release SHA; it does not rebuild.
+It verifies required jobs in the latest run attempt, protected branch rules and
+independent PR approval, immutable tags, and environment reviewer/ref/bypass
+settings before downloading the artifact. Archive SHA256, manifest identity and
+both distribution hashes must match. Publishing checks those file hashes and
+the anchored manifest again after environment approval. Production branch
+dispatches are rejected, including `master`.
+
+The 2026-10-13 GitHub inspection still found insufficient server-side protection.
+The available push credential cannot administer this repository; an attempted
+`pypi` environment update returned HTTP 403. Full acceptance requires an
+administrator to configure rulesets/environments and verify Trusted Publishers
+on both indexes, then record hosted positive/negative run evidence. See
+[RELEASING.md](RELEASING.md) for the exact configuration and release procedure.
+The new validator blocks publication under the observed settings. Local mocked
+API and artifact tests establish rejection behavior, not completed deployment
+configuration or a successful hosted release.
+
+Read-only GitHub ruleset responses can hide `bypass_actors`. An omitted/null
+field is rejected unless signed administrative evidence matches the current
+policy and update timestamp. Evidence has a maximum 24-hour lifetime, is bound
+to this repository, and is verified against a public key committed through
+review to the protected source. The independent workstation audit alone receives
+an administrator credential; the release `GITHUB_TOKEN` remains read-only.
+Tag tests model separate creation and immutability rulesets. CI and release
+artifact names include their run attempt; selection never falls back to a
+package built in an earlier attempt. See the administrative attestation procedure
+in [RELEASING.md](RELEASING.md).
 
 ## Security regression mapping
 

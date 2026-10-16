@@ -63,14 +63,20 @@ jobs:
         run: uv run --no-sync python .github/scripts/scan_secrets.py
 
   build:
-    name: Build distributions
+    name: Prepare verified CI distributions
     needs: security
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
       target: ${{ steps.meta.outputs.target }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      ci_run_id: ${{ steps.provenance.outputs.ci_run_id }}
+      ci_run_attempt: ${{ steps.provenance.outputs.ci_run_attempt }}
+      manifest_sha256: ${{ steps.hashes.outputs.manifest_sha256 }}
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -83,15 +89,6 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          version: "0.11.9"
-          enable-cache: true
-
-      - name: Install locked build tools
-        run: uv sync --locked --only-group build
-
       - name: Validate release target
         id: meta
         env:
@@ -100,17 +97,37 @@ jobs:
           DISPATCH_TARGET: ${{ inputs.target }}
         run: python .github/scripts/validate_release.py
 
-      - name: Build wheel and sdist
-        run: uv run --no-sync python -m build --no-isolation
+      - name: Validate protected source, exact CI SHA and environments
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_TARGET: ${{ steps.meta.outputs.target }}
+          RULESETS_ATTESTATION: ${{ vars.RELEASE_RULESETS_ATTESTATION }}
+        run: python .github/scripts/release_provenance.py
 
-      - name: Check distribution metadata
-        run: uv run --no-sync twine check dist/*
+      - name: Download CI artifact and verify archive digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_ARTIFACT_ID: ${{ steps.provenance.outputs.artifact_id }}
+          CI_ARTIFACT_DIGEST: ${{ steps.provenance.outputs.artifact_digest }}
+        run: python .github/scripts/download_ci_artifact.py
+
+      - name: Verify distributions and CI identity
+        id: hashes
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ steps.provenance.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ steps.provenance.outputs.ci_run_attempt }}
+        run: python .github/scripts/distribution_manifest.py verify
 
       - name: Upload distributions
+        id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dolphin-desktop-dist
-          path: dist/
+          name: dolphin-desktop-dist-attempt-${{ github.run_attempt }}
+          path: release-artifact/
           if-no-files-found: error
 
   publish-testpypi:
@@ -122,19 +139,37 @@ jobs:
     # OIDC token for PyPI Trusted Publishing — only this publishing job.
     permissions:
       id-token: write
+      contents: read
 
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
       - name: Download distributions
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: dolphin-desktop-dist
-          path: dist/
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
+
+      - name: Verify approved distributions immediately before upload
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ needs.build.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ needs.build.outputs.ci_run_attempt }}
+          MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+        run: python .github/scripts/distribution_manifest.py verify
 
       - name: Publish distributions
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          packages-dir: dist/
+          packages-dir: release-artifact/dist/
 
   publish-pypi:
     name: Publish to PyPI
@@ -145,18 +180,36 @@ jobs:
     # OIDC token for PyPI Trusted Publishing — only this publishing job.
     permissions:
       id-token: write
+      contents: read
 
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
       - name: Download distributions
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: dolphin-desktop-dist
-          path: dist/
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
+
+      - name: Verify approved distributions immediately before upload
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ needs.build.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ needs.build.outputs.ci_run_attempt }}
+          MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+        run: python .github/scripts/distribution_manifest.py verify
 
       - name: Publish distributions
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
-          packages-dir: dist/
+          packages-dir: release-artifact/dist/
 
   smoke-testpypi:
     name: Smoke TestPyPI package
@@ -173,8 +226,9 @@ jobs:
       - name: Download distributions
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: dolphin-desktop-dist
-          path: dist/
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
 
       # --pre because a preview may carry a PEP 440 pre-release segment
       # (0.2.0.dev1), which pip otherwise filters out of the candidate list.
@@ -219,7 +273,7 @@ jobs:
       - name: Verify the TestPyPI wheel matches this run's build artifact
         shell: pwsh
         run: |
-          $built = Get-ChildItem dist -Filter *.whl | Select-Object -First 1
+          $built = Get-ChildItem release-artifact/dist -Filter *.whl | Select-Object -First 1
           $downloaded = Get-ChildItem testpypi-download -Filter *.whl | Select-Object -First 1
           $builtHash = (Get-FileHash $built.FullName -Algorithm SHA256).Hash
           $downloadedHash = (Get-FileHash $downloaded.FullName -Algorithm SHA256).Hash

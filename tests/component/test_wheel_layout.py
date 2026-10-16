@@ -1,4 +1,4 @@
-"""Wheel-layout regression tests."""
+"""Package layout regressions using controlled, offline distribution builds."""
 
 from __future__ import annotations
 
@@ -59,6 +59,7 @@ def test_hatch_sdist_contains_no_top_level_dolphin_files():
                 sys.executable,
                 "-m",
                 "build",
+                "--no-isolation",
                 "--sdist",
                 "--outdir",
                 str(out_dir),
@@ -66,7 +67,7 @@ def test_hatch_sdist_contains_no_top_level_dolphin_files():
             ],
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=20,
         )
         if result.returncode != 0:
             pytest.fail(
@@ -85,10 +86,9 @@ def test_hatch_sdist_contains_no_top_level_dolphin_files():
         )
 
 
-# Slow — actually build the wheel and inspect it (opt-in)
+# Build the wheel and inspect it in the required component job.
 
 
-@pytest.mark.slow
 def test_built_wheel_contains_no_top_level_dolphin_files():
     """Build the wheel into a tempdir and assert the zip contains no entry whose top-level name is
     ``dolphin``.
@@ -100,6 +100,7 @@ def test_built_wheel_contains_no_top_level_dolphin_files():
                 sys.executable,
                 "-m",
                 "build",
+                "--no-isolation",
                 "--wheel",
                 "--outdir",
                 str(out_dir),
@@ -107,7 +108,7 @@ def test_built_wheel_contains_no_top_level_dolphin_files():
             ],
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=20,
         )
         if result.returncode != 0:
             pytest.fail(

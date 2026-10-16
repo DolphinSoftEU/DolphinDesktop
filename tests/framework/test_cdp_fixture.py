@@ -80,3 +80,23 @@ def test_initial_navigation_failure_cleans_acquired_session(monkeypatch, tmp_pat
         fixture.ChromiumSession("chrome.exe", tmp_path, 9222, "http://local")
     assert probe.cleaned.wait(2)
     assert probe.cleanup_calls == [("close", probe.launch_thread), ("kill", probe.launch_thread)]
+
+
+def test_launch_and_initial_navigation_share_the_startup_budget(monkeypatch, tmp_path):
+    class BudgetProbe(LaunchProbe):
+        def launch(self, *args, **kwargs):
+            assert kwargs["timeout"] == 20
+            return super().launch(*args, **kwargs)
+
+        def wait_for_url(self, url: str, *, timeout: float) -> None:
+            super().wait_for_url(url, timeout=timeout)
+            assert timeout == 19
+
+    probe = BudgetProbe()
+    probe.release.set()
+    monkeypatch.setattr(fixture.Desktop, "launch_electron_cdp", probe.launch)
+    moments = iter([0.0, 1.0, 11.0])
+    monkeypatch.setattr(fixture.time, "monotonic", lambda: next(moments))
+    with fixture.ChromiumSession("chrome.exe", tmp_path, 9222, "http://local"):
+        pass
+    assert probe.cleaned.wait(2)

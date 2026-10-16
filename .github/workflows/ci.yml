@@ -241,7 +241,7 @@ jobs:
   package:
     name: Build package
     runs-on: windows-latest
-    needs: unit
+    needs: [unit, component-windows, package-linux, security]
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -263,16 +263,40 @@ jobs:
         run: uv sync --locked --only-group build
 
       - name: Build wheel and sdist
-        run: uv run --no-sync python -m build --no-isolation
+        run: uv run --no-sync python -m build --no-isolation --outdir release-artifact/dist
 
       - name: Check distribution metadata
-        run: uv run --no-sync twine check dist/*
+        run: uv run --no-sync twine check release-artifact/dist/*
+
+      - name: Verify built wheel on Windows
+        shell: pwsh
+        run: |
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "release-wheel-smoke"
+          python -m venv $smokeRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $smokePython = Join-Path $smokeRoot "Scripts/python.exe"
+          $wheel = (Get-ChildItem release-artifact/dist -Filter *.whl).FullName
+          & $smokePython -m pip install $wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Push-Location $env:RUNNER_TEMP
+          & $smokePython -c "import dolphin_desktop; print(dolphin_desktop.__version__)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & (Join-Path $smokeRoot "Scripts/dolphin.exe") --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
+      - name: Record distribution hashes and CI identity
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python .github/scripts/distribution_manifest.py create
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dolphin-desktop-dist
-          path: dist/
+          name: dolphin-desktop-dist-attempt-${{ github.run_attempt }}
+          path: release-artifact/
           if-no-files-found: error
 
   security:

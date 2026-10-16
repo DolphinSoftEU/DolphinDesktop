@@ -86,6 +86,8 @@ class ChromiumSession:
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.app = None
         self.session = None
+        self.startup_phase = "launch and CDP handshake"
+        deadline = time.monotonic() + startup_timeout
         command = subprocess.list2cmdline(
             [
                 executable,
@@ -101,13 +103,22 @@ class ChromiumSession:
         def launch() -> int:
             try:
                 self.app, self.session = Desktop(hidden=False).launch_electron_cdp(
-                    command, debug_port=port, timeout=20, startup_delay=0
+                    command,
+                    debug_port=port,
+                    timeout=min(20, max(0.001, deadline - time.monotonic())),
+                    startup_delay=0,
                 )
                 pid = self.app.process_id
                 # A live CDP target can still be loading its initial document.
                 # Wait on the owning thread for this URL and its load event
                 # before title, cookie and storage assertions use the session.
-                self.session.wait_for_url(url, timeout=20)
+                self.startup_phase = "initial document navigation"
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        "Chromium startup budget exhausted before initial navigation"
+                    )
+                self.session.wait_for_url(url, timeout=min(20, remaining))
                 return pid
             except BaseException:
                 self._cleanup()
@@ -115,7 +126,7 @@ class ChromiumSession:
 
         try:
             self.pid = self.executor.submit(launch).result(timeout=startup_timeout)
-        except BaseException:
+        except BaseException as error:
             # This task runs after launch, even if result() timed out before
             # the worker acquired the session. Never cancel the queued cleanup
             # or wait here for a stalled launch to finish.
@@ -123,6 +134,11 @@ class ChromiumSession:
                 self.executor.submit(self._cleanup)
             finally:
                 self.executor.shutdown(wait=False)
+            if isinstance(error, TimeoutError):
+                raise TimeoutError(
+                    f"Chromium startup exceeded {startup_timeout}s during {self.startup_phase} "
+                    f"(port={port}, profile={profile})"
+                ) from error
             raise
 
     def evaluate(self, script: str):

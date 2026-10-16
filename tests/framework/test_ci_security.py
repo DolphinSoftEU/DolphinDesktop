@@ -35,11 +35,13 @@ def test_permissions_and_immutable_actions(name: str) -> None:
     for job_id, job in workflow["jobs"].items():
         permissions = job.get("permissions", workflow["permissions"])
         if name == "release.yml" and job_id.startswith("publish-"):
-            assert permissions == {"id-token": "write"}
+            assert permissions == {"id-token": "write", "contents": "read"}
             assert job["environment"] in {"pypi", "testpypi"}
         elif name == "docs.yml" and job_id == "deploy":
             assert permissions == {"contents": "write"}
             assert job["if"] == ("github.event_name == 'push' && github.ref == 'refs/heads/master'")
+        elif name == "release.yml" and job_id == "build":
+            assert permissions == {"contents": "read", "actions": "read", "pull-requests": "read"}
         else:
             assert permissions == {"contents": "read"}
         for step in job["steps"]:
@@ -86,8 +88,17 @@ def assert_security_gate(workflow: dict, *, release: bool) -> None:
             assert jobs[job_id]["needs"] == "build"
             target = "pypi" if job_id == "publish-pypi" else "testpypi"
             assert jobs[job_id]["if"] == f"needs.build.outputs.target == '{target}'"
-            assert not any("run" in step for step in jobs[job_id]["steps"])
-            assert jobs[job_id]["steps"][0]["with"]["name"] == "dolphin-desktop-dist"
+            verification = next(s for s in jobs[job_id]["steps"] if "run" in s)
+            assert verification["run"] == "python .github/scripts/distribution_manifest.py verify"
+            assert verification["env"]["MANIFEST_SHA256"] == (
+                "${{ needs.build.outputs.manifest_sha256 }}"
+            )
+            download = next(
+                s
+                for s in jobs[job_id]["steps"]
+                if s.get("uses", "").startswith("actions/download-artifact@")
+            )
+            assert download["with"]["artifact-ids"] == "${{ needs.build.outputs.artifact_id }}"
 
 
 @pytest.mark.parametrize(
@@ -224,7 +235,6 @@ def test_locked_qt5_runtime_has_a_windows_wheel() -> None:
 @pytest.mark.parametrize(
     ("version", "event", "ref", "requested", "expected"),
     [
-        ("0.2.0", "workflow_dispatch", "refs/heads/master", "pypi", "pypi"),
         ("0.2.0", "workflow_dispatch", "refs/tags/v0.2.0", "pypi", "pypi"),
         ("0.2.0", "push", "refs/tags/v0.2.0", "", "pypi"),
         ("0.2.0rc1", "push", "refs/tags/v0.2.0-rc.1", "", "testpypi"),
@@ -249,6 +259,7 @@ def test_production_rejects_non_final_versions(version: str) -> None:
 @pytest.mark.parametrize(
     ("version", "event", "ref", "requested"),
     [
+        ("0.2.0", "workflow_dispatch", "refs/heads/master", "pypi"),
         ("0.2.0", "workflow_dispatch", "refs/heads/testpypi-preview", "pypi"),
         ("0.2.0", "workflow_dispatch", "refs/heads/feature/fix", "pypi"),
         ("0.2.0", "workflow_dispatch", "refs/heads/v0.2.0", "pypi"),
@@ -318,7 +329,11 @@ def test_release_workflow_enforces_validation_before_building() -> None:
     assert validation["env"]["DISPATCH_TARGET"] == "${{ inputs.target }}"
     assert "if" not in validation and "continue-on-error" not in validation
     assert steps[0]["with"]["fetch-depth"] == "0"
-    build_index = next(
-        i for i, step in enumerate(steps) if step.get("name") == "Build wheel and sdist"
+    provenance_index = next(i for i, step in enumerate(steps) if step.get("id") == "provenance")
+    download_index = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("run") == "python .github/scripts/download_ci_artifact.py"
     )
-    assert steps.index(validation) < build_index
+    assert steps.index(validation) < provenance_index < download_index
+    assert not any("python -m build" in step.get("run", "") for step in steps)
