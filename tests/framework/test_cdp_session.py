@@ -1169,6 +1169,46 @@ class TestSessionConstructionAndLifecycle:
             ) == (context, page)
         assert page.url == "app://ready"
 
+    @pytest.mark.parametrize("has_context", [False, True])
+    def test_pick_stable_page_does_not_wait_without_context_or_remaining_budget(self, has_context):
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.url = "about:blank"
+        context = SimpleNamespace(pages=[page])
+        browser = SimpleNamespace(contexts=[context] if has_context else [])
+        with patch("time.monotonic", side_effect=[0.0, 0.0, 1.0]):
+            assert CDPSession._pick_stable_page(browser, timeout=0.1) == (
+                (context, page) if has_context else (None, None)
+            )
+        page.wait_for_timeout.assert_not_called()
+
+    @pytest.mark.parametrize("page_closed", [False, True])
+    def test_pick_stable_page_wait_error_retries_only_after_target_closes(self, page_closed):
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.url = "about:blank"
+        replacement = MagicMock()
+        replacement.is_closed.return_value = False
+        replacement.url = "app://replacement"
+        context = SimpleNamespace(pages=[page])
+        browser = SimpleNamespace(contexts=[context])
+        error = RuntimeError("Target closed" if page_closed else "Transport failed")
+
+        def fail_wait(_timeout):
+            if page_closed:
+                page.is_closed.return_value = True
+                context.pages = [replacement]
+            raise error
+
+        page.wait_for_timeout.side_effect = fail_wait
+        if page_closed:
+            assert CDPSession._pick_stable_page(browser, timeout=1) == (context, replacement)
+        else:
+            with pytest.raises(RuntimeError, match="Transport failed") as caught:
+                CDPSession._pick_stable_page(browser, timeout=1)
+            assert caught.value is error
+        page.wait_for_timeout.assert_called_once()
+
     def test_pick_stable_page_dispatches_new_page_events_when_context_is_empty(self):
         class EventTimeout(Exception):
             pass
