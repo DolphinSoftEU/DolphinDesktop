@@ -71,7 +71,7 @@ jobs:
       actions: read
       pull-requests: read
     outputs:
-      version: ${{ steps.meta.outputs.version }}
+      version: ${{ steps.version.outputs.version }}
       target: ${{ steps.meta.outputs.target }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       ci_run_id: ${{ steps.provenance.outputs.ci_run_id }}
@@ -122,6 +122,13 @@ jobs:
           CI_RUN_ATTEMPT: ${{ steps.provenance.outputs.ci_run_attempt }}
         run: python .github/scripts/distribution_manifest.py verify
 
+      - name: Determine exact CI artifact version
+        id: version
+        env:
+          CI_RUN_ID: ${{ steps.provenance.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ steps.provenance.outputs.ci_run_attempt }}
+        run: python .github/scripts/preview_version.py expected
+
       - name: Upload distributions
         id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -130,10 +137,56 @@ jobs:
           path: release-artifact/
           if-no-files-found: error
 
+  smoke-local:
+    name: Smoke exact wheel before publication
+    runs-on: windows-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
+
+      - name: Verify distributions before local smoke
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ needs.build.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ needs.build.outputs.ci_run_attempt }}
+          MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+        run: python .github/scripts/distribution_manifest.py verify
+
+      - name: Export locked runtime dependencies
+        run: >-
+          uv export --locked --no-default-groups --no-emit-project
+          --format requirements-txt --output-file "${{ runner.temp }}/release-requirements.txt"
+
+      - name: Import and CLI smoke on the exact local wheel
+        run: >-
+          python .github/scripts/smoke_wheel.py
+          --wheel-directory release-artifact/dist
+          --requirements "${{ runner.temp }}/release-requirements.txt"
+          --expected-version "${{ needs.build.outputs.version }}"
+
   publish-testpypi:
     name: Publish to TestPyPI
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, smoke-local]
     if: needs.build.outputs.target == 'testpypi'
     environment: testpypi
     # OIDC token for PyPI Trusted Publishing — only this publishing job.
@@ -174,7 +227,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, smoke-local]
     if: needs.build.outputs.target == 'pypi'
     environment: pypi
     # OIDC token for PyPI Trusted Publishing — only this publishing job.
@@ -218,10 +271,20 @@ jobs:
     if: needs.build.outputs.target == 'testpypi'
 
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
 
       - name: Download distributions
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -238,11 +301,8 @@ jobs:
       #
       # --no-deps, single --index-url (no --extra-index-url): this step must
       # fetch ONLY the dolphin-desktop artifact itself from TestPyPI. Mixing
-      # both indexes on one pip invocation lets pip silently resolve
-      # dolphin-desktop (or a same-named dependency) from whichever index
-      # answers first, which defeats the point of testing "what TestPyPI
-      # actually serves". Dependencies are installed separately, from PyPI,
-      # in the next step.
+      # both indexes lets pip consider competing candidates from either index.
+      # Dependencies are installed separately from PyPI with lockfile hashes.
       - name: Download dolphin-desktop from TestPyPI
         shell: pwsh
         run: |
@@ -256,7 +316,7 @@ jobs:
           python -m pip index versions dolphin-desktop --pre --index-url https://test.pypi.org/simple/
           New-Item -ItemType Directory -Force -Path testpypi-download | Out-Null
           for ($i = 1; $i -le 6; $i++) {
-            python -m pip download --pre --no-deps `
+            python -m pip download --pre --no-deps --only-binary=:all: `
               --index-url https://test.pypi.org/simple/ `
               --dest testpypi-download `
               "dolphin-desktop==$version"
@@ -284,17 +344,17 @@ jobs:
             exit 1
           }
 
-      - name: Install dolphin-desktop and its dependencies
-        shell: pwsh
-        run: |
-          $wheel = (Get-ChildItem testpypi-download -Filter *.whl | Select-Object -First 1).FullName
-          python -m pip install "$wheel"
+      - name: Export locked runtime dependencies
+        run: >-
+          uv export --locked --no-default-groups --no-emit-project
+          --format requirements-txt --output-file "${{ runner.temp }}/release-requirements.txt"
 
       - name: Import and CLI smoke
-        run: |
-          python -c "import dolphin_desktop; print(dolphin_desktop.__version__)"
-          dolphin --help
-          dolphin info backends
+        run: >-
+          python .github/scripts/smoke_wheel.py
+          --wheel-directory testpypi-download
+          --requirements "${{ runner.temp }}/release-requirements.txt"
+          --expected-version "${{ needs.build.outputs.version }}"
 
   smoke-pypi:
     name: Smoke PyPI package

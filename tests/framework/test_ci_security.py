@@ -85,7 +85,7 @@ def assert_security_gate(workflow: dict, *, release: bool) -> None:
         assert "if" not in jobs["build"]
         assert "ref" not in jobs["build"]["steps"][0]["with"]
         for job_id in ("publish-pypi", "publish-testpypi"):
-            assert jobs[job_id]["needs"] == "build"
+            assert set(jobs[job_id]["needs"]) == {"build", "smoke-local"}
             target = "pypi" if job_id == "publish-pypi" else "testpypi"
             assert jobs[job_id]["if"] == f"needs.build.outputs.target == '{target}'"
             verification = next(s for s in jobs[job_id]["steps"] if "run" in s)
