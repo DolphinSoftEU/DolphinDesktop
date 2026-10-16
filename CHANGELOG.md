@@ -22,6 +22,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Release requires a successful Windows smoke on the exact local wheel before
+  publishing. CI and TestPyPI smoke install runtime dependencies from PyPI using
+  `uv.lock` hashes and install DolphinDesktop separately without index resolution.
+  TestPyPI downloads clear inherited pip settings and disable configuration files,
+  preventing extra indexes or find-links from supplying the package.
+  Development previews receive unique CI run/attempt versions; reusing an
+  existing publication remains a hard failure (KAN-580).
+
 * Trace HTML generation validates v1 tables, column types, NOT NULL and primary
   key constraints, foreign key targets, and stored values
   before rendering, reports invalid databases with a controlled error, rejects

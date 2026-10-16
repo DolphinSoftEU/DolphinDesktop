@@ -118,9 +118,10 @@ does not waive source, review, checks, environment or Trusted Publisher gates.
 2. Merge the approved PR into the protected release branch. Wait for the **push**
    CI run for its exact merge SHA to complete successfully. A PR CI run, an older
    successful run, skipped jobs, or a run for another SHA cannot authorize release.
-3. CI builds with locked tools only after all required test/security jobs pass,
-   checks distribution metadata, installs the wheel in a fresh Windows venv,
-   and tests import/CLI. It uploads `dolphin-desktop-dist-attempt-N` containing
+3. CI builds with locked tools only after all required test/security jobs pass.
+   It exports runtime dependencies with their hashes before preparing the version,
+   checks distribution metadata, installs the exact wheel in a fresh Windows venv,
+   and tests import/version/CLI. It uploads `dolphin-desktop-dist-attempt-N` containing
    `dist/*.whl`, `dist/*.tar.gz`, and `provenance.json` with SHA, CI run/attempt
    identity and SHA256 hashes of both files.
 4. For production, create and push the matching `vX.Y.Z` tag on that exact merge
@@ -136,7 +137,10 @@ does not waive source, review, checks, environment or Trusted Publisher gates.
    GitHub archive digest are verified before extracting the distributions.
    Manifest hashes and run/attempt identity must match. A missing or expired
    artifact is a hard failure; rerun CI instead of rebuilding in Release.
-6. Review the prepared artifact and release evidence, then approve the target
+6. Release runs **Smoke exact wheel before publication** on Windows against the
+   prepared artifact, checking its manifest and hashes again. Both publishing
+   jobs require this smoke job to succeed. Review the prepared artifact and
+   release evidence, then approve the target
    environment. This is the final human gate. The publishing job downloads by
    immutable artifact ID and verifies the anchored manifest hash and both file
    hashes immediately before the Trusted Publisher upload. Only publishing jobs
@@ -145,13 +149,44 @@ does not waive source, review, checks, environment or Trusted Publisher gates.
    open the next Unreleased changelog section. For a broken release, yank it in
    the index and release a new version through the same process.
 
+## Preview identity and smoke tests (KAN-580)
+
+For a source version `X.Y.Z.devN`, CI assigns
+`X.Y.Z.dev{CI_RUN_ID * 1000000 + CI_RUN_ATTEMPT}` to both package metadata and
+`dolphin_desktop.__version__` before building. For example, run `42`, attempt `2`
+produces `0.2.0.dev42000002`. Attempts must be positive and below one million;
+larger values fail instead of overlapping another run's version allocation.
+Final and RC versions stay as reviewed in source. Release derives the preview
+version from the selected **CI** run/attempt, not from its own run, and reuses
+those distributions without rebuilding. Releasing the same CI artifact again
+attempts the same version and fails on an index collision; upload errors are
+never suppressed. Rerun CI to prepare a new development preview.
+
+CI, the Release pre-publication smoke, and the TestPyPI smoke use
+`.github/scripts/smoke_wheel.py`. Each creates a fresh venv, installs only the
+runtime dependencies exported from `uv.lock` from `https://pypi.org/simple/`
+with `--require-hashes`, then installs the exact wheel with `--no-deps --no-index`.
+Inherited pip index settings/configuration are disabled. `pip check`, the
+imported and installed versions, `dolphin --help`, and `dolphin info backends`
+must all pass. Import/CLI checks run outside the source checkout.
+
+After publication, TestPyPI provides only the DolphinDesktop wheel through
+`pip download --no-deps --only-binary=:all:` with its single explicit index.
+The download step also clears inherited `PIP_*` settings and disables pip
+configuration files before any pip command, including the diagnostic index query.
+The downloaded wheel's SHA256 must match the prepared CI artifact before smoke.
+Dependencies are never resolved from TestPyPI or a combination of indexes.
+
 ## Verification
 
 Run `uv run --locked --group dev pytest tests/framework/test_ci_security.py
-tests/framework/test_release_provenance.py -q` (one command). These tests cover
+tests/framework/test_release_provenance.py tests/framework/test_release_preview.py
+-q` (one command). These tests cover
 ref restrictions, real Git ancestry rejection, missing/failed/skipped/wrong-SHA
 CI, fork/PR runs, insufficient review/protection, mutable tags, weak environments,
 archive substitution/path traversal, and modified distributions or CI identity.
+They also cover the mandatory local smoke dependency, separate index downloads,
+hashed dependency installs, unique preview attempts and immediate smoke failure.
 
 Before closing KAN-579, record the administrator setup and a hosted negative run
 that stops before upload, followed by a successful protected-source preparation

@@ -262,6 +262,20 @@ jobs:
       - name: Install locked build tools
         run: uv sync --locked --only-group build
 
+      # Export before assigning a preview version: the checked-in lock describes
+      # the source version. No sync/resolution is allowed after this point.
+      - name: Export locked runtime dependencies
+        run: >-
+          uv export --locked --no-default-groups --no-emit-project
+          --format requirements-txt --output-file "${{ runner.temp }}/release-requirements.txt"
+
+      - name: Assign unique development preview version
+        id: version
+        env:
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python .github/scripts/preview_version.py prepare
+
       - name: Build wheel and sdist
         run: uv run --no-sync python -m build --no-isolation --outdir release-artifact/dist
 
@@ -269,21 +283,11 @@ jobs:
         run: uv run --no-sync twine check release-artifact/dist/*
 
       - name: Verify built wheel on Windows
-        shell: pwsh
-        run: |
-          $smokeRoot = Join-Path $env:RUNNER_TEMP "release-wheel-smoke"
-          python -m venv $smokeRoot
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $smokePython = Join-Path $smokeRoot "Scripts/python.exe"
-          $wheel = (Get-ChildItem release-artifact/dist -Filter *.whl).FullName
-          & $smokePython -m pip install $wheel
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Push-Location $env:RUNNER_TEMP
-          & $smokePython -c "import dolphin_desktop; print(dolphin_desktop.__version__)"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & (Join-Path $smokeRoot "Scripts/dolphin.exe") --help
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Pop-Location
+        run: >-
+          python .github/scripts/smoke_wheel.py
+          --wheel-directory release-artifact/dist
+          --requirements "${{ runner.temp }}/release-requirements.txt"
+          --expected-version "${{ steps.version.outputs.version }}"
 
       - name: Record distribution hashes and CI identity
         env:
