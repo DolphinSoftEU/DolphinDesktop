@@ -527,7 +527,12 @@ class TerminalField:
                 before typing so leftover characters do not stay. When
                 False, type at the current cursor position without
                 clearing — useful for suffixing.
+
+        Raises:
+            MainframeError: If s3270 text contains a control character.
+                Validation happens before moving the cursor or clearing the field.
         """
+        self._terminal._backend.validate_text(text)
         self._terminal.move_cursor(self._row, self._col)
         if clear:
             self._terminal.type_text(" " * self._length)
@@ -545,6 +550,10 @@ class TerminalField:
 
 class _TerminalBackend(abc.ABC):
     """Adapter interface implemented by s3270 and HLLAPI backends."""
+
+    def validate_text(self, text: str | Secret) -> None:
+        """Check backend text restrictions without changing terminal state."""
+        return None
 
     @abc.abstractmethod
     def connect(self, host: str, port: int, *, session_type: str) -> None: ...
@@ -1007,6 +1016,10 @@ class _S3270Backend(_TerminalBackend):
 
     # ---- keyboard input -------------------------------------------------- #
 
+    def validate_text(self, text: str | Secret) -> None:
+        """Reject non-printable input before any s3270 action is sent."""
+        _validate_s3270_text(unwrap_secret(text), field="text")
+
     def send_string(self, text: str | Secret) -> None:
         # One public call, one protocol action: the argument must be entirely
         # printable (control characters can do more than break line-framing
@@ -1014,7 +1027,7 @@ class _S3270Backend(_TerminalBackend):
         # _s3270_quote, which escapes quotes/backslashes and refuses the
         # CR/LF/NUL bytes that would otherwise start a second action.
         plain = unwrap_secret(text)
-        _validate_s3270_text(plain, field="text")
+        self.validate_text(plain)
         self._exec(f"String({_s3270_quote(plain)})")
 
     def send_aid(self, aid: str) -> None:
@@ -2637,6 +2650,10 @@ class MainframeTerminal:
         Pass a :class:`~dolphin_desktop.Secret` for a password: the backend
         receives the real characters, while every log, trace and report masks
         the value.
+
+        The s3270 backend accepts printable text only. Control characters
+        raise :class:`MainframeError` before writing to the emulator. Use
+        :meth:`press` to send an AID key such as Enter.
         """
         self._backend.send_string(text)
 

@@ -14,6 +14,7 @@ from unittest.mock import Mock, call
 import pytest
 
 import dolphin_desktop._mainframe as mf
+from dolphin_desktop import Desktop, Secret
 from dolphin_desktop._mainframe import AID, FieldInfo, TerminalField, TerminalScreen
 
 
@@ -507,6 +508,130 @@ def test_s3270_keeps_printable_payload_in_one_string_action() -> None:
     redacted = mf._describe_s3270_action('String("secret")')
     assert redacted.startswith("String(") and "secret" not in redacted
     assert mf._describe_s3270_action("Wait(1)") == "Wait(1)"
+
+
+_S3270_CONTROLS = [chr(code) for code in range(32)] + ["\x7f", "\x85", "\u2028", "\u2029"]
+
+
+@pytest.mark.parametrize(
+    ("host", "target"),
+    [
+        (" localhost ", "localhost:23"),
+        ("127.0.0.1", "127.0.0.1:23"),
+        ("[::1]", "[::1]:23"),
+        (" L:localhost ", "L:localhost:23"),
+    ],
+)
+def test_kan631_public_host_writes_one_connect_record(
+    monkeypatch: pytest.MonkeyPatch, host: str, target: str
+) -> None:
+    proc = _Process([b"ok\n"] * 3)
+    popen = Mock(return_value=proc)
+    monkeypatch.setattr(mf.subprocess, "Popen", popen)
+    term = Desktop(hidden=False).mainframe(host=host, ws3270_path="fake-s3270.exe")
+    popen.assert_called_once()
+    assert proc.stdin.writes == [
+        f"Connect({target})\n".encode(),
+        b"Wait(15,InputField)\n",
+        b"Wait(15,Output)\n",
+    ]
+    assert term.is_connected()
+
+
+@pytest.mark.parametrize("control", _S3270_CONTROLS)
+@pytest.mark.parametrize("template", ["{}host", "ho{}st", "host{}", "L:host{}"])
+@pytest.mark.parametrize("deferred", [False, True])
+def test_kan631_public_host_rejected_before_process_creation(
+    monkeypatch: pytest.MonkeyPatch, control: str, template: str, deferred: bool
+) -> None:
+    """Keep raw controls visible to validation, including the retested host CR."""
+    proc = _Process()
+    popen = Mock(return_value=proc)
+    monkeypatch.setattr(mf.subprocess, "Popen", popen)
+    options = {
+        "backend": "s3270",
+        "ws3270_path": "fake-s3270.exe",
+        "allow_plaintext": True,
+    }
+    host = template.format(control)
+    desktop = Desktop(hidden=False)
+    with pytest.raises(mf.MainframeError, match="control character"):
+        if deferred:
+            term = desktop.mainframe(connect=False, **options)
+            term.connect(host, 23, session_type="3270")
+        else:
+            desktop.mainframe(host=host, **options)
+    popen.assert_not_called()
+    assert proc.stdin.writes == []
+
+
+@pytest.mark.parametrize("control", _S3270_CONTROLS)
+@pytest.mark.parametrize("secret", [False, True])
+def test_kan631_public_text_rejected_before_stdin(control: str, secret: bool) -> None:
+    proc = _Process()
+    backend = mf._S3270Backend(binary="fake-s3270.exe")
+    backend._proc = proc
+    term = mf.MainframeTerminal(backend)
+    payload = f"hello{control}Script(boom)"
+    with pytest.raises(mf.MainframeError, match=r"s3270 text.*control character"):
+        term.type_text(Secret(payload) if secret else payload)
+    assert proc.stdin.writes == []
+
+
+@pytest.mark.parametrize("control", _S3270_CONTROLS)
+@pytest.mark.parametrize("secret", [False, True])
+@pytest.mark.parametrize("clear", [False, True])
+def test_kan631_field_text_rejected_before_cursor_or_clear(
+    control: str, secret: bool, clear: bool
+) -> None:
+    proc = _Process([b"ok\n"] * 4)
+    backend = mf._S3270Backend(binary="fake-s3270.exe")
+    backend._proc = proc
+    field = mf.MainframeTerminal(backend).field(row=2, col=3, length=8)
+    payload = f"hello{control}Script(boom)"
+    with pytest.raises(mf.MainframeError, match=r"s3270 text.*control character"):
+        field.type_text(Secret(payload) if secret else payload, clear=clear)
+    assert proc.stdin.writes == []
+
+
+@pytest.mark.parametrize("secret", [False, True])
+@pytest.mark.parametrize("clear", [False, True])
+def test_kan631_field_printable_text_keeps_cursor_and_clear_sequence(
+    secret: bool, clear: bool
+) -> None:
+    proc = _Process([b"ok\n"] * 4)
+    backend = mf._S3270Backend(binary="fake-s3270.exe")
+    backend._proc = proc
+    field = mf.MainframeTerminal(backend).field(row=2, col=3, length=8)
+    payload = 'a"b\\c'
+    field.type_text(Secret(payload) if secret else payload, clear=clear)
+    expected = [b"MoveCursor(1,2)\n"]
+    if clear:
+        expected += [b'String("        ")\n', b"MoveCursor(1,2)\n"]
+    expected.append(b'String("a\\"b\\\\c")\n')
+    assert proc.stdin.writes == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ('pa"ss\\word', b'String("pa\\"ss\\\\word")\n'),
+        ("Quit() Script(ignored)", b'String("Quit() Script(ignored)")\n'),
+        ("zażółć", 'String("zażółć")\n'.encode()),
+        ("", b'String("")\n'),
+    ],
+)
+@pytest.mark.parametrize("secret", [False, True])
+def test_kan631_public_text_writes_exactly_one_escaped_record(
+    payload: str, expected: bytes, secret: bool
+) -> None:
+    proc = _Process([b"ok\n"])
+    backend = mf._S3270Backend(binary="fake-s3270.exe")
+    backend._proc = proc
+    term = mf.MainframeTerminal(backend)
+    term.type_text(Secret(payload) if secret else payload)
+    assert proc.stdin.writes == [expected]
+    assert expected.count(b"\n") == 1
 
 
 def test_s3270_rejects_non_integer_cursor_arguments_before_stdin() -> None:
@@ -1218,6 +1343,23 @@ def test_tn5250_recompute_read_screen_fields_and_local_typing(
     backend.wait_unlock(0.1)
     backend.wait_output(0.1)
     assert backend.is_keyboard_locked() is False
+
+
+@pytest.mark.parametrize("clear", [False, True])
+@pytest.mark.parametrize("secret", [False, True])
+def test_tn5250_field_typing_uses_default_text_validation(clear: bool, secret: bool) -> None:
+    """The shared preflight hook preserves native TN5250 field editing."""
+    backend = mf._Tn5250Backend(rows=2, cols=8, codepage="cp037")
+    backend._screen[0] = list("KEEPxxxx")
+    terminal = mf.MainframeTerminal(backend)
+
+    terminal.field(row=1, col=2, length=4).type_text(Secret("X") if secret else "X", clear=clear)
+
+    assert "".join(backend._screen[0]) == ("KX   xxx" if clear else "KXEPxxxx")
+    expected = [(1, 2, "    ".encode("cp037"))] if clear else []
+    expected.append((1, 2, "X".encode("cp037")))
+    assert backend._pending_writes == expected
+    assert backend._input_cursor == (1, 3)
 
 
 def test_tn5250_send_aid_pf_unknown_and_pending_writes() -> None:
