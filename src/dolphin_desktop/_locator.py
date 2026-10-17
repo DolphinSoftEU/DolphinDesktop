@@ -2129,6 +2129,10 @@ class Locator:
 
         If *depth* is None, only direct children are returned.
         If *depth* is given (including 0), descendants up to that depth are returned.
+
+        Raises:
+            TypeError: If the backend rejects the search criteria, except for
+                ``auto_id``, which is filtered locally when unsupported.
         """
         self._refresh_object_repository()
         parent_spec = self._get_parent_spec()
@@ -2145,7 +2149,7 @@ class Locator:
             # empty collection.
             auto_id = self._criteria.get("auto_id")
             if auto_id is None:
-                elements = []
+                raise
             else:
                 backend_criteria = {
                     key: value for key, value in self._criteria.items() if key != "auto_id"
@@ -2155,6 +2159,8 @@ class Locator:
                         candidates = parent_spec.children(**backend_criteria)
                     else:
                         candidates = parent_spec.descendants(depth=depth, **backend_criteria)
+                except TypeError:
+                    raise
                 except Exception:
                     elements = []
                 else:

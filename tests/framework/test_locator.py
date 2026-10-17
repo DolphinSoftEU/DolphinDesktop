@@ -531,13 +531,47 @@ def test_locator_all_filters_auto_id_after_a_backend_type_error_for_children_and
     assert [item._element for item in locator.all(depth=5)] == [matching]
 
 
-def test_locator_all_discards_type_error_fallback_without_auto_id():
+@pytest.mark.parametrize("depth", [None, 0, 8])
+@pytest.mark.parametrize("auto_id", [None, "target"])
+def test_locator_all_propagates_unsupported_criteria_errors(depth, auto_id):
     parent = FakeSpec()
-    parent.children = Mock(side_effect=TypeError("unsupported criteria"))
+    error = TypeError("unexpected keyword argument 'unsupported_kan_621'")
+    search = Mock(side_effect=error)
+    if depth is None:
+        parent.children = search
+    else:
+        parent.descendants = search
+    criteria = {"unsupported_kan_621": "x", "control_type": "Button"}
+    if auto_id is not None:
+        criteria["auto_id"] = auto_id
     locator = locator_module.Locator(
-        SimpleNamespace(_get_spec=Mock(return_value=parent)), title="x"
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), **criteria
     )
-    assert locator.all() == []
+
+    with pytest.raises(TypeError, match="unsupported_kan_621") as caught:
+        locator.all(depth=depth)
+
+    assert caught.value is error
+    depth_criteria = {} if depth is None else {"depth": depth}
+    expected_calls = [call(**depth_criteria, **criteria)]
+    if auto_id is not None:
+        expected_calls.append(
+            call(**depth_criteria, unsupported_kan_621="x", control_type="Button")
+        )
+    assert search.call_args_list == expected_calls
+
+
+def test_locator_count_propagates_unsupported_criteria_errors():
+    parent = FakeSpec()
+    parent.children = Mock(
+        side_effect=TypeError("unexpected keyword argument 'unsupported_kan_621'")
+    )
+    locator = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), unsupported_kan_621="x"
+    )
+
+    with pytest.raises(TypeError, match="unsupported_kan_621"):
+        locator.count()
 
 
 def test_locator_all_discards_backend_error_during_auto_id_fallback():
