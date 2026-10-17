@@ -1102,7 +1102,7 @@ def test_locator_negative_nth_uses_tree_walk_when_descendants_has_no_match():
         result = locator_module._resolve_negative_found_index(parent, criteria, timeout=0)
 
     assert result is tree_result
-    tree_walk.assert_called_once_with(parent, criteria)
+    tree_walk.assert_called_once_with(parent, criteria, deadline=None)
 
 
 def test_locator_negative_nth_uses_tree_walk_for_auto_id():
@@ -1118,7 +1118,7 @@ def test_locator_negative_nth_uses_tree_walk_for_auto_id():
             locator_module._resolve_negative_found_index(parent, criteria, timeout=0) is tree_result
         )
 
-    tree_walk.assert_called_once_with(parent, criteria)
+    tree_walk.assert_called_once_with(parent, criteria, deadline=None)
 
 
 def test_locator_negative_nth_out_of_range_uses_not_found_behavior():
@@ -2497,6 +2497,110 @@ def test_wrapper_tree_fallback_honors_negative_index(virtualized_tree):
     case = virtualized_tree
     case.realized.append(case.item)
     assert case.target.nth(-1)._resolve().element_info is case.item
+
+
+@pytest.mark.parametrize("index", [0, 1, -1, -2])
+def test_wrapper_tree_filters_hidden_matches_before_indexing(virtualized_tree, index):
+    case = virtualized_tree
+    hidden = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=False)
+    first = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=True)
+    last = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=True)
+    case.realized.extend([hidden, first, last])
+    loc = locator_module.Locator(resolved(case.wrap(case.tree)), title="Save").timeout(0)
+    assert loc.nth(index)._resolve().element_info is [first, last][index]
+    assert loc._resolve_presence().element_info is hidden
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_spec_tree_filters_hidden_matches_before_indexing(virtualized_tree, index):
+    case = virtualized_tree
+    hidden = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=False)
+    first = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=True)
+    last = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=True)
+    case.realized.extend([hidden, first, last])
+    loc = locator_module.Locator(case.parent._parent, title="Save").timeout(0)
+    assert loc.nth(index)._resolve().element_info is [first, last][index]
+
+
+@pytest.mark.parametrize("index, expected", [(-1, 1), (-2, 0), (-3, None)])
+def test_wrapper_negative_index_uses_full_tree_when_findall_is_incomplete(
+    virtualized_tree, index, expected
+):
+    case = virtualized_tree
+    first = case.item
+    last = FakeInfo(name=first.name, control_type="TreeItem", children=lambda: [], visible=True)
+    # Put the additional match beyond the default fallback's depth limit.
+    nested = last
+    for _ in range(10):
+        nested = FakeInfo(children=lambda child=nested: [child])
+    case.realized.extend([first, nested])
+    loc = locator_module.Locator(resolved(case.wrap(case.tree)), title=first.name).timeout(0)
+    with patch("pywinauto.findwindows.find_elements", return_value=[first]) as find:
+        if expected is None:
+            with pytest.raises(ElementNotFoundError):
+                loc.nth(index)._resolve()
+        else:
+            assert loc.nth(index)._resolve().element_info is [first, last][expected]
+    find.assert_called_once()
+
+
+@pytest.mark.parametrize("index", [0, -1])
+def test_tree_walk_stops_between_nodes_at_deadline(virtualized_tree, index):
+    case = virtualized_tree
+    clock = Mock(return_value=0)
+    later_children = Mock(return_value=[])
+    later = FakeInfo(name="Later", children=later_children)
+
+    def slow_children():
+        clock.return_value = 2
+        return []
+
+    slow = FakeInfo(name="Slow", children=slow_children)
+    case.realized.extend([slow, later])
+    with patch.object(locator_module.time, "monotonic", clock):
+        assert (
+            locator_module._tree_walk_find(
+                case.wrap(case.tree), {"title": "Later", "found_index": index}, deadline=1
+            )
+            is None
+        )
+    later_children.assert_not_called()
+
+
+def test_tree_walk_does_not_resolve_root_after_deadline():
+    root = SimpleNamespace(wrapper_object=Mock())
+    with patch.object(locator_module.time, "monotonic", return_value=2):
+        assert locator_module._tree_walk_find(root, {"title": "Save"}, deadline=1) is None
+    root.wrapper_object.assert_not_called()
+
+
+def test_wrapper_negative_index_does_not_return_partial_match_after_walk_timeout(virtualized_tree):
+    case = virtualized_tree
+    clock = Mock(return_value=0)
+
+    def slow_children():
+        clock.return_value = 2
+        return []
+
+    case.item.children = slow_children
+    case.realized.append(case.item)
+    with (
+        patch.object(locator_module.time, "monotonic", clock),
+        patch("pywinauto.findwindows.find_elements", return_value=[case.item]),
+        pytest.raises(ElementNotFoundError),
+    ):
+        case.target.nth(-1).timeout(1)._resolve()
+
+
+def test_wrapper_negative_index_does_not_use_partial_tree_after_provider_error(virtualized_tree):
+    case = virtualized_tree
+    case.item.children = Mock(side_effect=RuntimeError("provider unavailable"))
+    case.realized.append(case.item)
+    with (
+        patch("pywinauto.findwindows.find_elements", return_value=[case.item]),
+        pytest.raises(ElementNotFoundError),
+    ):
+        case.target.nth(-1)._resolve()
 
 
 def test_wrapper_tree_fallback_rejects_result_after_deadline(virtualized_tree):
