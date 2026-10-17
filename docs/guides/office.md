@@ -186,10 +186,14 @@ wrapper cannot accidentally take ownership of the operator's document.
 
 PowerPoint is a shared COM server. `connect()` attaches to its active
 presentation; `open()` / `create()` expose the presentation they opened/created
-even when it has no window. `quit()` and context exit close only those owned
-presentations, leaving the PowerPoint process running. Save explicitly or use
+even when it has no window. In shared mode, `quit()` and context exit close only
+those owned presentations and release COM references, preserving the process. Save explicitly or use
 `quit(save_changes=True)` to retain changes. Failed saves/closes raise and keep
 the affected presentation available for retry.
+
+`export_pdf()` uses PowerPoint's `ExportAsFixedFormat` with PDF output. Real
+acceptance tests must parse the resulting PDF and verify page count/content,
+not just check COM arguments or the file extension.
 
 ## Classic Outlook
 
@@ -211,9 +215,23 @@ with OutlookApp.start() as outlook:
 
 `connect()` requires an already running classic Outlook session. `start()` may
 reuse the operator's session; neither method logs on/off or configures profiles.
+`start()` checks registered MAPI profiles before COM activation, then validates
+the active profile and accessible stores. Missing/unusable profiles raise
+`RuntimeError`. Missing folders/items raise `LookupError`.
 Folders support `item(1)` and `folder("Child")`; supported default folder names
 are `inbox`, `drafts`, `sent`, `deleted`, `calendar`, or an `OlDefaultFolders`
 integer. Items other than mail and appointments raise `TypeError` on lookup.
+
+Drafts created by this `OutlookApp` support `move(folder)` and `delete()`.
+`move()` updates the existing wrapper to the COM object returned by Outlook;
+`find_item(entry_id)` can verify its absence/presence in source/destination
+folders. Folder lookup recognizes owned drafts by EntryID **and** StoreID.
+Pre-existing messages, sent messages and locally opened MSG files cannot be
+moved/deleted by this API. Destinations must come from the creating facade.
+
+`delete()` moves an owned draft to its store's Deleted Items folder. A repeated
+call raises instead of silently deleting permanently. For UAT data cleanup,
+`delete(permanent=True)` explicitly removes only an owned draft already there.
 
 `create_appointment(subject=...)` returns a calendar item with editable `start`
 and `end` Python datetimes (Outlook local time), `location`, `subject` and `body`.
@@ -225,8 +243,42 @@ Mail supports `to`, `cc`, `bcc`, `subject`, `body`, `html_body` and attachments.
 Outlook's configured account. Outlook security prompts/policies remain active.
 Context exit and `quit()` discard unsaved changes to only the items created or
 opened here; saved drafts/appointments remain saved. Items retrieved from
-existing folders are not automatically closed. The shared Outlook application
-is never quit. Failed saves/closes raise and retain the affected items for retry.
+existing folders are not automatically closed. Shared Outlook sessions are
+preserved. Failed saves/closes raise and retain the affected items for retry.
+
+## Exclusive Office sessions for UAT
+
+`PowerPointApp.create/open(..., exclusive=True)` and
+`OutlookApp.start(exclusive=True)` require **no existing** process of that Office
+application. Use a dedicated test account without concurrent Office launches.
+This mode verifies the new process's image/creation time and retains its process
+handle. `owns_process` and `process_id` expose the resulting ownership.
+
+After document/item cleanup, `quit()` calls `Application.Quit()`, releases COM
+references and waits for that process handle to signal exit while pumping COM
+messages. A shutdown timeout raises and can be retried; processes are never
+force-killed. Foreign open presentations block exclusive PowerPoint shutdown.
+Objects from a closed facade are no longer usable. Shared mode (the default)
+and `connect()` never acquire process ownership or quit the operator's session.
+
+The DESKTOP-240/241 UAT scenarios live in the separate `dolphin-desktop.ta`
+repository, under `tests/zt_16_office_com`. They distinguish pre-existing and
+owned processes and validate PDF content independently. Outlook draft UAT
+requires `DOLPHIN_OUTLOOK_UAT=1`, a configured nonproduction profile/mailbox,
+and `DOLPHIN_OUTLOOK_UAT_FOLDER` naming a controlled subfolder of Drafts. Its
+synthetic drafts are moved, soft-deleted, verified and permanently cleaned up;
+the scenarios never send mail. The missing-profile case uses a Windows account
+without configured profiles and verifies no Outlook process was started.
+
+Run the suite from that repository against the built/installed wheel:
+
+```powershell
+python -m pytest tests/zt_16_office_com -q -rs -o junit_family=legacy --junitxml artifacts/office-com.xml
+```
+
+Repeat on Office 2019 and Microsoft 365, x86 and x64, recording product/version/
+bitness per run. A successful run on one installation does not establish PASS
+for another, and skipped profile-dependent scenarios do not count as PASS.
 
 ## Combining UI And Office Checks
 

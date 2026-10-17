@@ -12,7 +12,12 @@ from dolphin_desktop import _outlook as outlook
 @pytest.fixture
 def client(monkeypatch):
     client = MagicMock()
+    for com in (client.Dispatch.return_value, client.GetActiveObject.return_value):
+        com.GetNamespace.return_value.CurrentProfileName = "UAT"
+        com.GetNamespace.return_value.Stores.Count = 1
+        com.CreateItem.return_value.Sent = False
     monkeypatch.setattr(outlook, "_require_win32com", lambda: client)
+    monkeypatch.setattr(outlook, "_configured_profiles", lambda: ["UAT"])
     return client
 
 
@@ -41,6 +46,7 @@ def test_com_unavailable_is_clear(client, method):
 def test_mail_fields_attachments_and_local_save(client, tmp_path):
     with OutlookApp.start() as app:
         mail = app.create_mail(to="test@example.invalid", subject="Test", body="plain")
+        mail_com, app_com = mail._com, app._com
         app._com.CreateItem.assert_called_once_with(0)
         assert isinstance(mail, OutlookMail)
         assert (mail.to, mail.subject, mail.body) == ("test@example.invalid", "Test", "plain")
@@ -67,14 +73,15 @@ def test_mail_fields_attachments_and_local_save(client, tmp_path):
         mail.save()
         mail._com.Save.assert_called_once_with()
     app.quit()
-    mail._com.Close.assert_called_once_with(1)
-    mail._com.Send.assert_not_called()
-    app._com.Quit.assert_not_called()
+    mail_com.Close.assert_called_once_with(1)
+    mail_com.Send.assert_not_called()
+    app_com.Quit.assert_not_called()
 
 
 def test_calendar_fields_and_save(client):
     with OutlookApp.start() as app:
         item = app.create_appointment(subject="Local appointment")
+        item_com = item._com
         assert isinstance(item, OutlookAppointment)
         app._com.CreateItem.assert_called_once_with(1)
         item.start = "2030-01-02 10:00"
@@ -86,9 +93,9 @@ def test_calendar_fields_and_save(client):
             "Desk",
         )
         item.close(save=True)
-    item._com.Save.assert_called_once_with()
-    item._com.Close.assert_called_once_with(1)
-    item._com.Send.assert_not_called()
+    item_com.Save.assert_called_once_with()
+    item_com.Close.assert_called_once_with(1)
+    item_com.Send.assert_not_called()
 
 
 @pytest.mark.parametrize("name,folder_id", [("INBOX", 6), ("drafts", 16), ("calendar", 9), (5, 5)])
@@ -102,11 +109,12 @@ def test_default_folder_lookup_and_foreign_item_ownership(client, name, folder_i
         folder._com.Items.Item.return_value.Class = 43
         assert (folder.name, folder.item_count) == ("Folder", 7)
         mail = folder.item(1)
+        mail_com = mail._com
         assert isinstance(mail, OutlookMail)
         folder._com.Items.Item.assert_called_once_with(1)
         folder.folder("Child")
         folder._com.Folders.Item.assert_called_once_with("Child")
-    mail._com.Close.assert_not_called()
+    mail_com.Close.assert_not_called()
 
 
 @pytest.mark.parametrize("item_class,wrapper", [(43, OutlookMail), (26, OutlookAppointment)])
@@ -146,6 +154,7 @@ def test_unsupported_local_item_is_closed_without_touching_session(client, tmp_p
 def test_only_explicit_send_sends_and_failed_send_remains_tracked(client, send_fails):
     app = OutlookApp.start()
     mail = app.create_mail(to="recipient@example.invalid")
+    mail_com = mail._com
     mail._com.Send.assert_not_called()
     if send_fails:
         mail._com.Send.side_effect = OSError("security policy")
@@ -154,8 +163,8 @@ def test_only_explicit_send_sends_and_failed_send_remains_tracked(client, send_f
     else:
         mail.send()
     app.quit()
-    mail._com.Send.assert_called_once_with()
-    assert mail._com.Close.call_count == (1 if send_fails else 0)
+    mail_com.Send.assert_called_once_with()
+    assert mail_com.Close.call_count == (1 if send_fails else 0)
 
 
 @pytest.mark.parametrize("operation", ["Save", "Close"])
@@ -173,4 +182,199 @@ def test_cleanup_failure_preserves_item_and_other_items_are_closed(client, opera
     getattr(first._com, operation).side_effect = None
     app.quit(save_changes=True)
     assert not app._opened
-    app._com.Quit.assert_not_called()
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+class _Folder:
+    def __init__(self, name, store):
+        self.Name = self.EntryID = name
+        self.StoreID = "uat-store"
+        self.Store = store
+        self.Items = self
+        self.Folders = MagicMock()
+        self.messages = []
+
+    @property
+    def Count(self):  # noqa: N802
+        return len(self.messages)
+
+    def Item(self, index):  # noqa: N802
+        return self.messages[index - 1]
+
+
+class _Draft:
+    Class = 43
+    Sent = False
+
+    def __init__(self, store):
+        self.store = store
+        self.Parent = store.drafts
+        self.EntryID = ""
+        self.Subject = self.Body = self.To = ""
+        self.invalid = False
+        self.closes = 0
+
+    def Save(self):  # noqa: N802
+        assert not self.invalid, "stale COM proxy"
+        if not self.EntryID:
+            self.store.sequence += 1
+            self.EntryID = f"id-{self.store.sequence}"
+            self.Parent.messages.append(self)
+
+    def Move(self, folder):  # noqa: N802
+        assert not self.invalid, "stale COM proxy"
+        self.Parent.messages.remove(self)
+        moved = _Draft(self.store)
+        moved.Subject, moved.Body, moved.To = self.Subject, self.Body, self.To
+        moved.Parent = folder
+        moved.Save()
+        self.invalid = True
+        return moved
+
+    def Delete(self):  # noqa: N802
+        assert self.Parent is self.store.deleted
+        assert not self.invalid
+        self.Parent.messages.remove(self)
+        self.invalid = True
+
+    def Close(self, _):  # noqa: N802
+        assert not self.invalid, "stale COM proxy"
+        self.closes += 1
+
+
+class _Store:
+    def __init__(self):
+        self.sequence = 0
+        self.drafts = _Folder("drafts", self)
+        self.deleted = _Folder("deleted", self)
+        self.target = _Folder("UAT", self)
+        self.drafts.Folders.Item.return_value = self.target
+
+    def GetDefaultFolder(self, folder_id):  # noqa: N802
+        return {16: self.drafts, 3: self.deleted}[folder_id]
+
+
+def test_owned_draft_move_delete_and_folder_effects(client):
+    store = _Store()
+    com = client.Dispatch.return_value
+    com.CreateItem.side_effect = lambda _: _Draft(store)
+    com.GetNamespace.return_value.GetDefaultFolder.side_effect = store.GetDefaultFolder
+    with OutlookApp.start() as app:
+        source = app.default_folder("drafts")
+        target = source.folder("UAT")
+        deleted = app.default_folder("deleted")
+        draft = app.create_mail(subject="UAT", body="before")
+        draft.save()
+        original_id = draft.entry_id
+        assert source.find_item(original_id) is draft
+        assert source.item_count == 1
+        reread = source.item(1)
+        reread.body = "after"
+        reread.save()
+        stale = draft._com
+        assert reread.move(target) is draft
+        moved_id = draft.entry_id
+        assert moved_id != original_id
+        assert draft._com is not stale
+        assert source.find_item(original_id) is None
+        assert source.item_count == 0
+        assert target.find_item(moved_id).body == "after"
+        assert draft.parent_folder.name == "UAT"
+        draft.delete()
+        assert target.find_item(moved_id) is None
+        assert target.item_count == 0
+        assert deleted.item_count == 1
+        in_trash = deleted.find_item(draft.entry_id)
+        assert in_trash is draft
+        with pytest.raises(ValueError, match="already in Deleted Items"):
+            in_trash.delete()
+        in_trash.delete(permanent=True)
+        assert deleted.item_count == 0
+        assert deleted.find_item(draft.entry_id) is None
+        with pytest.raises(PermissionError):
+            draft.delete()
+
+
+@pytest.mark.parametrize("method", ["move", "delete"])
+def test_foreign_and_opened_msg_items_cannot_be_moved_or_deleted(client, tmp_path, method):
+    with OutlookApp.start() as app:
+        com = app._com.GetNamespace.return_value.OpenSharedItem.return_value
+        com.Class = 43
+        item = app.open_item(tmp_path / "foreign.msg")
+        with pytest.raises(PermissionError, match="created by this OutlookApp"):
+            getattr(item, method)(
+                app.default_folder("drafts")
+            ) if method == "move" else item.delete()
+        com.Move.assert_not_called()
+        com.Delete.assert_not_called()
+
+
+def test_move_rejects_cross_session_folder_and_sent_or_closed_draft(client):
+    with OutlookApp.start() as app, OutlookApp.start() as other:
+        mail = app.create_mail()
+        with pytest.raises(PermissionError, match="Destination"):
+            mail.move(other.default_folder("drafts"))
+        mail._com.Move.assert_not_called()
+        mail._com.Sent = True
+        with pytest.raises(PermissionError, match="unsent"):
+            mail.delete()
+        mail.close()
+        with pytest.raises(PermissionError, match="live draft"):
+            mail.move(app.default_folder("drafts"))
+
+
+def test_lookup_does_not_grant_ownership_for_same_entry_id_in_different_store(client):
+    with OutlookApp.start() as app:
+        owned = app.create_mail()
+        owned._com.EntryID = "same-id"
+        owned._com.Parent.StoreID = "owned-store"
+        foreign = MagicMock(Class=43, EntryID="same-id")
+        foreign.Parent.StoreID = "other-store"
+        folder = app.default_folder("drafts")
+        folder._com.Items.Item.return_value = foreign
+        item = folder.item(1)
+        with pytest.raises(PermissionError):
+            item.delete()
+        foreign.Delete.assert_not_called()
+
+
+def test_start_rejects_missing_profile_before_dispatch(client, monkeypatch):
+    monkeypatch.setattr(outlook, "_configured_profiles", lambda: [])
+    with pytest.raises(RuntimeError, match="No configured Outlook MAPI profile"):
+        OutlookApp.start()
+    client.Dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["start", "connect"])
+@pytest.mark.parametrize("failure", ["empty-profile", "no-store", "com-error"])
+def test_profile_failures_are_controlled_and_shared_process_is_preserved(client, method, failure):
+    com = client.Dispatch.return_value if method == "start" else client.GetActiveObject.return_value
+    namespace = com.GetNamespace.return_value
+    if failure == "empty-profile":
+        namespace.CurrentProfileName = ""
+    elif failure == "no-store":
+        namespace.Stores.Count = 0
+    else:
+        com.GetNamespace.side_effect = OSError("MAPI unavailable")
+    with pytest.raises(RuntimeError, match="MAPI profile unavailable"):
+        getattr(OutlookApp, method)()
+    com.Quit.assert_not_called()
+
+
+def test_folder_and_item_errors_are_controlled(client, tmp_path):
+    with OutlookApp.start() as app:
+        namespace = app._namespace
+        namespace.GetDefaultFolder.side_effect = OSError("store offline")
+        with pytest.raises(LookupError, match="default folder unavailable"):
+            app.default_folder("drafts")
+        namespace.GetDefaultFolder.side_effect = None
+        folder = app.default_folder("drafts")
+        folder._com.Folders.Item.side_effect = OSError("folder missing")
+        with pytest.raises(LookupError, match="folder not found"):
+            folder.folder("missing")
+        folder._com.Items.Item.side_effect = OSError("item missing")
+        with pytest.raises(LookupError, match="item not found"):
+            folder.item(123)
+        namespace.OpenSharedItem.side_effect = OSError("file missing")
+        with pytest.raises(LookupError, match="item file unavailable"):
+            app.open_item(tmp_path / "missing.msg")

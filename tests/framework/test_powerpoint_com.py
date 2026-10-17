@@ -120,7 +120,17 @@ def test_document_slide_shape_and_persistence_contract(client, tmp_path):
         document.save_as(tmp_path / "deck.pptx")
         com.SaveAs.assert_called_once_with(str((tmp_path / "deck.pptx").resolve()))
         document.export_pdf(tmp_path / "deck.pdf")
-        com.SaveCopyAs.assert_called_once_with(str((tmp_path / "deck.pdf").resolve()), 32)
+        com.ExportAsFixedFormat.assert_called_once_with(
+            str((tmp_path / "deck.pdf").resolve()),
+            2,
+            1,
+            0,
+            1,
+            1,
+            0,
+            None,
+            1,
+        )
         document.save()
         com.Save.assert_called_once_with()
         slide.delete()

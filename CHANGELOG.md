@@ -22,6 +22,15 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Outlook drafts created by a facade now support owned move/delete, keeping the
+  returned COM identity after moves and checking source/destination folder
+  effects. Profile checks fail before first-run setup and validate active MAPI
+  stores; missing folders/items have controlled lookup errors. PowerPoint and
+  Outlook support explicit exclusive UAT process ownership, COM-reference
+  release and graceful exit verification while preserving shared sessions.
+  PDF export uses `ExportAsFixedFormat`; real UAT lives in `dolphin-desktop.ta`
+  and checks parsed PDF content and process cleanup (KAN-659 / KAN-658).
+
 * Added public `PowerPointApp` and `OutlookApp` COM facades to match the Office
   Support Matrix: presentations, slides, editable text, PDF export; classic
   Outlook mail, recipients, attachments, folders, appointments and local MSG

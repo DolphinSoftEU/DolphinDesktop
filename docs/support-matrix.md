@@ -142,13 +142,16 @@ the headline **capabilities** it exposes (against the
 | Alt           | `uia` for the ribbon / task-pane UI when COM cannot reach a dialog |
 | Modes         | Launch, Attach                                                     |
 | Capabilities  | Excel: workbook / worksheet / cell / range access, values and formulas, save. Word: document text, find and replace, save. PowerPoint: create/open presentations, slides, shape text, save, PDF. Outlook: create/read mail and appointments, recipients, attachments, folders, save MSG, explicit mail send. SCREENSHOT via UIA. |
-| Limitations   | Domain API, separate from generic `Backend` capabilities. PowerPoint/Outlook share application sessions; cleanup closes only wrapper-owned documents/items and never quits the shared process. Outlook requires classic Outlook and a configured MAPI profile; new Outlook has no supported COM facade. Dialogs and ribbon UI use UIA/Win32. |
+| Limitations   | Domain API, separate from generic `Backend` capabilities. Shared PowerPoint/Outlook sessions are preserved. Opt-in `exclusive=True` requires no existing application process, owns the verified new process and quits/waits for it during cleanup. Outlook requires classic Outlook and an accessible MAPI profile/store; new Outlook has no supported COM facade. Draft move/delete requires item ownership. Dialogs and ribbon UI use UIA/Win32. |
 
 See the [Office guide](guides/office.md) and [COM API reference](reference/office.md).
 DESKTOP-232 / DESKTOP-233 can check these four exports against the public API.
 Real COM acceptance for DESKTOP-240 (PowerPoint) and DESKTOP-241 (Outlook)
 belongs in the separate `dolphin-desktop.ta` automation repository, using the
 public API on Windows with the corresponding applications installed.
+Its `tests/zt_16_office_com` suite verifies PDF page count/content, draft folder
+effects, shared-session preservation and exclusive process exit. Repeat UAT
+independently for Office 2019/Microsoft 365 and x86/x64.
 A missing COM server or Outlook profile is a skip, not a real COM PASS.
 Unit stand-ins in this library do not establish real-stack PASS.
 

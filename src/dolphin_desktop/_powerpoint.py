@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ._office import _require_win32com
+from ._office_session import _OfficeSession, _start_office
 
 
 class PowerPointShape:
@@ -42,6 +43,7 @@ class PowerPointSlide:
 
     def __init__(self, _com: Any) -> None:
         self._com = _com
+        self._shapes: list[PowerPointShape] = []
 
     @property
     def index(self) -> int:
@@ -55,7 +57,9 @@ class PowerPointSlide:
 
     def shape(self, name_or_index: str | int) -> PowerPointShape:
         """Return a shape by name or 1-based index."""
-        return PowerPointShape(self._com.Shapes.Item(name_or_index))
+        shape = PowerPointShape(self._com.Shapes.Item(name_or_index))
+        self._shapes.append(shape)
+        return shape
 
     def add_textbox(
         self,
@@ -68,6 +72,7 @@ class PowerPointSlide:
     ) -> PowerPointShape:
         """Add horizontal text; position and size are in points."""
         shape = PowerPointShape(self._com.Shapes.AddTextbox(1, left, top, width, height))
+        self._shapes.append(shape)
         shape.text = text
         return shape
 
@@ -82,6 +87,7 @@ class PowerPointPresentation:
     def __init__(self, _com: Any) -> None:
         self._com = _com
         self._closed = False
+        self._slides: list[PowerPointSlide] = []
 
     @property
     def name(self) -> str:
@@ -95,11 +101,15 @@ class PowerPointPresentation:
 
     def slide(self, index: int) -> PowerPointSlide:
         """Return a slide by 1-based index."""
-        return PowerPointSlide(self._com.Slides.Item(index))
+        slide = PowerPointSlide(self._com.Slides.Item(index))
+        self._slides.append(slide)
+        return slide
 
     def add_slide(self, *, layout: int = 12) -> PowerPointSlide:
         """Append a slide using a PpSlideLayout value (12 means blank)."""
-        return PowerPointSlide(self._com.Slides.Add(self.slide_count + 1, layout))
+        slide = PowerPointSlide(self._com.Slides.Add(self.slide_count + 1, layout))
+        self._slides.append(slide)
+        return slide
 
     def save(self) -> None:
         """Save changes to the existing presentation file."""
@@ -111,7 +121,9 @@ class PowerPointPresentation:
 
     def export_pdf(self, path: str | Path) -> None:
         """Export a PDF copy, retaining the presentation's existing file name."""
-        self._com.SaveCopyAs(str(Path(path).resolve()), 32)  # ppSaveAsPDF
+        # PrintRange is required even when exporting all slides. Pass Nothing
+        # explicitly; positional arguments also work with late-bound Dispatch.
+        self._com.ExportAsFixedFormat(str(Path(path).resolve()), 2, 1, 0, 1, 1, 0, None, 1)
 
     def close(self, *, save: bool = False) -> None:
         """Close this presentation, optionally saving; a failed save leaves it open."""
@@ -121,6 +133,16 @@ class PowerPointPresentation:
             self.save()
         self._com.Close()
         self._closed = True
+        self._release_com()
+
+    def _release_com(self) -> None:
+        for slide in self._slides:
+            for shape in slide._shapes:
+                shape._com = None
+            slide._shapes.clear()
+            slide._com = None
+        self._slides.clear()
+        self._com = None
 
 
 class PowerPointApp:
@@ -131,9 +153,21 @@ class PowerPointApp:
     of the operator's existing presentations.
     """
 
-    def __init__(self, _com: Any) -> None:
+    def __init__(self, _com: Any, *, _session: _OfficeSession | None = None) -> None:
         self._com = _com
+        self._session = _session
         self._opened: list[PowerPointPresentation] = []
+        self._borrowed: list[PowerPointPresentation] = []
+
+    @property
+    def owns_process(self) -> bool:
+        """Whether an exclusive session owns a process whose exit is not yet confirmed."""
+        return self._session is not None and not self._session.closed
+
+    @property
+    def process_id(self) -> int | None:
+        """Verified exclusive process ID, or None for shared/connected sessions."""
+        return self._session.pid if self._session is not None else None
 
     @classmethod
     def connect(cls) -> PowerPointApp:
@@ -144,11 +178,24 @@ class PowerPointApp:
             raise RuntimeError("No running PowerPoint instance found.") from exc
 
     @classmethod
-    def create(cls, *, visible: bool = True) -> PowerPointApp:
-        """Create a blank presentation, starting PowerPoint if necessary."""
-        app = cls(_require_win32com().Dispatch("PowerPoint.Application"))
-        presentation = app._com.Presentations.Add(-1 if visible else 0)
-        app._opened.append(PowerPointPresentation(presentation))
+    def create(cls, *, visible: bool = True, exclusive: bool = False) -> PowerPointApp:
+        """Create a presentation; exclusive=True owns a newly started UAT process."""
+        com, session = _start_office(
+            _require_win32com(),
+            "PowerPoint.Application",
+            "POWERPNT.EXE",
+            exclusive=exclusive,
+        )
+        app = cls(com, _session=session)
+        try:
+            presentation = app._com.Presentations.Add(-1 if visible else 0)
+            app._opened.append(PowerPointPresentation(presentation))
+        except BaseException as exc:
+            try:
+                app.quit()
+            except Exception as cleanup_error:
+                exc.add_note(f"Office cleanup also failed: {cleanup_error}")
+            raise
         return app
 
     @classmethod
@@ -158,6 +205,7 @@ class PowerPointApp:
         *,
         visible: bool = True,
         allow_macros: bool = False,
+        exclusive: bool = False,
     ) -> PowerPointApp:
         """Open an editable presentation; VBA is disabled unless explicitly allowed.
 
@@ -168,13 +216,19 @@ class PowerPointApp:
         if not isinstance(allow_macros, bool):
             raise TypeError("allow_macros must be a bool")
         resolved = Path(path).resolve()
-        app = cls(_require_win32com().Dispatch("PowerPoint.Application"))
-        for index in range(1, int(app._com.Presentations.Count) + 1):
-            existing = app._com.Presentations.Item(index)
-            if Path(str(existing.FullName)).resolve() == resolved:
-                raise RuntimeError(f"Presentation is already open: {resolved}")
-        previous = app._com.AutomationSecurity
+        com, session = _start_office(
+            _require_win32com(),
+            "PowerPoint.Application",
+            "POWERPNT.EXE",
+            exclusive=exclusive,
+        )
+        app = cls(com, _session=session)
         try:
+            for index in range(1, int(app._com.Presentations.Count) + 1):
+                existing = app._com.Presentations.Item(index)
+                if Path(str(existing.FullName)).resolve() == resolved:
+                    raise RuntimeError(f"Presentation is already open: {resolved}")
+            previous = app._com.AutomationSecurity
             try:
                 app._com.AutomationSecurity = 1 if allow_macros else 3
                 presentation = app._com.Presentations.Open(
@@ -199,12 +253,15 @@ class PowerPointApp:
         """Most recently opened/created presentation, or PowerPoint's active one."""
         if self._opened:
             return self._opened[-1]
-        return PowerPointPresentation(self._com.ActivePresentation)
+        presentation = PowerPointPresentation(self._com.ActivePresentation)
+        self._borrowed.append(presentation)
+        return presentation
 
     def quit(self, *, save_changes: bool = False) -> None:
         """Close owned presentations only; retain failures for retry and raise.
 
-        The shared PowerPoint process is never quit, even when started here.
+        Shared/connected processes are preserved. An exclusive process is quit
+        only after all owned presentations close and no foreign ones remain.
         """
         failed: list[PowerPointPresentation] = []
         errors: list[str] = []
@@ -217,6 +274,20 @@ class PowerPointApp:
         self._opened = failed
         if errors:
             raise RuntimeError("Could not close PowerPoint presentations: " + "; ".join(errors))
+        if self._session is None:
+            self._release_com()
+        elif self._session.running():
+            if not self._session._quit_requested and self._com.Presentations.Count:
+                raise RuntimeError("Unowned presentations prevent exclusive PowerPoint shutdown")
+            self._session.quit(self._com, release=self._release_com)
+        else:
+            self._release_com()
+
+    def _release_com(self) -> None:
+        for presentation in self._borrowed:
+            presentation._release_com()
+        self._borrowed.clear()
+        self._com = None
 
     def __enter__(self) -> PowerPointApp:
         return self
