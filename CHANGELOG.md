@@ -22,6 +22,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* `Locator.all()` and `count()` propagate backend `TypeError` for unsupported
+  search criteria instead of returning an empty result, including errors during
+  the local `auto_id` filtering fallback (KAN-621).
+
 * Release wheel installation is checked with normal pip dependency resolution
   on Linux, macOS and Windows for Python 3.11–3.13. All jobs consume the exact
   CI artifact and verify its manifest before installing. Wheel metadata must
