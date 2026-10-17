@@ -2574,6 +2574,66 @@ def test_tree_walk_does_not_resolve_root_after_deadline():
     root.wrapper_object.assert_not_called()
 
 
+@pytest.mark.parametrize("slow_operation", ["root", "backend", "iterator", "visibility"])
+def test_tree_walk_rejects_result_when_provider_operation_exceeds_deadline(
+    virtualized_tree, monkeypatch, slow_operation
+):
+    case = virtualized_tree
+    clock = Mock(return_value=0)
+    case.item.children = Mock(return_value=[])
+
+    def resolve_root():
+        if slow_operation == "root":
+            clock.return_value = 2
+        return case.wrap(case.tree)
+
+    def create_backend(**kwargs):
+        if slow_operation == "backend":
+            clock.return_value = 2
+        return SimpleNamespace(backend=backend)
+
+    def iterate_children():
+        if slow_operation == "iterator":
+            clock.return_value = 2
+        yield case.item
+
+    def is_visible():
+        if slow_operation == "visibility":
+            clock.return_value = 2
+        return True
+
+    backend = SimpleNamespace(
+        generic_wrapper_class=lambda info: SimpleNamespace(element_info=info, is_visible=is_visible)
+    )
+    case.tree.children = iterate_children
+    root = SimpleNamespace(wrapper_object=resolve_root)
+    monkeypatch.setattr(sys.modules["pywinauto"], "Application", create_backend)
+    with patch.object(locator_module.time, "monotonic", clock):
+        assert (
+            locator_module._tree_walk_find(
+                root, {"auto_id": "item_450"}, visible_only=True, deadline=1
+            )
+            is None
+        )
+    case.item.children.assert_not_called()
+
+
+def test_wrapper_negative_index_rejects_partial_results_after_property_error(virtualized_tree):
+    case = virtualized_tree
+
+    class UnavailableItem:
+        @property
+        def name(self):
+            raise RuntimeError("UIA element is no longer available")
+
+    case.realized.extend([case.item, UnavailableItem()])
+    with (
+        patch("pywinauto.findwindows.find_elements", return_value=[case.item]),
+        pytest.raises(ElementNotFoundError),
+    ):
+        case.target.nth(-1)._resolve()
+
+
 def test_wrapper_negative_index_does_not_return_partial_match_after_walk_timeout(virtualized_tree):
     case = virtualized_tree
     clock = Mock(return_value=0)
