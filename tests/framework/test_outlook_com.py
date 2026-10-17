@@ -1,5 +1,7 @@
 """Outlook facade contract: draft-only operations and shared-session ownership."""
 
+import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -7,6 +9,55 @@ import pytest
 import dolphin_desktop
 from dolphin_desktop import OutlookApp, OutlookAppointment, OutlookMail
 from dolphin_desktop import _outlook as outlook
+
+
+@pytest.mark.parametrize(
+    "profile_path",
+    [
+        r"Software\Microsoft\Office\16.0\Outlook\Profiles",
+        r"Software\Microsoft\Office\15.0\Outlook\Profiles",
+        r"Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles",
+    ],
+)
+def test_profile_discovery_reads_supported_current_user_registry_locations(
+    monkeypatch, profile_path
+):
+    context = MagicMock()
+    context.__enter__.return_value = "profile-key"
+
+    def open_key(root, path):
+        assert root == "HKCU"
+        if path != profile_path:
+            raise FileNotFoundError(path)
+        return context
+
+    registry = SimpleNamespace(
+        HKEY_CURRENT_USER="HKCU",
+        OpenKey=MagicMock(side_effect=open_key),
+        QueryInfoKey=MagicMock(return_value=(2, 0, 0)),
+        EnumKey=MagicMock(side_effect=lambda key, index: ["UAT", "Secondary"][index]),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", registry)
+    assert outlook._configured_profiles() == ["UAT", "Secondary"]
+    registry.OpenKey.assert_any_call("HKCU", profile_path)
+    registry.QueryInfoKey.assert_called_once_with("profile-key")
+    context.__exit__.assert_called_once_with(None, None, None)
+
+
+def test_profile_discovery_distinguishes_missing_registry_keys_from_access_denied(monkeypatch):
+    registry = SimpleNamespace(
+        HKEY_CURRENT_USER="HKCU",
+        OpenKey=MagicMock(side_effect=FileNotFoundError("not configured")),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", registry)
+    assert outlook._configured_profiles() == []
+    error = PermissionError("profile registry inaccessible")
+    registry.OpenKey.side_effect = error
+    with pytest.raises(
+        RuntimeError, match="Cannot inspect configured Outlook MAPI profiles"
+    ) as caught:
+        outlook._configured_profiles()
+    assert caught.value.__cause__ is error
 
 
 @pytest.fixture
@@ -323,6 +374,52 @@ def test_move_rejects_cross_session_folder_and_sent_or_closed_draft(client):
             mail.move(app.default_folder("drafts"))
 
 
+def test_move_with_unknown_outcome_invalidates_proxy_and_prevents_retries(client):
+    with OutlookApp.start() as app:
+        draft = app.create_mail()
+        com = draft._com
+        com.Move.return_value = None
+        target = app.default_folder("drafts")
+        target_com = target._com
+        with pytest.raises(RuntimeError, match="Move returned no item"):
+            draft.move(target)
+        with pytest.raises(PermissionError, match="live draft"):
+            draft.move(target)
+        with pytest.raises(PermissionError, match="live draft"):
+            draft.delete()
+    com.Move.assert_called_once_with(target_com)
+    com.Close.assert_not_called()
+    com.Delete.assert_not_called()
+
+
+def test_delete_requires_boolean_opt_in_and_rejects_permanent_deletion_outside_trash(client):
+    with OutlookApp.start() as app:
+        draft = app.create_mail()
+        com = draft._com
+        com.Parent.EntryID = "drafts"
+        com.Parent.StoreID = "store"
+        deleted = com.Parent.Store.GetDefaultFolder.return_value
+        deleted.EntryID, deleted.StoreID = "deleted", "store"
+        with pytest.raises(TypeError, match="permanent must be a bool"):
+            draft.delete(permanent="yes")
+        with pytest.raises(ValueError, match="requires the draft to be in Deleted Items"):
+            draft.delete(permanent=True)
+        com.Move.assert_not_called()
+        com.Delete.assert_not_called()
+
+
+def test_folder_identity_preserves_store_context_and_unknown_names_are_rejected(client):
+    with OutlookApp.start() as app:
+        namespace = app._namespace
+        with pytest.raises(ValueError, match="Unknown Outlook default folder"):
+            app.default_folder("unknown-folder")
+        namespace.GetDefaultFolder.assert_not_called()
+        folder = app.default_folder("drafts")
+        folder._com.EntryID = "folder-id"
+        folder._com.StoreID = "store-id"
+        assert (folder.entry_id, folder.store_id) == ("folder-id", "store-id")
+
+
 def test_lookup_does_not_grant_ownership_for_same_entry_id_in_different_store(client):
     with OutlookApp.start() as app:
         owned = app.create_mail()
@@ -359,6 +456,33 @@ def test_profile_failures_are_controlled_and_shared_process_is_preserved(client,
     with pytest.raises(RuntimeError, match="MAPI profile unavailable"):
         getattr(OutlookApp, method)()
     com.Quit.assert_not_called()
+
+
+def test_profile_validation_failure_preserves_error_when_exclusive_cleanup_also_fails(
+    client,
+    monkeypatch,
+):
+    com = client.Dispatch.return_value
+    profile_error = OSError("MAPI store unavailable")
+    com.GetNamespace.side_effect = profile_error
+    session = MagicMock()
+    session.quit.side_effect = OSError("shutdown failed")
+    monkeypatch.setattr(outlook, "_start_office", lambda *_, **__: (com, session))
+    with pytest.raises(RuntimeError, match="MAPI profile unavailable") as caught:
+        OutlookApp.start(exclusive=True)
+    assert caught.value.__cause__ is profile_error
+    assert caught.value.__notes__ == ["Office cleanup also failed: shutdown failed"]
+    session.quit.assert_called_once()
+
+
+def test_unsupported_local_item_preserves_type_error_when_close_also_fails(client, tmp_path):
+    with OutlookApp.start() as app:
+        com = app._namespace.OpenSharedItem.return_value
+        com.Class = 40
+        com.Close.side_effect = OSError("item close failed")
+        with pytest.raises(TypeError, match="Unsupported Outlook item class: 40"):
+            app.open_item(tmp_path / "unsupported.msg")
+        com.Close.assert_called_once_with(1)
 
 
 def test_folder_and_item_errors_are_controlled(client, tmp_path):

@@ -25,6 +25,8 @@ def test_public_powerpoint_facade_is_exported():
 def test_create_and_close_only_owned_presentation(client):
     com = client.Dispatch.return_value
     with PowerPointApp.create(visible=False) as app:
+        assert not app.owns_process
+        assert app.process_id is None
         assert app.active_presentation._com is com.Presentations.Add.return_value
         com.Presentations.Add.assert_called_once_with(0)
     app.quit()
@@ -35,8 +37,14 @@ def test_create_and_close_only_owned_presentation(client):
 def test_connected_presentations_are_never_closed(client):
     com = client.GetActiveObject.return_value
     with PowerPointApp.connect() as app:
-        assert app.active_presentation._com is com.ActivePresentation
+        document = app.active_presentation
+        assert document._com is com.ActivePresentation
+        slide = document.slide(1)
+        shape = slide.shape("caption")
     com.ActivePresentation.Close.assert_not_called()
+    assert document._com is None
+    assert slide._com is None
+    assert shape._com is None
     com.Quit.assert_not_called()
     client.GetActiveObject.assert_called_once_with("PowerPoint.Application")
 
@@ -45,6 +53,27 @@ def test_connect_failure_is_clear(client):
     client.GetActiveObject.side_effect = OSError("not running")
     with pytest.raises(RuntimeError, match="No running PowerPoint"):
         PowerPointApp.connect()
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_failed_presentation_creation_preserves_original_error_and_cleans_session(
+    client,
+    monkeypatch,
+    cleanup_fails,
+):
+    com = client.Dispatch.return_value
+    error = OSError("presentation creation failed")
+    com.Presentations.Add.side_effect = error
+    session = MagicMock(_quit_requested=False)
+    if cleanup_fails:
+        session.quit.side_effect = OSError("shutdown failed")
+    monkeypatch.setattr(ppt, "_start_office", lambda *_, **__: (com, session))
+    with pytest.raises(OSError, match="presentation creation failed") as caught:
+        PowerPointApp.create(exclusive=True)
+    assert caught.value is error
+    session.quit.assert_called_once()
+    if cleanup_fails:
+        assert error.__notes__ == ["Office cleanup also failed: shutdown failed"]
 
 
 @pytest.mark.parametrize("allow_macros", [False, True])

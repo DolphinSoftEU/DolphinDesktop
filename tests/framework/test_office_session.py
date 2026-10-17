@@ -1,5 +1,6 @@
 """Exclusive Office ownership must never infer absence from a failed probe."""
 
+import ctypes
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -10,6 +11,90 @@ from dolphin_desktop import OutlookApp, PowerPointApp
 from dolphin_desktop import _office_session as sessions
 from dolphin_desktop import _outlook as outlook
 from dolphin_desktop import _powerpoint as ppt
+
+
+@pytest.fixture
+def native_snapshot(monkeypatch):
+    state = SimpleNamespace(error=5, index=0)
+    records = [("POWERPNT.EXE", 42), ("notepad.exe", 43)]
+    kernel = SimpleNamespace(
+        CreateToolhelp32Snapshot=MagicMock(return_value=123),
+        Process32FirstW=MagicMock(),
+        Process32NextW=MagicMock(),
+        CloseHandle=MagicMock(),
+    )
+
+    def fill(pointer):
+        entry = pointer._obj
+        assert entry.dwSize == ctypes.sizeof(type(entry))
+        entry.szExeFile, entry.th32ProcessID = records[state.index]
+        return True
+
+    def first(handle, pointer):
+        assert handle == 123
+        state.index = 0
+        return fill(pointer)
+
+    def next_entry(handle, pointer):
+        assert handle == 123
+        state.index += 1
+        if state.index == len(records):
+            state.error = 18  # ERROR_NO_MORE_FILES
+            return False
+        return fill(pointer)
+
+    kernel.Process32FirstW.side_effect = first
+    kernel.Process32NextW.side_effect = next_entry
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_, **__: kernel, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: state.error, raising=False)
+    monkeypatch.setattr(
+        ctypes, "WinError", lambda code: OSError(code, "Win32 probe failed"), raising=False
+    )
+    return kernel, records
+
+
+def test_native_snapshot_enumerates_records_and_releases_handle(native_snapshot):
+    kernel, records = native_snapshot
+    assert sessions._process_entries() == records
+    kernel.CreateToolhelp32Snapshot.assert_called_once_with(2, 0)
+    assert kernel.Process32FirstW.call_count == 1
+    assert kernel.Process32NextW.call_count == 2
+    kernel.CloseHandle.assert_called_once_with(123)
+
+
+@pytest.mark.parametrize(
+    "failure", ["null-handle", "invalid-handle", "first", "next", "next-error"]
+)
+def test_native_snapshot_errors_are_not_reported_as_empty_process_lists(native_snapshot, failure):
+    kernel, _ = native_snapshot
+    if failure == "null-handle":
+        kernel.CreateToolhelp32Snapshot.return_value = None
+    elif failure == "invalid-handle":
+        kernel.CreateToolhelp32Snapshot.return_value = ctypes.c_void_p(-1).value
+    elif failure == "first":
+        kernel.Process32FirstW.side_effect = None
+        kernel.Process32FirstW.return_value = False
+    elif failure == "next":
+        kernel.Process32NextW.side_effect = None
+        kernel.Process32NextW.return_value = False
+    else:
+        kernel.Process32NextW.side_effect = OSError("enumeration interrupted")
+    with pytest.raises(OSError):
+        sessions._process_entries()
+    if failure in ("null-handle", "invalid-handle"):
+        kernel.CloseHandle.assert_not_called()
+    else:
+        kernel.CloseHandle.assert_called_once_with(123)
+
+
+@pytest.mark.parametrize("exclusive", [None, 1, "true"])
+def test_invalid_ownership_option_is_rejected_before_activation(monkeypatch, exclusive):
+    client, snapshot = MagicMock(), MagicMock()
+    monkeypatch.setattr(sessions, "_office_pids", snapshot)
+    with pytest.raises(TypeError, match="exclusive must be a bool"):
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=exclusive)
+    snapshot.assert_not_called()
+    client.Dispatch.assert_not_called()
 
 
 def test_shared_start_does_not_claim_or_probe_processes(monkeypatch):
@@ -262,6 +347,35 @@ def test_wait_pumps_com_messages(anchored_session):
     wait.side_effect = [258, 0]
     assert sessions._wait_for_exit(handle, 1)
     sys.modules["pythoncom"].PumpWaitingMessages.assert_called_once_with()
+
+
+def test_exit_wait_timeout_reports_failure_after_servicing_com(anchored_session, monkeypatch):
+    _, handle, wait = anchored_session
+    wait.side_effect = [258]
+    monkeypatch.setattr(
+        sessions, "time", SimpleNamespace(monotonic=MagicMock(side_effect=[0, 0, 1]))
+    )
+    assert sessions._wait_for_exit(handle, 1) is False
+    sys.modules["pythoncom"].PumpWaitingMessages.assert_called_once_with()
+    handle.Close.assert_not_called()
+
+
+def test_exit_wait_query_failure_keeps_process_anchor_open(anchored_session):
+    _, handle, wait = anchored_session
+    wait.side_effect = [-1]
+    with pytest.raises(RuntimeError, match="Cannot wait for the owned Office process handle"):
+        sessions._wait_for_exit(handle, 1)
+    handle.Close.assert_not_called()
+
+
+def test_already_exited_process_still_releases_facade_resources(anchored_session):
+    session, handle, wait = anchored_session
+    wait.side_effect = [0]
+    release, com = MagicMock(), MagicMock()
+    session.quit(com, release=release)
+    release.assert_called_once_with()
+    com.Quit.assert_not_called()
+    handle.Close.assert_called_once_with()
 
 
 def test_release_callback_runs_before_waiting_for_exit(anchored_session, monkeypatch):
