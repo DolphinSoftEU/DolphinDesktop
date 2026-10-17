@@ -62,13 +62,145 @@ def test_exclusive_start_only_claims_unique_new_process(monkeypatch):
     assert anchor.call_args.args[:2] == (42, "OFFICE.EXE")
 
 
-@pytest.mark.parametrize("after", [[], [42, 43]])
-def test_ambiguous_activation_never_quits_a_guessed_process(monkeypatch, after):
-    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], after]))
+def test_ambiguous_activation_never_waits_to_claim_a_surviving_process(monkeypatch):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], [42, 43], [43]]))
+    anchor, pause = MagicMock(), MagicMock()
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    monkeypatch.setattr(sessions, "_startup_pause", pause)
     client = MagicMock()
-    with pytest.raises(RuntimeError, match="Cannot establish"):
+    with pytest.raises(sessions._OfficeStartupError, match="Multiple candidate") as caught:
         sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.observed_pids == (42, 43)
+    assert caught.value.possible_orphan_pids == (43,)
+    anchor.assert_not_called()
+    pause.assert_not_called()
     client.Dispatch.return_value.Quit.assert_not_called()
+
+
+@pytest.fixture
+def startup_clock(monkeypatch):
+    clock = SimpleNamespace(now=0.0, delays=[])
+
+    def pause(delay):
+        clock.delays.append(delay)
+        clock.now += delay
+
+    monkeypatch.setattr(
+        sessions,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: clock.now,
+            time_ns=lambda: 1_000_000_000,
+        ),
+    )
+    monkeypatch.setattr(sessions, "_startup_pause", pause)
+    monkeypatch.setattr(sessions, "_START_TIMEOUT", 0.12)
+    return clock
+
+
+def test_delayed_visibility_is_retried_and_identity_is_verified(monkeypatch, startup_clock):
+    probe = MagicMock(side_effect=[[], [], [], [42]])
+    anchor = MagicMock()
+    monkeypatch.setattr(sessions, "_office_pids", probe)
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    client = MagicMock()
+    com, session = sessions._start_office(
+        client, "Office.Application", "OFFICE.EXE", exclusive=True
+    )
+    assert com is client.Dispatch.return_value
+    assert session is anchor.return_value
+    assert startup_clock.delays == [0.05, 0.05]
+    anchor.assert_called_once_with(42, "OFFICE.EXE", 116444736010000000)
+    client.Dispatch.assert_called_once_with("Office.Application")
+
+
+def test_visibility_timeout_is_bounded_and_reports_no_current_process(monkeypatch, startup_clock):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(return_value=[]))
+    anchor = MagicMock()
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    client = MagicMock()
+    with pytest.raises(sessions._OfficeStartupError, match="No process became visible") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert isinstance(caught.value.__cause__, TimeoutError)
+    assert startup_clock.now == pytest.approx(0.12)
+    assert all(0 < delay <= 0.05 for delay in startup_clock.delays)
+    assert caught.value.possible_orphan_pids == ()
+    assert "may still start later" in str(caught.value)
+    anchor.assert_not_called()
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_process_detected_only_in_timeout_diagnostics_is_not_claimed(monkeypatch, startup_clock):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], [], [], [], [], [42]]))
+    anchor = MagicMock()
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    client = MagicMock()
+    with pytest.raises(sessions._OfficeStartupError, match="Possible orphaned") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.possible_orphan_pids == (42,)
+    assert caught.value.observed_pids == (42,)
+    anchor.assert_not_called()
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_dispatch_error_reports_possible_orphan_without_terminating_it(monkeypatch):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], [42]]))
+    client = MagicMock()
+    error = OSError("COM activation failed")
+    client.Dispatch.side_effect = error
+    with pytest.raises(sessions._OfficeStartupError, match="COM activation failed") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.__cause__ is error
+    assert caught.value.possible_orphan_pids == (42,)
+    assert "No process was claimed or terminated" in str(caught.value)
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_failed_identity_is_not_retried_with_a_replacement_process(monkeypatch):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], [42], [43]]))
+    error = RuntimeError("Creation time does not establish ownership")
+    anchor = MagicMock(side_effect=error)
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    client = MagicMock()
+    with pytest.raises(sessions._OfficeStartupError, match="Creation time") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.__cause__ is error
+    assert caught.value.observed_pids == (42, 43)
+    anchor.assert_called_once()
+    assert anchor.call_args.args[0] == 42
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_failed_snapshot_during_activation_reports_unknown_orphan_status(monkeypatch):
+    error = OSError("snapshot unavailable")
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], error, error]))
+    client = MagicMock()
+    with pytest.raises(sessions._OfficeStartupError, match="snapshot unavailable") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.__cause__ is error
+    assert caught.value.possible_orphan_pids is None
+    assert "Current process snapshot unavailable" in str(caught.value)
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_startup_pause_services_com_without_reactivating_office(monkeypatch):
+    pump, sleep = MagicMock(), MagicMock()
+    monkeypatch.setitem(sys.modules, "pythoncom", SimpleNamespace(PumpWaitingMessages=pump))
+    monkeypatch.setattr(sessions, "time", SimpleNamespace(sleep=sleep))
+    sessions._startup_pause(0.05)
+    pump.assert_called_once_with()
+    sleep.assert_called_once_with(0.05)
+
+
+def test_outlook_preserves_startup_orphan_diagnostics(monkeypatch):
+    monkeypatch.setattr(sessions, "_office_pids", lambda _: [42])
+    error = sessions._OfficeStartupError("OUTLOOK.EXE", OSError("activation failed"), set())
+    monkeypatch.setattr(outlook, "_configured_profiles", lambda: ["UAT"])
+    monkeypatch.setattr(outlook, "_require_win32com", MagicMock())
+    monkeypatch.setattr(outlook, "_start_office", MagicMock(side_effect=error))
+    with pytest.raises(RuntimeError, match="Possible orphaned OUTLOOK") as caught:
+        OutlookApp.start(exclusive=True)
+    assert caught.value is error
 
 
 @pytest.mark.parametrize("creation,path", [(None, "x"), (99, "x"), (101, None), (101, "other.exe")])

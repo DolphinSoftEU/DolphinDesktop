@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ._office import _require_win32com
-from ._office_session import _OfficeSession, _start_office
+from ._office_session import _OfficeSession, _OfficeStartupError, _start_office
 
 _FOLDERS = {"inbox": 6, "drafts": 16, "sent": 5, "deleted": 3, "calendar": 9}
 
@@ -390,6 +390,8 @@ class OutlookApp:
                 "OUTLOOK.EXE",
                 exclusive=exclusive,
             )
+        except _OfficeStartupError:
+            raise
         except Exception as exc:
             raise RuntimeError(
                 "Classic Outlook COM is unavailable; install classic Outlook and "

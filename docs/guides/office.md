@@ -254,6 +254,16 @@ application. Use a dedicated test account without concurrent Office launches.
 This mode verifies the new process's image/creation time and retains its process
 handle. `owns_process` and `process_id` expose the resulting ownership.
 
+After COM activation, exclusive startup polls process visibility for up to
+five seconds, servicing COM messages between attempts. Multiple candidates or
+a failed identity check stop initialization immediately. Failed activation,
+visibility timeout or ownership verification reports observed PIDs and a final
+snapshot of possible orphaned processes. A failed snapshot is reported as
+unknown, not as absence. No unverified process is claimed or terminated;
+inspect the reported processes before retrying. Office may still start after
+the timeout, so a diagnostic snapshot without candidates cannot prove that no
+process will appear later.
+
 After document/item cleanup, `quit()` calls `Application.Quit()`, releases COM
 references and waits for that process handle to signal exit while pumping COM
 messages. A shutdown timeout raises and can be retried; processes are never

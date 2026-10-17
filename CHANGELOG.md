@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Exclusive Office startup now retries delayed process visibility for up to five
+  seconds without repeating COM activation. Ambiguous or unverified processes
+  are never claimed or quit. Failed startup reports observed PIDs and possible
+  orphaned processes, preserving these diagnostics through the Outlook facade.
+
 * Outlook drafts created by a facade now support owned move/delete, keeping the
   returned COM identity after moves and checking source/destination folder
   effects. Profile checks fail before first-run setup and validate active MAPI

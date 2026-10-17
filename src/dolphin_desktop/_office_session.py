@@ -9,6 +9,44 @@ from typing import Any
 
 from ._application import _process_creation_time_from_handle, _process_image_path
 
+_START_TIMEOUT = 5.0
+_START_POLL_INTERVAL = 0.05
+
+
+class _OfficeStartupError(RuntimeError):
+    """An activation failed without acquiring ownership of any process."""
+
+    def __init__(self, image: str, reason: Exception, observed: set[int]) -> None:
+        self.image = image
+        self.possible_orphan_pids: tuple[int, ...] | None
+        try:
+            current = tuple(sorted(_office_pids(image)))
+            observed.update(current)
+            self.possible_orphan_pids = current
+            if current:
+                diagnostic = (
+                    f"Possible orphaned {image} processes (ownership unverified), PIDs: {current}."
+                )
+            else:
+                diagnostic = "No process is currently visible; Office may still start later."
+        except Exception as snapshot_error:
+            self.possible_orphan_pids = None
+            diagnostic = f"Current process snapshot unavailable: {snapshot_error}."
+        self.observed_pids = tuple(sorted(observed))
+        super().__init__(
+            f"Cannot establish exclusive {image} process ownership: {reason}. "
+            f"Observed PIDs after activation: {self.observed_pids}. {diagnostic} "
+            "No process was claimed or terminated. Inspect the listed processes before retrying."
+        )
+
+
+def _startup_pause(delay: float) -> None:
+    """Give initialization time to progress while servicing the COM apartment."""
+    import pythoncom
+
+    pythoncom.PumpWaitingMessages()
+    time.sleep(delay)
+
 
 def _office_pids(image: str) -> list[int]:
     """Take a strict snapshot: enumeration errors must never imply no process."""
@@ -157,8 +195,23 @@ def _start_office(
     if _office_pids(image):
         raise RuntimeError(f"Exclusive session requires no existing {image} process")
     started = time.time_ns() // 100 + 116444736000000000  # Windows FILETIME epoch
-    com = client.Dispatch(progid)
-    pids = _office_pids(image)
-    if len(pids) != 1:
-        raise RuntimeError(f"Cannot establish exclusive {image} process ownership")
-    return com, _OfficeSession(pids[0], image, started)
+    observed: set[int] = set()
+    try:
+        com = client.Dispatch(progid)
+        deadline = time.monotonic() + _START_TIMEOUT
+        while True:
+            pids = _office_pids(image)
+            observed.update(pids)
+            if len(pids) == 1:
+                # A candidate still needs its original image, creation time and
+                # process handle verified. Never retry a failed identity check
+                # against a replacement process or wait for ambiguity to clear.
+                return com, _OfficeSession(pids[0], image, started)
+            if len(pids) > 1:
+                raise RuntimeError("Multiple candidate processes appeared during activation")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"No process became visible within {_START_TIMEOUT:g} seconds")
+            _startup_pause(min(_START_POLL_INTERVAL, remaining))
+    except Exception as exc:
+        raise _OfficeStartupError(image, exc, observed) from exc
