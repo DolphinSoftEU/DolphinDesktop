@@ -2622,7 +2622,9 @@ def _find_under_wrapper(
 
     ``child_window`` is defined on ``WindowSpecification`` only, so a locator
     chained off ``_ResolvedLocator`` / ``_QtObjectNameLocator`` — or off any
-    fallback match — has to go through ``find_elements`` instead.
+    fallback match — has to go through ``find_elements`` instead. UIA providers
+    can omit realized virtualized items from that search, so use the same
+    TreeWalker fallback as the WindowSpecification path.
     """
     from pywinauto.findwindows import find_elements
 
@@ -2666,6 +2668,22 @@ def _find_under_wrapper(
                 return wrapper_cls(found[0])
         except Exception as exc:
             last_exc = exc
+        if backend_name == "uia" and not _deadline_expired(
+            deadline, timeout, enforce=enforce_deadline
+        ):
+            tree_result = _tree_walk_find(parent, criteria)
+            if tree_result is not None:
+                try:
+                    probe = getattr(tree_result, "is_visible", None)
+                    visible = (
+                        True if probe is None else bool(probe()) if callable(probe) else bool(probe)
+                    )
+                except Exception:
+                    visible = False
+                if (not visible_only or visible) and not _deadline_expired(
+                    deadline, timeout, enforce=enforce_deadline
+                ):
+                    return tree_result
         if timeout <= 0 or (enforce_deadline and time.monotonic() >= deadline):
             break
         time.sleep(0.1)
@@ -2701,7 +2719,10 @@ def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
     negative_matches: list[Any] = []
 
     try:
-        root_info = parent_spec.wrapper_object().element_info
+        parent = (
+            parent_spec.wrapper_object() if hasattr(parent_spec, "wrapper_object") else parent_spec
+        )
+        root_info = parent.element_info
     except Exception:
         return None
 
