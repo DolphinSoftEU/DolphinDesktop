@@ -1345,6 +1345,23 @@ def test_tn5250_recompute_read_screen_fields_and_local_typing(
     assert backend.is_keyboard_locked() is False
 
 
+@pytest.mark.parametrize("clear", [False, True])
+@pytest.mark.parametrize("secret", [False, True])
+def test_tn5250_field_typing_uses_default_text_validation(clear: bool, secret: bool) -> None:
+    """The shared preflight hook preserves native TN5250 field editing."""
+    backend = mf._Tn5250Backend(rows=2, cols=8, codepage="cp037")
+    backend._screen[0] = list("KEEPxxxx")
+    terminal = mf.MainframeTerminal(backend)
+
+    terminal.field(row=1, col=2, length=4).type_text(Secret("X") if secret else "X", clear=clear)
+
+    assert "".join(backend._screen[0]) == ("KX   xxx" if clear else "KXEPxxxx")
+    expected = [(1, 2, "    ".encode("cp037"))] if clear else []
+    expected.append((1, 2, "X".encode("cp037")))
+    assert backend._pending_writes == expected
+    assert backend._input_cursor == (1, 3)
+
+
 def test_tn5250_send_aid_pf_unknown_and_pending_writes() -> None:
     backend = mf._Tn5250Backend(rows=2, cols=5)
     sock = _Socket()
