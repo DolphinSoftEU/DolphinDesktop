@@ -561,6 +561,33 @@ def test_locator_all_propagates_unsupported_criteria_errors(depth, auto_id):
     assert search.call_args_list == expected_calls
 
 
+@pytest.mark.parametrize("depth", [None, 0, 20])
+def test_locator_all_propagates_type_error_reading_auto_id_during_local_filtering(depth):
+    error = TypeError("auto_id property read failed")
+
+    class BrokenInfo:
+        @property
+        def auto_id(self):
+            raise error
+
+    candidate = SimpleNamespace(element_info=BrokenInfo())
+    parent = FakeSpec()
+    search = Mock(side_effect=[TypeError("auto_id unsupported"), [candidate]])
+    if depth is None:
+        parent.children = search
+    else:
+        parent.descendants = search
+    locator = locator_module.Locator(
+        SimpleNamespace(_get_spec=Mock(return_value=parent)), auto_id="target"
+    )
+
+    with pytest.raises(TypeError, match="auto_id property read failed") as caught:
+        locator.all(depth=depth)
+
+    assert caught.value is error
+    assert search.call_count == 2
+
+
 def test_locator_count_propagates_unsupported_criteria_errors():
     parent = FakeSpec()
     parent.children = Mock(
