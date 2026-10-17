@@ -289,6 +289,10 @@ jobs:
     name: Build package
     runs-on: windows-latest
     needs: [unit, component-windows, package-linux, security, minimum-dependencies]
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      version: ${{ steps.version.outputs.version }}
+      manifest_sha256: ${{ steps.manifest.outputs.manifest_sha256 }}
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -343,11 +347,75 @@ jobs:
           CI_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: python .github/scripts/distribution_manifest.py create
 
+      - name: Verify recorded distribution hashes
+        id: manifest
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python .github/scripts/distribution_manifest.py verify
+
       - name: Upload package artifacts
+        id: upload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dolphin-desktop-dist-attempt-${{ github.run_attempt }}
           path: release-artifact/
+          if-no-files-found: error
+
+  package-platforms:
+    name: "Wheel install / ${{ matrix.os }} / Python ${{ matrix.python-version }}"
+    needs: package
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked verification tools
+        run: uv sync --locked --only-group build
+
+      - name: Download the exact CI distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          path: release-artifact
+
+      - name: Verify distribution identity and hashes
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+          MANIFEST_SHA256: ${{ needs.package.outputs.manifest_sha256 }}
+        run: python .github/scripts/distribution_manifest.py verify
+
+      - name: Install wheel normally and verify native import
+        env:
+          DOLPHIN_DESKTOP_VERSION: ${{ needs.package.outputs.version }}
+        run: >-
+          uv run --no-sync python .github/scripts/check_wheel_platform.py
+          --wheel-directory release-artifact/dist --output artifacts/wheel-platform
+
+      - name: Upload platform installation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-platform-${{ matrix.os }}-${{ matrix.python-version }}
+          path: artifacts/wheel-platform/
           if-no-files-found: error
 
   security:

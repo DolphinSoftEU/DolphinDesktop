@@ -22,6 +22,13 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Release wheel installation is checked with normal pip dependency resolution
+  on Linux, macOS and Windows for Python 3.11–3.13. All jobs consume the exact
+  CI artifact and verify its manifest before installing. Wheel metadata must
+  exclude `pywin32` and `comtypes` outside Windows and retain both on Windows;
+  import checks verify the non-Windows `RuntimeWarning`. Installation reports,
+  metadata and wheel hashes are retained for DESKTOP-008 retests (KAN-586).
+
 * Release requires a successful Windows smoke on the exact local wheel before
   publishing. CI and TestPyPI smoke install runtime dependencies from PyPI using
   `uv.lock` hashes and install DolphinDesktop separately without index resolution.

@@ -1,7 +1,7 @@
 # Releasing dolphin-desktop
 
 The release workflow publishes the exact wheel and sdist already built and
-smoke-tested by CI on Windows. It never rebuilds distributions. Production
+smoke-tested by CI on Windows, Linux and macOS. It never rebuilds distributions. Production
 requires a matching final `vX.Y.Z` tag; manual publication from `master`, preview
 or feature branches is rejected. TestPyPI permits `master`, `testpypi-preview`,
 and matching final/RC tags (`vX.Y.Z-rc.N` for `X.Y.ZrcN`). Tags use a reviewed
@@ -27,6 +27,45 @@ Required check names (must match CI job names):
 - `Build package`
 - `Security gate (CVE / secrets / SAST) / ubuntu-latest`
 - `Security gate (CVE / secrets / SAST) / windows-latest`
+
+Also require all nine `Wheel install / <runner> / Python <version>` checks,
+where `<runner>` is `ubuntu-latest`, `macos-latest` or `windows-latest`, and
+`<version>` is `3.11`, `3.12` or `3.13`. Each downloads the same distribution
+artifact by immutable artifact ID, verifies the originating SHA/run/attempt
+and manifest digest, then installs its wheel in a clean venv using normal pip
+dependency resolution. The release validator requires these exact checks on
+the release SHA, including when the overall workflow reports success.
+
+## Release wheel retest (KAN-586 / DESKTOP-008)
+
+Source markers or an installed development version do not prove the metadata
+of a release artifact. Retest the approved wheel itself on each native platform
+and Python 3.11–3.13, keeping its exact version and SHA-256 with the results:
+
+```bash
+uv sync --locked --only-group build
+uv run --no-sync python .github/scripts/check_wheel_platform.py \
+  --wheel /path/to/dolphin_desktop-0.2.0-py3-none-any.whl \
+  --expected-version 0.2.0 --output artifacts/wheel-platform
+```
+
+Alternatively, set `DOLPHIN_DESKTOP_WHEEL` and `DOLPHIN_DESKTOP_VERSION` and
+pass only `--output`. The check rejects a development wheel for a requested
+final version, and rejects the old 0.2.0 metadata with unconditional Windows
+dependencies. It records `METADATA`, pip's `install.json`, `commands.log`,
+`import.json` and a successful `result.json` with the wheel hash and installed
+versions. CI retains these as `wheel-platform-<runner>-<python>` artifacts.
+No runtime dependencies are preinstalled from the lock, and `--no-deps` is not
+used, so an installation failure cannot be hidden by the test environment.
+
+A locally rebuilt 0.2.0 wheel is a candidate until reviewed and approved; it
+does not change a previously distributed wheel with the same version. If 0.2.0
+has already been published, ship the correction under a new release version
+through the existing release process. Native Linux/macOS results are required
+before closing the artifact acceptance criteria. The import implementation is
+covered separately by KAN-465; this gate checks that installation reaches it.
+
+## Release tagging and environments
 
 Create an active tag ruleset matching `refs/tags/v*.*.*` with update and deletion
 restrictions and an empty bypass list. A separate creation ruleset must restrict
