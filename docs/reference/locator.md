@@ -59,6 +59,16 @@ loc.get_attribute("automation_id")        # raises AttributeError if unpublished
 loc.get_attribute("automation_id", None)  # returns the default instead
 ```
 
+`bounding_box()` returns exactly `{"x": x, "y": y, "width": width, "height": height}`,
+as do `Window`, Delphi and Java Access Bridge wrappers. `x` and `y` are absolute
+screen coordinates and may be negative on a multi-monitor desktop. Width and
+height are dimensions, not right/bottom edges. Queries do not interact with the
+element.
+
+When migrating consumers of the former `left`/`top`/`right`/`bottom` keys, use
+`x` for `left`, `y` for `top`, `x + width` for `right`, and `y + height` for
+`bottom`. Do not require the legacy keys alongside the four current keys.
+
 Attribute names are the snake_case ones pywinauto's `element_info` exposes
 (`automation_id`, `class_name`, `control_type`, `name`, `rich_text`), not the
 PascalCase UIA property names. A name the element does not publish raises

@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Bounding-box consumer tests now use the established `{x, y, width, height}`
+  contract, including the DESKTOP-054 retest and related window, screenshot,
+  movement and mouse scenarios in `dolphin-desktop.ta`. Locator documentation
+  explains how to derive the former edge keys; regression tests cover negative
+  screen coordinates, read-only queries and real UIA bounds (KAN-637).
+
 * s3270 rejects host control characters before whitespace normalization and
   process creation, including a trailing CR and the `L:` TLS prefix. KAN-631
   regression coverage checks immediate/deferred public connections, rejected

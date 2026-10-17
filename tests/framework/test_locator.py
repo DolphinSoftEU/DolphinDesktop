@@ -1885,6 +1885,26 @@ def test_focus_scroll_text_value_and_queries():
     }
 
 
+@pytest.mark.parametrize(
+    ("left", "top", "right", "bottom"),
+    [(10, 20, 110, 70), (-120, -80, -20, -30), (0, 0, 0, 0)],
+)
+def test_bounding_box_preserves_absolute_xywh_without_interaction(left, top, right, bottom):
+    element = FakeElement(visible=False, enabled=False)
+    element.rectangle = Mock(
+        return_value=SimpleNamespace(left=left, top=top, right=right, bottom=bottom)
+    )
+    element.set_focus = Mock()
+
+    assert resolved(element).bounding_box() == {
+        "x": left,
+        "y": top,
+        "width": right - left,
+        "height": bottom - top,
+    }
+    element.set_focus.assert_not_called()
+
+
 def test_exists_waits_and_bounding_box_error_safe_queries():
     loc = resolved(FakeElement())
     assert loc.exists() is True

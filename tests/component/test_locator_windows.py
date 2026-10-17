@@ -44,6 +44,23 @@ def test_real_locator_uses_a_fallback_selector(real_window) -> None:
     assert locator.text() == "Cancel"
 
 
+def test_real_bounding_boxes_share_xywh_without_interaction(real_window) -> None:
+    status = real_window.locator(auto_id=str(ID_STATUS))
+    before = status.text()
+    window_box = real_window.bounding_box()
+    box = real_window.locator(auto_id=str(ID_OK)).bounding_box()
+
+    for bounds in (window_box, box):
+        assert set(bounds) == {"x", "y", "width", "height"}
+        assert all(isinstance(value, int) for value in bounds.values())
+        assert bounds["width"] > 0 and bounds["height"] > 0
+    assert window_box["x"] <= box["x"]
+    assert window_box["y"] <= box["y"]
+    assert box["x"] + box["width"] <= window_box["x"] + window_box["width"]
+    assert box["y"] + box["height"] <= window_box["y"] + window_box["height"]
+    assert status.text() == before
+
+
 def test_real_locator_collection_filters_uia_auto_id_after_backend_fallback(real_window) -> None:
     matches = real_window.locator(auto_id=str(ID_CANCEL)).all(depth=5)
 
