@@ -29,7 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
-        profile: [base, all-extras]
+        profile: [base, fast, vision, cdp, docs, telemetry, pytest, all, all-extras]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -58,6 +58,7 @@ jobs:
           $wheel = (Get-ChildItem artifacts/minimum/dist/*.whl).FullName
           $options = @()
           if ($env:PROFILE -eq "all-extras") { $options += "--all-extras" }
+          elseif ($env:PROFILE -ne "base") { $options += @("--extra", $env:PROFILE) }
           uv run --no-sync python .github/scripts/check_minimum_dependencies.py --wheel $wheel --output artifacts/minimum/evidence @options
 
       - name: Upload minimum installation and audit evidence

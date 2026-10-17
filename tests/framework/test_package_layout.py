@@ -78,7 +78,7 @@ def test_windows_only_dependencies_are_limited_to_windows(pyproject_text: str):
     }
 
     assert windows_only == {
-        "comtypes": 'comtypes>=1.4; platform_system == "Windows"',
+        "comtypes": 'comtypes>=1.4.8; platform_system == "Windows"',
         "pywin32": 'pywin32>=306; platform_system == "Windows"',
     }
 

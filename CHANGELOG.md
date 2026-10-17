@@ -144,6 +144,10 @@ Addresses further findings from a follow-up security review
   installation/smoke logs and audit JSON for retesting (KAN-581).
   The compatibility check also raises `comtypes` to `>=1.4.8` for Python 3.13
   support and `opencv-python` to `>=4.10.0.84` for NumPy 2 support.
+  Each extra, including aggregate `all`, is also resolved and audited
+  independently. Smoke checks verify the installed CLI and pytest entry-point
+  registration; wheel parsing has unit coverage for platform/Python markers,
+  extra selection and recursive self-references.
 * **Secret redaction gap closed for `login`/`username`/`connection_string`/
   `clipboard`.** These keys were not masked when they appeared in a
   dict-repr shape (e.g. inside an `ElementNotFoundError` message built from

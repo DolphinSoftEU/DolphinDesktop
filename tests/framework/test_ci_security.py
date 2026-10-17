@@ -66,7 +66,17 @@ def test_minimum_installations_block_distribution(name: str) -> None:
     assert job["runs-on"] == "windows-latest"
     assert job["strategy"]["matrix"] == {
         "python-version": ["3.11", "3.12", "3.13"],
-        "profile": ["base", "all-extras"],
+        "profile": [
+            "base",
+            "fast",
+            "vision",
+            "cdp",
+            "docs",
+            "telemetry",
+            "pytest",
+            "all",
+            "all-extras",
+        ],
     }
     assert "if" not in job and "continue-on-error" not in job
     for step in job["steps"]:
@@ -77,6 +87,7 @@ def test_minimum_installations_block_distribution(name: str) -> None:
     assert "uv sync --locked --only-group build --only-group security" in commands
     assert "check_minimum_dependencies.py" in commands
     assert "--all-extras" in commands
+    assert '"--extra", $env:PROFILE' in commands
     upload = next(s for s in job["steps"] if s.get("name", "").startswith("Upload"))
     assert upload["if"] == "always()"
     assert upload["with"]["path"] == "artifacts/minimum/"
