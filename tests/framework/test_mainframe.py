@@ -565,6 +565,46 @@ def test_kan631_public_host_rejected_before_process_creation(
     assert proc.stdin.writes == []
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "host\r",
+        "host\nQuit()",
+        "host\r\nScript(boom)",
+        "host)Quit()",
+        "host)Script(boom)",
+        "host\x00",
+        "L:host\r",
+        "L:host)Script(boom)",
+    ],
+)
+@pytest.mark.parametrize("entry_point", ["backend", "immediate", "deferred"])
+def test_kan632_host_payload_rejected_without_process_or_stdin(
+    monkeypatch: pytest.MonkeyPatch, host: str, entry_point: str
+) -> None:
+    """DESKTOP-199 retest: reject raw CR and action syntax on every connect path."""
+    proc = _Process()
+    popen = Mock(return_value=proc)
+    monkeypatch.setattr(mf.subprocess, "Popen", popen)
+    options = {
+        "backend": "s3270",
+        "ws3270_path": "fake-s3270.exe",
+        "allow_plaintext": True,
+    }
+    desktop = Desktop(hidden=False)
+    with pytest.raises(mf.MainframeError, match="invalid host"):
+        if entry_point == "backend":
+            backend = mf._S3270Backend(binary="fake-s3270.exe", allow_plaintext=True)
+            backend.connect(host, 23, session_type="3270")
+        elif entry_point == "immediate":
+            desktop.mainframe(host=host, **options)
+        else:
+            term = desktop.mainframe(connect=False, **options)
+            term.connect(host, 23, session_type="3270")
+    popen.assert_not_called()
+    assert proc.stdin.writes == []
+
+
 @pytest.mark.parametrize("control", _S3270_CONTROLS)
 @pytest.mark.parametrize("secret", [False, True])
 def test_kan631_public_text_rejected_before_stdin(control: str, secret: bool) -> None:

@@ -28,6 +28,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   text without stdin writes, and one escaped record per printable text input.
   `TerminalField.type_text()` validates s3270 text before moving the cursor or
   clearing the field, so invalid input leaves the terminal untouched.
+  KAN-632 / DESKTOP-199 retest coverage also verifies trailing CR and
+  `Quit()`/`Script(...)` host payloads before process creation or stdin writes
+  through direct backend, immediate public and deferred public connections.
 
 * `Locator.all()` and `count()` propagate backend `TypeError` for unsupported
   search criteria instead of returning an empty result, including errors during
