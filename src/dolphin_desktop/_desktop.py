@@ -1156,7 +1156,8 @@ class Desktop:
                 TN3270/TN5250 gateway. Ignored when ``backend='hllapi'`` (the
                 emulator manages the connection). x3270 host prefixes are not
                 passed through; ``L:`` is accepted as a synonym for
-                ``tls=True``.
+                ``tls=True``. Control characters, including leading or trailing
+                CR/LF, are rejected before the s3270 process starts.
             port: TCP port. 23 (telnet) is standard for 3270/5250 hosts,
                 992 for TLS.
             session_type: ``"3270"`` for zSeries / z/OS, ``"5250"`` for

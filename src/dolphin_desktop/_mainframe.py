@@ -2637,6 +2637,10 @@ class MainframeTerminal:
         Pass a :class:`~dolphin_desktop.Secret` for a password: the backend
         receives the real characters, while every log, trace and report masks
         the value.
+
+        The s3270 backend accepts printable text only. Control characters
+        raise :class:`MainframeError` before writing to the emulator. Use
+        :meth:`press` to send an AID key such as Enter.
         """
         self._backend.send_string(text)
 
