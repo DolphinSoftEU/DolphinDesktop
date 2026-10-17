@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from packaging import markers
 
 pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,8 +38,16 @@ def wheel(tmp_path):
     return create
 
 
-@pytest.mark.parametrize("marker", ['platform_system == "Windows"', 'sys_platform == "win32"'])
-def test_built_wheel_markers_allow_only_windows_across_supported_pythons(wheel, marker):
+@pytest.mark.parametrize(
+    "marker", ['platform_system == "Windows"', 'sys_platform == "win32"', 'os_name == "nt"']
+)
+@pytest.mark.parametrize("host_os_name", ["nt", "posix"])
+def test_built_wheel_markers_allow_only_windows_across_supported_pythons(
+    wheel, marker, host_os_name, monkeypatch
+):
+    environment = markers.default_environment()
+    environment["os_name"] = host_os_name
+    monkeypatch.setattr(markers, "default_environment", lambda: environment.copy())
     path = wheel([f"{name}>=1; {marker}" for name in ("comtypes", "pywin32")])
     assert b"Requires-Dist:" in validate(path, "0.2.0")
 
@@ -137,6 +146,9 @@ def test_platform_matrix_installs_exact_publishable_artifact_and_gates_release()
     steps = job["steps"]
     download = next(step for step in steps if "download-artifact@" in step.get("uses", ""))
     assert download["with"]["artifact-ids"] == "${{ needs.package.outputs.artifact_id }}"
+    # download-artifact v4 otherwise nests ID-selected artifacts by name.
+    assert download["with"]["merge-multiple"] == "true"
+    assert download["with"]["path"] == "release-artifact"
     assert package["outputs"]["artifact_id"] == "${{ steps.upload.outputs.artifact-id }}"
     commands = [step.get("run", "") for step in steps]
     assert not any("-m build" in command for command in commands)

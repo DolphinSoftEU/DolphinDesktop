@@ -81,6 +81,7 @@ def validate_metadata(wheel: Path, expected_version: str) -> bytes:
                         {
                             "platform_system": system,
                             "sys_platform": sys_platform,
+                            "os_name": "nt" if system == "Windows" else "posix",
                             "python_version": python,
                             "python_full_version": python + ".0",
                             "extra": extra,

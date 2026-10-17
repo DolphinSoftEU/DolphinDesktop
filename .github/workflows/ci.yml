@@ -394,6 +394,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.package.outputs.artifact_id }}
           path: release-artifact
+          merge-multiple: true
 
       - name: Verify distribution identity and hashes
         env:
