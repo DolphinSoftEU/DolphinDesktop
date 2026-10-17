@@ -134,15 +134,23 @@ the headline **capabilities** it exposes (against the
 | Capabilities  | Same as TN3270                                                     |
 | Limitations   | Read-side full; write-side WSF handshake missing on some IBM i releases. |
 
-### Office (Excel / Word / PowerPoint / Outlook)
+### Office COM (Excel / Word / PowerPoint / classic Outlook)
 
 | Field         | Value                                                              |
 | ------------- | ------------------------------------------------------------------ |
-| Primary       | Office COM automation (in-process, not a `Backend` registry entry) |
+| Primary       | Office COM automation through public `ExcelApp`, `WordApp`, `PowerPointApp`, `OutlookApp` facades (not `Backend` registry entries) |
 | Alt           | `uia` for the ribbon / task-pane UI when COM cannot reach a dialog |
 | Modes         | Launch, Attach                                                     |
-| Capabilities  | LOCATE (workbook / worksheet / range), READ_TEXT, TYPE_TEXT (cell values), SET_VALUE, INVOKE (macros), SCREENSHOT via UIA |
-| Limitations   | Office COM is a domain API — not exposed via the generic `Backend` interface. Uses its own `ExcelApp.open(path)` / `ExcelApp.connect()` / `WordApp` facades. Modeless dialogs (e.g. AutoCorrect prompts) still routed through UIA. |
+| Capabilities  | Excel: workbook / worksheet / cell / range access, values and formulas, save. Word: document text, find and replace, save. PowerPoint: create/open presentations, slides, shape text, save, PDF. Outlook: create/read mail and appointments, recipients, attachments, folders, save MSG, explicit mail send. SCREENSHOT via UIA. |
+| Limitations   | Domain API, separate from generic `Backend` capabilities. PowerPoint/Outlook share application sessions; cleanup closes only wrapper-owned documents/items and never quits the shared process. Outlook requires classic Outlook and a configured MAPI profile; new Outlook has no supported COM facade. Dialogs and ribbon UI use UIA/Win32. |
+
+See the [Office guide](guides/office.md) and [COM API reference](reference/office.md).
+DESKTOP-232 / DESKTOP-233 can check these four exports against the public API.
+Real COM acceptance for DESKTOP-240 (PowerPoint) and DESKTOP-241 (Outlook)
+belongs in the separate `dolphin-desktop.ta` automation repository, using the
+public API on Windows with the corresponding applications installed.
+A missing COM server or Outlook profile is a skip, not a real COM PASS.
+Unit stand-ins in this library do not establish real-stack PASS.
 
 ### Image fallback
 

@@ -1,6 +1,11 @@
-﻿# Excel / Word (Office COM)
+﻿# Excel / Word / PowerPoint / Outlook (Office COM)
 
 Office automation via `win32com.client`. Requires Microsoft Office to be installed.
+
+The public COM entry points are `ExcelApp`, `WordApp`, `PowerPointApp` and
+`OutlookApp`, exported from `dolphin_desktop`. Outlook requires classic Outlook
+and a configured MAPI profile. Ribbon controls and dialogs use UIA/Win32
+separately; see the [Support Matrix](../support-matrix.md#office-com-excel-word-powerpoint-classic-outlook).
 
 ---
 
@@ -45,6 +50,46 @@ Office automation via `win32com.client`. Requires Microsoft Office to be install
 ::: dolphin_desktop._office.WordDocument
 
 ---
+
+## PowerPointApp
+
+::: dolphin_desktop._powerpoint.PowerPointApp
+
+## PowerPointPresentation
+
+::: dolphin_desktop._powerpoint.PowerPointPresentation
+
+## PowerPointSlide
+
+::: dolphin_desktop._powerpoint.PowerPointSlide
+
+## PowerPointShape
+
+::: dolphin_desktop._powerpoint.PowerPointShape
+
+## OutlookApp
+
+::: dolphin_desktop._outlook.OutlookApp
+
+## OutlookMail
+
+::: dolphin_desktop._outlook.OutlookMail
+    options:
+      inherited_members: true
+
+## OutlookAppointment
+
+::: dolphin_desktop._outlook.OutlookAppointment
+    options:
+      inherited_members: true
+
+## OutlookFolder
+
+::: dolphin_desktop._outlook.OutlookFolder
+
+## OutlookAttachment
+
+::: dolphin_desktop._outlook.OutlookAttachment
 
 ## Quick reference
 

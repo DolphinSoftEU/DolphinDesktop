@@ -76,8 +76,13 @@ app.kill()
 | **HLLAPI** (PCOMM, Attachmate, Rocket)      | ctypes binding to `EHLAPI32.DLL`                       | *(base + emulator)*         |
 | **Delphi / VCL** (RAD Studio, Lazarus)      | UIA + Delphi-aware locator with 5 strategies           | *(base)*                    |
 | **PowerBuilder** (2019+ Appeon)             | UIA + OCR fallback for DataWindow                      | *(base; `[vision]` for OCR)* |
-| Office (Excel / Word)                       | COM Automation via pywin32                             | *(base + Office)*           |
+| Office (Excel / Word / PowerPoint / classic Outlook) | COM Automation via pywin32                     | *(base + Office)*           |
 | Image-based fallback                        | OpenCV template match + Tesseract OCR                  | `[vision]`                  |
+
+Office COM provides public `ExcelApp`, `WordApp`, `PowerPointApp` and `OutlookApp`
+facades. Outlook requires classic Outlook with a configured MAPI profile.
+Ribbon controls and dialogs use UIA/Win32 separately; see the
+[Support Matrix](docs/support-matrix.md#office-com-excel-word-powerpoint-classic-outlook).
 
 Every backend shares the same design: **lazy locators, auto-waiting,
 readable assertions.**

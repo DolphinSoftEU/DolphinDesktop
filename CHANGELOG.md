@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Added public `PowerPointApp` and `OutlookApp` COM facades to match the Office
+  Support Matrix: presentations, slides, editable text, PDF export; classic
+  Outlook mail, recipients, attachments, folders, appointments and local MSG
+  persistence. Shared sessions and existing documents/items remain untouched
+  on context exit. Added unit tests for the COM contract (KAN-659).
+
 * Bounding-box consumer tests now use the established `{x, y, width, height}`
   contract, including the DESKTOP-054 retest and related window, screenshot,
   movement and mouse scenarios in `dolphin-desktop.ta`. Locator documentation

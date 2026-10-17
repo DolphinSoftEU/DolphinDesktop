@@ -1,6 +1,15 @@
 # Office
 
-Dolphin automates Excel and Word through COM wrappers. These helpers require Microsoft Office and pywin32 on Windows.
+Dolphin automates Excel, Word, PowerPoint and classic Outlook through COM wrappers.
+These helpers require the corresponding Microsoft Office applications and pywin32 on Windows.
+
+## Supported applications
+
+The dedicated Office COM API exports `ExcelApp`, `WordApp`, `PowerPointApp`
+and `OutlookApp` from `dolphin_desktop`. Outlook requires classic Outlook with
+an existing configured MAPI profile; new Outlook is outside this COM API.
+Ribbon controls and dialogs still use the generic `Desktop` UIA/Win32 API.
+See the [Support Matrix](../support-matrix.md#office-com-excel-word-powerpoint-classic-outlook).
 
 ## Macro security
 
@@ -149,6 +158,75 @@ with WordApp.connect() as wd:
 
 A connected instance is left running when the block exits — see the note
 above.
+
+## PowerPoint
+
+```python
+from dolphin_desktop import PowerPointApp
+
+with PowerPointApp.create(visible=False) as ppt:
+    presentation = ppt.active_presentation
+    slide = presentation.add_slide()  # blank layout, appended at the end
+    caption = slide.add_textbox("Quarterly report")
+    caption.text = "Quarterly report — reviewed"
+    presentation.save_as("report.pptx")
+    presentation.export_pdf("report.pdf")
+
+with PowerPointApp.open("report.pptx", visible=False) as ppt:
+    print(ppt.active_presentation.slide(1).shape(1).text)
+```
+
+Slide and shape indexes are 1-based; shapes can also be selected by name.
+`open()` disables VBA macros by default and restores the previous
+`AutomationSecurity` setting after opening, including on failure. As with the
+other Office wrappers, `allow_macros=True` is an explicit opt-in for trusted
+files; Office policies still apply. This is not a sandbox for linked content.
+Opening a presentation already open in PowerPoint raises `RuntimeError` so the
+wrapper cannot accidentally take ownership of the operator's document.
+
+PowerPoint is a shared COM server. `connect()` attaches to its active
+presentation; `open()` / `create()` expose the presentation they opened/created
+even when it has no window. `quit()` and context exit close only those owned
+presentations, leaving the PowerPoint process running. Save explicitly or use
+`quit(save_changes=True)` to retain changes. Failed saves/closes raise and keep
+the affected presentation available for retry.
+
+## Classic Outlook
+
+```python
+from dolphin_desktop import OutlookApp, OutlookMail
+
+with OutlookApp.start() as outlook:  # starts or reuses classic Outlook
+    draft = outlook.create_mail(subject="Local report", body="Review the attachment.")
+    draft.add_attachment("report.pdf")
+    draft.save_as("report.msg")  # local file only; does not send
+
+with OutlookApp.start() as outlook:
+    mail = outlook.open_item("report.msg")
+    assert isinstance(mail, OutlookMail)
+    print(mail.subject, mail.body)
+    mail.attachment(1).save_as("report-copy.pdf")
+    print(outlook.default_folder("inbox").item_count)
+```
+
+`connect()` requires an already running classic Outlook session. `start()` may
+reuse the operator's session; neither method logs on/off or configures profiles.
+Folders support `item(1)` and `folder("Child")`; supported default folder names
+are `inbox`, `drafts`, `sent`, `deleted`, `calendar`, or an `OlDefaultFolders`
+integer. Items other than mail and appointments raise `TypeError` on lookup.
+
+`create_appointment(subject=...)` returns a calendar item with editable `start`
+and `end` Python datetimes (Outlook local time), `location`, `subject` and `body`.
+It can be saved to a local MSG file or explicitly persisted to the calendar
+with `save()`. Creating/saving appointments does not send invitations.
+
+Mail supports `to`, `cc`, `bcc`, `subject`, `body`, `html_body` and attachments.
+`save()` stores a draft; only an explicit `mail.send()` sends a message using
+Outlook's configured account. Outlook security prompts/policies remain active.
+Context exit and `quit()` discard unsaved changes to only the items created or
+opened here; saved drafts/appointments remain saved. Items retrieved from
+existing folders are not automatically closed. The shared Outlook application
+is never quit. Failed saves/closes raise and retain the affected items for retry.
 
 ## Combining UI And Office Checks
 
