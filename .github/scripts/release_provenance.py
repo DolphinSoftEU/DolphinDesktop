@@ -24,6 +24,11 @@ REQUIRED_JOBS = {
     "Build package",
     "Security gate (CVE / secrets / SAST) / ubuntu-latest",
     "Security gate (CVE / secrets / SAST) / windows-latest",
+    *{
+        f"Wheel install / {system} / Python {python}"
+        for system in ("ubuntu-latest", "macos-latest", "windows-latest")
+        for python in ("3.11", "3.12", "3.13")
+    },
 }
 
 
@@ -285,7 +290,7 @@ def select_artifact(api: GitHub, repository: str, sha: str, branch: str) -> dict
         and job.get("conclusion") == "success"
     }
     if not REQUIRED_JOBS <= passed:
-        raise ValueError("Required Windows CI/security jobs did not pass for this SHA")
+        raise ValueError("Required CI/security/platform jobs did not pass for this SHA")
     artifacts = api.pages(f"/actions/runs/{run['id']}/artifacts", "artifacts")
     name = f"dolphin-desktop-dist-attempt-{run['run_attempt']}"
     artifacts = [a for a in artifacts if a["name"] == name]

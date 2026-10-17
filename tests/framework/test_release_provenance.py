@@ -214,6 +214,20 @@ def test_unverified_ci_or_artifact_cannot_be_selected(change):
         policy["select_artifact"](api, REPO, SHA, "master")
 
 
+@pytest.mark.parametrize("system", ["ubuntu-latest", "macos-latest", "windows-latest"])
+@pytest.mark.parametrize("python", ["3.11", "3.12", "3.13"])
+@pytest.mark.parametrize("outcome", ["missing", "skipped", "failure"])
+def test_every_native_wheel_check_must_pass_before_artifact_selection(system, python, outcome):
+    api = API()
+    name = f"Wheel install / {system} / Python {python}"
+    if outcome == "missing":
+        api.jobs = [job for job in api.jobs if job["name"] != name]
+    else:
+        next(job for job in api.jobs if job["name"] == name)["conclusion"] = outcome
+    with pytest.raises(ValueError, match="Required CI/security/platform jobs"):
+        policy["select_artifact"](api, REPO, SHA, "master")
+
+
 def test_latest_failed_run_cannot_fall_back_to_old_success():
     api = API()
     older = deepcopy(api.run)
