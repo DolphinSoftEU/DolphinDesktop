@@ -578,6 +578,40 @@ def test_kan631_public_text_rejected_before_stdin(control: str, secret: bool) ->
     assert proc.stdin.writes == []
 
 
+@pytest.mark.parametrize("control", _S3270_CONTROLS)
+@pytest.mark.parametrize("secret", [False, True])
+@pytest.mark.parametrize("clear", [False, True])
+def test_kan631_field_text_rejected_before_cursor_or_clear(
+    control: str, secret: bool, clear: bool
+) -> None:
+    proc = _Process([b"ok\n"] * 4)
+    backend = mf._S3270Backend(binary="fake-s3270.exe")
+    backend._proc = proc
+    field = mf.MainframeTerminal(backend).field(row=2, col=3, length=8)
+    payload = f"hello{control}Script(boom)"
+    with pytest.raises(mf.MainframeError, match=r"s3270 text.*control character"):
+        field.type_text(Secret(payload) if secret else payload, clear=clear)
+    assert proc.stdin.writes == []
+
+
+@pytest.mark.parametrize("secret", [False, True])
+@pytest.mark.parametrize("clear", [False, True])
+def test_kan631_field_printable_text_keeps_cursor_and_clear_sequence(
+    secret: bool, clear: bool
+) -> None:
+    proc = _Process([b"ok\n"] * 4)
+    backend = mf._S3270Backend(binary="fake-s3270.exe")
+    backend._proc = proc
+    field = mf.MainframeTerminal(backend).field(row=2, col=3, length=8)
+    payload = 'a"b\\c'
+    field.type_text(Secret(payload) if secret else payload, clear=clear)
+    expected = [b"MoveCursor(1,2)\n"]
+    if clear:
+        expected += [b'String("        ")\n', b"MoveCursor(1,2)\n"]
+    expected.append(b'String("a\\"b\\\\c")\n')
+    assert proc.stdin.writes == expected
+
+
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [

@@ -26,6 +26,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   process creation, including a trailing CR and the `L:` TLS prefix. KAN-631
   regression coverage checks immediate/deferred public connections, rejected
   text without stdin writes, and one escaped record per printable text input.
+  `TerminalField.type_text()` validates s3270 text before moving the cursor or
+  clearing the field, so invalid input leaves the terminal untouched.
 
 * `Locator.all()` and `count()` propagate backend `TypeError` for unsupported
   search criteria instead of returning an empty result, including errors during
