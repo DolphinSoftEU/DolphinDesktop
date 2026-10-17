@@ -1009,7 +1009,7 @@ class TestPredicatesSeeWhatClickSees:
 
         calls: list = []
 
-        def _spy(*args):
+        def _spy(*args, **kwargs):
             calls.append(args)
             return result
 

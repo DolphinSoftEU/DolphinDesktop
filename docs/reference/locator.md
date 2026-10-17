@@ -105,6 +105,19 @@ third = loc.nth(2)
 n = loc.count()
 ```
 
+Negative indices count from the end (`loc.nth(-1)` selects the last match).
+For UIA searches under an already resolved wrapper, selectors using exact
+`title`, `control_type`, and/or `auto_id` resolve negative indices by enumerating
+the entire realized TreeWalker subtree in depth-first order. This includes
+matches omitted by FindAll, but does not realize virtualized items itself.
+Visible searches filter hidden matches before indexing; presence searches
+include them. An interrupted enumeration fails rather than selecting from a
+partial result. Other selectors and backends use pywinauto's search results.
+
+TreeWalker checks a positive timeout's deadline between nodes and provider
+calls. An individual COM call can still block beyond that deadline.
+`timeout(0)` performs one attempt without a wall-clock limit on that attempt.
+
 ## Chaining
 
 ```python

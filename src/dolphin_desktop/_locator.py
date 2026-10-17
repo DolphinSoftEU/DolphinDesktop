@@ -865,13 +865,15 @@ class Locator:
                 self._timeout,
                 enforce=enforce_deadline,
             ):
-                tree_result = _tree_walk_find(parent_spec, self._criteria)
+                tree_result = _tree_walk_find(
+                    parent_spec,
+                    self._criteria,
+                    visible_only=True,
+                    deadline=deadline if enforce_deadline else None,
+                )
                 if tree_result is not None:
-                    # TreeWalker can find controls that FindAll misses, but
-                    # it does not enforce the visible-state contract used by
-                    # actions and wait_for(state="visible").  Do not return a
-                    # hidden wrapper as if it were ready; continue polling so
-                    # click() waits for the control to become visible.
+                    # Recheck readiness after the walk: the provider may have
+                    # changed the control's visibility during enumeration.
                     try:
                         visibility_probe = getattr(tree_result, "is_visible", None)
                         tree_result_is_visible = (
@@ -1729,7 +1731,11 @@ class Locator:
                 self._timeout,
                 enforce=enforce_deadline,
             ):
-                tree_result = _tree_walk_find(parent_spec, self._criteria)
+                tree_result = _tree_walk_find(
+                    parent_spec,
+                    self._criteria,
+                    deadline=deadline if enforce_deadline else None,
+                )
                 if tree_result is not None and not _deadline_expired(
                     deadline,
                     self._timeout,
@@ -2588,7 +2594,9 @@ def _resolve_negative_found_index(
             timeout,
             enforce=enforce_deadline,
         ):
-            tree_result = _tree_walk_find(parent_spec, criteria)
+            tree_result = _tree_walk_find(
+                parent_spec, criteria, deadline=deadline if enforce_deadline else None
+            )
             if tree_result is not None and not _deadline_expired(
                 deadline,
                 timeout,
@@ -2622,7 +2630,9 @@ def _find_under_wrapper(
 
     ``child_window`` is defined on ``WindowSpecification`` only, so a locator
     chained off ``_ResolvedLocator`` / ``_QtObjectNameLocator`` — or off any
-    fallback match — has to go through ``find_elements`` instead.
+    fallback match — has to go through ``find_elements`` instead. UIA providers
+    can omit realized virtualized items from that search, so use the same
+    TreeWalker fallback as the WindowSpecification path.
     """
     from pywinauto.findwindows import find_elements
 
@@ -2639,6 +2649,16 @@ def _find_under_wrapper(
         enforce_deadline = timeout > 0
     last_exc: Exception | None = None
     negative_index = int(criteria["found_index"]) if _is_negative_found_index(criteria) else None
+    # For supported UIA selectors, index the complete realized TreeWalker tree,
+    # not a potentially nonempty but incomplete FindAll result. Other backends
+    # and selectors retain pywinauto's enumeration semantics.
+    tree_index = (
+        negative_index is not None
+        and backend_name == "uia"
+        and set(criteria) <= _TREE_WALK_KEYS
+        and any(criteria.get(key) for key in ("title", "control_type", "auto_id"))
+        and callable(getattr(getattr(parent, "element_info", None), "children", None))
+    )
     search_criteria = (
         {key: value for key, value in criteria.items() if key != "found_index"}
         if negative_index is not None
@@ -2656,16 +2676,34 @@ def _find_under_wrapper(
                 visible_only=visible_only,
                 **search_criteria,
             )
-            if negative_index is not None:
+            if negative_index is not None and not tree_index:
                 resolved_index = len(found) + negative_index
                 if 0 <= resolved_index < len(found) and (
                     not enforce_deadline or time.monotonic() < deadline
                 ):
                     return wrapper_cls(found[resolved_index])
-            elif found and (not enforce_deadline or time.monotonic() < deadline):
+            elif (
+                negative_index is None
+                and found
+                and (not enforce_deadline or time.monotonic() < deadline)
+            ):
                 return wrapper_cls(found[0])
         except Exception as exc:
             last_exc = exc
+        if backend_name == "uia" and not _deadline_expired(
+            deadline, timeout, enforce=enforce_deadline
+        ):
+            tree_result = _tree_walk_find(
+                parent,
+                criteria,
+                visible_only=visible_only,
+                deadline=deadline if enforce_deadline else None,
+                max_depth=None if tree_index else 8,
+            )
+            if tree_result is not None and not _deadline_expired(
+                deadline, timeout, enforce=enforce_deadline
+            ):
+                return tree_result
         if timeout <= 0 or (enforce_deadline and time.monotonic() >= deadline):
             break
         time.sleep(0.1)
@@ -2674,13 +2712,24 @@ def _find_under_wrapper(
     ) from last_exc
 
 
-def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
+def _tree_walk_find(
+    parent_spec: Any,
+    criteria: dict[str, Any],
+    *,
+    visible_only: bool = False,
+    deadline: float | None = None,
+    max_depth: int | None = 8,
+) -> Any | None:
     """Find an element via UIAElementInfo.children() (IUIAutomation::TreeWalker).
 
     pywinauto's child_window()/descendants() use IUIAutomation::FindAll which
     misses elements only reachable via TreeWalker, e.g. toolbar buttons inside
     Win32 ToolbarWindow32 controls.  This fallback uses UIAElementInfo.children()
     which calls TreeWalker internally and can reach those elements.
+    Filter visibility before indexing matches. A supplied absolute deadline is
+    checked between nodes and provider calls; a single COM call can still block.
+    ``max_depth=None`` enumerates the full realized tree for negative indices.
+    An interrupted enumeration never yields a partial negative-index result.
     Returns a pywinauto wrapper on success, or None.
     """
     # Only ``title``, ``control_type`` and ``auto_id`` can be evaluated against
@@ -2697,62 +2746,89 @@ def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
     # ``nth()`` merges found_index into the criteria; skipping that many
     # matches here keeps .nth(N) with the same fallbacks as the bare locator.
     found_index = int(criteria.get("found_index", 0) or 0)
-    remaining = [found_index]
+    remaining = found_index
     negative_matches: list[Any] = []
 
+    def expired() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    if expired() or (max_depth is not None and max_depth <= 0):
+        return None
     try:
-        root_info = parent_spec.wrapper_object().element_info
+        parent = (
+            parent_spec.wrapper_object() if hasattr(parent_spec, "wrapper_object") else parent_spec
+        )
+        root_info = parent.element_info
     except Exception:
         return None
 
-    def _search(info: Any, depth: int) -> Any | None:
-        if depth <= 0:
+    def children_of(info: Any) -> Any:
+        if expired():
+            raise TimeoutError("TreeWalker deadline expired")
+        return iter(info.children())
+
+    try:
+        if expired():
             return None
-        try:
-            children = info.children()
-        except Exception:
-            return None
-        for child in children:
+        import pywinauto as _pw
+
+        wrapper_cls = _pw.Application(backend="uia").backend.generic_wrapper_class
+        stack = [(children_of(root_info), 1)]
+        while stack:
+            if expired():
+                return None
+            children, depth = stack[-1]
+            try:
+                child = next(children)
+            except StopIteration:
+                stack.pop()
+                continue
+            if expired():
+                return None
             try:
                 child_name = (child.name or "").split("\t")[0]
                 child_ct = child.control_type or ""
                 child_auto_id = getattr(child, "automation_id", "") or ""
+                matches = (
+                    (not title or child_name == title)
+                    and (not ct or child_ct == ct)
+                    and (not auto_id or child_auto_id == auto_id)
+                )
+                wrapper = None
+                if matches:
+                    wrapper = wrapper_cls(child)
+                    if visible_only:
+                        probe = getattr(wrapper, "is_visible", None)
+                        matches = (
+                            True
+                            if probe is None
+                            else bool(probe())
+                            if callable(probe)
+                            else bool(probe)
+                        )
             except Exception:
-                continue
-            if (
-                (not title or child_name == title)
-                and (not ct or child_ct == ct)
-                and (not auto_id or child_auto_id == auto_id)
-            ):
                 if found_index < 0:
-                    negative_matches.append(child)
-                elif remaining[0] > 0:
-                    remaining[0] -= 1
+                    return None
+                matches = False
+            if expired():
+                return None
+            if matches:
+                if found_index < 0:
+                    negative_matches.append(wrapper)
+                elif remaining > 0:
+                    remaining -= 1
                 else:
-                    try:
-                        import pywinauto as _pw
-
-                        wrapper_cls = _pw.Application(backend="uia").backend.generic_wrapper_class
-                        return wrapper_cls(child)
-                    except Exception:
-                        pass
-            result = _search(child, depth - 1)
-            if result is not None:
-                return result
+                    return wrapper
+            if max_depth is None or depth < max_depth:
+                try:
+                    stack.append((children_of(child), depth + 1))
+                except Exception:
+                    if found_index < 0:
+                        return None
+        if found_index < 0 and not expired():
+            return negative_matches[found_index]
+    except Exception:
         return None
-
-    result = _search(root_info, 8)
-    if result is not None:
-        return result
-    if found_index < 0:
-        try:
-            child = negative_matches[found_index]
-            import pywinauto as _pw
-
-            wrapper_cls = _pw.Application(backend="uia").backend.generic_wrapper_class
-            return wrapper_cls(child)
-        except Exception:
-            return None
 
     return None
 

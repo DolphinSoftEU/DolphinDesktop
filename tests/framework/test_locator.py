@@ -1102,7 +1102,7 @@ def test_locator_negative_nth_uses_tree_walk_when_descendants_has_no_match():
         result = locator_module._resolve_negative_found_index(parent, criteria, timeout=0)
 
     assert result is tree_result
-    tree_walk.assert_called_once_with(parent, criteria)
+    tree_walk.assert_called_once_with(parent, criteria, deadline=None)
 
 
 def test_locator_negative_nth_uses_tree_walk_for_auto_id():
@@ -1118,7 +1118,7 @@ def test_locator_negative_nth_uses_tree_walk_for_auto_id():
             locator_module._resolve_negative_found_index(parent, criteria, timeout=0) is tree_result
         )
 
-    tree_walk.assert_called_once_with(parent, criteria)
+    tree_walk.assert_called_once_with(parent, criteria, deadline=None)
 
 
 def test_locator_negative_nth_out_of_range_uses_not_found_behavior():
@@ -2388,7 +2388,7 @@ def test_find_under_wrapper_success_invalid_and_timeout():
     parent = SimpleNamespace(backend=backend)
     with (
         patch("pywinauto.findwindows.find_elements", side_effect=[RuntimeError("search"), []]),
-        patch.object(locator_module.time, "monotonic", side_effect=[0, 0, 2]),
+        patch.object(locator_module.time, "monotonic", side_effect=[0, 0, 2, 2]),
         patch.object(locator_module.time, "sleep"),
     ):
         with pytest.raises(ElementNotFoundError, match="not found") as exc_info:
@@ -2417,6 +2417,269 @@ def test_presence_search_under_raw_wrapper_includes_hidden_elements():
     with patch("pywinauto.findwindows.find_elements", return_value=[wrapped]) as find:
         assert loc._resolve_presence() == "wrapped-result"
     assert find.call_args.kwargs["visible_only"] is False
+
+
+@pytest.fixture
+def virtualized_tree(monkeypatch):
+    """FindAll omits this tree; TreeWalker sees only currently realized items."""
+    realized = []
+    item = FakeInfo(name="Item 450", control_type="TreeItem", automation_id="item_450")
+    item.children = lambda: []
+    item.visible = True
+    tree = FakeInfo(name="Tree", control_type="Tree", automation_id="virtual_tree")
+    tree.children = lambda: list(realized)
+    tree.visible = True
+    root = FakeInfo(children=lambda: [tree])
+    backend = SimpleNamespace(name="uia")
+
+    def wrap(info):
+        return SimpleNamespace(element_info=info, backend=backend, is_visible=lambda: info.visible)
+
+    backend.generic_wrapper_class = wrap
+    monkeypatch.setattr(
+        sys.modules["pywinauto"], "Application", lambda **kwargs: SimpleNamespace(backend=backend)
+    )
+    monkeypatch.setattr("pywinauto.findwindows.find_elements", Mock(return_value=[]))
+    spec = FakeSpec(wrapper=SimpleNamespace(element_info=root))
+    spec.child_window = Mock(side_effect=RuntimeError("FindAll omitted element"))
+    window = SimpleNamespace(_get_spec=lambda: spec)
+    parent = locator_module.Locator(window, auto_id="virtual_tree").timeout(0)
+    target = parent.locator(auto_id="item_450").timeout(0)
+    return SimpleNamespace(
+        target=target, parent=parent, tree=tree, item=item, realized=realized, wrap=wrap
+    )
+
+
+def test_nested_auto_id_locator_resolves_after_virtualized_item_is_realized(virtualized_tree):
+    case = virtualized_tree
+    with pytest.raises(ElementNotFoundError):
+        case.target._resolve()
+    case.realized.append(case.item)
+    assert case.target._resolve().element_info is case.item
+    assert case.target.wait_for(state="visible", timeout=0) is case.target
+
+
+def test_nested_auto_id_locator_polls_until_item_is_realized(virtualized_tree):
+    case = virtualized_tree
+    with patch.object(
+        locator_module.time, "sleep", side_effect=lambda _: case.realized.append(case.item)
+    ) as sleep:
+        assert case.target.timeout(1)._resolve().element_info is case.item
+    sleep.assert_called_once()
+
+
+def test_wrapper_tree_fallback_preserves_visibility_and_presence(virtualized_tree):
+    case = virtualized_tree
+    case.realized.append(case.item)
+    case.item.visible = False
+    with pytest.raises(ElementNotFoundError):
+        case.target._resolve()
+    assert case.target._resolve_presence().element_info is case.item
+
+
+@pytest.mark.parametrize(
+    "criteria",
+    [
+        {"auto_id": "missing"},
+        {"auto_id": "item_450", "title": "Wrong name"},
+        {"auto_id": "item_450", "class_name": "Unmatched"},
+        {"auto_id": "item_450", "found_index": 1},
+    ],
+)
+def test_wrapper_tree_fallback_honors_all_criteria(virtualized_tree, criteria):
+    case = virtualized_tree
+    case.realized.append(case.item)
+    with pytest.raises(ElementNotFoundError):
+        locator_module._find_under_wrapper(case.wrap(case.tree), criteria, 0)
+
+
+def test_wrapper_tree_fallback_honors_negative_index(virtualized_tree):
+    case = virtualized_tree
+    case.realized.append(case.item)
+    assert case.target.nth(-1)._resolve().element_info is case.item
+
+
+@pytest.mark.parametrize("index", [0, 1, -1, -2])
+def test_wrapper_tree_filters_hidden_matches_before_indexing(virtualized_tree, index):
+    case = virtualized_tree
+    hidden = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=False)
+    first = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=True)
+    last = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=True)
+    case.realized.extend([hidden, first, last])
+    loc = locator_module.Locator(resolved(case.wrap(case.tree)), title="Save").timeout(0)
+    assert loc.nth(index)._resolve().element_info is [first, last][index]
+    assert loc._resolve_presence().element_info is hidden
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_spec_tree_filters_hidden_matches_before_indexing(virtualized_tree, index):
+    case = virtualized_tree
+    hidden = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=False)
+    first = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=True)
+    last = FakeInfo(name="Save", control_type="Button", children=lambda: [], visible=True)
+    case.realized.extend([hidden, first, last])
+    loc = locator_module.Locator(case.parent._parent, title="Save").timeout(0)
+    assert loc.nth(index)._resolve().element_info is [first, last][index]
+
+
+@pytest.mark.parametrize("index, expected", [(-1, 1), (-2, 0), (-3, None)])
+def test_wrapper_negative_index_uses_full_tree_when_findall_is_incomplete(
+    virtualized_tree, index, expected
+):
+    case = virtualized_tree
+    first = case.item
+    last = FakeInfo(name=first.name, control_type="TreeItem", children=lambda: [], visible=True)
+    # Put the additional match beyond the default fallback's depth limit.
+    nested = last
+    for _ in range(10):
+        nested = FakeInfo(children=lambda child=nested: [child])
+    case.realized.extend([first, nested])
+    loc = locator_module.Locator(resolved(case.wrap(case.tree)), title=first.name).timeout(0)
+    with patch("pywinauto.findwindows.find_elements", return_value=[first]) as find:
+        if expected is None:
+            with pytest.raises(ElementNotFoundError):
+                loc.nth(index)._resolve()
+        else:
+            assert loc.nth(index)._resolve().element_info is [first, last][expected]
+    find.assert_called_once()
+
+
+@pytest.mark.parametrize("index", [0, -1])
+def test_tree_walk_stops_between_nodes_at_deadline(virtualized_tree, index):
+    case = virtualized_tree
+    clock = Mock(return_value=0)
+    later_children = Mock(return_value=[])
+    later = FakeInfo(name="Later", children=later_children)
+
+    def slow_children():
+        clock.return_value = 2
+        return []
+
+    slow = FakeInfo(name="Slow", children=slow_children)
+    case.realized.extend([slow, later])
+    with patch.object(locator_module.time, "monotonic", clock):
+        assert (
+            locator_module._tree_walk_find(
+                case.wrap(case.tree), {"title": "Later", "found_index": index}, deadline=1
+            )
+            is None
+        )
+    later_children.assert_not_called()
+
+
+def test_tree_walk_does_not_resolve_root_after_deadline():
+    root = SimpleNamespace(wrapper_object=Mock())
+    with patch.object(locator_module.time, "monotonic", return_value=2):
+        assert locator_module._tree_walk_find(root, {"title": "Save"}, deadline=1) is None
+    root.wrapper_object.assert_not_called()
+
+
+@pytest.mark.parametrize("slow_operation", ["root", "backend", "iterator", "visibility"])
+def test_tree_walk_rejects_result_when_provider_operation_exceeds_deadline(
+    virtualized_tree, monkeypatch, slow_operation
+):
+    case = virtualized_tree
+    clock = Mock(return_value=0)
+    case.item.children = Mock(return_value=[])
+
+    def resolve_root():
+        if slow_operation == "root":
+            clock.return_value = 2
+        return case.wrap(case.tree)
+
+    def create_backend(**kwargs):
+        if slow_operation == "backend":
+            clock.return_value = 2
+        return SimpleNamespace(backend=backend)
+
+    def iterate_children():
+        if slow_operation == "iterator":
+            clock.return_value = 2
+        yield case.item
+
+    def is_visible():
+        if slow_operation == "visibility":
+            clock.return_value = 2
+        return True
+
+    backend = SimpleNamespace(
+        generic_wrapper_class=lambda info: SimpleNamespace(element_info=info, is_visible=is_visible)
+    )
+    case.tree.children = iterate_children
+    root = SimpleNamespace(wrapper_object=resolve_root)
+    monkeypatch.setattr(sys.modules["pywinauto"], "Application", create_backend)
+    with patch.object(locator_module.time, "monotonic", clock):
+        assert (
+            locator_module._tree_walk_find(
+                root, {"auto_id": "item_450"}, visible_only=True, deadline=1
+            )
+            is None
+        )
+    case.item.children.assert_not_called()
+
+
+def test_wrapper_negative_index_rejects_partial_results_after_property_error(virtualized_tree):
+    case = virtualized_tree
+
+    class UnavailableItem:
+        @property
+        def name(self):
+            raise RuntimeError("UIA element is no longer available")
+
+    case.realized.extend([case.item, UnavailableItem()])
+    with (
+        patch("pywinauto.findwindows.find_elements", return_value=[case.item]),
+        pytest.raises(ElementNotFoundError),
+    ):
+        case.target.nth(-1)._resolve()
+
+
+def test_wrapper_negative_index_does_not_return_partial_match_after_walk_timeout(virtualized_tree):
+    case = virtualized_tree
+    clock = Mock(return_value=0)
+
+    def slow_children():
+        clock.return_value = 2
+        return []
+
+    case.item.children = slow_children
+    case.realized.append(case.item)
+    with (
+        patch.object(locator_module.time, "monotonic", clock),
+        patch("pywinauto.findwindows.find_elements", return_value=[case.item]),
+        pytest.raises(ElementNotFoundError),
+    ):
+        case.target.nth(-1).timeout(1)._resolve()
+
+
+def test_wrapper_negative_index_does_not_use_partial_tree_after_provider_error(virtualized_tree):
+    case = virtualized_tree
+    case.item.children = Mock(side_effect=RuntimeError("provider unavailable"))
+    case.realized.append(case.item)
+    with (
+        patch("pywinauto.findwindows.find_elements", return_value=[case.item]),
+        pytest.raises(ElementNotFoundError),
+    ):
+        case.target.nth(-1)._resolve()
+
+
+def test_wrapper_tree_fallback_rejects_result_after_deadline(virtualized_tree):
+    case = virtualized_tree
+    case.realized.append(case.item)
+    with monotonic_values(0, 0, 2, 2), pytest.raises(ElementNotFoundError):
+        locator_module._find_under_wrapper(
+            case.wrap(case.tree), {"auto_id": "item_450"}, 1, deadline=1
+        )
+
+
+def test_wrapper_tree_fallback_is_uia_only(virtualized_tree):
+    case = virtualized_tree
+    parent = case.wrap(case.tree)
+    parent.backend.name = "win32"
+    with patch.object(locator_module, "_tree_walk_find") as walk:
+        with pytest.raises(ElementNotFoundError):
+            locator_module._find_under_wrapper(parent, {"auto_id": "item_450"}, 0)
+    walk.assert_not_called()
 
 
 def test_tree_walk_find_filters_walks_children_and_builds_wrapper():
