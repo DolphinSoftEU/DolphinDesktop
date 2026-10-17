@@ -519,14 +519,14 @@ security = [
 [package.metadata]
 requires-dist = [
     { name = "allure-pytest", marker = "extra == 'pytest'", specifier = ">=2.13" },
-    { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4" },
+    { name = "comtypes", marker = "sys_platform == 'win32'", specifier = ">=1.4.8" },
     { name = "dolphin-desktop", extras = ["cdp", "fast", "pytest", "vision"], marker = "extra == 'all'" },
     { name = "mike", marker = "extra == 'docs'", specifier = ">=2.0" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.7.7" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.25" },
     { name = "mss", marker = "extra == 'fast'", specifier = ">=9.0" },
     { name = "numpy", marker = "extra == 'vision'", specifier = ">=1.26" },
-    { name = "opencv-python", marker = "extra == 'vision'", specifier = ">=4.9" },
+    { name = "opencv-python", marker = "extra == 'vision'", specifier = ">=4.10.0.84" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "playwright", marker = "extra == 'cdp'", specifier = ">=1.40" },
     { name = "pytesseract", marker = "extra == 'vision'", specifier = ">=0.3.10" },

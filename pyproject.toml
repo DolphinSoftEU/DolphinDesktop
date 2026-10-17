@@ -35,7 +35,7 @@ classifiers = [
 dependencies = [
     "pywinauto>=0.6.8",
     "Pillow>=12.3.0",
-    "comtypes>=1.4; platform_system == \"Windows\"",
+    "comtypes>=1.4.8; platform_system == \"Windows\"",
     "pywin32>=306; platform_system == \"Windows\"",
     "pyyaml>=6.0",
 ]
@@ -70,7 +70,7 @@ packages = ["src/dolphin_desktop"]
 [project.optional-dependencies]
 fast = ["mss>=9.0"]
 vision = [
-    "opencv-python>=4.9",
+    "opencv-python>=4.10.0.84",
     "numpy>=1.26",
     "pytesseract>=0.3.10",
 ]

@@ -138,6 +138,16 @@ Addresses further findings from a follow-up security review
 * **Dependency floors raised** to their audited-safe minimums: Pillow
   `>=12.3.0`, `mkdocs-material>=9.7.7`, `sentry-sdk>=2.8.0`,
   `pytest>=9.0.3`.
+  Minimum installations are now checked from built wheel metadata on Windows
+  with Python 3.11–3.13, for the base package and all extras, separately from
+  the full lockfile audit. CI and release retain the wheel, hashed resolutions,
+  installation/smoke logs and audit JSON for retesting (KAN-581).
+  The compatibility check also raises `comtypes` to `>=1.4.8` for Python 3.13
+  support and `opencv-python` to `>=4.10.0.84` for NumPy 2 support.
+  Each extra, including aggregate `all`, is also resolved and audited
+  independently. Smoke checks verify the installed CLI and pytest entry-point
+  registration; wheel parsing has unit coverage for platform/Python markers,
+  extra selection and recursive self-references.
 * **Secret redaction gap closed for `login`/`username`/`connection_string`/
   `clipboard`.** These keys were not masked when they appeared in a
   dict-repr shape (e.g. inside an `ElementNotFoundError` message built from

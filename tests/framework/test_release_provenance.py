@@ -427,7 +427,13 @@ def test_ci_artifact_is_built_only_after_required_checks_and_smoke_test():
         (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader
     )
     package = workflow["jobs"]["package"]
-    assert set(package["needs"]) == {"unit", "component-windows", "package-linux", "security"}
+    assert set(package["needs"]) == {
+        "unit",
+        "component-windows",
+        "package-linux",
+        "security",
+        "minimum-dependencies",
+    }
     assert "if" not in package and "continue-on-error" not in package
     names = [step.get("name") for step in package["steps"]]
     assert (

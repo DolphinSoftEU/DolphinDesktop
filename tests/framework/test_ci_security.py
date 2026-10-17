@@ -59,6 +59,42 @@ def test_security_checks_block_publication_for_the_same_revision(name: str) -> N
     assert_security_gate(load(name), release=name == "release.yml")
 
 
+@pytest.mark.parametrize("name", ["ci.yml", "release.yml"])
+def test_minimum_installations_block_distribution(name: str) -> None:
+    jobs = load(name)["jobs"]
+    job = jobs["minimum-dependencies"]
+    assert job["runs-on"] == "windows-latest"
+    assert job["strategy"]["matrix"] == {
+        "python-version": ["3.11", "3.12", "3.13"],
+        "profile": [
+            "base",
+            "fast",
+            "vision",
+            "cdp",
+            "docs",
+            "telemetry",
+            "pytest",
+            "all",
+            "all-extras",
+        ],
+    }
+    assert "if" not in job and "continue-on-error" not in job
+    for step in job["steps"]:
+        assert "continue-on-error" not in step
+        if "run" in step:
+            assert "if" not in step
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "uv sync --locked --only-group build --only-group security" in commands
+    assert "check_minimum_dependencies.py" in commands
+    assert "--all-extras" in commands
+    assert '"--extra", $env:PROFILE' in commands
+    upload = next(s for s in job["steps"] if s.get("name", "").startswith("Upload"))
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"] == "artifacts/minimum/"
+    consumer = jobs["build" if name == "release.yml" else "package"]
+    assert "minimum-dependencies" in consumer["needs"]
+
+
 def assert_security_gate(workflow: dict, *, release: bool) -> None:
     security = workflow["jobs"]["security"]
     assert set(security["strategy"]["matrix"]["os"]) == {"ubuntu-latest", "windows-latest"}
@@ -80,7 +116,7 @@ def assert_security_gate(workflow: dict, *, release: bool) -> None:
         assert not re.search(r"\bexit\s+0\b|\bset\s+\+e\b|\$LASTEXITCODE\s*=", command)
     if release:
         jobs = workflow["jobs"]
-        assert jobs["build"]["needs"] == "security"
+        assert set(jobs["build"]["needs"]) == {"security", "minimum-dependencies"}
         assert "continue-on-error" not in jobs["build"]
         assert "if" not in jobs["build"]
         assert "ref" not in jobs["build"]["steps"][0]["with"]

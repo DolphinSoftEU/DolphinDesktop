@@ -41,6 +41,49 @@ With coverage:
 uv run pytest --cov=dolphin_desktop --cov-report=term-missing
 ```
 
+## Minimum dependency verification (KAN-581)
+
+CI and release run a separate Windows matrix for Python 3.11, 3.12 and 3.13,
+with the base package, each extra independently (including the aggregate `all`
+extra), and all extras together. Each job builds a wheel using
+locked build tools, reads its `Requires-Dist` metadata, resolves the lowest
+compatible direct dependencies with binary distributions, then installs the
+hashed resolution in a clean environment. Transitive dependencies use the
+resolver's latest compatible versions. This tests a compatible minimum set,
+not every possible combination allowed by the dependency ranges.
+
+The checks include dependency consistency, import of the installed wheel,
+imports of the selected optional integrations, execution of the installed
+`dolphin --help` and `dolphin info backends` commands, and an explicit check of
+the `dolphin-desktop` pytest entry point whenever the `pytest` extra is selected,
+and a strict `pip-audit` of the resolved set. This audit is independent of the
+existing full-lockfile audit; their vulnerability counts must not be added.
+Build, security and docs tooling remain controlled by `uv.lock`.
+
+To reproduce one matrix entry on Windows (use a fresh checkout or set
+`UV_PROJECT_ENVIRONMENT` to a dedicated tool environment):
+
+```powershell
+uv sync --locked --only-group build --only-group security --python 3.13
+uv run --no-sync python -m build --no-isolation --wheel --outdir artifacts/minimum/dist
+$wheel = (Get-ChildItem artifacts/minimum/dist/*.whl).FullName
+uv run --no-sync python .github/scripts/check_minimum_dependencies.py --wheel $wheel --output artifacts/minimum/evidence --all-extras
+```
+
+Replace `--all-extras` with `--extra <name>` for an individual extra (`fast`,
+`vision`, `cdp`, `docs`, `telemetry`, `pytest`, or `all`); omit both for the base
+profile. The `all` extra selects only its wheel requirements, including any
+self-references; it does not implicitly include `docs` or `telemetry`. Repeat with
+Python 3.11 and 3.12. Each profile resolves independently, preventing an
+unrelated extra from raising a shared dependency's minimum during the check.
+CI uploads `minimum-dependencies-<python>-<profile>` even on failure, containing
+the wheel, direct requirements, hashed resolution, command log, audit JSON and
+a success result with interpreter version and wheel SHA-256. A missing success
+result indicates an incomplete or failed check; inspect the command log.
+After dependency/resolver changes, rerun this matrix and the full-lockfile
+security gate. The wheel and reports let a tester reproduce the installation
+without relying on metadata from an unrelated environment.
+
 ## Code Style
 
 This project uses [ruff](https://docs.astral.sh/ruff/) for linting and formatting, and [mypy](https://mypy-lang.org/) for type checking.
