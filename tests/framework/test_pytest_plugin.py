@@ -345,7 +345,24 @@ class TestMakereportIsolation:
     def test_skips_reach_terminal_and_junit_reporters(
         self, tmp_path, monkeypatch, source, autoload
     ):
-        monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
+        monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+        monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+        if autoload:
+            monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
+            # Block other installed entry points before pytest starts discovery.
+            # Dolphin still loads automatically from its real package metadata.
+            pytest_command = [
+                "-c",
+                "import sys\n"
+                "from importlib.metadata import entry_points\n"
+                "import pytest\n"
+                "blocked = [arg for ep in entry_points(group='pytest11') "
+                "if ep.name != 'dolphin-desktop' for arg in ('-p', 'no:' + ep.name)]\n"
+                "raise SystemExit(pytest.main(blocked + sys.argv[1:]))\n",
+            ]
+        else:
+            monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+            pytest_command = ["-m", "pytest"]
         test_file = tmp_path / "test_skip.py"
         test_file.write_text(
             "import pytest\nREASON = 'brak preflight; token=CDP_SECRET_123'\n" + source,
@@ -355,6 +372,8 @@ class TestMakereportIsolation:
             "def pytest_configure(config):\n"
             "    assert config.pluginmanager.hasplugin('dolphin-desktop') or "
             "config.pluginmanager.hasplugin('dolphin_desktop.pytest_plugin')\n"
+            "    assert all(dist.project_name == 'dolphin-desktop' "
+            "for _, dist in config.pluginmanager.list_plugin_distinfo())\n"
             "def pytest_runtest_logreport(report):\n"
             "    if report.skipped:\n"
             "        assert isinstance(report.longrepr, tuple)\n"
@@ -369,8 +388,7 @@ class TestMakereportIsolation:
         result = subprocess.run(
             [
                 sys.executable,
-                "-m",
-                "pytest",
+                *pytest_command,
                 *plugin_args,
                 str(test_file),
                 "-q",
