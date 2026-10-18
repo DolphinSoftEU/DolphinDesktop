@@ -22,6 +22,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Trace now records failed actions with empty exception messages as errors,
+  including screenshots and UIA trees in `on-failure` mode. Unsupported UIA
+  pattern actions store the same diagnostic raised to the caller (KAN-662).
+
 * Pytest skip reports retain their `(path, line, reason)` representation while
   redacting sensitive text, so `-rs` and JUnit reporting can display skip reasons.
   Regression coverage checks call, setup, teardown and marker skips with explicit

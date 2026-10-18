@@ -13,7 +13,9 @@ from typing import ClassVar
 
 import pytest
 
-from dolphin_desktop import _trace
+from dolphin_desktop import UnsupportedPatternError, _trace
+from dolphin_desktop._locator import Locator
+from dolphin_desktop._window import Window
 
 
 class _FailingConnection:
@@ -509,6 +511,78 @@ class TestUiATreeDump:
 
 
 class TestTraceSessionBranches:
+    @pytest.mark.parametrize("mode", ["always", "on-failure"])
+    @pytest.mark.parametrize("error", [None, "", "action failed"])
+    def test_error_presence_controls_status_and_capture(self, tmp_path, monkeypatch, mode, error):
+        session = _trace.TraceSession("tests/t.py::test_x", tmp_path / "run", mode=mode)
+        monkeypatch.setattr(_trace, "_capture_screenshot", lambda path: path.write_bytes(b"jpeg"))
+        element = TestUiATreeDump._Node(
+            TestUiATreeDump._Info("CheckBox", "Trace", "trace_failure_checkbox")
+        )
+        try:
+            session.record_step("set_value", "selector", element=element, error=error)
+        finally:
+            session.finish("failed")
+
+        with closing(sqlite3.connect(str(session.run_dir / "trace.db"))) as db:
+            result, stored_error, screenshot, tree = db.execute(
+                "SELECT result, error, screenshot_file, uia_tree FROM steps"
+            ).fetchone()
+        failed = error is not None
+        assert result == ("error" if failed else "ok")
+        assert bool(stored_error) if failed else stored_error is None
+        if failed or mode == "always":
+            assert (session.run_dir / "screenshots" / screenshot).read_bytes() == b"jpeg"
+            assert json.loads(tree) is not None
+        else:
+            assert screenshot is None
+            assert tree is None
+
+    @pytest.mark.parametrize("mode", ["always", "on-failure"])
+    @pytest.mark.parametrize("exception_type", [AttributeError, RuntimeError])
+    def test_locator_empty_exception_is_recorded_as_failure(
+        self, tmp_path, monkeypatch, mode, exception_type
+    ):
+        original = exception_type()
+
+        def set_value(text):
+            raise original
+
+        element = TestUiATreeDump._Node(
+            TestUiATreeDump._Info("CheckBox", "Trace", "trace_failure_checkbox")
+        )
+        element.set_value = set_value
+        monkeypatch.setattr(Locator, "_resolve", lambda self: element)
+        monkeypatch.setattr(_trace, "_capture_screenshot", lambda path: path.write_bytes(b"jpeg"))
+        session = _trace.TraceSession("tests/t.py::test_x", tmp_path / "run", mode=mode)
+        monkeypatch.setattr(_trace, "_current", session)
+        locator = Window(SimpleNamespace()).check_box(auto_id="trace_failure_checkbox")
+        expected = UnsupportedPatternError if exception_type is AttributeError else exception_type
+        try:
+            with pytest.raises(expected) as raised:
+                locator.set_value("forbidden")
+        finally:
+            session.finish("failed")
+
+        if exception_type is AttributeError:
+            assert raised.value.__cause__ is original
+        else:
+            assert raised.value is original
+        with closing(sqlite3.connect(str(session.run_dir / "trace.db"))) as db:
+            rows = db.execute(
+                "SELECT action, result, error, screenshot_file, uia_tree FROM steps"
+            ).fetchall()
+        assert len(rows) == 1
+        action, result, error, screenshot, tree = rows[0]
+        assert action == "set_value"
+        assert result == "error"
+        assert error
+        if exception_type is AttributeError:
+            assert error == str(raised.value)
+            assert "ValuePattern" in error
+        assert (session.run_dir / "screenshots" / screenshot).read_bytes() == b"jpeg"
+        assert json.loads(tree) is not None
+
     def test_invalid_mode_is_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="Invalid trace mode"):
             _trace.TraceSession("tests/t.py::test_x", tmp_path / "run", mode="sometimes")
