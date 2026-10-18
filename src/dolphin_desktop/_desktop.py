@@ -18,6 +18,7 @@ else:
 
 from ._application import (
     Application,
+    _is_notepad_launcher,
     _process_image_path,
 )
 from ._exceptions import ApplicationError, DolphinError
@@ -215,7 +216,8 @@ class Desktop:
             ``r"C:\\Windows\\notepad.exe my_file.txt"``).
         timeout:
             Maximum seconds to wait for a GUI process to become input-idle
-            after creation when *wait_for_idle* is true.
+            after creation when *wait_for_idle* is true. Also bounds discovery
+            of Windows Notepad's replacement process after MSIX activation.
         work_dir:
             Optional working directory for the new process.
         startup_delay:
@@ -260,7 +262,7 @@ class Desktop:
             )
             if startup_delay > 0:
                 time.sleep(startup_delay)
-            return Application(
+            result = Application(
                 app,
                 backend=self._backend,
                 default_timeout_ms=self._default_timeout_ms,
@@ -268,6 +270,9 @@ class Desktop:
                 image_path=image_path,
                 owned_process_handle=process_handle,
             )
+            if _is_notepad_launcher(image_path):
+                result._resolve_launch_handoff(timeout=timeout)
+            return result
         except Exception as exc:
             if process_handle is not None:
                 try:
