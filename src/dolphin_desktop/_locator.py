@@ -2333,6 +2333,18 @@ class _QtObjectNameLocator(Locator):
         # Read by ``_resolve`` (``found_index``) and by trace/repr.
         self._criteria = {"qt_object_name": object_name}
 
+    def _resolve_presence(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        """Use the Qt objectName scan for presence checks as well as actions."""
+        # The scan does not require visibility. The base implementation would
+        # pass our internal qt_object_name criterion to pywinauto, which cannot
+        # interpret it, so exists() would report even a live widget as absent.
+        return self._resolve(deadline=deadline, single_attempt=single_attempt)
+
     def _resolve(
         self,
         deadline: float | None = None,

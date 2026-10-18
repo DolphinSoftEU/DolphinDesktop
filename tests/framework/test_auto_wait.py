@@ -428,7 +428,9 @@ class TestZeroTimeoutTriesOnce:
         match = MagicMock()
         match.element_info.automation_id = "App.win.btn_ok"
         spec.descendants.return_value = [match]
+        spec.child_window.side_effect = TypeError("unsupported qt_object_name criterion")
         assert _window(spec).get_by_object_name("btn_ok").exists() is True
+        spec.child_window.assert_not_called()
 
     def test_wait_until_hidden_returns_for_an_absent_element(self):
         loc = _window(_failing_spec()).get_by_role("Button")
