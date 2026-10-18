@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Pytest skip reports retain their `(path, line, reason)` representation while
+  redacting sensitive text, so `-rs` and JUnit reporting can display skip reasons.
+  Regression coverage checks call, setup, teardown and marker skips with explicit
+  plugin loading and automatic entry-point discovery (KAN-661).
+
 * `Desktop.launch()` now binds the new Windows 11 Notepad MSIX window even
   when Windows redirects startup to another process. `windows()`, `top_window()`
   and owned cleanup use that process only after verifying a new descendant

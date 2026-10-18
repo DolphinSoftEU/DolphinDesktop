@@ -328,22 +328,52 @@ class TestMakereportIsolation:
         plugin._redact_report(report)
         assert report.longrepr == ("test_cdp.py", 12, "Skipped: token=***")
 
-    def test_skips_reach_terminal_and_junit_reporters(self, tmp_path):
+    @pytest.mark.parametrize("autoload", [False, True], ids=["explicit", "entry-point"])
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "def test_optional_cdp():\n    pytest.skip(REASON)\n",
+            "@pytest.fixture\ndef optional_cdp():\n    pytest.skip(REASON)\n"
+            "def test_optional_cdp(optional_cdp):\n    pass\n",
+            "@pytest.fixture\ndef optional_cdp():\n    yield\n    pytest.skip(REASON)\n"
+            "def test_optional_cdp(optional_cdp):\n    pass\n",
+            "@pytest.mark.skip(reason=REASON)\ndef test_optional_cdp():\n    pass\n",
+            "@pytest.mark.skipif(True, reason=REASON)\ndef test_optional_cdp():\n    pass\n",
+        ],
+        ids=["call", "setup", "teardown", "skip-marker", "skipif-marker"],
+    )
+    def test_skips_reach_terminal_and_junit_reporters(
+        self, tmp_path, monkeypatch, source, autoload
+    ):
+        monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
         test_file = tmp_path / "test_skip.py"
         test_file.write_text(
-            "import pytest\ndef test_optional_cdp():\n    pytest.skip('token=CDP_SECRET_123')\n",
+            "import pytest\nREASON = 'brak preflight; token=CDP_SECRET_123'\n" + source,
             encoding="utf-8",
+        )
+        (tmp_path / "conftest.py").write_text(
+            "def pytest_configure(config):\n"
+            "    assert config.pluginmanager.hasplugin('dolphin-desktop') or "
+            "config.pluginmanager.hasplugin('dolphin_desktop.pytest_plugin')\n"
+            "def pytest_runtest_logreport(report):\n"
+            "    if report.skipped:\n"
+            "        assert isinstance(report.longrepr, tuple)\n"
+            "        path, line, reason = report.longrepr\n"
+            "        assert isinstance(line, int)\n"
+            "        assert reason == 'Skipped: brak preflight; token=***'\n",
+            encoding="utf-8",
+        )
+        plugin_args = (
+            [] if autoload else ["-p", "no:dolphin-desktop", "-p", "dolphin_desktop.pytest_plugin"]
         )
         result = subprocess.run(
             [
                 sys.executable,
                 "-m",
                 "pytest",
-                "-p",
-                "no:dolphin-desktop",
-                "-p",
-                "dolphin_desktop.pytest_plugin",
+                *plugin_args,
                 str(test_file),
+                "-q",
                 "-rs",
                 "--junitxml",
                 str(tmp_path / "result.xml"),
@@ -356,9 +386,12 @@ class TestMakereportIsolation:
         )
         assert result.returncode == 0, result.stdout + result.stderr
         assert "1 skipped" in result.stdout
-        assert "token=***" in result.stdout
+        assert "brak preflight; token=***" in result.stdout
         assert "CDP_SECRET_123" not in result.stdout + result.stderr
-        assert "CDP_SECRET_123" not in (tmp_path / "result.xml").read_text(encoding="utf-8")
+        xml = (tmp_path / "result.xml").read_text(encoding="utf-8")
+        assert "<skipped" in xml
+        assert "brak preflight; token=***" in xml
+        assert "CDP_SECRET_123" not in xml
 
     def test_makereport_redacts_longrepr_before_reporters_serialize_it(self, monkeypatch):
         monkeypatch.setattr(plugin, "_collect_artifacts", lambda *_args: None)
