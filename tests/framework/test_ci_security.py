@@ -243,7 +243,9 @@ def test_published_testpypi_wheel_is_smoked_on_real_linux() -> None:
     assert '--expected-version "${{ needs.build.outputs.version }}"' in install
     assert "--output artifacts/testpypi-linux" in install
 
-    evidence = next(s for s in steps if s.get("name") == "Upload Linux installation and import evidence")
+    evidence = next(
+        s for s in steps if s.get("name") == "Upload Linux installation and import evidence"
+    )
     assert evidence["if"] == "always()"
     assert evidence["with"]["path"] == "artifacts/testpypi-linux/"
 
