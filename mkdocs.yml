@@ -138,7 +138,7 @@ nav:
       - Mainframe: reference/mainframe.md
       - CDP / Electron: reference/cdp.md
       - Playwright Compatibility: reference/playwright-compat.md
-      - Excel / Word: reference/office.md
+      - Office COM: reference/office.md
       - SAP GUI for Windows: reference/sap.md
       - Exceptions: reference/exceptions.md
       - pytest Plugin: reference/pytest-plugin.md
