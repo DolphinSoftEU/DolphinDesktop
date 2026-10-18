@@ -581,18 +581,20 @@ class TestDesktopWideWindowFallback:
 
         app = self._app_whose_own_process_has_no_window(4242)
         try:
-            app._image_path = r"c:\windows\notepad.exe"
+            app._image_path = r"c:\tools\single-instance-demo.exe"
             monkeypatch.setattr(_application, "_PwDesktop", self._desktop_returning_pid(9999))
             monkeypatch.setattr(_application, "_process_parent_map", dict)
             monkeypatch.setattr(
-                _application, "_process_image_path", lambda pid: r"c:\windows\notepad.exe"
+                _application,
+                "_process_image_path",
+                lambda pid: r"c:\tools\single-instance-demo.exe",
             )
             monkeypatch.setattr(_application, "_process_state", lambda _pid: "stopped")
             new_app = MagicMock()
             new_app.process = 9999
             monkeypatch.setattr(_application, "_PyWinApp", MagicMock(return_value=new_app))
 
-            app._find_window({"title_re": ".*Notepad.*"}, 0.1)
+            app._find_window({"title_re": ".*Single Instance Demo.*"}, 0.1)
 
             new_app.connect.assert_called_once_with(process=9999)
             assert app._app is new_app

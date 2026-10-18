@@ -22,6 +22,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* `Desktop.launch()` now binds the new Windows 11 Notepad MSIX window even
+  when Windows redirects startup to another process. `windows()`, `top_window()`
+  and owned cleanup use that process only after verifying a new descendant
+  against the pre-launch process snapshot and anchored process identity.
+  The snapshot is taken only for potential Notepad commands, so other
+  applications do not pay for process-table enumeration.
+  Existing, independent and unverified broker processes remain unowned.
+  Ownership failures raise `WindowNotFoundError` from `app.window()`.
+  Discovery has its own `handoff_timeout` (default 2 seconds) and stops early
+  for existing instances; cleanup retains a handle to prevent PID reuse (KAN-660).
+
 * Exclusive Office startup now retries delayed process visibility for up to five
   seconds without repeating COM activation. Ambiguous or unverified processes
   are never claimed or quit. Failed startup reports observed PIDs and possible
