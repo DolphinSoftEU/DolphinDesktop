@@ -2374,6 +2374,22 @@ def test_qt_object_name_presence_uses_the_same_matches_as_actions(
     parent.child_window.assert_not_called()
 
 
+@pytest.mark.parametrize("timeout", [0, 1])
+def test_qt_object_name_presence_resolves_an_unresolved_hidden_parent(timeout):
+    match = FakeElement(automation_id="App.hidden.target", visible=False)
+    hidden_parent = FakeSpec(wrapper=FakeElement(visible=False), descendants=[match])
+    hidden_parent.child_window = Mock(side_effect=TypeError("unsupported qt_object_name"))
+    root = FakeSpec()
+    root.child_window = Mock(return_value=hidden_parent)
+    window = SimpleNamespace(_get_spec=Mock(return_value=root))
+    parent = locator_module.Locator(window, title="hidden parent")
+    child = locator_module._QtObjectNameLocator(parent, "target")
+
+    assert child.exists(timeout=timeout) is True
+    root.child_window.assert_called_once_with(visible_only=False, title="hidden parent")
+    hidden_parent.child_window.assert_not_called()
+
+
 def test_qt_object_name_locator_resolves_suffix_index_and_times_out():
     parent = FakeSpec(
         descendants=[
