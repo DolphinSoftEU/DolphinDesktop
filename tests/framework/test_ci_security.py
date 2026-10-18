@@ -197,15 +197,14 @@ def test_published_testpypi_wheel_is_smoked_on_real_linux() -> None:
     assert "continue-on-error" not in job
 
     steps = job["steps"]
-    setup_steps = [
-        step for step in steps if step.get("uses", "").startswith("actions/setup-python@")
-    ]
+    setup_steps = [step for step in steps if "setup-python@" in step.get("uses", "")]
     assert len(setup_steps) == 1
     assert setup_steps[0]["with"]["python-version"] == "3.12"
 
     names = [step.get("name") for step in steps]
     download_ci = steps[names.index("Download approved CI distribution")]
-    assert download_ci["with"]["artifact-ids"] == "${{ needs.build.outputs.artifact_id }}"
+    expected_artifact_id = "${{ needs.build.outputs.artifact_id }}"
+    assert download_ci["with"]["artifact-ids"] == expected_artifact_id
     assert download_ci["with"]["path"] == "release-artifact/"
 
     download_index = names.index("Download published wheel from TestPyPI")
