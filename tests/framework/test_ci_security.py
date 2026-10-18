@@ -186,6 +186,68 @@ def test_event_coverage() -> None:
     assert release["on"]["push"]["tags"] == ["v*.*.*"]
 
 
+def test_published_testpypi_wheel_is_smoked_on_real_linux() -> None:
+    """KAN-465: test the published wheel, not just a pre-publication CI wheel."""
+    jobs = load("release.yml")["jobs"]
+    job = jobs["smoke-testpypi-linux"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert job["needs"] == ["build", "publish-testpypi"]
+    assert job["if"] == "needs.build.outputs.target == 'testpypi'"
+    assert job["permissions"] == {"contents": "read"}
+    assert "continue-on-error" not in job
+
+    steps = job["steps"]
+    setup = next(s for s in steps if s.get("uses", "").startswith("actions/setup-python@"))
+    assert setup["with"]["python-version"] == "3.12"
+
+    download_ci = next(
+        s for s in steps if s.get("name") == "Download approved CI distribution"
+    )
+    assert download_ci["with"]["artifact-ids"] == "${{ needs.build.outputs.artifact_id }}"
+    assert download_ci["with"]["path"] == "release-artifact/"
+
+    download_index = next(
+        i for i, s in enumerate(steps) if s.get("name") == "Download published wheel from TestPyPI"
+    )
+    verify_index = next(
+        i
+        for i, s in enumerate(steps)
+        if s.get("name") == "Verify published wheel matches approved CI wheel"
+    )
+    install_index = next(
+        i
+        for i, s in enumerate(steps)
+        if s.get("name") == "Install published wheel and verify Linux import and warning"
+    )
+    assert download_index < verify_index < install_index
+
+    download = steps[download_index]
+    assert download["env"]["PACKAGE_VERSION"] == "${{ needs.build.outputs.version }}"
+    for required in (
+        "python -m pip --isolated download",
+        "--no-deps",
+        "--index-url https://test.pypi.org/simple/",
+        '"dolphin-desktop==${PACKAGE_VERSION}"',
+    ):
+        assert required in download["run"]
+    assert "exit 1" in download["run"]
+
+    verify = steps[verify_index]["run"]
+    assert 'Path("release-artifact/dist")' in verify
+    assert 'Path("testpypi-download")' in verify
+    assert "sha256" in verify and "assert built_hash == published_hash" in verify
+
+    install = steps[install_index]["run"]
+    assert ".github/scripts/check_wheel_platform.py" in install
+    assert "--wheel-directory testpypi-download" in install
+    assert '--expected-version "${{ needs.build.outputs.version }}"' in install
+    assert "--output artifacts/testpypi-linux" in install
+
+    evidence = next(s for s in steps if s.get("name") == "Upload Linux installation and import evidence")
+    assert evidence["if"] == "always()"
+    assert evidence["with"]["path"] == "artifacts/testpypi-linux/"
+
+
 @pytest.mark.parametrize("name", ["ci.yml", "docs.yml", "release.yml"])
 def test_dependency_commands_cannot_update_the_lock(name: str) -> None:
     for job in load(name)["jobs"].values():
