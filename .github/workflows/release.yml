@@ -411,6 +411,102 @@ jobs:
           --requirements "${{ runner.temp }}/release-requirements.txt"
           --expected-version "${{ needs.build.outputs.version }}"
 
+  # This is separate from the Windows TestPyPI smoke: it validates the wheel
+  # actually published to TestPyPI, not just the locally-built CI wheel.
+  smoke-testpypi-linux:
+    name: Smoke published TestPyPI wheel / Ubuntu 24.04 / Python 3.12
+    runs-on: ubuntu-24.04
+    needs: [build, publish-testpypi]
+    if: needs.build.outputs.target == 'testpypi'
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked build tools
+        run: uv sync --locked --only-group build
+
+      - name: Download approved CI distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
+
+      # Only the product wheel comes from TestPyPI. Installing the downloaded
+      # wheel with ordinary pip resolves its dependencies from real PyPI.
+      # --isolated prevents inherited pip config / extra indexes from silently
+      # supplying a different artifact. Retries allow index propagation.
+      - name: Download published wheel from TestPyPI
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p testpypi-download
+          for attempt in {1..6}; do
+            if python -m pip --isolated download --pre --no-deps --only-binary=:all: \
+              --no-cache-dir --index-url https://test.pypi.org/simple/ \
+              --dest testpypi-download "dolphin-desktop==${PACKAGE_VERSION}"; then
+              break
+            fi
+            if [[ "$attempt" == 6 ]]; then
+              echo "Published wheel never appeared on TestPyPI" >&2
+              exit 1
+            fi
+            sleep 20
+          done
+
+      - name: Verify published wheel matches approved CI wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          built = list(Path("release-artifact/dist").glob("*.whl"))
+          published = list(Path("testpypi-download").glob("*.whl"))
+          assert len(built) == len(published) == 1, "Expected exactly one wheel per source"
+          assert built[0].name == published[0].name, "Published wheel filename differs"
+          built_hash = sha256(built[0].read_bytes()).hexdigest()
+          published_hash = sha256(published[0].read_bytes()).hexdigest()
+          print(f"CI wheel SHA-256:       {built_hash}")
+          print(f"TestPyPI wheel SHA-256: {published_hash}")
+          assert built_hash == published_hash, "Published wheel differs from approved CI artifact"
+          PY
+
+      # check_wheel_platform.py makes an isolated venv, installs the actual
+      # downloaded wheel with dependencies, runs pip check, and asserts that
+      # native Linux import works and emits the required RuntimeWarning.
+      - name: Install published wheel and verify Linux import and warning
+        run: >-
+          uv run --no-sync python .github/scripts/check_wheel_platform.py
+          --wheel-directory testpypi-download
+          --expected-version "${{ needs.build.outputs.version }}"
+          --output artifacts/testpypi-linux
+
+      - name: Upload Linux installation and import evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: testpypi-ubuntu-3.12-evidence
+          path: artifacts/testpypi-linux/
+          if-no-files-found: warn
+
   smoke-pypi:
     name: Smoke PyPI package
     runs-on: windows-latest
