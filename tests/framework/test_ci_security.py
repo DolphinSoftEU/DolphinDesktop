@@ -187,7 +187,7 @@ def test_event_coverage() -> None:
 
 
 def test_published_testpypi_wheel_is_smoked_on_real_linux() -> None:
-    """KAN-465: test the published wheel, not just a pre-publication CI wheel."""
+    """KAN-465: validate the published wheel, not just the CI-built wheel."""
     jobs = load("release.yml")["jobs"]
     job = jobs["smoke-testpypi-linux"]
     assert job["runs-on"] == "ubuntu-24.04"
@@ -197,27 +197,21 @@ def test_published_testpypi_wheel_is_smoked_on_real_linux() -> None:
     assert "continue-on-error" not in job
 
     steps = job["steps"]
-    setup = next(s for s in steps if s.get("uses", "").startswith("actions/setup-python@"))
-    assert setup["with"]["python-version"] == "3.12"
+    setup_steps = [
+        step for step in steps if step.get("uses", "").startswith("actions/setup-python@")
+    ]
+    assert len(setup_steps) == 1
+    assert setup_steps[0]["with"]["python-version"] == "3.12"
 
-    download_ci = next(
-        s for s in steps if s.get("name") == "Download approved CI distribution"
-    )
+    names = [step.get("name") for step in steps]
+    download_ci = steps[names.index("Download approved CI distribution")]
     assert download_ci["with"]["artifact-ids"] == "${{ needs.build.outputs.artifact_id }}"
     assert download_ci["with"]["path"] == "release-artifact/"
 
-    download_index = next(
-        i for i, s in enumerate(steps) if s.get("name") == "Download published wheel from TestPyPI"
-    )
-    verify_index = next(
-        i
-        for i, s in enumerate(steps)
-        if s.get("name") == "Verify published wheel matches approved CI wheel"
-    )
-    install_index = next(
-        i
-        for i, s in enumerate(steps)
-        if s.get("name") == "Install published wheel and verify Linux import and warning"
+    download_index = names.index("Download published wheel from TestPyPI")
+    verify_index = names.index("Verify published wheel matches approved CI wheel")
+    install_index = names.index(
+        "Install published wheel and verify Linux import and warning"
     )
     assert download_index < verify_index < install_index
 
@@ -243,9 +237,7 @@ def test_published_testpypi_wheel_is_smoked_on_real_linux() -> None:
     assert '--expected-version "${{ needs.build.outputs.version }}"' in install
     assert "--output artifacts/testpypi-linux" in install
 
-    evidence = next(
-        s for s in steps if s.get("name") == "Upload Linux installation and import evidence"
-    )
+    evidence = steps[names.index("Upload Linux installation and import evidence")]
     assert evidence["if"] == "always()"
     assert evidence["with"]["path"] == "artifacts/testpypi-linux/"
 
