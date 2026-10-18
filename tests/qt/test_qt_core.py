@@ -165,7 +165,10 @@ def test_get_by_object_name_finds_widget(qt_app):
     _, win = qt_app
     _select_tab(win, "Buttons")
     btn = win.get_by_object_name("qt_btn_ok")
+    assert win.button(name="OK").exists(timeout=2.0)
+    assert btn.exists()
     assert btn.exists(timeout=2.0)
+    assert btn.bounding_box() == win.button(name="OK").bounding_box()
 
 
 @_windows_only

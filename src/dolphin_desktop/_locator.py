@@ -2333,11 +2333,34 @@ class _QtObjectNameLocator(Locator):
         # Read by ``_resolve`` (``found_index``) and by trace/repr.
         self._criteria = {"qt_object_name": object_name}
 
+    def _resolve_presence(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        """Use the Qt objectName scan for presence checks as well as actions."""
+        # The scan does not require visibility. The base implementation would
+        # pass our internal qt_object_name criterion to pywinauto, which cannot
+        # interpret it, so exists() would report even a live widget as absent.
+        return self._resolve_object_name(
+            deadline=deadline, single_attempt=single_attempt, presence_only=True
+        )
+
     def _resolve(
         self,
         deadline: float | None = None,
         *,
         single_attempt: bool = False,
+    ) -> Any:
+        return self._resolve_object_name(deadline=deadline, single_attempt=single_attempt)
+
+    def _resolve_object_name(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+        presence_only: bool = False,
     ) -> Any:
         single_attempt = single_attempt or self._timeout <= 0
         deadline, enforce_deadline = _effective_deadline(
@@ -2345,7 +2368,8 @@ class _QtObjectNameLocator(Locator):
             deadline,
             single_attempt=single_attempt,
         )
-        parent_spec = self._get_parent_spec(deadline, single_attempt=single_attempt)
+        get_parent = self._get_parent_presence_spec if presence_only else self._get_parent_spec
+        parent_spec = get_parent(deadline, single_attempt=single_attempt)
         suffix = f".{self._object_name}"
         index = self._criteria.get("found_index", 0)
         negative_index = isinstance(index, int) and index < 0

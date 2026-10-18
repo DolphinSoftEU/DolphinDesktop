@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Qt `get_by_object_name(...).exists()` now uses the same objectName lookup
+  as actions, instead of forwarding an internal selector to pywinauto.
+  Presence checks preserve timeout and index handling and resolve nested
+  parents without requiring visibility (KAN-663).
+
 * Trace now records failed actions with empty exception messages as errors,
   including screenshots and UIA trees in `on-failure` mode. Unsupported UIA
   pattern actions store the same diagnostic raised to the caller (KAN-662).

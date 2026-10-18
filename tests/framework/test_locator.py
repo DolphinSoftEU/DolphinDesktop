@@ -774,7 +774,8 @@ def test_negative_index_helper_handles_non_negative_expiry_and_search_errors():
     sleep.assert_called_once()
 
 
-def test_qt_object_name_match_is_rejected_when_the_deadline_passes_during_scan():
+@pytest.mark.parametrize("resolve_method", ["_resolve", "_resolve_presence"])
+def test_qt_object_name_match_is_rejected_when_the_deadline_passes_during_scan(resolve_method):
     match = SimpleNamespace(element_info=SimpleNamespace(automation_id="target"))
     parent = FakeSpec(descendants=[match])
     locator = locator_module._QtObjectNameLocator(
@@ -782,7 +783,7 @@ def test_qt_object_name_match_is_rejected_when_the_deadline_passes_during_scan()
     ).timeout(1)
 
     with monotonic_values(0, 0, 1, 1), pytest.raises(ElementNotFoundError):
-        locator._resolve()
+        getattr(locator, resolve_method)()
 
 
 def test_invalid_fallback_entry_reports_its_index_before_resolution():
@@ -2341,6 +2342,52 @@ def test_select_popup_helper_string_index_and_timeout():
     ):
         locator_module._select_via_popup(element, 1, 1)
     second_window_item.click_input.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("automation_ids", "index", "expected"),
+    [
+        (["target"], 0, True),
+        (["App.win.target"], 0, True),
+        (["App.win.not_target", "App.win.target_extra"], 0, False),
+        ([], 0, False),
+        (["target", "App.win.target"], 1, True),
+        (["target"], 1, False),
+        (["target", "App.win.target"], -1, True),
+        (["target"], -2, False),
+    ],
+)
+@pytest.mark.parametrize("timeout", [0, 0.01])
+def test_qt_object_name_presence_uses_the_same_matches_as_actions(
+    automation_ids, index, expected, timeout
+):
+    matches = [FakeElement(automation_id=aid, visible=False) for aid in automation_ids]
+    parent = FakeSpec(descendants=matches)
+    parent.child_window = Mock(side_effect=TypeError("unsupported qt_object_name criterion"))
+    window = SimpleNamespace(_get_spec=Mock(return_value=parent))
+    locator = locator_module._QtObjectNameLocator(window, "target").nth(index)
+
+    assert locator.exists(timeout=timeout) is expected
+    if expected:
+        assert locator.timeout(0)._resolve_presence() is matches[index]
+        assert locator.timeout(0)._resolve() is matches[index]
+    parent.child_window.assert_not_called()
+
+
+@pytest.mark.parametrize("timeout", [0, 1])
+def test_qt_object_name_presence_resolves_an_unresolved_hidden_parent(timeout):
+    match = FakeElement(automation_id="App.hidden.target", visible=False)
+    hidden_parent = FakeSpec(wrapper=FakeElement(visible=False), descendants=[match])
+    hidden_parent.child_window = Mock(side_effect=TypeError("unsupported qt_object_name"))
+    root = FakeSpec()
+    root.child_window = Mock(return_value=hidden_parent)
+    window = SimpleNamespace(_get_spec=Mock(return_value=root))
+    parent = locator_module.Locator(window, title="hidden parent")
+    child = locator_module._QtObjectNameLocator(parent, "target")
+
+    assert child.exists(timeout=timeout) is True
+    root.child_window.assert_called_once_with(visible_only=False, title="hidden parent")
+    hidden_parent.child_window.assert_not_called()
 
 
 def test_qt_object_name_locator_resolves_suffix_index_and_times_out():
