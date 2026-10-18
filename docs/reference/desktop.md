@@ -34,7 +34,20 @@ with Desktop(backend="uia", hidden=False).launch("my-app.exe") as app:
     window.wait_until_ready()
 ```
 
-`Desktop.launch()` owns the process it starts. `Application.close()` /
+`Desktop.launch()` owns the process it starts. Windows 11 Notepad redirects
+are owned only when a pre-launch process snapshot and process ancestry prove
+that the new process descends from the launched process. A matching executable,
+package or creation time alone is insufficient. Existing instances and
+unverified broker activations remain unowned; use `connect(process=...)` to
+control them explicitly. Failed ownership checks raise `WindowNotFoundError`
+from `app.window()`.
+
+Notepad discovery uses `handoff_timeout=2.0` seconds independently of the
+input-idle `timeout`. Set `handoff_timeout=0` to make a single discovery pass.
+If an existing Notepad instance is visible and no verified replacement window is found, discovery
+returns immediately instead of waiting for this timeout.
+
+`Application.close()` /
 `Application.kill()` clean up owned processes (including children launched via
 that application). `Desktop.connect()` attaches to an existing process and
 does not make Dolphin its owner; closing the returned `Application` therefore

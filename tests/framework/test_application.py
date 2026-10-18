@@ -1274,7 +1274,8 @@ def test_adopt_hand_off_reconnects_attached_and_preserves_original_on_failure(mo
     monkeypatch.setattr(app, "_is_hand_off_pid", Mock(return_value=True))
     monkeypatch.setattr(application, "_PyWinApp", Mock(return_value=new_raw))
     try:
-        app._adopt_hand_off(spec, {"title": "X"})
+        with pytest.raises(application.WindowNotFoundError, match="Could not adopt window"):
+            app._adopt_hand_off(spec, {"title": "X"})
         assert app._app is raw
         assert application._attached_pids == {10}
 

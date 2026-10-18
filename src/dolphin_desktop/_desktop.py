@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import time
@@ -20,6 +21,7 @@ from ._application import (
     Application,
     _is_notepad_launcher,
     _process_image_path,
+    _snapshot_process_ids,
 )
 from ._exceptions import ApplicationError, DolphinError
 
@@ -206,6 +208,7 @@ class Desktop:
         startup_delay: float = 0.5,
         env: Mapping[str, str] | None = None,
         wait_for_idle: bool = False,
+        handoff_timeout: float = 2.0,
     ) -> Application:
         """Start a new process and return an :class:`Application`.
 
@@ -216,8 +219,7 @@ class Desktop:
             ``r"C:\\Windows\\notepad.exe my_file.txt"``).
         timeout:
             Maximum seconds to wait for a GUI process to become input-idle
-            after creation when *wait_for_idle* is true. Also bounds discovery
-            of Windows Notepad's replacement process after MSIX activation.
+            after creation when *wait_for_idle* is true.
         work_dir:
             Optional working directory for the new process.
         startup_delay:
@@ -233,7 +235,13 @@ class Desktop:
             Opt in to waiting for GUI input-idle readiness. The default
             preserves the former ``wait_for_idle=False`` launch behaviour;
             console processes return as soon as ``CreateProcessW`` succeeds.
+        handoff_timeout:
+            Maximum additional seconds to discover Notepad's replacement
+            process (default 2). Existing instances are never owned; an
+            unverified broker activation requires explicit ``connect()``.
         """
+        if not math.isfinite(handoff_timeout) or handoff_timeout < 0:
+            raise ValueError("handoff_timeout must be finite and non-negative")
         if self._is_hidden:
             return self._launch_hidden(
                 cmd,
@@ -248,6 +256,7 @@ class Desktop:
 
         process_handle: int | None = None
         try:
+            baseline = _snapshot_process_ids()
             # CreateProcessW returns the identity anchor together with the PID.
             # Keep that handle before startup_delay: a fast single-instance
             # launcher may exit and its numeric PID may be reused during the
@@ -271,7 +280,8 @@ class Desktop:
                 owned_process_handle=process_handle,
             )
             if _is_notepad_launcher(image_path):
-                result._resolve_launch_handoff(timeout=timeout)
+                result._launch_snapshot = baseline
+                result._resolve_launch_handoff(timeout=handoff_timeout)
             return result
         except Exception as exc:
             if process_handle is not None:

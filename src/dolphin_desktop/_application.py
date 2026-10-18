@@ -761,6 +761,14 @@ def _enumerate_child_pids(parent_pid: int) -> list[int]:
     return _process_parent_map().get(parent_pid, [])
 
 
+def _snapshot_process_ids() -> set[int] | None:
+    """Return a pre-launch process baseline, or None when enumeration failed."""
+    parents = _process_parent_map()
+    if not parents:
+        return None
+    return {pid for children in parents.values() for pid in children}
+
+
 def _enumerate_descendant_pids(root_pid: int) -> set[int]:
     """Return every PID below *root_pid*, not just its direct children.
 
@@ -850,6 +858,7 @@ class Application:
         self.default_timeout_ms = default_timeout_ms
         self._desktop = desktop
         self._owns_process = owns_process
+        self._launch_snapshot: set[int] | None = None
         self._launched_apps: list[tuple[str, Application]] = []
         # Cache for Qt runtime info — module enumeration right after process
         # spawn is non-deterministic on Windows (EnumProcessModulesEx can
@@ -1069,6 +1078,7 @@ class Application:
                     "Desktop().connect(process=...)"
                 ),
             )
+        new_handle = None
         try:
             old_pid = self.process_id
             # Build + connect the replacement pywinauto App on a local
@@ -1091,11 +1101,12 @@ class Application:
                     or _process_creation_time_from_handle(new_handle) != created
                     or not self._is_hand_off_pid(actual_pid)
                 ):
-                    if new_handle is not None:
-                        _close_owned_process_handle(new_handle)
-                    return
+                    raise WindowNotFoundError(
+                        f"Cannot verify ownership of window {criteria!r} (pid {actual_pid})"
+                    )
+            image_path = _process_image_path(actual_pid)
             self._app = new_app
-            self._image_path = _process_image_path(actual_pid)
+            self._image_path = image_path
             self._qt_info = None
             self._launch_handoff_resolved = True
             if self._owns_process:
@@ -1124,8 +1135,12 @@ class Application:
             else:
                 _attached_pids.discard(old_pid)
                 _attached_pids.add(actual_pid)
-        except Exception:
-            pass
+        except Exception as exc:
+            if new_handle is not None and self._app is not new_app:
+                _close_owned_process_handle(new_handle)
+            raise WindowNotFoundError(
+                f"Could not adopt window {criteria!r} (pid {actual_pid}): {exc}"
+            ) from exc
 
     def _is_hand_off_pid(self, pid: int) -> bool:
         """Return True when *pid* is plausibly this application's own process.
@@ -1152,11 +1167,11 @@ class Application:
                 image = _process_image_path(pid)
                 return (
                     self._owns_process
-                    and _process_state(self.process_id) == "stopped"
                     and launched is not None
                     and created is not None
                     and created >= launched
                     and image is not None
+                    and self._is_new_notepad_descendant(pid, created)
                     and (
                         image == self._image_path
                         or (
@@ -1182,6 +1197,43 @@ class Application:
             return False
         return _process_image_path(pid) == self._image_path
 
+    def _is_new_notepad_descendant(self, pid: int, created: int) -> bool:
+        """Require a new, time-ordered ancestry chain back to our anchored launcher.
+
+        MSIX package identity and temporal proximity alone never grant ownership:
+        another user can independently activate the very same package concurrently.
+        Missing snapshots, pre-existing ancestors and PID reuse all fail closed.
+        """
+        baseline = getattr(self, "_launch_snapshot", None)
+        launched = getattr(self, "_launch_creation_time", None)
+        if baseline is None or launched is None:
+            return False
+        root = self.process_id
+        root_created = _process_creation_time(root)
+        if (root_created is not None and root_created != launched) or (
+            root_created is None and _process_state(root) != "stopped"
+        ):
+            return False
+        parents = {
+            child: parent
+            for parent, children in _process_parent_map().items()
+            for child in children
+        }
+        seen = {root}
+        while True:
+            if pid in baseline or pid in seen or created < launched:
+                return False
+            seen.add(pid)
+            parent = parents.get(pid)
+            if parent is None:
+                return False
+            if parent == root:
+                return True
+            parent_created = _process_creation_time(parent)
+            if parent_created is None or parent_created > created:
+                return False
+            pid, created = parent, parent_created
+
     def _resolve_launch_handoff(self, timeout: float = 0.0) -> None:
         """Bind a unique new packaged Notepad window, including delayed activation."""
         if (
@@ -1200,10 +1252,19 @@ class Application:
                 except Exception:
                     pass  # pywinauto may reject an already-exited launcher.
                 candidates = {}
+                existing_notepad = False
                 desktop = _PwDesktop(backend=self._backend)
                 for wrapper in desktop.windows():
                     try:
                         pid = wrapper.process_id()
+                        baseline = getattr(self, "_launch_snapshot", None)
+                        if (
+                            baseline is not None
+                            and pid in baseline
+                            and _is_notepad_launcher(_process_image_path(pid))
+                        ):
+                            existing_notepad = True
+                            continue
                         launched = getattr(self, "_launch_creation_time", None)
                         created = _process_creation_time(pid)
                         if (
@@ -1223,6 +1284,8 @@ class Application:
                         return
                 elif len(candidates) > 1:
                     return  # Concurrent launches cannot be attributed safely.
+                elif existing_notepad:
+                    return  # An existing instance may have consumed activation.
             except Exception as exc:
                 _log.debug("Notepad hand-off discovery failed: %s", exc)
             if time.monotonic() >= deadline:
