@@ -16,6 +16,68 @@ MSIX_NOTEPAD = (
 )
 
 
+@pytest.mark.parametrize(
+    "command,needs_snapshot",
+    [
+        ("notepad.exe", True),
+        ("NOTEPAD", True),
+        ('  "notepad.exe" "notes.txt"', True),
+        (SYSTEM_NOTEPAD + " notes.txt", True),
+        ('"' + SYSTEM_NOTEPAD + '" "notes.txt"', True),
+        (SYSTEM_NOTEPAD.removesuffix(".exe"), True),
+        ('"' + MSIX_NOTEPAD + '" "notes.txt"', True),
+        ("demo.exe", False),
+        ('python.exe "' + SYSTEM_NOTEPAD + '"', False),
+        ('"C:\\Program Files\\Demo\\demo.exe" notepad.exe', False),
+        (r"C:\Other\notepad.exe", False),
+        (r"C:\Other\notepad", False),
+        ('"C:\\Other\\notepad.exe" notes.txt', False),
+        ('"notepad.exe', False),
+        ("", False),
+    ],
+)
+def test_public_launch_snapshots_only_possible_notepad_commands(
+    handoff, monkeypatch, command, needs_snapshot
+):
+    snapshot = Mock(return_value={99})
+    resolver = Mock()
+    monkeypatch.setattr(desktop_module, "_snapshot_process_ids", snapshot)
+    monkeypatch.setattr(application.Application, "_resolve_launch_handoff", resolver)
+    desktop = desktop_module.Desktop(hidden=False)
+
+    def spawn(*args, **kwargs):
+        # The baseline must already exist at spawn, never be taken afterwards.
+        assert snapshot.called is needs_snapshot
+        return handoff.raw, SYSTEM_NOTEPAD, 10
+
+    monkeypatch.setattr(desktop, "_launch_with_environment", spawn)
+    app = desktop.launch(command, startup_delay=0)
+
+    if needs_snapshot:
+        snapshot.assert_called_once_with()
+        resolver.assert_called_once_with(timeout=2.0)
+        assert app._launch_snapshot == {99}
+    else:
+        snapshot.assert_not_called()
+        resolver.assert_not_called()
+        assert app._launch_snapshot is None
+
+
+def test_failed_prelaunch_snapshot_does_not_start_unverifiable_discovery(handoff, monkeypatch):
+    snapshot = Mock(return_value=None)
+    resolver = Mock()
+    monkeypatch.setattr(desktop_module, "_snapshot_process_ids", snapshot)
+    monkeypatch.setattr(application.Application, "_resolve_launch_handoff", resolver)
+    desktop = desktop_module.Desktop(hidden=False)
+    monkeypatch.setattr(
+        desktop, "_launch_with_environment", Mock(return_value=(handoff.raw, SYSTEM_NOTEPAD, 10))
+    )
+    app = desktop.launch(SYSTEM_NOTEPAD, startup_delay=0)
+    snapshot.assert_called_once_with()
+    resolver.assert_not_called()
+    assert app._launch_snapshot is None
+
+
 @pytest.fixture
 def handoff(monkeypatch):
     for name in ("_live_pids", "_session_pids", "_unanchored_pids", "_attached_pids"):

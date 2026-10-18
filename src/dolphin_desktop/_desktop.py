@@ -40,6 +40,28 @@ def _image_path_now(app: _PyWinApp) -> str | None:
         return None
 
 
+def _may_launch_notepad(cmd: str) -> bool:
+    """Cheaply gate the pre-spawn snapshot; process identity is verified later.
+
+    Bare Notepad commands can resolve to the system launcher. Explicit paths
+    must identify a Windows launcher or installed Notepad package. Arguments
+    containing Notepad never make a different executable eligible.
+    """
+    command = cmd.lstrip()
+    if command.startswith('"'):
+        executable, closing_quote, _ = command[1:].partition('"')
+        if not closing_quote:
+            return False
+    else:
+        executable = command.split(maxsplit=1)[0] if command else ""
+    lowered = executable.lower()
+    if lowered in {"notepad", "notepad.exe"}:
+        return True
+    if not lowered.endswith(("\\notepad.exe", "/notepad.exe", "\\notepad", "/notepad")):
+        return False
+    return _is_notepad_launcher(executable if lowered.endswith(".exe") else executable + ".exe")
+
+
 if TYPE_CHECKING:
     from ._capabilities import Capability
     from ._cdp import CDPSession
@@ -256,7 +278,7 @@ class Desktop:
 
         process_handle: int | None = None
         try:
-            baseline = _snapshot_process_ids()
+            baseline = _snapshot_process_ids() if _may_launch_notepad(cmd) else None
             # CreateProcessW returns the identity anchor together with the PID.
             # Keep that handle before startup_delay: a fast single-instance
             # launcher may exit and its numeric PID may be reused during the
@@ -279,7 +301,7 @@ class Desktop:
                 image_path=image_path,
                 owned_process_handle=process_handle,
             )
-            if _is_notepad_launcher(image_path):
+            if baseline is not None and _is_notepad_launcher(image_path):
                 result._launch_snapshot = baseline
                 result._resolve_launch_handoff(timeout=handoff_timeout)
             return result
