@@ -234,13 +234,17 @@ class TraceSession:
         Every text column is redacted at this boundary — the selector and the
         error message are built from user input and exception text, and the
         store outlives the test run.
+
+        Only ``error=None`` means success. An empty error message still marks
+        a failed action and is stored with a nonempty diagnostic fallback.
         """
         if self.mode == "off":
             return
 
         action = _redact(action)
         selector = _redact(selector) if selector is not None else None
-        error = _redact(error) if error is not None else None
+        failed = error is not None
+        error = _redact(error or "Action failed without an error message") if failed else None
 
         with self._lock:
             if self._closed:
@@ -248,13 +252,13 @@ class TraceSession:
             self._seq += 1
             seq = self._seq
         ts = time.time() - self._started_at
-        result = "error" if error else "ok"
+        result = "error" if failed else "ok"
         action = _redact(str(action))
         selector = _redact_optional(selector)
         error = _redact_optional(error)
 
         screenshot_file: str | None = None
-        capture_shot = self.mode == "always" or bool(error)
+        capture_shot = self.mode == "always" or failed
         if capture_shot:
             try:
                 fname = f"step_{seq:04d}.jpg"
@@ -265,7 +269,7 @@ class TraceSession:
 
         uia_tree: str | None = None
         if element is not None:
-            if error:
+            if failed:
                 uia_tree = _dump_uia_tree(element)
             elif self.mode == "always":
                 uia_tree = _dump_uia_tree(element, include_root=True)

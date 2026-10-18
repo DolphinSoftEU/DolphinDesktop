@@ -200,14 +200,15 @@ def _pattern_action(
             or isinstance(exc, AttributeError)
             or getattr(exc, "hresult", None) == _E_ACCESSDENIED
         ):
-            _trace_step(action_name, self._criteria, element=element, error=str(exc))
-            raise UnsupportedPatternError(
+            pattern_error = UnsupportedPatternError(
                 f"{action_name}() failed — element does not implement "
                 f"{pattern_name} (wrapper {type(target).__name__!r})",
                 hint=hint_extra
                 or "the widget exposes the wrapper but not the pattern; "
                 "use the input-based action (click(), type_text()) in headed mode",
-            ) from exc
+            )
+            _trace_step(action_name, self._criteria, element=element, error=str(pattern_error))
+            raise pattern_error from exc
         _trace_step(action_name, self._criteria, element=element, error=str(exc))
         raise
     _trace_step(action_name, self._criteria, element=element)
