@@ -13,35 +13,17 @@ FINAL_VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 
 
 def release_target(version: str, event: str, ref: str, requested: str) -> str:
-    final_tag = re.fullmatch(rf"refs/tags/v({FINAL_VERSION})", ref)
-    rc_tag = re.fullmatch(rf"refs/tags/v({FINAL_VERSION})-rc\.([0-9]+)", ref)
-    if event == "push":
-        if final_tag:
-            target = "pypi"
-        elif rc_tag:
-            target = "testpypi"
-        else:
-            raise ValueError(f"Unsupported release ref: {ref}")
-    elif event == "workflow_dispatch" and requested in {"pypi", "testpypi"}:
-        target = requested
-    else:
-        raise ValueError("Unsupported release event or target")
-
-    if final_tag and version != final_tag.group(1):
-        raise ValueError("Final release tag does not match the project version")
-    if rc_tag and version != f"{rc_tag.group(1)}rc{rc_tag.group(2)}":
-        raise ValueError("Release candidate tag does not match the project version")
-
-    if target == "pypi":
-        if not re.fullmatch(FINAL_VERSION, version):
-            raise ValueError("PyPI requires a final X.Y.Z version")
-        if not final_tag:
-            raise ValueError("PyPI requires a matching final release tag")
-    elif ref not in {"refs/heads/master", "refs/heads/testpypi-preview"} and not (
-        final_tag or rc_tag
-    ):
-        raise ValueError("TestPyPI requires master, testpypi-preview or a matching release tag")
-    return target
+    if event == "workflow_dispatch" and requested == "testpypi":
+        if ref not in {"refs/heads/master", "refs/heads/testpypi-preview"}:
+            raise ValueError("TestPyPI requires master or testpypi-preview dispatch")
+        return "testpypi"
+    if event != "push":
+        raise ValueError("PyPI requires a tag push; manual production dispatch is forbidden")
+    if not re.fullmatch(FINAL_VERSION, version):
+        raise ValueError("PyPI requires a final X.Y.Z version")
+    if ref != f"refs/tags/v{version}":
+        raise ValueError("PyPI requires a matching final release tag")
+    return "pypi"
 
 
 def main() -> int:

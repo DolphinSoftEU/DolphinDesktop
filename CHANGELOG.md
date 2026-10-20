@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Release no longer requires signed administrative ruleset evidence. Native
+  preview and production policies are audited separately from exact CI artifact
+  provenance, a nonpublishing preflight validates the wheel, and both indexes
+  verify the downloaded wheel bytes before smoke testing (KAN-741).
+
 * Qt `get_by_object_name(...).exists()` now uses the same objectName lookup
   as actions, instead of forwarding an internal selector to pywinauto.
   Presence checks preserve timeout and index handling and resolve nested
