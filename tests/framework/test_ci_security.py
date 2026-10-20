@@ -271,12 +271,9 @@ def test_locked_qt5_runtime_has_a_windows_wheel() -> None:
 @pytest.mark.parametrize(
     ("version", "event", "ref", "requested", "expected"),
     [
-        ("0.2.0", "workflow_dispatch", "refs/tags/v0.2.0", "pypi", "pypi"),
         ("0.2.0", "push", "refs/tags/v0.2.0", "", "pypi"),
-        ("0.2.0rc1", "push", "refs/tags/v0.2.0-rc.1", "", "testpypi"),
+        ("0.2.0.dev7", "workflow_dispatch", "refs/heads/master", "testpypi", "testpypi"),
         ("0.2.0.dev7", "workflow_dispatch", "refs/heads/testpypi-preview", "testpypi", "testpypi"),
-        ("0.2.0rc1", "workflow_dispatch", "refs/tags/v0.2.0-rc.1", "testpypi", "testpypi"),
-        ("0.2.0", "workflow_dispatch", "refs/tags/v0.2.0", "testpypi", "testpypi"),
     ],
 )
 def test_approved_release_refs(version, event, ref, requested, expected) -> None:
@@ -289,12 +286,15 @@ def test_approved_release_refs(version, event, ref, requested, expected) -> None
 )
 def test_production_rejects_non_final_versions(version: str) -> None:
     with pytest.raises(ValueError, match=r"final X\.Y\.Z"):
-        release_target(version, "workflow_dispatch", "refs/heads/master", "pypi")
+        release_target(version, "push", "refs/tags/v0.2.0", "")
 
 
 @pytest.mark.parametrize(
     ("version", "event", "ref", "requested"),
     [
+        ("0.2.0", "workflow_dispatch", "refs/tags/v0.2.0", "pypi"),
+        ("0.2.0", "workflow_dispatch", "refs/tags/v0.2.0", "testpypi"),
+        ("0.2.0rc1", "push", "refs/tags/v0.2.0-rc.1", ""),
         ("0.2.0", "workflow_dispatch", "refs/heads/master", "pypi"),
         ("0.2.0", "workflow_dispatch", "refs/heads/testpypi-preview", "pypi"),
         ("0.2.0", "workflow_dispatch", "refs/heads/feature/fix", "pypi"),
@@ -340,7 +340,7 @@ def test_production_tag_requires_a_master_commit(tmp_path: Path, approved_commit
         text=True,
         env={
             **os.environ,
-            "EVENT_NAME": "workflow_dispatch",
+            "EVENT_NAME": "push",
             "RELEASE_REF": "refs/tags/v0.2.0",
             "DISPATCH_TARGET": "pypi",
             "GITHUB_OUTPUT": str(output),

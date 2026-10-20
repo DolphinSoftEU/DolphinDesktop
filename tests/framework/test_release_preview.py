@@ -86,23 +86,54 @@ def test_smoke_dependency_exports_keep_lockfile_hashes():
         assert '--requirements "${{ runner.temp }}/release-requirements.txt"' in command
 
 
-def test_testpypi_download_is_separate_and_hash_checked_before_install():
+@pytest.mark.parametrize("target,index", [("testpypi", "test.pypi.org"), ("pypi", "pypi.org")])
+def test_index_download_is_separate_and_hash_checked_before_install(target, index):
     jobs = workflow("release.yml")["jobs"]
-    steps = jobs["smoke-testpypi"]["steps"]
+    steps = jobs[f"smoke-{target}"]["steps"]
     commands = [step.get("run", "") for step in steps]
     download = next(i for i, command in enumerate(commands) if "pip download" in command)
-    assert "--pre --no-deps --only-binary=:all:" in commands[download]
-    assert "--index-url https://test.pypi.org/simple/" in commands[download]
+    assert "--no-deps --only-binary=:all:" in commands[download]
+    assert f"--index-url https://{index}/simple/" in commands[download]
     assert "--extra-index-url" not in "\n".join(commands)
     verification = next(i for i, command in enumerate(commands) if "Get-FileHash" in command)
     assert "$builtHash -ne $downloadedHash" in commands[verification]
     assert "exit 1" in commands[verification]
     installation = next(i for i, command in enumerate(commands) if "smoke_wheel.py" in command)
     assert download < verification < installation
-    assert "--wheel-directory testpypi-download" in commands[installation]
+    assert f"--wheel-directory {target}-download" in commands[installation]
     for job in (jobs["publish-testpypi"], jobs["publish-pypi"]):
         publish = job["steps"][-1]
         assert publish["with"].get("skip-existing", "false") == "false"
+
+
+@pytest.mark.parametrize("target", ["testpypi", "pypi"])
+@pytest.mark.parametrize("substituted", [False, True])
+def test_actual_workflow_rejects_same_version_with_different_bytes(tmp_path, target, substituted):
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("Index verification requires PowerShell")
+    built = tmp_path / "release-artifact/dist"
+    downloaded = tmp_path / f"{target}-download"
+    built.mkdir(parents=True)
+    downloaded.mkdir()
+    name = "dolphin_desktop-0.2.0-py3-none-any.whl"
+    (built / name).write_bytes(b"CI wheel")
+    (downloaded / name).write_bytes(b"substitute" if substituted else b"CI wheel")
+    step = next(
+        step
+        for step in workflow("release.yml")["jobs"][f"smoke-{target}"]["steps"]
+        if "Get-FileHash" in step.get("run", "")
+    )
+    script = tmp_path / "verify.ps1"
+    script.write_text("$ErrorActionPreference = 'Stop'\n" + step["run"], encoding="utf-8")
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == (1 if substituted else 0), result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("prefix", ["PIP_", "pip_"])

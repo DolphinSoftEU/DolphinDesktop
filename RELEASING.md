@@ -1,233 +1,135 @@
-# Releasing dolphin-desktop
+# Releasing DolphinDesktop
 
-The release workflow publishes the exact wheel and sdist already built and
-smoke-tested by CI on Windows, Linux and macOS. It never rebuilds distributions. Production
-requires a matching final `vX.Y.Z` tag; manual publication from `master`, preview
-or feature branches is rejected. TestPyPI permits `master`, `testpypi-preview`,
-and matching final/RC tags (`vX.Y.Z-rc.N` for `X.Y.ZrcN`). Tags use a reviewed
-merge commit on `master`; preview branch dispatches use its reviewed merge commit.
+Release publishes the exact distributions from the latest successful **push CI**
+for the selected SHA and branch. It never rebuilds a package or falls back to an
+older successful run. GitHub enforces branch, tag and environment policies;
+artifact provenance is validated separately. No OpenSSL, signed ruleset JSON,
+private signing key or expiring administrative evidence is used (KAN-741).
 
-## Administrator setup (KAN-579)
+## Native GitHub configuration
 
-Configure active GitHub rulesets for both `master` and `testpypi-preview`:
+Configure active rulesets with no bypass actors, required PRs, strict required
+GitHub Actions checks, deletion protection and force-push protection:
 
-- Require a pull request and at least one independent approval, dismiss stale
-  approvals, and require approval of the most recent reviewable push.
-- Require all checks below, with GitHub Actions as the expected source and
-  strict up-to-date checks. Disable force pushes and deletion.
-- Leave the bypass list empty, including administrator bypasses.
+| Source | Review policy | Required checks |
+| --- | --- | --- |
+| `testpypi-preview` | PR required; **zero approvals**, no last-push approval or code-owner review requirement; author may merge after checks | Every name in `REQUIRED_JOBS` in `.github/scripts/release_provenance.py`, bound to GitHub Actions integration 15368 |
+| `master` | At least one independent approval, dismiss stale reviews, require last-push approval | The same required checks |
 
-Required check names (must match CI job names):
+CI also gates package creation on the minimum dependency matrix (all Python
+versions and profiles), CVE audit, SAST and secret scans. Keep these dependencies.
 
-- `Unit / Python 3.11 / Windows`
-- `Unit / Python 3.12 / Windows`
-- `Unit / Python 3.13 / Windows`
-- `Windows component tests`
-- `Linux package install and import`
-- `Build package`
-- `Security gate (CVE / secrets / SAST) / ubuntu-latest`
-- `Security gate (CVE / secrets / SAST) / windows-latest`
+Production tags `refs/tags/v*.*.*` need two active rulesets: update/deletion
+restrictions without bypass actors, and a creation restriction with dedicated
+releasers (team, integration, or repository administrator role). Do not grant
+those releasers bypass on tag immutability or branch protection.
 
-Also require all nine `Wheel install / <runner> / Python <version>` checks,
-where `<runner>` is `ubuntu-latest`, `macos-latest` or `windows-latest`, and
-`<version>` is `3.11`, `3.12` or `3.13`. Each downloads the same distribution
-artifact by immutable artifact ID, verifies the originating SHA/run/attempt
-and manifest digest, then installs its wheel in a clean venv using normal pip
-dependency resolution. The release validator requires these exact checks on
-the release SHA, including when the overall workflow reports success.
+Configure environments using **Selected branches and tags**, with exactly:
 
-## Release wheel retest (KAN-586 / DESKTOP-008)
+| Environment | Allowed branches | Allowed tags | Manual approval |
+| --- | --- | --- | --- |
+| `testpypi` | `master`, `testpypi-preview` | None | None; remove required reviewers |
+| `pypi` | None | `v*.*.*` | Required reviewers, prevent self-review, administrator bypass disabled |
 
-Source markers or an installed development version do not prove the metadata
-of a release artifact. Retest the approved wheel itself on each native platform
-and Python 3.11–3.13, keeping its exact version and SHA-256 with the results:
+Disable administrator bypass for both environments. Preserve any required wait
+or custom production protection; preview must have no manual deployment gate.
+Only the publishing jobs receive `id-token: write`. Other jobs have read-only
+permissions, and all Actions dependencies are pinned to immutable SHAs.
 
-```bash
-uv sync --locked --only-group build
-uv run --no-sync python .github/scripts/check_wheel_platform.py \
-  --wheel /path/to/dolphin_desktop-0.2.0-py3-none-any.whl \
-  --expected-version 0.2.0 --output artifacts/wheel-platform
+Read-only GitHub tokens can omit `bypass_actors`. Preflight checks active rules,
+required checks and visible bypass actors, but does **not** claim that omitted
+actors prove an empty bypass list. GitHub remains responsible for native policy
+enforcement. Administrators must keep bypass lists empty as specified above;
+there is no recurring manual attestation. See the
+[GitHub rules API](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset).
+
+Configure a Trusted Publisher in each package index: project `dolphin-desktop`,
+owner `DolphinSoftEU`, repository `DolphinDesktop`, workflow `release.yml`, and
+matching environment `testpypi` or `pypi`. Revoke obsolete publishers and legacy
+upload tokens. An administrator must verify the index configuration independently
+of GitHub; environment names cannot prove index settings.
+
+## Nonpublishing preflight
+
+Run **Release preflight** (`release-preflight.yml`) on `testpypi-preview` or
+`master` with target `testpypi`. For production, select the existing matching
+`vX.Y.Z` tag and target `pypi`; dry-run simulates the tag-push event only inside
+this workflow. It has no publishing action, environment deployment or OIDC
+permission and cannot authorize a production dispatch in `release.yml`.
+
+Preflight checks the ref and source version, Git ancestry, native policies, the
+latest exact-SHA push CI and its successful required jobs, attempt-specific
+artifact ID, expiry and archive digest. It downloads that artifact, verifies
+its distribution manifest and CI identity, derives its expected version and
+runs an isolated Windows wheel install/import/CLI smoke. Rejection explains the
+failed gate without printing credentials or signed evidence.
+
+## TestPyPI checklist
+
+1. Merge the version/code PR into protected `testpypi-preview` after checks pass.
+   Its author can merge it; a second account is unnecessary. `master` remains
+   supported for preview, with its stricter review policy.
+2. Wait for the **push** CI for that exact merge SHA to finish successfully.
+3. Run **Release preflight** for the same branch and inspect the result.
+4. Dispatch **Release** from the same branch with `testpypi`. Tags, arbitrary
+   branches and arbitrary SHAs are rejected for preview. No deployment approval
+   is required. Trusted Publishing uses OIDC, never long-lived upload tokens.
+5. Verify the post-publish smoke: the downloaded TestPyPI wheel must have the
+   same SHA-256 as the CI wheel, then pass install/import/version/CLI checks.
+
+Development versions `X.Y.Z.devN` become
+`X.Y.Z.dev{CI_RUN_ID * 1000000 + CI_RUN_ATTEMPT}` during CI. Release derives this
+version from the selected CI run/attempt, rather than its own run identity.
+Releasing the same artifact twice fails on the index version collision:
+`skip-existing` is never enabled. Rerun CI to obtain a fresh development version.
+RC versions may be previewed by branch dispatch; RC tag pushes are not supported.
+
+## PyPI checklist
+
+1. Merge matching `pyproject.toml`, package `__version__` and changelog changes
+   through independent review into protected `master`. Use canonical final
+   `X.Y.Z`; development, RC, post, local and epoch versions are rejected.
+2. Wait for the exact-SHA master push CI to pass. Create the matching immutable
+   `vX.Y.Z` tag on a commit reachable from master and push it.
+3. Release accepts production **only on tag push**. A manual production
+   `workflow_dispatch` is always rejected, even on a matching existing tag.
+   A failed production run can be rerun using GitHub's run-rerun facility.
+4. Inspect the manifest, exact CI run/attempt and local Windows wheel smoke.
+   An independent reviewer must approve the native `pypi` environment; self-review
+   and admin bypass are disabled. No production upload occurs without this gate.
+5. Verify the downloaded PyPI wheel hash against the CI artifact and its isolated
+   smoke result. Create release notes after successful verification.
+
+Both upload jobs require the local wheel smoke. They download by immutable
+artifact ID and reverify the anchored manifest hash and both distribution hashes
+immediately before upload. Missing/expired artifacts require another CI build.
+Partial CI reruns must rebuild the package in the selected attempt.
+
+Both post-publish smokes download DolphinDesktop with `--no-deps` from one explicit
+index, clearing inherited pip configuration. Dependencies come separately from
+PyPI with lockfile hashes. They install the downloaded wheel with
+`--no-deps --no-index` in a clean venv, outside the source checkout. A same-version
+wheel with different bytes is rejected before installation.
+
+## Validation and deployment evidence
+
+Run:
+
+```powershell
+uv run --locked --group dev pytest tests/framework/test_ci_security.py tests/framework/test_release_provenance.py tests/framework/test_release_preview.py -q
 ```
 
-Alternatively, set `DOLPHIN_DESKTOP_WHEEL` and `DOLPHIN_DESKTOP_VERSION` and
-pass only `--output`. The check rejects a development wheel for a requested
-final version, and rejects the old 0.2.0 metadata with unconditional Windows
-dependencies. It records `METADATA`, pip's `install.json`, `commands.log`,
-`import.json` and a successful `result.json` with the wheel hash and installed
-versions. CI retains these as `wheel-platform-<runner>-<python>` artifacts.
-No runtime dependencies are preinstalled from the lock, and `--no-deps` is not
-used, so an installation failure cannot be hidden by the test environment.
+Record hosted preflight failures for an unauthorized ref, a missing/pending CI
+and invalid digest using controlled tests; then record successful branch preflight,
+a complete TestPyPI Release and the downloaded wheel SHA-256. Keep preview and
+production evidence separate. Do not change KAN-579's status before re-auditing
+its original unauthorized-release risk. Local tests cannot certify hosted GitHub
+or index configuration.
 
-A locally rebuilt 0.2.0 wheel is a candidate until reviewed and approved; it
-does not change a previously distributed wheel with the same version. If 0.2.0
-has already been published, ship the correction under a new release version
-through the existing release process. Native Linux/macOS results are required
-before closing the artifact acceptance criteria. The import implementation is
-covered separately by KAN-465; this gate checks that installation reaches it.
-
-## Release tagging and environments
-
-Create an active tag ruleset matching `refs/tags/v*.*.*` with update and deletion
-restrictions and an empty bypass list. A separate creation ruleset must restrict
-release tagging to a designated team/integration or repository administrators;
-use `always` bypass mode for those designated creators, and do not give them
-bypass rights on the update/deletion ruleset. A creation restriction with no
-allowed creator is rejected because it would prevent every release tag.
-The release validator checks the effective branch
-rules, tag immutability, and an independent approval for the exact merged PR
-head whose merge result is the release SHA. Classic branch protection alone is
-not accepted by this validator.
-
-Configure both [GitHub Environments](https://github.com/DolphinSoftEU/DolphinDesktop/settings/environments)
-with required reviewers, **Prevent self-review**, **Allow administrators to
-bypass configured protection rules** disabled, and **Selected branches and tags**:
-
-| Environment | Branch rules | Tag rules |
-| --- | --- | --- |
-| `pypi` | None | `v*.*.*` |
-| `testpypi` | `master`, `testpypi-preview` | `v*.*.*` |
-
-Remove all broader rules. The validator requires these exact rules and rejects
-missing protection. With only `DolphinSoftEU` as reviewer, another collaborator
-must initiate the run or a second trusted reviewer must be appointed.
-
-In each package index, configure a Trusted Publisher for project
-`dolphin-desktop`, owner `DolphinSoftEU`, repository `DolphinDesktop`, workflow
-`release.yml`, and the corresponding environment (`pypi` or `testpypi`). Remove
-obsolete publishers and revoke legacy upload tokens that could bypass this
-workflow. An index administrator must record dated evidence of these settings;
-GitHub environment names alone do not prove Trusted Publisher configuration.
-See [PyPI Trusted Publisher configuration](https://docs.pypi.org/trusted-publishers/adding-a-publisher/)
-and [GitHub environment configuration](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
-
-The read-only inspection on 2026-10-13 confirmed that `master` only has a deletion
-rule, `testpypi-preview` is unprotected, no active tag ruleset exists, and both
-package environments allow self-review/admin bypass and have no ref restrictions.
-The available credential has push access but `admin=false`. Applying the `pypi`
-environment hardening returned HTTP 403, `Must have admin rights to Repository`.
-These server-side changes and Trusted Publisher verification remain outstanding.
-The new release validator refuses publication under the observed configuration.
-
-## Administrative ruleset attestation
-
-GitHub [omits `bypass_actors` from read-only ruleset responses](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset).
-An omitted or null field does not establish that bypasses are disabled. Release
-accepts an explicit empty list for branch and tag-immutability rulesets; otherwise
-hidden actors require signed administrative evidence. Nonempty bypasses on those
-rulesets still reject publication, including when revealed by the audit.
-
-The release `GITHUB_TOKEN` retains its read permissions. An administrator performs
-the independent audit on a trusted workstation with Python and OpenSSL:
-
-1. Generate an RSA signing key outside the checkout (for example,
-   `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /secure/release-audit.pem`).
-   Keep the private key under administrator control. Export its public key with
-   `openssl pkey -in /secure/release-audit.pem -pubout -out .github/release-rulesets-public.pem`
-   and add that public key through a reviewed PR to the protected release branch.
-   The public key is pinned in the released source; a mutable variable cannot
-   replace the trust anchor. No private key or admin token belongs in CI.
-2. Configure a short-lived `RULESETS_ADMIN_TOKEN` for the audit process, scoped to
-   this repository and able to expose ruleset bypasses. Run:
-
-   ```bash
-   python .github/scripts/audit_release_rulesets.py \
-     --repository DolphinSoftEU/DolphinDesktop \
-     --private-key /secure/release-audit.pem --output /secure/rulesets-attestation.json
-   ```
-
-3. Set repository variable `RELEASE_RULESETS_ATTESTATION` to the exact JSON envelope
-   from that file. Only the signed public evidence enters Release. The helper
-   refuses to sign if its own API response omits/nulls `bypass_actors`.
-4. Run release preparation within the evidence lifetime (one hour by default;
-   `--valid-hours` can extend it to at most 24 hours). Refresh the administrative
-   audit after expiry or any ruleset change. The signature binds repository,
-   expiry, visible policy fields and `updated_at` to the observed bypass lists.
-   Release compares the live policy digest, including the update timestamp, so
-   evidence for an older configuration cannot supply the missing bypass data.
-
-Missing evidence/key, signature failure, wrong repository, expired evidence or a
-configuration mismatch blocks preparation. The audit supplies visibility; it
-does not waive source, review, checks, environment or Trusted Publisher gates.
-
-## Release procedure
-
-1. Update `pyproject.toml`, `src/dolphin_desktop/__init__.py`, and `CHANGELOG.md`
-   consistently through a reviewed PR. Production accepts only canonical final
-   `X.Y.Z`, without development, RC, post, local or epoch segments.
-2. Merge the approved PR into the protected release branch. Wait for the **push**
-   CI run for its exact merge SHA to complete successfully. A PR CI run, an older
-   successful run, skipped jobs, or a run for another SHA cannot authorize release.
-3. CI builds with locked tools only after all required test/security jobs pass.
-   It exports runtime dependencies with their hashes before preparing the version,
-   checks distribution metadata, installs the exact wheel in a fresh Windows venv,
-   and tests import/version/CLI. It uploads `dolphin-desktop-dist-attempt-N` containing
-   `dist/*.whl`, `dist/*.tar.gz`, and `provenance.json` with SHA, CI run/attempt
-   identity and SHA256 hashes of both files.
-4. For production, create and push the matching `vX.Y.Z` tag on that exact merge
-   commit. For preview, dispatch Release from an allowed branch with `testpypi`.
-   To retry production, dispatch from the existing matching tag with `pypi`.
-   If CI is still running when the tag is pushed, release fails; retry after CI.
-5. Release validates source review/protection and environments, then selects the
-   latest successful push CI run for the exact SHA and approved branch. It checks
-   every required job in the latest run attempt and selects only that attempt's
-   artifact name. Older artifacts remain distinct; no overwrite is used. A partial
-   rerun that does not rebuild the package for the new attempt requires rerunning
-   the package job or the complete CI workflow. The immutable artifact ID and
-   GitHub archive digest are verified before extracting the distributions.
-   Manifest hashes and run/attempt identity must match. A missing or expired
-   artifact is a hard failure; rerun CI instead of rebuilding in Release.
-6. Release runs **Smoke exact wheel before publication** on Windows against the
-   prepared artifact, checking its manifest and hashes again. Both publishing
-   jobs require this smoke job to succeed. Review the prepared artifact and
-   release evidence, then approve the target
-   environment. This is the final human gate. The publishing job downloads by
-   immutable artifact ID and verifies the anchored manifest hash and both file
-   hashes immediately before the Trusted Publisher upload. Only publishing jobs
-   receive OIDC permission; metadata is outside the package upload directory.
-7. Check index smoke results, create a GitHub Release with changelog notes, and
-   open the next Unreleased changelog section. For a broken release, yank it in
-   the index and release a new version through the same process.
-
-## Preview identity and smoke tests (KAN-580)
-
-For a source version `X.Y.Z.devN`, CI assigns
-`X.Y.Z.dev{CI_RUN_ID * 1000000 + CI_RUN_ATTEMPT}` to both package metadata and
-`dolphin_desktop.__version__` before building. For example, run `42`, attempt `2`
-produces `0.2.0.dev42000002`. Attempts must be positive and below one million;
-larger values fail instead of overlapping another run's version allocation.
-Final and RC versions stay as reviewed in source. Release derives the preview
-version from the selected **CI** run/attempt, not from its own run, and reuses
-those distributions without rebuilding. Releasing the same CI artifact again
-attempts the same version and fails on an index collision; upload errors are
-never suppressed. Rerun CI to prepare a new development preview.
-
-CI, the Release pre-publication smoke, and the TestPyPI smoke use
-`.github/scripts/smoke_wheel.py`. Each creates a fresh venv, installs only the
-runtime dependencies exported from `uv.lock` from `https://pypi.org/simple/`
-with `--require-hashes`, then installs the exact wheel with `--no-deps --no-index`.
-Inherited pip index settings/configuration are disabled. `pip check`, the
-imported and installed versions, `dolphin --help`, and `dolphin info backends`
-must all pass. Import/CLI checks run outside the source checkout.
-
-After publication, TestPyPI provides only the DolphinDesktop wheel through
-`pip download --no-deps --only-binary=:all:` with its single explicit index.
-The download step also clears inherited `PIP_*` settings and disables pip
-configuration files before any pip command, including the diagnostic index query.
-The downloaded wheel's SHA256 must match the prepared CI artifact before smoke.
-Dependencies are never resolved from TestPyPI or a combination of indexes.
-
-## Verification
-
-Run `uv run --locked --group dev pytest tests/framework/test_ci_security.py
-tests/framework/test_release_provenance.py tests/framework/test_release_preview.py
--q` (one command). These tests cover
-ref restrictions, real Git ancestry rejection, missing/failed/skipped/wrong-SHA
-CI, fork/PR runs, insufficient review/protection, mutable tags, weak environments,
-archive substitution/path traversal, and modified distributions or CI identity.
-They also cover the mandatory local smoke dependency, separate index downloads,
-hashed dependency installs, unique preview attempts and immediate smoke failure.
-
-Before closing KAN-579, record the administrator setup and a hosted negative run
-that stops before upload, followed by a successful protected-source preparation
-run. Do not approve a package upload merely to test a rejection path. The local
-suite cannot certify GitHub settings or PyPI/TestPyPI account configuration.
+Read-only inspection on 2026-10-20 found preview requiring one approval and last
+push approval, TestPyPI requiring manual environment review, and production
+missing the required master/tag/environment protection. These settings must be
+migrated before the corresponding hosted positive tests; code changes alone do
+not update GitHub settings. Remove the obsolete repository variable
+`RELEASE_RULESETS_ATTESTATION` during migration. Keep private keys outside the
+repository; they are no longer used by Release.

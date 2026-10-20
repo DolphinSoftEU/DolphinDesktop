@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import io
 import json
 import runpy
-import shutil
-import subprocess
-import time
+import sys
 import zipfile
 from copy import deepcopy
 from pathlib import Path
@@ -19,12 +16,15 @@ import pytest
 
 pytestmark = pytest.mark.unit
 SCRIPTS = Path(__file__).resolve().parents[2] / ".github/scripts"
-policy = runpy.run_path(str(SCRIPTS / "release_provenance.py"))
+provenance = runpy.run_path(str(SCRIPTS / "release_provenance.py"))
 manifest = runpy.run_path(str(SCRIPTS / "distribution_manifest.py"))
 download = runpy.run_path(str(SCRIPTS / "download_ci_artifact.py"))
 SHA = "a" * 40
 REPO = "DolphinSoftEU/DolphinDesktop"
-JOBS = policy["REQUIRED_JOBS"]
+JOBS = provenance["REQUIRED_JOBS"]
+
+sys.path.insert(0, str(SCRIPTS))
+policy = runpy.run_path(str(SCRIPTS / "release_policy.py"))
 
 
 class API:
@@ -82,7 +82,6 @@ class API:
             "rules": self.rules,
             "updated_at": "2026-10-13T12:00:00Z",
         }
-        self.attested_rulesets = None
         self.environment = {
             "can_admins_bypass": False,
             "protection_rules": [
@@ -150,7 +149,7 @@ def test_verified_ci_artifact_is_selected():
     policy["validate_branch"](api, "master")
     policy["validate_tag"](api, "refs/tags/v0.2.0")
     policy["validate_environment"](api, "pypi")
-    assert policy["select_artifact"](api, REPO, SHA, "master") == {
+    assert provenance["select_artifact"](api, REPO, SHA, "master") == {
         "ci_run_id": 42,
         "ci_run_attempt": 2,
         "artifact_id": 7,
@@ -211,7 +210,7 @@ def test_unverified_ci_or_artifact_cannot_be_selected(change):
     elif change == "artifact-branch":
         api.artifact["workflow_run"]["head_branch"] = "feature"
     with pytest.raises(ValueError):
-        policy["select_artifact"](api, REPO, SHA, "master")
+        provenance["select_artifact"](api, REPO, SHA, "master")
 
 
 @pytest.mark.parametrize("system", ["ubuntu-latest", "macos-latest", "windows-latest"])
@@ -225,7 +224,7 @@ def test_every_native_wheel_check_must_pass_before_artifact_selection(system, py
     else:
         next(job for job in api.jobs if job["name"] == name)["conclusion"] = outcome
     with pytest.raises(ValueError, match="Required CI/security/platform jobs"):
-        policy["select_artifact"](api, REPO, SHA, "master")
+        provenance["select_artifact"](api, REPO, SHA, "master")
 
 
 def test_latest_failed_run_cannot_fall_back_to_old_success():
@@ -238,7 +237,7 @@ def test_latest_failed_run_cannot_fall_back_to_old_success():
         [older, api.run] if path.startswith("/actions/workflows") else original(path, key)
     )
     with pytest.raises(ValueError, match="Latest CI"):
-        policy["select_artifact"](api, REPO, SHA, "master")
+        provenance["select_artifact"](api, REPO, SHA, "master")
 
 
 @pytest.mark.parametrize(
@@ -496,91 +495,6 @@ def test_publish_cannot_replace_both_manifest_and_wheel(tmp_path, monkeypatch, s
     assert (tmp_path / "output").exists() is not substituted
 
 
-@pytest.mark.parametrize("area", ["branch", "tag"])
-@pytest.mark.parametrize("actors", [[], None, [{"actor_type": "RepositoryRole", "actor_id": 5}]])
-def test_empty_missing_and_nonempty_bypasses_are_distinct(area, actors):
-    api = API()
-    ruleset = api.ruleset if area == "branch" else api.tag
-    if actors is None:
-        ruleset.pop("bypass_actors")
-    else:
-        ruleset["bypass_actors"] = actors
-
-    def validate():
-        if area == "branch":
-            policy["validate_branch"](api, "master")
-        else:
-            policy["validate_tag"](api, "refs/tags/v0.2.0")
-
-    if actors == []:
-        validate()
-    else:
-        with pytest.raises(ValueError):
-            validate()
-
-
-@pytest.mark.parametrize("area", ["branch", "tag"])
-@pytest.mark.parametrize(
-    "change",
-    ["none", "policy", "hidden-bypass-update", "null", "bypass", "null-time", "missing-time"],
-)
-def test_hidden_bypasses_require_matching_admin_evidence(area, change):
-    api = API()
-    ruleset = api.ruleset if area == "branch" else api.tag
-    api.attested_rulesets = {
-        str(ruleset["id"]): {
-            "policy_sha256": policy["ruleset_digest"](ruleset),
-            "bypass_actors": [],
-        }
-    }
-    ruleset.pop("bypass_actors")
-    if change == "policy":
-        ruleset["conditions"]["ref_name"]["exclude"] = ["refs/heads/other"]
-    elif change == "hidden-bypass-update":
-        ruleset["updated_at"] = "2026-10-13T12:05:00Z"
-    elif change == "null-time":
-        ruleset["updated_at"] = None
-    elif change == "missing-time":
-        ruleset.pop("updated_at")
-    elif change == "null":
-        api.attested_rulesets[str(ruleset["id"])]["bypass_actors"] = None
-    elif change == "bypass":
-        api.attested_rulesets[str(ruleset["id"])]["bypass_actors"] = [{"actor_id": 5}]
-    if change == "none":
-        if area == "branch":
-            policy["validate_branch"](api, "master")
-        else:
-            policy["validate_tag"](api, "refs/tags/v0.2.0")
-    else:
-        with pytest.raises(ValueError):
-            if area == "branch":
-                policy["validate_branch"](api, "master")
-            else:
-                policy["validate_tag"](api, "refs/tags/v0.2.0")
-
-
-@pytest.mark.parametrize("change", ["none", "empty", "missing", "write-role", "pull-request-only"])
-def test_tag_creation_and_immutability_are_independent(change):
-    api = API()
-    assert api.tag["bypass_actors"] == []
-    assert {r["type"] for r in api.tag["rules"]} == {"update", "deletion"}
-    if change == "empty":
-        api.creation["bypass_actors"] = []
-    elif change == "missing":
-        api.creation.pop("bypass_actors")
-    elif change == "write-role":
-        api.creation["bypass_actors"] = [
-            {"actor_type": "RepositoryRole", "actor_id": 4, "bypass_mode": "always"}
-        ]
-    elif change == "pull-request-only":
-        api.creation["bypass_actors"][0]["bypass_mode"] = "pull_request"
-    if change == "none":
-        policy["validate_tag"](api, "refs/tags/v0.2.0")
-    else:
-        with pytest.raises(ValueError):
-            policy["validate_tag"](api, "refs/tags/v0.2.0")
-
-
 @pytest.mark.parametrize("latest_exists", [True, False])
 def test_ci_rerun_selects_only_the_verified_attempt_artifact(latest_exists):
     api = API()
@@ -594,165 +508,141 @@ def test_ci_rerun_selects_only_the_verified_attempt_artifact(latest_exists):
         else original(path, key)
     )
     if latest_exists:
-        assert policy["select_artifact"](api, REPO, SHA, "master")["artifact_id"] == 7
+        assert provenance["select_artifact"](api, REPO, SHA, "master")["artifact_id"] == 7
     else:
         with pytest.raises(ValueError, match="exactly one CI distribution artifact"):
-            policy["select_artifact"](api, REPO, SHA, "master")
+            provenance["select_artifact"](api, REPO, SHA, "master")
 
 
-@pytest.fixture(scope="module")
-def signing_keys(tmp_path_factory):
-    openssl = shutil.which("openssl")
-    if not openssl:
-        candidate = Path("C:/Program Files/Git/usr/bin/openssl.exe")
-        openssl = str(candidate) if candidate.is_file() else None
-    assert openssl, "Attestation security tests require OpenSSL"
-    root = tmp_path_factory.mktemp("rulesets-signing")
-    private = root / "private.pem"
-    public = root / "public.pem"
-    subprocess.run(
-        [
-            openssl,
-            "genpkey",
-            "-algorithm",
-            "RSA",
-            "-pkeyopt",
-            "rsa_keygen_bits:2048",
-            "-out",
-            str(private),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        [openssl, "pkey", "-in", str(private), "-pubout", "-out", str(public)],
-        check=True,
-        capture_output=True,
-    )
-    return openssl, root, private, public
-
-
-@pytest.mark.parametrize(
-    "change", ["none", "expired", "future", "wrong-repo", "long-lived", "tampered", "unsigned"]
-)
-def test_admin_attestation_signature_repository_and_expiry(signing_keys, change):
-    openssl, root, private, public = signing_keys
-    now = int(time.time())
-    evidence = {
-        "schema": 1,
-        "repository": REPO,
-        "issued_at": now - 60,
-        "expires_at": now + 3600,
-        "rulesets": {"1": {"bypass_actors": []}},
-    }
-    if change == "expired":
-        evidence["expires_at"] = now - 1
-    elif change == "future":
-        evidence["issued_at"] = now + 60
-    elif change == "wrong-repo":
-        evidence["repository"] = "attacker/fork"
-    elif change == "long-lived":
-        evidence["expires_at"] = now + 86401
-    payload = json.dumps(evidence).encode()
-    source = root / "payload"
-    signature = root / "signature"
-    source.write_bytes(payload)
-    subprocess.run(
-        [openssl, "dgst", "-sha256", "-sign", str(private), "-out", str(signature), str(source)],
-        check=True,
-        capture_output=True,
-    )
-    if change == "tampered":
-        evidence["rulesets"]["2"] = {"bypass_actors": []}
-        payload = json.dumps(evidence).encode()
-    signed = signature.read_bytes() if change != "unsigned" else b""
-    envelope = json.dumps(
-        {
-            "payload": base64.b64encode(payload).decode(),
-            "signature": base64.b64encode(signed).decode(),
-        }
-    )
-    if change == "none":
-        assert (
-            policy["load_ruleset_attestation"](envelope, public, REPO, openssl=openssl)
-            == (evidence["rulesets"])
-        )
-    else:
-        with pytest.raises((ValueError, subprocess.CalledProcessError)):
-            policy["load_ruleset_attestation"](envelope, public, REPO, openssl=openssl)
-
-
-@pytest.mark.parametrize("actors", [[], "missing", None, [{"actor_type": "Team", "actor_id": 7}]])
-def test_admin_collector_cannot_attest_hidden_or_null_bypasses(monkeypatch, actors):
-    monkeypatch.syspath_prepend(str(SCRIPTS))
-    audit = runpy.run_path(str(SCRIPTS / "audit_release_rulesets.py"))
+@pytest.mark.parametrize("area", ["branch", "tag", "creation"])
+@pytest.mark.parametrize("visibility", ["missing", "null"])
+def test_read_only_rulesets_do_not_require_manual_evidence(area, visibility):
     api = API()
-    if actors == "missing":
-        api.tag.pop("bypass_actors")
-    else:
-        api.tag["bypass_actors"] = actors
-    if isinstance(actors, list):
-        evidence = audit["collect_rulesets"](api)
-        assert evidence["2"]["bypass_actors"] == actors
-        assert evidence["2"]["policy_sha256"] == policy["ruleset_digest"](api.tag)
-        assert evidence["3"]["bypass_actors"] == api.creation["bypass_actors"]
-    else:
-        with pytest.raises(ValueError, match="cannot attest"):
-            audit["collect_rulesets"](api)
-
-
-def test_signed_admin_audit_validates_hidden_branch_and_both_tag_rulesets(
-    monkeypatch, signing_keys
-):
-    monkeypatch.syspath_prepend(str(SCRIPTS))
-    audit = runpy.run_path(str(SCRIPTS / "audit_release_rulesets.py"))
-    api = API()
-    original = api.pages
-    api.pages = lambda path, key=None: (
-        [
-            {"id": 1, "target": "branch", "enforcement": "active"},
-            {"id": 2, "target": "tag", "enforcement": "active"},
-            {"id": 3, "target": "tag", "enforcement": "active"},
-        ]
-        if path == "/rulesets?includes_parents=true"
-        else original(path, key)
-    )
-    now = int(time.time())
-    payload = json.dumps(
-        {
-            "schema": 1,
-            "repository": REPO,
-            "issued_at": now - 1,
-            "expires_at": now + 3600,
-            "rulesets": audit["collect_rulesets"](api),
-        }
-    ).encode()
-    openssl, root, private, public = signing_keys
-    (root / "payload").write_bytes(payload)
-    subprocess.run(
-        [
-            openssl,
-            "dgst",
-            "-sha256",
-            "-sign",
-            str(private),
-            "-out",
-            str(root / "signature"),
-            str(root / "payload"),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    envelope = json.dumps(
-        {
-            "payload": base64.b64encode(payload).decode(),
-            "signature": base64.b64encode((root / "signature").read_bytes()).decode(),
-        }
-    )
-    api.attested_rulesets = policy["load_ruleset_attestation"](
-        envelope, public, REPO, openssl=openssl
-    )
-    for ruleset in (api.ruleset, api.tag, api.creation):
+    ruleset = {"branch": api.ruleset, "tag": api.tag, "creation": api.creation}[area]
+    if visibility == "missing":
         ruleset.pop("bypass_actors")
+    else:
+        ruleset["bypass_actors"] = None
     policy["validate_branch"](api, "master")
     policy["validate_tag"](api, "refs/tags/v0.2.0")
+
+
+def test_preview_allows_author_merge_without_second_account():
+    api = API()
+    api.rules[0]["parameters"] = {"required_approving_review_count": 0}
+    original = api.get
+    api.get = lambda path: (
+        {"protected": True}
+        if path == "/branches/testpypi-preview"
+        else api.rules
+        if path == "/rules/branches/testpypi-preview"
+        else original(path)
+    )
+    policy["validate_branch"](api, "testpypi-preview")
+    with pytest.raises(ValueError, match="independent review"):
+        policy["validate_branch"](api, "master")
+
+
+@pytest.mark.parametrize("change", ["none", "reviewers", "tag", "feature", "admin"])
+def test_preview_environment_needs_branch_restrictions_without_approval(change):
+    api = API()
+    api.environment["protection_rules"] = []
+    api.policies = [
+        {"type": "branch", "name": "master"},
+        {"type": "branch", "name": "testpypi-preview"},
+    ]
+    if change == "reviewers":
+        api.environment["protection_rules"] = [{"type": "required_reviewers"}]
+    elif change == "tag":
+        api.policies.append({"type": "tag", "name": "v*.*.*"})
+    elif change == "feature":
+        api.policies.append({"type": "branch", "name": "*"})
+    elif change == "admin":
+        api.environment["can_admins_bypass"] = True
+    original_get, original_pages = api.get, api.pages
+    api.get = lambda path: original_get(path.replace("testpypi", "pypi"))
+    api.pages = lambda path, key=None: original_pages(path.replace("testpypi", "pypi"), key)
+    if change == "none":
+        policy["validate_environment"](api, "testpypi")
+    else:
+        with pytest.raises(ValueError):
+            policy["validate_environment"](api, "testpypi")
+
+
+@pytest.mark.parametrize("key", ["id", "run_attempt"])
+@pytest.mark.parametrize("value", [None, 0, -1, "2", True])
+def test_missing_or_invalid_ci_identity_is_rejected(key, value):
+    api = API()
+    api.run[key] = value
+    with pytest.raises(ValueError):
+        provenance["select_artifact"](api, REPO, SHA, "master")
+
+
+def test_preflight_has_no_publish_permissions_or_environment():
+    import yaml
+
+    root = SCRIPTS.parents[1]
+    workflow = yaml.load(
+        (root / ".github/workflows/release-preflight.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert workflow["permissions"] == {"contents": "read"}
+    job = workflow["jobs"]["release-preflight"]
+    assert set(workflow["on"]) == {"workflow_dispatch"}
+    assert "environment" not in job
+    assert set(job["permissions"].values()) == {"read"}
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    for script in (
+        "validate_release",
+        "release_preflight",
+        "release_provenance",
+        "download_ci_artifact",
+        "distribution_manifest",
+        "smoke_wheel",
+    ):
+        assert f"{script}.py" in commands
+    assert not any("pypi-publish" in step.get("uses", "") for step in job["steps"])
+    release = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "RULESETS_ATTESTATION" not in release
+    assert not (root / ".github/scripts/audit_release_rulesets.py").exists()
+    assert not (root / ".github/release-rulesets-public.pem").exists()
+
+
+@pytest.mark.parametrize("change", ["none", "checkout", "ref", "ci", "sha"])
+def test_provenance_cli_emits_outputs_only_for_verified_source(tmp_path, monkeypatch, change):
+    api = API()
+    output = tmp_path / "outputs"
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.2.0"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    for key, value in {
+        "GITHUB_REPOSITORY": REPO,
+        "GH_TOKEN": "not-a-real-token",
+        "RELEASE_SHA": SHA,
+        "RELEASE_REF": "refs/heads/master",
+        "RELEASE_TARGET": "testpypi",
+        "EVENT_NAME": "workflow_dispatch",
+        "GITHUB_OUTPUT": str(output),
+    }.items():
+        monkeypatch.setenv(key, value)
+    main = provenance["main"]
+    monkeypatch.setitem(main.__globals__, "GitHub", lambda *args: api)
+    monkeypatch.setattr(
+        provenance["subprocess"],
+        "check_output",
+        lambda *args, **kwargs: "c" * 40 if change == "checkout" else SHA,
+    )
+    monkeypatch.setattr(provenance["subprocess"], "run", lambda *args, **kwargs: None)
+    if change == "ref":
+        monkeypatch.setenv("RELEASE_REF", "refs/heads/feature")
+    elif change == "ci":
+        api.run["conclusion"] = "failure"
+    elif change == "sha":
+        monkeypatch.setenv("RELEASE_SHA", "invalid")
+    assert main() == (0 if change == "none" else 1)
+    if change == "none":
+        assert output.read_text(encoding="utf-8") == (
+            "ci_run_id=42\nci_run_attempt=2\nartifact_id=7\n"
+            f"artifact_digest={api.artifact['digest']}\n"
+        )
+    else:
+        assert not output.exists()
