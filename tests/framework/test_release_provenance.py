@@ -146,8 +146,8 @@ class API:
 
 def test_verified_ci_artifact_is_selected():
     api = API()
-    policy["validate_branch"](api, "master")
-    policy["validate_tag"](api, "refs/tags/v0.2.0")
+    assert policy["validate_branch"](api, "master") == "verified"
+    assert policy["validate_tag"](api, "refs/tags/v0.2.0") == "verified"
     policy["validate_environment"](api, "pypi")
     assert provenance["select_artifact"](api, REPO, SHA, "master") == {
         "ci_run_id": 42,
@@ -523,8 +523,71 @@ def test_read_only_rulesets_do_not_require_manual_evidence(area, visibility):
         ruleset.pop("bypass_actors")
     else:
         ruleset["bypass_actors"] = None
-    policy["validate_branch"](api, "master")
-    policy["validate_tag"](api, "refs/tags/v0.2.0")
+    assert policy["validate_branch"](api, "master") == (
+        "unknown" if area == "branch" else "verified"
+    )
+    assert policy["validate_tag"](api, "refs/tags/v0.2.0") == (
+        "unknown" if area != "branch" else "verified"
+    )
+
+
+@pytest.mark.parametrize(
+    "actors,expected",
+    [
+        (None, "unknown"),
+        ([], "invalid"),
+        ([{"actor_type": "Team", "actor_id": 7, "bypass_mode": "always"}], "verified"),
+        ([{"actor_type": "RepositoryRole", "actor_id": 4, "bypass_mode": "always"}], "invalid"),
+        ([{"actor_type": "Team", "actor_id": 7, "bypass_mode": "pull_request"}], "invalid"),
+        ([{"actor_type": "Team", "bypass_mode": "always"}], "invalid"),
+    ],
+)
+def test_tag_creation_authorization_has_three_distinct_states(actors, expected):
+    api = API()
+    api.creation["bypass_actors"] = actors
+    assert policy["bypass_status"](api.creation, creation=True) == expected
+    if expected == "invalid":
+        with pytest.raises(ValueError, match="dedicated authorized releasers"):
+            policy["validate_tag"](api, "refs/tags/v0.2.0")
+    else:
+        assert policy["validate_tag"](api, "refs/tags/v0.2.0") == expected
+
+
+@pytest.mark.parametrize("outcome", ["verified", "unknown", "invalid"])
+def test_preflight_reports_status_in_logs_outputs_and_summary(
+    tmp_path, monkeypatch, capsys, outcome
+):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    preflight = runpy.run_path(str(SCRIPTS / "release_preflight.py"))
+    main = preflight["main"]
+    status = preflight["PolicyStatus"](outcome)
+    output, summary = tmp_path / "outputs", tmp_path / "summary"
+    for key, value in {
+        "GITHUB_REPOSITORY": REPO,
+        "GH_TOKEN": "fake-token",
+        "RELEASE_SHA": SHA,
+        "RELEASE_REF": "refs/tags/v0.2.0",
+        "RELEASE_TARGET": "pypi",
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_STEP_SUMMARY": str(summary),
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    def audit(*args):
+        if outcome == "invalid":
+            raise ValueError("Invalid creation policy")
+        return status
+
+    monkeypatch.setitem(main.__globals__, "audit", audit)
+    assert main() == (1 if outcome == "invalid" else 0)
+    logs = capsys.readouterr()
+    assert f"policy status: {outcome}" in logs.out
+    assert output.read_text(encoding="utf-8") == f"policy_status={outcome}\n"
+    assert f"policy status: {outcome}" in summary.read_text(encoding="utf-8")
+    if outcome == "unknown":
+        assert "authorization is NOT verified" in logs.out
+        assert "preflight passed" not in logs.out
+    assert "fake-token" not in logs.out + logs.err
 
 
 def test_preview_allows_author_merge_without_second_account():

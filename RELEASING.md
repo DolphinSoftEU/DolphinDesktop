@@ -37,10 +37,20 @@ Only the publishing jobs receive `id-token: write`. Other jobs have read-only
 permissions, and all Actions dependencies are pinned to immutable SHAs.
 
 Read-only GitHub tokens can omit `bypass_actors`. Preflight checks active rules,
-required checks and visible bypass actors, but does **not** claim that omitted
-actors prove an empty bypass list. GitHub remains responsible for native policy
-enforcement. Administrators must keep bypass lists empty as specified above;
-there is no recurring manual attestation. See the
+required checks and visible bypass actors. Its `policy_status` output and job
+summary distinguish `verified`, `unknown` and `invalid`: visible valid actors
+are `verified`, omitted/null actors are `unknown`, and a policy violation is
+`invalid` and fails the step. Hidden tag creators are never verified by an empty
+`all(...)` check. `unknown` allows the remaining artifact checks to proceed under
+GitHub's native enforcement; it is not confirmation of authorization settings.
+
+Before acceptance, an administrator performs one configuration check using the
+repository settings UI or a read-only administrative API session that exposes
+the bypass lists. Verify empty branch/immutability bypass lists and dedicated
+tag creators, and record the checked ruleset IDs, configuration date and outcome
+in deployment evidence. Recheck when those policies change. Do not copy an admin
+token into Actions or add signed evidence to CI. There is no recurring manual
+attestation or release-time expiry requirement. See the
 [GitHub rules API](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset).
 
 Configure a Trusted Publisher in each package index: project `dolphin-desktop`,
@@ -50,6 +60,44 @@ upload tokens. An administrator must verify the index configuration independentl
 of GitHub; environment names cannot prove index settings.
 
 ## Nonpublishing preflight
+
+### First deployment on the default branch (required before acceptance)
+
+GitHub requires a `workflow_dispatch` workflow to exist on the default branch,
+which is `master` in this repository. Merging only into `testpypi-preview` does
+not register the new workflow for standard dispatch. See
+[GitHub workflow_dispatch requirements](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch).
+
+1. Prepare a separate reviewed PR against `master` containing the KAN-741 release
+   changes, including `.github/workflows/release-preflight.yml`, its complete
+   script dependencies and matching tests/documentation. Include
+   `release_preflight.py`, `release_policy.py`, `release_provenance.py`,
+   `validate_release.py`, `download_ci_artifact.py`, `distribution_manifest.py`,
+   `preview_version.py` and `smoke_wheel.py` in the dependency review. Keep the
+   release workflow and its scripts consistent; do not bootstrap by merging
+   unrelated `0.2.0/dev7` application changes or disabling master protection.
+2. Merge that PR under master's normal review/check policy. Confirm the file on
+   the default branch, rather than only checking the preview branch:
+
+   ```powershell
+   gh api 'repos/DolphinSoftEU/DolphinDesktop/contents/.github/workflows/release-preflight.yml?ref=master' --jq .sha
+   gh workflow view release-preflight.yml --repo DolphinSoftEU/DolphinDesktop
+   ```
+
+3. Merge the matching KAN-741 changes into protected `testpypi-preview`, migrate
+   its native policies, and wait for the exact merge SHA's push CI. Complete the
+   administrator configuration check described above.
+4. Only now start hosted acceptance tests:
+
+   ```powershell
+   gh workflow run release-preflight.yml --repo DolphinSoftEU/DolphinDesktop --ref testpypi-preview -f target=testpypi
+   ```
+
+Record the master bootstrap PR/merge SHA, preview merge SHA, administrator check
+and hosted run URL with the acceptance evidence. Until bootstrap is merged,
+local tests and preview-only merges do not establish dispatch availability.
+
+### Routine runs
 
 Run **Release preflight** (`release-preflight.yml`) on `testpypi-preview` or
 `master` with target `testpypi`. For production, select the existing matching
@@ -71,6 +119,8 @@ failed gate without printing credentials or signed evidence.
    supported for preview, with its stricter review policy.
 2. Wait for the **push** CI for that exact merge SHA to finish successfully.
 3. Run **Release preflight** for the same branch and inspect the result.
+   Its initial deployment on `master` and administrative configuration check
+   must already be complete; `unknown` is not verified bypass configuration.
 4. Dispatch **Release** from the same branch with `testpypi`. Tags, arbitrary
    branches and arbitrary SHAs are rejected for preview. No deployment approval
    is required. Trusted Publishing uses OIDC, never long-lived upload tokens.

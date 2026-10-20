@@ -8,8 +8,15 @@ No signed evidence, elevated token or private key is needed in Release.
 from __future__ import annotations
 
 import fnmatch
+from enum import StrEnum
 
 from release_provenance import REQUIRED_JOBS
+
+
+class PolicyStatus(StrEnum):
+    VERIFIED = "verified"
+    UNKNOWN = "unknown"
+    INVALID = "invalid"
 
 
 def visible_bypasses(ruleset: dict) -> list | None:
@@ -21,7 +28,27 @@ def visible_bypasses(ruleset: dict) -> list | None:
     return actors
 
 
-def validate_branch(api, branch: str) -> None:
+def bypass_status(ruleset: dict, *, creation: bool = False) -> PolicyStatus:
+    actors = visible_bypasses(ruleset)
+    if actors is None:
+        return PolicyStatus.UNKNOWN
+    if not creation:
+        return PolicyStatus.INVALID if actors else PolicyStatus.VERIFIED
+    if actors and all(
+        actor.get("bypass_mode") == "always"
+        and type(actor.get("actor_id")) is int
+        and actor["actor_id"] > 0
+        and (
+            actor.get("actor_type") in {"Team", "Integration"}
+            or (actor.get("actor_type") == "RepositoryRole" and actor["actor_id"] == 5)
+        )
+        for actor in actors
+    ):
+        return PolicyStatus.VERIFIED
+    return PolicyStatus.INVALID
+
+
+def validate_branch(api, branch: str) -> PolicyStatus:
     if branch not in {"master", "testpypi-preview"}:
         raise ValueError("Unexpected release source branch")
     if api.get(f"/branches/{branch}").get("protected") is not True:
@@ -31,12 +58,18 @@ def validate_branch(api, branch: str) -> None:
     # prevent deletion. Server-side rules must enforce review and required CI.
     trusted = []
     rulesets = {}
+    status = PolicyStatus.VERIFIED
     for rule in rules:
         identity = rule["ruleset_id"]
         if identity not in rulesets:
             rulesets[identity] = api.get(f"/rulesets/{identity}")
         ruleset = rulesets[identity]
-        if ruleset.get("enforcement") == "active" and visible_bypasses(ruleset) in (None, []):
+        if ruleset.get("enforcement") == "active":
+            bypass = bypass_status(ruleset)
+            if bypass == PolicyStatus.INVALID:
+                raise ValueError(f"Release source {branch} permits ruleset bypass")
+            if bypass == PolicyStatus.UNKNOWN:
+                status = PolicyStatus.UNKNOWN
             trusted.append(rule)
     if not any(
         rule["type"] == "pull_request"
@@ -67,6 +100,7 @@ def validate_branch(api, branch: str) -> None:
     }
     if not REQUIRED_JOBS <= contexts:
         raise ValueError(f"Release source {branch} lacks required GitHub Actions checks")
+    return status
 
 
 def validate_review(api, repository: str, sha: str, branch: str) -> None:
@@ -92,11 +126,12 @@ def validate_review(api, repository: str, sha: str, branch: str) -> None:
     raise ValueError("Release SHA must be the merge result of an independently approved PR")
 
 
-def validate_tag(api, ref: str) -> None:
+def validate_tag(api, ref: str) -> PolicyStatus:
     if not ref.startswith("refs/tags/"):
-        return
+        return PolicyStatus.VERIFIED
     rules = set()
     creation_restricted = False
+    status = PolicyStatus.VERIFIED
     for entry in api.pages("/rulesets?includes_parents=true"):
         if entry["target"] != "tag" or entry["enforcement"] != "active":
             continue
@@ -110,31 +145,27 @@ def validate_tag(api, ref: str) -> None:
         )
         excluded = any(fnmatch.fnmatchcase(ref, p) for p in conditions.get("exclude", []))
         if included and not excluded:
-            actors = visible_bypasses(ruleset)
             types = {rule["type"] for rule in ruleset["rules"]}
-            if actors in (None, []):
-                rules.update(types)
-            # Creation may have dedicated releasers; immutability may not.
-            if (
-                "creation" in types
-                and actors != []
-                and all(
-                    actor.get("bypass_mode") == "always"
-                    and (
-                        actor.get("actor_type") in {"Team", "Integration"}
-                        or (
-                            actor.get("actor_type") == "RepositoryRole"
-                            and actor.get("actor_id") == 5
-                        )
-                    )
-                    for actor in (actors or [])
-                )
-            ):
+            if types & {"update", "deletion"}:
+                bypass = bypass_status(ruleset)
+                if bypass == PolicyStatus.INVALID:
+                    raise ValueError("Release tag immutability permits ruleset bypass")
+                if bypass == PolicyStatus.UNKNOWN:
+                    status = PolicyStatus.UNKNOWN
+                rules.update(types & {"update", "deletion"})
+            if "creation" in types:
+                bypass = bypass_status(ruleset, creation=True)
+                if bypass == PolicyStatus.INVALID:
+                    raise ValueError("Release tag creation lacks dedicated authorized releasers")
+                if bypass == PolicyStatus.UNKNOWN:
+                    status = PolicyStatus.UNKNOWN
+                # Rule presence is known; hidden releaser authorization stays unknown.
                 creation_restricted = True
     if not {"update", "deletion"} <= rules or not creation_restricted:
         raise ValueError(
             "Release tag requires restricted creation and immutable update/deletion rules"
         )
+    return status
 
 
 def validate_environment(api, target: str) -> None:
