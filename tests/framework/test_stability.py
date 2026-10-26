@@ -1009,7 +1009,7 @@ class TestAttachedPidsAreTrackedButNeverKilled:
 
         self._attached(61003)
         try:
-            pytest_plugin.pytest_runtest_teardown(MagicMock(), None)
+            pytest_plugin._reap_test_processes(MagicMock())
             assert 61003 in _application._attached_pids
         finally:
             _application._attached_pids.discard(61003)

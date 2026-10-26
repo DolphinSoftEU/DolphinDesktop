@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Pytest reaps leftover AUT processes after fixture finalizers, including when
+  teardown fails. Releasing an anchored process handle also invalidates live
+  Application wrappers, so repeated cleanup is safe without reopening a reused
+  PID (KAN-742).
+
 * Release no longer requires signed administrative ruleset evidence. Native
   preview and production policies are audited separately from exact CI artifact
   provenance, a nonpublishing preflight validates the wheel, and both indexes
