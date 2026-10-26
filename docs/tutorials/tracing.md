@@ -108,6 +108,13 @@ captured stdout/stderr and diagnostic logs remain available after secret
 redaction. A failed screenshot capture does not leave a partial PNG or a
 misleading artifact link.
 
+For Allure, redaction runs before result/container serialization, covering test
+and fixture exception messages, tracebacks, nested steps and parameters or
+labels named by sensitive keys such as `pin`. Captured stdout/stderr is masked
+before attachment. This applies with automatic or explicit plugin loading;
+Allure remains an optional dependency. Test statuses and attachment references
+are preserved.
+
 Redaction applies to text, not screenshot or video pixels. A captured desktop
 can show credentials or other private information, including in windows outside
 the application under test. Limit access to these artifacts and set CI

@@ -99,6 +99,14 @@ self-healing journal (`selfheal.jsonl`) and UIA tree dumps — and, for
 structured data such as a selector's criteria dict, a sensitive *key* masks
 its whole value whatever its type.
 
+With Dolphin's pytest plugin enabled, the optional Allure integration also
+redacts completed result/container models before any reporter serializes them.
+This covers `statusDetails.message` and `statusDetails.trace` for tests, fixture
+setup/teardown and nested steps, including diagnostics that Allure builds
+directly from an exception instead of pytest's report. Parameters and labels
+named by sensitive keys such as `pin` have their entire value masked. Test
+statuses, IDs and attachment references retain their original meaning.
+
 The surest control is not the pattern but `Secret`: wrap a value in
 `dolphin_desktop.Secret("…")` before handing it to `type_text` (UIA, CDP
 and mainframe locators accept it). The action receives the real characters;
@@ -302,7 +310,7 @@ future refactor cannot preserve a prose claim while dropping the regression:
 | --- | --- | --- | --- |
 | KAN-467 | DESKTOP-199 | `tests/framework/test_mainframe.py::test_s3270_rejects_unsafe_host_before_spawn_or_stdin` | s3270 host input cannot inject another emulator action; the process is not spawned. |
 | KAN-468 | DESKTOP-200 | `tests/framework/test_security_mainframe.py::test_tn5250_tls_handshake_verifies_the_certificate`; DESKTOP-200 TLS UAT | Verified TLS is enforced for native TN5250 and the s3270 `L:` path when explicitly requested; remote plaintext requires `allow_plaintext=True`. |
-| KAN-469 | KAN-535 / DESKTOP-201 | `tests/framework/test_security_core.py::test_trace_db_never_stores_a_secret`, `::test_crash_dump_zip_never_stores_a_secret`, `::test_allure_text_attachment_is_redacted`; `tests/framework/test_security_mainframe.py::test_s3270_trace_names_the_action_not_the_typed_text`, `::test_hllapi_payload_functions_are_not_dumped` | Textual `pin=` values and structurally keyed PINs are redacted at trace, crash ZIP, and Allure boundaries; s3270/HLLAPI diagnostic logs hide typed text. |
+| KAN-469 | KAN-535 / DESKTOP-201 | `tests/framework/test_security_core.py::test_trace_db_never_stores_a_secret`, `::test_crash_dump_zip_never_stores_a_secret`, `::test_allure_text_attachment_is_redacted`; `tests/framework/test_allure_redaction.py`; `tests/framework/test_security_mainframe.py::test_s3270_trace_names_the_action_not_the_typed_text`, `::test_hllapi_payload_functions_are_not_dumped` | Textual PINs and marked secrets are redacted in real Allure result/container JSON, steps, parameters and captured attachments, as well as trace/crash artifacts and mainframe diagnostic logs. |
 | KAN-472 | DESKTOP-203 | `tests/framework/test_security_core.py::test_terminate_skips_when_identity_was_never_recorded`, `::test_terminate_skips_when_current_identity_cannot_be_read` | Cleanup does not terminate a PID unless its recorded creation time can be confirmed. |
 | KAN-473 | DESKTOP-204 | `tests/framework/test_java.py::test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path`; `tests/framework/test_mainframe.py::test_resolve_hllapi_dll_success_and_failure` | JAB and HLLAPI DLL loading use explicit trusted paths; relative and DLL search-order/PATH fallback is refused. |
 | KAN-475 | DESKTOP-205 | `tests/framework/test_desktop.py::test_cdp_rejects_http_endpoint_owned_by_foreign_pid`; `tests/framework/test_security_core.py::test_verify_cdp_port_owner_rejects_unknown_owner` | A live CDP endpoint is accepted only when its listener PID is known and belongs to the launched process tree. |

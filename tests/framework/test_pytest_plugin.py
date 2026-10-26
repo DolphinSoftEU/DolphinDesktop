@@ -1024,11 +1024,30 @@ def pytest_sessionfinish(session, exitstatus):
 
     def test_configure_registers_both_markers(self):
         lines: list[tuple[str, str]] = []
-        config = SimpleNamespace(addinivalue_line=lambda key, value: lines.append((key, value)))
-        plugin.pytest_configure(config)
+        cleanups = []
+        config = SimpleNamespace(
+            addinivalue_line=lambda key, value: lines.append((key, value)),
+            add_cleanup=cleanups.append,
+        )
+        try:
+            plugin.pytest_configure(config)
+        finally:
+            for cleanup in reversed(cleanups):
+                cleanup()
         assert [key for key, _value in lines] == ["markers", "markers"]
         assert "dolphin(timeout" in lines[0][1]
         assert "dolphin_headless" in lines[1][1]
+
+    def test_configure_redaction_without_optional_allure(self, monkeypatch):
+        original_import = builtins.__import__
+
+        def without_allure(name, *args, **kwargs):
+            if name == "allure_commons":
+                raise ModuleNotFoundError("allure_commons is not installed")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", without_allure)
+        plugin._configure_allure_redaction(SimpleNamespace())
 
     def test_addoption_registers_all_dolphin_options(self):
         added: list[tuple[tuple, dict]] = []

@@ -9,7 +9,7 @@ import time
 import uuid
 import zipfile
 from argparse import ArgumentTypeError
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -214,6 +214,18 @@ def pytest_configure(config: pytest.Config) -> None:
         "dolphin_headless: mark test as requiring headless desktop mode "
         "(skip with pytest -m 'not dolphin_headless' when running interactively)",
     )
+    _configure_allure_redaction(config)
+
+
+def _configure_allure_redaction(config: pytest.Config) -> None:
+    """Install the serialization hook only when the optional Allure SDK is present."""
+    try:
+        import allure_commons  # noqa: F401
+    except ImportError:
+        return
+    from ._allure import _install_redaction
+
+    _install_redaction(config)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -786,6 +798,11 @@ def _redact_report(report: pytest.TestReport) -> None:
         else:
             report.longrepr = _redact(str(report.longrepr))
 
+    _redact_captured_output(report)
+
+
+def _redact_captured_output(report: pytest.TestReport) -> None:
+    """Mask captured streams before another plugin can attach them to its report."""
     sections = getattr(report, "sections", None)
     if sections is not None:
         for index, section in enumerate(list(sections)):
@@ -802,6 +819,12 @@ def _redact_report(report: pytest.TestReport) -> None:
     for name in ("capstdout", "capstderr"):
         if name in values:
             values[name] = _redact(str(values[name]))
+
+
+@pytest.hookimpl(hookwrapper=True, trylast=True, specname="pytest_runtest_makereport")
+def pytest_dolphin_redact_capture() -> Generator[None, Any, None]:
+    outcome = yield
+    _redact_captured_output(outcome.get_result())
 
 
 @pytest.hookimpl(hookwrapper=True)

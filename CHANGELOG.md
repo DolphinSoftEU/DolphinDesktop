@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Allure results and fixture containers now redact exception messages, traces,
+  nested steps and sensitive parameters before serialization. Captured streams
+  are sanitized before reporters attach them, independently of plugin order;
+  statuses and attachment references remain intact (KAN-469).
+
 * Raise the minimum Pillow version to 13.0.0 and refresh the audited lockfile
   to certifi 2026.10.19, filelock 4.2.1 and virtualenv 21.14.13. These releases
   support Python 3.11–3.13. Minimum-dependency failures now retain their original
