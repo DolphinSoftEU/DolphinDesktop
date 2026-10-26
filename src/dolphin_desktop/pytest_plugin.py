@@ -16,13 +16,15 @@ from typing import Any
 import pytest
 
 from ._desktop import Desktop
-from ._logging import _redact
+from ._logging import _redact, is_sensitive_key
 from ._logging import get_logger as _get_logger
+from ._redaction import _PARAMETER_VALUES, _redact_with_values, _sensitive_values
 
 _TRACE_SESSION_KEY: pytest.StashKey[Any] = pytest.StashKey()
 _VIDEO_RECORDER_KEY: pytest.StashKey[Any] = pytest.StashKey()
 _RETRY_ATTEMPT_KEY: pytest.StashKey[int] = pytest.StashKey()
 _RETRY_MAX_KEY: pytest.StashKey[int] = pytest.StashKey()
+_PARAMETER_VALUES_KEY: pytest.StashKey[set[str]] = pytest.StashKey()
 _DOLPHIN_TRANSIENT_ATTR = "_dolphin_transient_failure"
 
 _session_reports: list[dict[str, Any]] = []
@@ -54,6 +56,31 @@ def _cli_retry(value: str) -> int:
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     _session_reports.clear()
+    _PARAMETER_VALUES.set(None)
+
+
+def _item_parameter_values(item: pytest.Item) -> set[str]:
+    """Snapshot sensitive callspec leaves once, before fixtures can mutate them."""
+    stash = getattr(item, "stash", None)
+    if isinstance(stash, pytest.Stash):
+        cached = stash.get(_PARAMETER_VALUES_KEY, None)
+        if cached is not None:
+            return cached
+    parameters = getattr(getattr(item, "callspec", None), "params", {})
+    values: set[str] = set()
+    if isinstance(parameters, dict):
+        for name, value in parameters.items():
+            if is_sensitive_key(name):
+                values.update(_sensitive_values(value))
+    if isinstance(stash, pytest.Stash):
+        stash[_PARAMETER_VALUES_KEY] = values
+    return values
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Snapshot secret inputs before fixtures and bind this test's diagnostic context."""
+    _PARAMETER_VALUES.set(_item_parameter_values(item))
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
@@ -787,21 +814,25 @@ def _capture_failure_screenshot(item: pytest.Item, phase: str = "call") -> Path 
 # Main report hook
 
 
-def _redact_report(report: pytest.TestReport) -> None:
+def _redact_report(report: pytest.TestReport, secrets: tuple[str, ...] = ()) -> None:
     """Sanitise every text sink before pytest reporters serialize a report."""
     if getattr(report, "longrepr", None) is not None:
         if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
             # pytest's terminal and JUnit reporters unpack skipped reports as
             # (path, line, reason). Keep that shape while redacting text.
             path, line, reason = report.longrepr
-            report.longrepr = (_redact(str(path)), line, _redact(str(reason)))
+            report.longrepr = (
+                _redact_with_values(str(path), secrets),
+                line,
+                _redact_with_values(str(reason), secrets),
+            )
         else:
-            report.longrepr = _redact(str(report.longrepr))
+            report.longrepr = _redact_with_values(str(report.longrepr), secrets)
 
-    _redact_captured_output(report)
+    _redact_captured_output(report, secrets)
 
 
-def _redact_captured_output(report: pytest.TestReport) -> None:
+def _redact_captured_output(report: pytest.TestReport, secrets: tuple[str, ...] = ()) -> None:
     """Mask captured streams before another plugin can attach them to its report."""
     sections = getattr(report, "sections", None)
     if sections is not None:
@@ -810,7 +841,7 @@ def _redact_captured_output(report: pytest.TestReport) -> None:
                 heading, content = section
             except (TypeError, ValueError):
                 continue
-            sections[index] = (heading, _redact(str(content)))
+            sections[index] = (heading, _redact_with_values(str(content), secrets))
 
     # TestReport exposes capstdout/capstderr as read-only properties derived
     # from ``sections``.  Lightweight report doubles used by callers may store
@@ -818,13 +849,15 @@ def _redact_captured_output(report: pytest.TestReport) -> None:
     values = getattr(report, "__dict__", {})
     for name in ("capstdout", "capstderr"):
         if name in values:
-            values[name] = _redact(str(values[name]))
+            values[name] = _redact_with_values(str(values[name]), secrets)
 
 
 @pytest.hookimpl(hookwrapper=True, trylast=True, specname="pytest_runtest_makereport")
-def pytest_dolphin_redact_capture() -> Generator[None, Any, None]:
+def pytest_dolphin_redact_capture(item: pytest.Item) -> Generator[None, Any, None]:
+    values = _item_parameter_values(item)
+    _PARAMETER_VALUES.set(values)
     outcome = yield
-    _redact_captured_output(outcome.get_result())
+    _redact_captured_output(outcome.get_result(), tuple(sorted(values, key=len, reverse=True)))
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -836,7 +869,7 @@ def pytest_runtest_makereport(  # type: ignore[misc]
     # JUnit and terminal reporters consume the same TestReport after this hook.
     # Sanitise the report itself so neither the failure nor captured output can
     # serialize the original secret before artifact-specific copies are made.
-    _redact_report(report)
+    _redact_report(report, tuple(sorted(_item_parameter_values(item), key=len, reverse=True)))
     if call.when == "call":
         from ._exceptions import ElementNotFoundError, WaitTimeoutError
 
@@ -988,6 +1021,7 @@ def _xdist_worker_id(config: pytest.Config) -> str | None:
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Final safety-net cleanup + HTML fallback report."""
+    _PARAMETER_VALUES.set(None)
     # ---- 1. Kill any session-tracked PIDs that escaped per-test teardown ----
     #
     # When a fixture calls ``app.detach()`` (to survive module-scope teardown)

@@ -7,7 +7,6 @@ redacting that report alone does not protect Allure's result/container JSON.
 
 from __future__ import annotations
 
-from ast import literal_eval
 from collections.abc import Iterator
 from typing import Any
 
@@ -16,6 +15,7 @@ import pytest
 from attr import fields, has
 
 from ._logging import is_sensitive_key, redact_value
+from ._redaction import _PARAMETER_VALUES, _redact_with_values, _sensitive_values
 
 _PLUGIN_NAME = "dolphin_desktop.redaction"
 # IDs, attachment paths and schema enums are references/control data rather
@@ -38,18 +38,7 @@ def _parameter_values(item: Any, *, depth: int = 0) -> set[str]:
     values: set[str] = set()
     if has(type(item)):
         if is_sensitive_key(getattr(item, "name", None)) and hasattr(item, "value"):
-            value = item.value
-            if isinstance(value, str) and value.startswith(("'", '"', "b'", 'b"')):
-                try:
-                    value = literal_eval(value)
-                except (ValueError, SyntaxError):
-                    pass
-            if isinstance(value, bytes):
-                value = value.decode("utf-8", errors="backslashreplace")
-            if isinstance(value, (str, int, float, bool)):
-                text = str(value)
-                if text and text != "***":
-                    values.update((text, text.encode("unicode_escape").decode("ascii")))
+            values.update(_sensitive_values(item.value, serialized=True))
         children = [
             getattr(item, field.name)
             for field in fields(type(item))
@@ -71,7 +60,11 @@ def _redact_item(item: Any, *, depth: int = 0, secrets: tuple[str, ...] | None =
     if depth > 32:
         return "***"
     if secrets is None:
-        secrets = tuple(sorted(_parameter_values(item), key=len, reverse=True))
+        secrets = tuple(
+            sorted(
+                _parameter_values(item) | (_PARAMETER_VALUES.get() or set()), key=len, reverse=True
+            )
+        )
     if has(type(item)):
         sensitive_value = is_sensitive_key(getattr(item, "name", None))
         for field in fields(type(item)):
@@ -96,15 +89,19 @@ def _redact_item(item: Any, *, depth: int = 0, secrets: tuple[str, ...] | None =
     if isinstance(item, (list, tuple)):
         values = [_redact_item(value, depth=depth + 1, secrets=secrets) for value in item]
         return tuple(values) if isinstance(item, tuple) else values
-    redacted = redact_value(item)
-    if isinstance(redacted, str):
-        for secret in secrets:
-            redacted = redacted.replace(secret, "***")
-    return redacted
+    if isinstance(item, str):
+        return _redact_with_values(item, secrets)
+    return redact_value(item)
 
 
 class _AllureRedactor:
     """Run before file/memory reporters, regardless of plugin registration order."""
+
+    @allure_commons.hookimpl(optionalhook=True)
+    def add_parameter(self, name: str, value: Any) -> None:
+        current = _PARAMETER_VALUES.get()
+        if current is not None and is_sensitive_key(name):
+            current.update(_sensitive_values(value))
 
     @allure_commons.hookimpl(hookwrapper=True, tryfirst=True)
     def report_result(self, result: Any) -> Iterator[None]:

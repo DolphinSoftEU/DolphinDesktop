@@ -109,6 +109,15 @@ statuses, IDs and attachment references retain their original meaning.
 
 Values of sensitive Allure parameters are also masked when repeated in display
 names, including pytest's default parameter IDs and custom `ids=` strings.
+Sensitive pytest parameters are snapshotted before fixture setup. Their scalar
+leaves, including nested dictionary/list values, also mask captured stdout and
+stderr when printed without a key or `Secret` wrapper. The same values protect
+Allure display names when custom IDs extract a leaf such as `pin["code"]`.
+This context belongs to the individual test; it does not add values to the
+global registry used by `Secret`.
+Sensitive values supplied through `allure.dynamic.parameter()` extend the
+current test's context, including structured values that are later replaced
+with a display mask in Allure metadata.
 This sanitizes Allure metadata; it does not change pytest's collection IDs or
 live verbose collection output. Prefer non-sensitive `ids=` when sharing that
 output.

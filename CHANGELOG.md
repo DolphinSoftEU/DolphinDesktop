@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Sensitive pytest parameter values now also mask bare values in captured
+  stdout/stderr. A shared collector handles nested containers and Allure reprs,
+  so custom IDs extracting a dictionary value are masked too. Values are
+  snapshotted before fixtures mutate them and scoped to the individual test;
+  technical Allure IDs remain unchanged (KAN-469 review).
+
 * Allure redaction now also removes sensitive parameter values repeated in
   test display names, including default and custom pytest IDs, while preserving
   technical identifiers and attachment references. Documentation explicitly

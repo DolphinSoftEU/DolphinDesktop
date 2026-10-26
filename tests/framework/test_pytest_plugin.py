@@ -443,6 +443,38 @@ class TestMakereportIsolation:
         assert report.sections[1] == ("malformed",)
         assert report.sections[2] == ("too many fields", "kept", "ignored")
 
+    def test_parameter_snapshot_is_immutable_and_does_not_leak_to_the_next_test(self):
+        from dolphin_desktop._redaction import _PARAMETER_VALUES
+
+        token = _PARAMETER_VALUES.set(None)
+        try:
+            value = {"code": "SNAPSHOT_CANARY_739184"}
+            item = SimpleNamespace(
+                callspec=SimpleNamespace(params={"pin": value}), stash=pytest.Stash()
+            )
+            plugin.pytest_runtest_setup(item)
+            value.clear()
+            report = SimpleNamespace(
+                sections=[("Captured stdout", "Authenticating with SNAPSHOT_CANARY_739184")],
+                capstderr="SNAPSHOT_CANARY_739184",
+                longrepr=("test.py", 12, "Skipped: SNAPSHOT_CANARY_739184"),
+            )
+            plugin._redact_report(
+                report, tuple(sorted(plugin._item_parameter_values(item), key=len, reverse=True))
+            )
+            assert report.sections == [("Captured stdout", "Authenticating with ***")]
+            assert report.capstderr == "***"
+            assert report.longrepr == ("test.py", 12, "Skipped: ***")
+            next_item = SimpleNamespace(
+                callspec=SimpleNamespace(params={"public": "SNAPSHOT_CANARY_739184"}),
+                stash=pytest.Stash(),
+            )
+            plugin.pytest_runtest_setup(next_item)
+            assert plugin._item_parameter_values(next_item) == set()
+            assert _PARAMETER_VALUES.get() == set()
+        finally:
+            _PARAMETER_VALUES.reset(token)
+
     def test_collection_error_does_not_escape(self, monkeypatch, caplog):
         def _boom(item, call, report):
             raise RuntimeError("artifact backend exploded")

@@ -17,6 +17,61 @@ from dolphin_desktop._allure import _PLUGIN_NAME, _AllureRedactor, _redact_item
 from tests._allure_redaction import run_allure_case
 
 
+@pytest.mark.parametrize("shape", ["scalar", "dict", "nested"])
+@pytest.mark.parametrize("fails", [False, True], ids=["success", "failure"])
+@pytest.mark.parametrize("order", ["dolphin-first", "allure-first", "entry-point"])
+def test_sensitive_parameter_leaves_are_redacted_in_real_captured_attachments(
+    tmp_path, shape, fails, order
+):
+    expression, extract = {
+        "scalar": ('os.environ["KAN469_CANARY"]', "pin"),
+        "dict": ('{"code": os.environ["KAN469_CANARY"]}', 'pin["code"]'),
+        "nested": ('{"codes": [{"code": os.environ["KAN469_CANARY"]}]}', 'pin["codes"][0]["code"]'),
+    }[shape]
+    source = (
+        """
+import os
+import sys
+import pytest
+
+@pytest.fixture
+def diagnostic(pin):
+    print("setup stdout", EXTRACT)
+    print("setup stderr", EXTRACT, file=sys.stderr)
+    yield
+    print("teardown stdout", EXTRACT)
+    print("teardown stderr", EXTRACT, file=sys.stderr)
+
+@pytest.mark.parametrize("pin", [VALUE], ids=lambda pin: EXTRACT)
+def test_login(pin, diagnostic):
+    print("Authenticating with", EXTRACT)
+    print("call stderr", EXTRACT, file=sys.stderr)
+    if FAILS:
+        raise RuntimeError("authentication failed " + EXTRACT)
+""".replace("EXTRACT", extract)
+        .replace("VALUE", expression)
+        .replace("FAILS", repr(fails))
+    )
+    case = run_allure_case(tmp_path, "call" if fails else "success", "pin", order, source=source)
+    assert case["exit_code"] == (1 if fails else 0), case["terminal"]
+    assert case["leaks"] == [], f"Canary leaked to {case['leaks']}"
+    result = next(
+        value for name, value in case["documents"].items() if name.endswith("-result.json")
+    )
+    assert result["name"] == "test_login[***]"
+    assert result["status"] == ("broken" if fails else "passed")
+    attachments = "\n".join(case["attachments"].values())
+    for operation in (
+        "setup stdout",
+        "setup stderr",
+        "Authenticating with",
+        "call stderr",
+        "teardown stdout",
+        "teardown stderr",
+    ):
+        assert operation + " ***" in attachments
+
+
 @pytest.mark.parametrize("custom_ids", [False, True], ids=["default-id", "custom-id"])
 @pytest.mark.parametrize("numeric", [False, True], ids=["text", "numeric"])
 @pytest.mark.parametrize("order", ["dolphin-first", "allure-first", "entry-point"])
@@ -57,6 +112,81 @@ def test_login(pin):
         value for name, value in case["documents"].items() if name.endswith("-container.json")
     ]
     assert any(result["uuid"] in container.get("children", []) for container in containers)
+
+
+@pytest.mark.parametrize("order", ["dolphin-first", "allure-first", "entry-point"])
+def test_parameter_snapshot_survives_fixture_mutation(tmp_path, order):
+    source = """
+import os
+import pytest
+
+@pytest.fixture
+def original(pin):
+    value = pin.pop("code")
+    print("fixture input", value)
+    return value
+
+@pytest.mark.parametrize("pin", [{"code": os.environ["KAN469_CANARY"]}], ids=lambda p: p["code"])
+def test_login(pin, original):
+    print("Authenticating with", original)
+    assert pin == {}
+"""
+    case = run_allure_case(tmp_path, "success", "pin", order, source=source)
+    assert case["exit_code"] == 0, case["terminal"]
+    assert case["leaks"] == []
+    result = next(
+        value for name, value in case["documents"].items() if name.endswith("-result.json")
+    )
+    assert result["name"] == "test_login[***]"
+    attachments = "\n".join(case["attachments"].values())
+    assert "Authenticating with ***" in attachments and "fixture input ***" in attachments
+
+
+@pytest.mark.parametrize("order", ["dolphin-first", "allure-first", "entry-point"])
+def test_dynamic_sensitive_parameter_leaves_protect_real_captured_output(tmp_path, order):
+    source = """
+import os
+import allure
+
+def test_login():
+    value = os.environ["KAN469_CANARY"]
+    allure.dynamic.parameter("pin", {"code": value})
+    allure.dynamic.parameter("pin", "***")
+    allure.dynamic.title("login " + value)
+    print("Authenticating with", value)
+"""
+    case = run_allure_case(tmp_path, "success", "pin", order, source=source)
+    assert case["exit_code"] == 0, case["terminal"]
+    assert case["leaks"] == []
+    result = next(
+        value for name, value in case["documents"].items() if name.endswith("-result.json")
+    )
+    assert result["name"] == "login ***"
+    assert "Authenticating with ***" in "\n".join(case["attachments"].values())
+
+
+def test_dynamic_parameter_context_is_test_scoped_and_survives_metadata_masking():
+    from dolphin_desktop._redaction import _PARAMETER_VALUES
+
+    redactor = _AllureRedactor()
+    token = _PARAMETER_VALUES.set(None)
+    try:
+        redactor.add_parameter("pin", "not-active")
+        assert _PARAMETER_VALUES.get() is None
+        state = set()
+        _PARAMETER_VALUES.set(state)
+        redactor.add_parameter("public", "visible-operation")
+        assert not state
+        redactor.add_parameter("pin", {"code": "DYNAMIC_CANARY_739184"})
+        redactor.add_parameter("pin", "***")
+        result = AllureResult(
+            name="login DYNAMIC_CANARY_739184", parameters=[Parameter(name="pin", value="***")]
+        )
+        _redact_item(result)
+        assert result.name == "login ***"
+        assert state == {"DYNAMIC_CANARY_739184"}
+    finally:
+        _PARAMETER_VALUES.reset(token)
 
 
 @pytest.mark.parametrize(

@@ -116,8 +116,13 @@ Allure remains an optional dependency. Test statuses and attachment references
 are preserved.
 
 Sensitive parameter values are also removed from Allure display names with
-default pytest IDs or custom `ids=`. Pytest collection IDs and live verbose
-output are unchanged; use non-sensitive `ids=` when sharing them.
+default pytest IDs or custom `ids=`, including IDs extracted from nested
+dictionary/list parameters. Captured stdout/stderr uses a snapshot of the
+sensitive parameters taken before fixtures run, so bare printed values are
+masked even without `pin=` or a `Secret` wrapper. Sensitive values added through
+`allure.dynamic.parameter()` also extend this test's redaction context.
+Pytest collection IDs and live verbose output are unchanged; use non-sensitive
+`ids=` when sharing them.
 
 Direct `allure.attach()` and `allure.attach.file()` calls bypass Dolphin's text
 redaction. Their caller must sanitize the body or file first. For example:
