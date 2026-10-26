@@ -14,16 +14,14 @@ from __future__ import annotations
 
 import pytest
 
+from dolphin_desktop import ElementNotFoundError
+
 pytestmark = [pytest.mark.external, pytest.mark.timeout(180)]
 
-# ALV grids sit inside a container control, and the nesting differs per
-# transaction: SM04 wraps its grid in a splitter, SM66 does not.
-_GRID_IDS = (
-    ("SM04", "wnd[0]/usr/cntlGRID1/shellcont/shell/shellcont[0]/shell"),
-    ("SM04", "wnd[0]/usr/cntlGRID1/shellcont/shell"),
-    ("SM66", "wnd[0]/usr/cntlGRID1/shellcont/shell"),
-    ("SM66", "wnd[0]/usr/cntlGRID1/shellcont/shell/shellcont[0]/shell"),
-)
+# ALV grids sit inside splitter/container shells whose nesting differs per
+# transaction *and* per SAP GUI release, so the grid is located by type
+# (GuiGridView, or GuiShell with SubType GridView) instead of by a fixed id.
+_GRID_TCODES = ("SM04", "SM66")
 
 # The Easy Access menu tree is published under a couple of ids depending
 # on whether the picture container is switched on.
@@ -41,15 +39,13 @@ def _goto(session, tcode: str) -> None:
 
 
 def _grid(session):
-    """Return a resolvable ALV grid locator, or skip."""
-    current = None
-    for tcode, grid_id in _GRID_IDS:
-        if tcode != current:
-            _goto(session, tcode)
-            current = tcode
-        loc = session.find_by_id(grid_id)
-        if loc.exists(2):
-            return loc
+    """Return a locator for the first ALV grid in SM04 / SM66, or skip."""
+    for tcode in _GRID_TCODES:
+        _goto(session, tcode)
+        try:
+            return session.find_first_in_tree("GuiGridView", parent_id="wnd[0]/usr", timeout=5)
+        except ElementNotFoundError:
+            continue
     pytest.skip("no ALV grid found in SM04 / SM66 on this system")
 
 
