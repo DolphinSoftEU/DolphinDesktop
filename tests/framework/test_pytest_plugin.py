@@ -668,6 +668,47 @@ def pytest_sessionfinish(session, exitstatus):
         assert ("terminate", "handle-102", 1) in api_calls
         assert handles == {}
 
+    @pytest.mark.parametrize("creation_time", [111, 222, None], ids=["owned", "reused", "unknown"])
+    def test_runtest_teardown_verifies_legacy_identity_before_removing_registrations(
+        self, monkeypatch, creation_time
+    ):
+        from dolphin_desktop import _application
+
+        pid = 507
+        live, session, identities = {pid}, {pid}, {pid: 111}
+        calls = []
+        api = types.SimpleNamespace(
+            OpenProcess=lambda *args: calls.append(("open", *args)) or "legacy-handle",
+            TerminateProcess=lambda *args: calls.append(("terminate", *args)),
+            CloseHandle=lambda *args: calls.append(("close", *args)),
+        )
+        monkeypatch.setitem(sys.modules, "win32api", api)
+        monkeypatch.setitem(
+            sys.modules,
+            "win32con",
+            types.SimpleNamespace(PROCESS_TERMINATE=1, PROCESS_QUERY_LIMITED_INFORMATION=0x1000),
+        )
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_session_pids", session)
+        monkeypatch.setattr(_application, "_process_identities", identities)
+        monkeypatch.setattr(_application, "_owned_process_handles", {})
+        monkeypatch.setattr(_application, "_unanchored_pids", set())
+
+        def probe(handle):
+            assert handle == "legacy-handle"
+            return creation_time
+
+        monkeypatch.setattr(_application, "_process_creation_time", probe)
+        plugin._reap_test_processes(SimpleNamespace(nodeid="legacy-process"))
+
+        expected = [("open", 0x1001, False, pid)]
+        if creation_time == 111:
+            expected.append(("terminate", "legacy-handle", 1))
+        expected.append(("close", "legacy-handle"))
+        assert calls == expected
+        assert live == session == (set() if creation_time == 111 else {pid})
+        assert identities == ({pid: 111} if creation_time is None else {})
+
     def test_runtest_teardown_keeps_unknown_pid_registered(self, monkeypatch):
         from dolphin_desktop import _application
 

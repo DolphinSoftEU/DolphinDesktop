@@ -661,6 +661,68 @@ def test_owned_process_handle_is_registered_and_released_by_kill(monkeypatch) ->
         application._discard_owned_process_handle(1237, "anchor")
 
 
+@pytest.mark.parametrize(
+    ("cleanup", "child_fails"), [("close", False), ("kill", False), ("kill", True)]
+)
+def test_reaped_parent_cleanup_preserves_reused_pid_and_cleans_children(
+    monkeypatch, cleanup, child_fails
+) -> None:
+    from dolphin_desktop import _application as application
+    from dolphin_desktop import pytest_plugin
+
+    pid = 1248
+    handles = {}
+    live = set()
+    session = set()
+    identities = {}
+    monkeypatch.setattr(application, "_owned_process_handles", handles)
+    monkeypatch.setattr(application, "_live_pids", live)
+    monkeypatch.setattr(application, "_session_pids", session)
+    monkeypatch.setattr(application, "_unanchored_pids", set())
+    monkeypatch.setattr(application, "_process_identities", identities)
+    monkeypatch.setattr(application, "_process_creation_time", lambda _pid: 111)
+    api = SimpleNamespace(TerminateProcess=Mock(), CloseHandle=Mock(), OpenProcess=Mock())
+    monkeypatch.setitem(sys.modules, "win32api", api)
+    raw = Mock(process=pid)
+    app = application.Application(raw, "uia", image_path="owned.exe", owned_process_handle="anchor")
+    first_child, second_child = Mock(), Mock()
+    app._launched_apps = [("first.exe", first_child), ("second.exe", second_child)]
+    error = RuntimeError("child cleanup failed")
+    if child_fails:
+        first_child.kill.side_effect = error
+
+    pytest_plugin._reap_test_processes(SimpleNamespace(nodeid="reaped-parent"))
+
+    assert app._owned_process_handle is None
+    assert app._owned_process_released is True
+    assert not handles and not live and not session and not identities
+    # A retained wrapper must remain harmless after the OS reuses its PID.
+    handles[pid] = "replacement-anchor"
+    live.add(pid)
+    session.add(pid)
+    identities[pid] = 222
+    app._terminate_owned_process(soft=False)
+    if child_fails:
+        with pytest.raises(RuntimeError) as caught:
+            app.kill()
+        assert caught.value is error
+    else:
+        getattr(app, cleanup)()
+
+    expected_arguments = {"timeout": 5.0} if cleanup == "close" else {}
+    getattr(first_child, cleanup).assert_called_once_with(**expected_arguments)
+    getattr(second_child, cleanup).assert_called_once_with(**expected_arguments)
+    assert app._launched_apps == []
+    assert handles == {pid: "replacement-anchor"}
+    assert live == session == {pid}
+    assert identities == {pid: 222}
+    api.TerminateProcess.assert_called_once_with("anchor", 1)
+    api.CloseHandle.assert_called_once_with("anchor")
+    api.OpenProcess.assert_not_called()
+    raw.kill.assert_not_called()
+    raw.windows.assert_not_called()
+
+
 def test_owned_process_handle_is_released_by_close(monkeypatch) -> None:
     import dolphin_desktop._application as application
 
