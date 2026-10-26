@@ -17,6 +17,128 @@ from dolphin_desktop._allure import _PLUGIN_NAME, _AllureRedactor, _redact_item
 from tests._allure_redaction import run_allure_case
 
 
+@pytest.mark.parametrize("custom_ids", [False, True], ids=["default-id", "custom-id"])
+@pytest.mark.parametrize("numeric", [False, True], ids=["text", "numeric"])
+@pytest.mark.parametrize("order", ["dolphin-first", "allure-first", "entry-point"])
+def test_sensitive_parameter_value_is_removed_from_real_allure_test_name(
+    tmp_path, custom_ids, numeric, order
+):
+    source = """
+import os
+import pytest
+
+@pytest.mark.parametrize("pin", [VALUE], IDS)
+def test_login(pin):
+    assert pin
+""".replace("IDS", 'ids=lambda value: "customer-" + str(value)' if custom_ids else "ids=None")
+    source = source.replace(
+        "VALUE", 'int(os.environ["KAN469_CANARY"])' if numeric else 'os.environ["KAN469_CANARY"]'
+    )
+    case = run_allure_case(
+        tmp_path,
+        "success",
+        "pin",
+        order,
+        source=source,
+        canary="739184527361" if numeric else None,
+    )
+    assert case["exit_code"] == 0, case["terminal"]
+    assert case["leaks"] == []
+    result = next(
+        value for name, value in case["documents"].items() if name.endswith("-result.json")
+    )
+    assert result["name"] == ("test_login[customer-***]" if custom_ids else "test_login[***]")
+    assert result["parameters"] == [{"name": "pin", "value": "***"}]
+    assert result["status"] == "passed"
+    assert len(result["uuid"]) == 36 and "***" not in result["uuid"]
+    for key in ("historyId", "testCaseId"):
+        assert len(result[key]) == 32 and "***" not in result[key]
+    containers = [
+        value for name, value in case["documents"].items() if name.endswith("-container.json")
+    ]
+    assert any(result["uuid"] in container.get("children", []) for container in containers)
+
+
+@pytest.mark.parametrize(
+    ("parameter", "display"),
+    [
+        ("739184", "739184"),
+        (739184, "739184"),
+        ("7", "7"),
+        ("p\u00e4ss\u56db", r"p\xe4ss\u56db"),
+        (b"739184", "739184"),
+        (b"\xff", r"\xff"),
+        ("quote'word", "quote'word"),
+    ],
+)
+def test_sensitive_parameter_spellings_are_removed_without_changing_technical_ids(
+    parameter, display
+):
+    result = AllureResult(
+        uuid="739184-test-id",
+        historyId="739184-history-id",
+        testCaseId="739184-case-id",
+        name=f"test_login[customer-{display}]",
+        fullName=f"module#test_login[{display}]",
+        parameters=[Parameter(name="pin", value=repr(parameter))],
+        attachments=[Attachment(name=f"diagnostic {display}", source="739184.png")],
+    )
+    _redact_item(result)
+    assert result.name == "test_login[customer-***]"
+    assert result.fullName == "module#test_login[***]"
+    assert result.parameters[0].value == "***"
+    assert result.attachments[0].name == "diagnostic ***"
+    assert result.uuid == "739184-test-id"
+    assert result.historyId == "739184-history-id" and result.testCaseId == "739184-case-id"
+    assert result.attachments[0].source == "739184.png"
+
+
+def test_unparseable_parameter_repr_does_not_break_redaction():
+    result = AllureResult(
+        name="test_login['unterminated]",
+        parameters=[Parameter(name="pin", value="'unterminated")],
+    )
+    _redact_item(result)
+    assert result.name == "test_login[***]"
+    assert result.parameters[0].value == "***"
+
+
+def test_native_allure_attachment_requires_explicit_sanitization(tmp_path):
+    source = """
+import os
+import allure
+from pathlib import Path
+from dolphin_desktop import Secret
+
+def test_attachments():
+    value = os.environ["KAN469_CANARY"]
+    allure.attach("pin=" + value, name="native", attachment_type=allure.attachment_type.TEXT)
+    allure.attach(
+        f"pin={Secret(value)}", name="sanitized", attachment_type=allure.attachment_type.TEXT
+    )
+    path = Path("diagnostics.txt")
+    path.write_text("pin=" + value, encoding="utf-8")
+    allure.attach.file(str(path), name="native-file", attachment_type=allure.attachment_type.TEXT)
+    path.write_text(f"pin={Secret(value)}", encoding="utf-8")
+    allure.attach.file(
+        str(path), name="sanitized-file", attachment_type=allure.attachment_type.TEXT
+    )
+"""
+    case = run_allure_case(tmp_path, "success", "pin", "entry-point", source=source)
+    assert case["exit_code"] == 0, case["terminal"]
+    result = next(
+        value for name, value in case["documents"].items() if name.endswith("-result.json")
+    )
+    sources = {attachment["name"]: attachment["source"] for attachment in result["attachments"]}
+    # This is the explicitly documented native-SDK boundary, not a protected
+    # Dolphin sink. Only the attachment whose caller formats Secret is safe.
+    assert case["attachments"][sources["native"]] == "pin=" + case["canary"]
+    assert case["attachments"][sources["sanitized"]] == "pin=***"
+    assert case["attachments"][sources["native-file"]] == "pin=" + case["canary"]
+    assert case["attachments"][sources["sanitized-file"]] == "pin=***"
+    assert set(case["leaks"]) == {sources["native"], sources["native-file"]}
+
+
 @pytest.mark.parametrize("phase", ["success", "call", "setup", "teardown", "xfail"])
 @pytest.mark.parametrize("style", ["pin", "marked"])
 @pytest.mark.parametrize("order", ["dolphin-first", "allure-first", "entry-point"])

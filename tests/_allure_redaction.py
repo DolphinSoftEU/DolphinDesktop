@@ -58,11 +58,20 @@ def test_operation(scenario):
 """
 
 
-def run_allure_case(directory: Path, phase: str, style: str, order: str) -> dict[str, Any]:
+def run_allure_case(
+    directory: Path,
+    phase: str,
+    style: str,
+    order: str,
+    *,
+    source: str = CHILD,
+    canary: str | None = None,
+) -> dict[str, Any]:
     """Return the terminal output and on-disk JSON/attachments from a child pytest run."""
     child = directory / "test_allure_case.py"
-    child.write_text(CHILD, encoding="utf-8")
-    canary = "KAN469_" + uuid.uuid4().hex
+    child.write_text(source, encoding="utf-8")
+    if canary is None:
+        canary = "KAN469_" + uuid.uuid4().hex
     environment = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
     environment.update(KAN469_CANARY=canary, KAN469_PHASE=phase, KAN469_STYLE=style)
     plugins = []

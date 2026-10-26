@@ -107,10 +107,23 @@ directly from an exception instead of pytest's report. Parameters and labels
 named by sensitive keys such as `pin` have their entire value masked. Test
 statuses, IDs and attachment references retain their original meaning.
 
+Values of sensitive Allure parameters are also masked when repeated in display
+names, including pytest's default parameter IDs and custom `ids=` strings.
+This sanitizes Allure metadata; it does not change pytest's collection IDs or
+live verbose collection output. Prefer non-sensitive `ids=` when sharing that
+output.
+
+**Native Allure attachments are caller-owned.** The automatic protection above
+covers report models and captured stdout/stderr, not arbitrary bodies passed
+directly to `allure.attach()` or files passed to `allure.attach.file()`.
+Registering a value with `Secret` does not intercept these SDK calls. Sanitize
+the text or file before passing it to Allure; for example, format a `Secret`
+into the text (`f"pin={Secret(pin)}"`) rather than attaching its revealed value.
+
 The surest control is not the pattern but `Secret`: wrap a value in
 `dolphin_desktop.Secret("…")` before handing it to `type_text` (UIA, CDP
 and mainframe locators accept it). The action receives the real characters;
-the literal value is then masked wherever it appears in any artifact,
+the literal value is then masked wherever it appears in Dolphin-managed artifact text,
 independent of the pattern and of any variable name. `str(secret)` and
 `repr(secret)` never reveal it.
 

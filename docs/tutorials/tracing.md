@@ -115,6 +115,24 @@ before attachment. This applies with automatic or explicit plugin loading;
 Allure remains an optional dependency. Test statuses and attachment references
 are preserved.
 
+Sensitive parameter values are also removed from Allure display names with
+default pytest IDs or custom `ids=`. Pytest collection IDs and live verbose
+output are unchanged; use non-sensitive `ids=` when sharing them.
+
+Direct `allure.attach()` and `allure.attach.file()` calls bypass Dolphin's text
+redaction. Their caller must sanitize the body or file first. For example:
+
+```python
+import allure
+from dolphin_desktop import Secret
+
+allure.attach(f"pin={Secret(pin)}", name="diagnostics", attachment_type=allure.attachment_type.TEXT)
+```
+
+The formatted text contains `pin=***`. Attaching the raw value or a file that
+contains it remains outside automatic redaction, even if the value was
+previously registered through `Secret`.
+
 Redaction applies to text, not screenshot or video pixels. A captured desktop
 can show credentials or other private information, including in windows outside
 the application under test. Limit access to these artifacts and set CI

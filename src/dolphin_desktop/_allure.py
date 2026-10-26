@@ -7,6 +7,7 @@ redacting that report alone does not protect Allure's result/container JSON.
 
 from __future__ import annotations
 
+from ast import literal_eval
 from collections.abc import Iterator
 from typing import Any
 
@@ -25,10 +26,52 @@ _STRUCTURAL_FIELDS = frozenset(
 )
 
 
-def _redact_item(item: Any, *, depth: int = 0) -> Any:
+def _parameter_values(item: Any, *, depth: int = 0) -> set[str]:
+    """Collect secret parameter/label values before their metadata is masked.
+
+    Allure stores string parameters as repr(value). Pytest can repeat the
+    unquoted value in a default or custom parameter ID, so mask both its plain
+    and escaped spellings throughout the model's human-readable fields.
+    """
+    if depth > 32:
+        return set()
+    values: set[str] = set()
+    if has(type(item)):
+        if is_sensitive_key(getattr(item, "name", None)) and hasattr(item, "value"):
+            value = item.value
+            if isinstance(value, str) and value.startswith(("'", '"', "b'", 'b"')):
+                try:
+                    value = literal_eval(value)
+                except (ValueError, SyntaxError):
+                    pass
+            if isinstance(value, bytes):
+                value = value.decode("utf-8", errors="backslashreplace")
+            if isinstance(value, (str, int, float, bool)):
+                text = str(value)
+                if text and text != "***":
+                    values.update((text, text.encode("unicode_escape").decode("ascii")))
+        children = [
+            getattr(item, field.name)
+            for field in fields(type(item))
+            if field.name not in _STRUCTURAL_FIELDS
+        ]
+    elif isinstance(item, dict):
+        children = list(item.values())
+    elif isinstance(item, (list, tuple)):
+        children = list(item)
+    else:
+        return values
+    for child in children:
+        values.update(_parameter_values(child, depth=depth + 1))
+    return values
+
+
+def _redact_item(item: Any, *, depth: int = 0, secrets: tuple[str, ...] | None = None) -> Any:
     """Sanitize nested Allure models, including parameters keyed by secret names."""
     if depth > 32:
         return "***"
+    if secrets is None:
+        secrets = tuple(sorted(_parameter_values(item), key=len, reverse=True))
     if has(type(item)):
         sensitive_value = is_sensitive_key(getattr(item, "name", None))
         for field in fields(type(item)):
@@ -40,18 +83,24 @@ def _redact_item(item: Any, *, depth: int = 0) -> Any:
                 field.name,
                 "***"
                 if field.name == "value" and sensitive_value
-                else _redact_item(value, depth=depth + 1),
+                else _redact_item(value, depth=depth + 1, secrets=secrets),
             )
         return item
     if isinstance(item, dict):
         return {
-            key: "***" if is_sensitive_key(key) else _redact_item(value, depth=depth + 1)
+            key: "***"
+            if is_sensitive_key(key)
+            else _redact_item(value, depth=depth + 1, secrets=secrets)
             for key, value in item.items()
         }
     if isinstance(item, (list, tuple)):
-        values = [_redact_item(value, depth=depth + 1) for value in item]
+        values = [_redact_item(value, depth=depth + 1, secrets=secrets) for value in item]
         return tuple(values) if isinstance(item, tuple) else values
-    return redact_value(item)
+    redacted = redact_value(item)
+    if isinstance(redacted, str):
+        for secret in secrets:
+            redacted = redacted.replace(secret, "***")
+    return redacted
 
 
 class _AllureRedactor:

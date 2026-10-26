@@ -22,6 +22,13 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Allure redaction now also removes sensitive parameter values repeated in
+  test display names, including default and custom pytest IDs, while preserving
+  technical identifiers and attachment references. Documentation explicitly
+  limits automatic attachment redaction to captured streams; native
+  `allure.attach()` / `allure.attach.file()` payloads must be sanitized by their
+  caller (KAN-469 review).
+
 * Allure results and fixture containers now redact exception messages, traces,
   nested steps and sensitive parameters before serialization. Captured streams
   are sanitized before reporters attach them, independently of plugin order;
