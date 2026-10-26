@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Raise the minimum Pillow version to 13.0.0 and refresh the audited lockfile
+  to certifi 2026.10.19, filelock 4.2.1 and virtualenv 21.14.13. These releases
+  support Python 3.11–3.13. Minimum-dependency failures now retain their original
+  audit/timeout exception when Windows tools emit mixed-encoding logs, including
+  when the console cannot represent the diagnostic text.
+
 * Pytest reaps leftover AUT processes after fixture finalizers, including when
   teardown fails. Releasing an anchored process handle also invalidates live
   Application wrappers, so repeated cleanup is safe without reopening a reused

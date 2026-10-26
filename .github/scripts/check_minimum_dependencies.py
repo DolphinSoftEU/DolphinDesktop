@@ -93,12 +93,24 @@ def check(wheel: Path, output: Path, *, all_extras: bool = False, extra: str | N
                     command,
                     check=True,
                     cwd=output,
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     timeout=300,
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                print((output / "commands.log").read_text(encoding="utf-8")[-8000:])
+                # Native tools can still write Windows code-page bytes to the
+                # redirected stream. Diagnostics must preserve the original
+                # failure, even for mixed encodings or a legacy console.
+                tail = (output / "commands.log").read_text(
+                    encoding="utf-8", errors="backslashreplace"
+                )[-8000:]
+                console_encoding = sys.stdout.encoding or "utf-8"
+                print(
+                    tail.encode(console_encoding, errors="backslashreplace").decode(
+                        console_encoding
+                    )
+                )
                 raise
 
     run(

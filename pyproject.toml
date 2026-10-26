@@ -34,7 +34,7 @@ classifiers = [
 ]
 dependencies = [
     "pywinauto>=0.6.8",
-    "Pillow>=12.3.0",
+    "Pillow>=13.0.0",
     "comtypes>=1.4.8; platform_system == \"Windows\"",
     "pywin32>=306; platform_system == \"Windows\"",
     "pyyaml>=6.0",
