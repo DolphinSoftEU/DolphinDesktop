@@ -120,7 +120,7 @@ def test_check_smokes_cli_and_pytest_for_flattened_aggregate(wheel, tmp_path, mo
     # Hatch flattens `all` in real wheels; no self-reference remains to expand.
     path = wheel(
         [
-            "pillow>=12.3.0",
+            "pillow>=13.0.0",
             'pytest>=9.0.3; extra == "pytest" or extra == "all"',
             'numpy>=1.26; extra == "all"',
         ]
@@ -145,6 +145,57 @@ def test_check_smokes_cli_and_pytest_for_flattened_aggregate(wheel, tmp_path, mo
     assert any("import numpy;" in argument for command in commands for argument in command) == (
         extra == "all"
     )
+
+
+@pytest.mark.parametrize("failure", ["audit", "timeout"])
+def test_failure_diagnostics_preserve_original_error_with_windows_bytes(
+    wheel, tmp_path, monkeypatch, failure
+):
+    path = wheel(["pillow>=13.0.0"])
+    output = tmp_path / "evidence"
+    output.mkdir()
+    (output / "result.json").write_text('{"status": "passed"}', encoding="utf-8")
+    captured = []
+
+    class LegacyConsole:
+        encoding = "cp1252"
+
+        def write(self, value):
+            captured.append(value.encode(self.encoding).decode(self.encoding))
+
+        def flush(self):
+            pass
+
+    console = LegacyConsole()
+    monkeypatch.setattr(module["sys"], "stdout", console)
+    original_error = None
+
+    def run(command, **kwargs):
+        nonlocal original_error
+        assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+        assert kwargs["env"]["PYTHONUTF8"] == "1"
+        if "pip_audit" not in command:
+            return
+        # A native Windows tool can emit bytes that are invalid in UTF-8,
+        # alongside valid UTF-8 that an older console cannot represent.
+        kwargs["stdout"].buffer.write(b"audit failure: \x81\xff " + "\u2603".encode())
+        kwargs["stdout"].flush()
+        if failure == "audit":
+            original_error = subprocess.CalledProcessError(1, command)
+        else:
+            original_error = subprocess.TimeoutExpired(command, 300)
+        raise original_error
+
+    monkeypatch.setattr(module["subprocess"], "run", run)
+    expected = subprocess.CalledProcessError if failure == "audit" else subprocess.TimeoutExpired
+    with pytest.raises(expected) as raised:
+        module["check"](path, output)
+    assert raised.value is original_error
+    diagnostic = "".join(captured)
+    assert "pip_audit" in diagnostic
+    assert r"audit failure: \x81\xff \u2603" in diagnostic
+    assert not (output / "result.json").exists()
+    assert b"audit failure: \x81\xff" in (output / "commands.log").read_bytes()
 
 
 @pytest.mark.parametrize("block_plugin", [False, True])

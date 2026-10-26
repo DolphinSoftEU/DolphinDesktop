@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dolphin-desktop"
-version = "0.2.0.dev7"
+version = "0.2.0.dev8"
 description = "Windows desktop test automation for SAP, Qt, Electron, Java, Oracle Forms, and IBM mainframe — with lazy locators, auto-waiting, and pytest integration"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -34,7 +34,7 @@ classifiers = [
 ]
 dependencies = [
     "pywinauto>=0.6.8",
-    "Pillow>=12.3.0",
+    "Pillow>=13.0.0",
     "comtypes>=1.4.8; platform_system == \"Windows\"",
     "pywin32>=306; platform_system == \"Windows\"",
     "pyyaml>=6.0",

@@ -310,4 +310,4 @@ __all__ = [
     "write_crash_dump",
 ]
 
-__version__ = "0.2.0.dev7"
+__version__ = "0.2.0.dev8"

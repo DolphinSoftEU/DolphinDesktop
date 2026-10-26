@@ -35,6 +35,25 @@ def real_window():
         app.kill()
 
 
+@pytest.fixture
+def owned_real_window():
+    """Keep ownership through yield so plugin/fixture teardown ordering is exercised."""
+    app = Desktop(backend="uia").launch(f'"{python_executable()}" "{_HELPER}"', startup_delay=0.5)
+    try:
+        window = app.window(title=WINDOW_TITLE, timeout=20)
+        yield window
+        assert window.locator(auto_id=str(ID_OK)).exists(timeout=0)
+    finally:
+        app.kill()
+    app.kill()
+    app.close()
+
+
+def test_missing_locator_preserves_aut_until_fixture_cleanup(owned_real_window) -> None:
+    """KAN-742: checking a missing control must not cause an invalid-handle teardown."""
+    assert not owned_real_window.locator(auto_id="missing-control").exists(timeout=0)
+
+
 def test_real_locator_uses_a_fallback_selector(real_window) -> None:
     locator = real_window.locator(
         auto_id="stale-after-refactor",

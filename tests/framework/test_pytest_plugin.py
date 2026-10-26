@@ -523,6 +523,119 @@ def _fake_allure(calls: list[tuple], file_calls: list[tuple] | None = None):
 
 
 class TestBasicHooksAndOptions:
+    @pytest.mark.parametrize("failure", ["none", "call", "setup", "teardown"])
+    def test_reaper_runs_after_fixture_finalizers(self, tmp_path, monkeypatch, failure):
+        monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+        monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+        monkeypatch.delenv("PYTEST_PLUGINS", raising=False)
+        (tmp_path / "conftest.py").write_text(
+            """
+import sys
+from types import SimpleNamespace
+import pytest
+from dolphin_desktop import _application as application
+
+events = []
+application._process_image_path = lambda pid: None
+application._process_creation_time_from_handle = lambda handle: 111
+application.record_process_identity = lambda pid: None
+
+def terminate(handle, code):
+    assert handle == "original-anchor"
+    assert events == ["fixture-finalizer"]
+    events.append("terminate")
+
+def close(handle):
+    assert handle == "original-anchor"
+    events.append("close")
+
+sys.modules["win32api"] = SimpleNamespace(
+    TerminateProcess=terminate, CloseHandle=close,
+    OpenProcess=lambda *args: pytest.fail("PID must not be reopened"),
+)
+sys.modules["win32process"] = SimpleNamespace(GetExitCodeProcess=lambda handle: 259)
+app = None
+
+@pytest.fixture
+def aut():
+    global app
+    app = application.Application(
+        SimpleNamespace(process=12345), "uia", owned_process_handle="original-anchor"
+    )
+    yield app
+    assert events == []
+    assert app._owned_process_handle == "original-anchor"
+    assert 12345 in application._live_pids
+    events.append("fixture-finalizer")
+    if FAILURE == "teardown":
+        raise RuntimeError("intentional finalizer failure")
+    if FAILURE == "none":
+        app.kill()
+
+@pytest.fixture
+def failing_setup(aut):
+    if FAILURE == "setup":
+        raise RuntimeError("intentional setup failure")
+
+def pytest_sessionfinish(session, exitstatus):
+    assert events == ["fixture-finalizer", "terminate", "close"]
+    assert not application._live_pids
+    assert not application._session_pids
+    assert not application._owned_process_handles
+    assert app._owned_process_handle is None
+    # Cleanup of a retained wrapper must not touch a newly reused PID.
+    application._live_pids.add(12345)
+    application._session_pids.add(12345)
+    application._owned_process_handles[12345] = "unrelated-anchor"
+    application._is_notepad_launcher = lambda path: True
+    app._app.windows = lambda: pytest.fail("released wrapper must not rediscover a PID")
+    try:
+        app.kill()
+        app.close()
+        assert application._owned_process_handles == {12345: "unrelated-anchor"}
+        assert application._live_pids == {12345}
+        assert application._session_pids == {12345}
+        assert events == ["fixture-finalizer", "terminate", "close"]
+    finally:
+        application._live_pids.clear()
+        application._session_pids.clear()
+        application._owned_process_handles.clear()
+""".replace("FAILURE", repr(failure)),
+            encoding="utf-8",
+        )
+        (tmp_path / "test_lifecycle.py").write_text(
+            "def test_aut(aut, failing_setup):\n"
+            f"    assert {failure!r} != 'call', 'intentional test failure'\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "dolphin_desktop.pytest_plugin",
+                "--dolphin-video=off",
+                "--dolphin-trace=off",
+                str(tmp_path / "test_lifecycle.py"),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == (0 if failure == "none" else 1), output
+        assert "INTERNALERROR" not in output, output
+        if failure == "none":
+            assert "1 passed" in output, output
+        elif failure == "call":
+            assert "1 failed" in output and "1 error" not in output, output
+        else:
+            assert "1 error" in output, output
+
     def test_sessionstart_clears_previous_report_rows(self):
         plugin._session_reports[:] = [{"nodeid": "stale"}]
         plugin.pytest_sessionstart(SimpleNamespace())
@@ -532,7 +645,7 @@ class TestBasicHooksAndOptions:
         from dolphin_desktop import _application
 
         monkeypatch.setattr(_application, "_live_pids", set())
-        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
+        plugin._reap_test_processes(SimpleNamespace(nodeid="test"))
 
     def test_runtest_teardown_kills_anchored_processes_and_discards_them(self, monkeypatch):
         from dolphin_desktop import _application
@@ -548,12 +661,53 @@ class TestBasicHooksAndOptions:
         monkeypatch.setattr(_application, "_live_pids", live)
         monkeypatch.setattr(_application, "_owned_process_handles", handles)
 
-        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
+        plugin._reap_test_processes(SimpleNamespace(nodeid="test"))
 
         assert live == set()
         assert ("terminate", "handle-101", 1) in api_calls
         assert ("terminate", "handle-102", 1) in api_calls
         assert handles == {}
+
+    @pytest.mark.parametrize("creation_time", [111, 222, None], ids=["owned", "reused", "unknown"])
+    def test_runtest_teardown_verifies_legacy_identity_before_removing_registrations(
+        self, monkeypatch, creation_time
+    ):
+        from dolphin_desktop import _application
+
+        pid = 507
+        live, session, identities = {pid}, {pid}, {pid: 111}
+        calls = []
+        api = types.SimpleNamespace(
+            OpenProcess=lambda *args: calls.append(("open", *args)) or "legacy-handle",
+            TerminateProcess=lambda *args: calls.append(("terminate", *args)),
+            CloseHandle=lambda *args: calls.append(("close", *args)),
+        )
+        monkeypatch.setitem(sys.modules, "win32api", api)
+        monkeypatch.setitem(
+            sys.modules,
+            "win32con",
+            types.SimpleNamespace(PROCESS_TERMINATE=1, PROCESS_QUERY_LIMITED_INFORMATION=0x1000),
+        )
+        monkeypatch.setattr(_application, "_live_pids", live)
+        monkeypatch.setattr(_application, "_session_pids", session)
+        monkeypatch.setattr(_application, "_process_identities", identities)
+        monkeypatch.setattr(_application, "_owned_process_handles", {})
+        monkeypatch.setattr(_application, "_unanchored_pids", set())
+
+        def probe(handle):
+            assert handle == "legacy-handle"
+            return creation_time
+
+        monkeypatch.setattr(_application, "_process_creation_time", probe)
+        plugin._reap_test_processes(SimpleNamespace(nodeid="legacy-process"))
+
+        expected = [("open", 0x1001, False, pid)]
+        if creation_time == 111:
+            expected.append(("terminate", "legacy-handle", 1))
+        expected.append(("close", "legacy-handle"))
+        assert calls == expected
+        assert live == session == (set() if creation_time == 111 else {pid})
+        assert identities == ({pid: 111} if creation_time is None else {})
 
     def test_runtest_teardown_keeps_unknown_pid_registered(self, monkeypatch):
         from dolphin_desktop import _application
@@ -568,7 +722,7 @@ class TestBasicHooksAndOptions:
         live = {404}
         monkeypatch.setattr(_application, "_live_pids", live)
 
-        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="test"), None)
+        plugin._reap_test_processes(SimpleNamespace(nodeid="test"))
 
         assert live == {404}
 
@@ -590,7 +744,7 @@ class TestBasicHooksAndOptions:
         monkeypatch.setattr(_application, "_live_pids", live)
         monkeypatch.setattr(_application, "_owned_process_handles", handles)
 
-        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="reuse"), None)
+        plugin._reap_test_processes(SimpleNamespace(nodeid="reuse"))
 
         assert calls == [("terminate", "original-process-handle", 1)]
         assert live == {505}
@@ -611,7 +765,7 @@ class TestBasicHooksAndOptions:
         monkeypatch.setattr(_application, "_live_pids", live)
         monkeypatch.setattr(_application, "_owned_process_handles", handles)
 
-        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="reuse"), None)
+        plugin._reap_test_processes(SimpleNamespace(nodeid="reuse"))
 
         assert calls == [
             ("terminate", "original-process-handle", 1),
@@ -636,7 +790,7 @@ class TestBasicHooksAndOptions:
         monkeypatch.setattr(_application, "_live_pids", live)
         monkeypatch.setattr(_application, "_unanchored_pids", unanchored)
 
-        plugin.pytest_runtest_teardown(SimpleNamespace(nodeid="unanchored"), None)
+        plugin._reap_test_processes(SimpleNamespace(nodeid="unanchored"))
 
         assert live == {508}
         assert unanchored == {508}

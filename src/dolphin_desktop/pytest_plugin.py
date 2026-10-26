@@ -56,8 +56,17 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     _session_reports.clear()
 
 
-def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
-    """Kill any zombie processes left over from a crashed or improperly cleaned-up test."""
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> Iterator[None]:
+    """Reap leftover processes after fixture finalizers, even when teardown fails."""
+    try:
+        yield
+    finally:
+        _reap_test_processes(item)
+
+
+def _reap_test_processes(item: pytest.Item) -> None:
+    """Kill processes that fixture finalizers left registered for cleanup."""
     from . import _application
 
     pids = list(_application._live_pids)
@@ -78,6 +87,7 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
                 _application._discard_owned_process_handle(pid, anchored_handle)
                 getattr(_application, "_unanchored_pids", set()).discard(pid)
                 _application._live_pids.discard(pid)
+                _application._session_pids.discard(pid)
                 _application.forget_process_identity(pid)
                 log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
             except Exception as exc:
@@ -109,6 +119,7 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
             # and is left alone (CWE-367). See _application.terminate_tracked_pid.
             if _application.terminate_tracked_pid(pid, log):
                 _application._live_pids.discard(pid)
+                _application._session_pids.discard(pid)
                 log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
         except Exception:
             pass

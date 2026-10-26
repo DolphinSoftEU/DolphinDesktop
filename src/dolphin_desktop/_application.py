@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
+from weakref import WeakSet
 
 if sys.platform == "win32":
     from pywinauto import Application as _PyWinApp
@@ -50,6 +51,10 @@ _session_pids: set[int] = set()
 # cleanup hooks use these handles so PID reuse can never make cleanup terminate
 # an unrelated process.
 _owned_process_handles: dict[int, Any] = {}
+
+# Keep live wrappers in sync when a reaper releases their shared anchor,
+# without extending the lifetime of the wrappers themselves.
+_owned_process_apps: WeakSet[Application] = WeakSet()
 
 # Owned PIDs for which opening the identity anchor failed.  These must remain
 # visible for diagnostics but are never eligible for PID-only termination.
@@ -183,6 +188,15 @@ def _close_owned_process_handle(handle: Any) -> None:
         pass
 
 
+def _release_owned_process_handle(handle: Any) -> None:
+    """Invalidate wrappers before closing their shared process anchor."""
+    for app in tuple(_owned_process_apps):
+        if app._owned_process_handle == handle:
+            app._owned_process_handle = None
+            app._owned_process_released = True
+    _close_owned_process_handle(handle)
+
+
 def _register_owned_process_handle(pid: int, handle: Any) -> bool:
     """Publish *handle* for plugin cleanup unless the PID is already tracked.
 
@@ -206,11 +220,11 @@ def _discard_owned_process_handle(pid: int, handle: Any = _NO_PROCESS_HANDLE) ->
     if handle is not _NO_PROCESS_HANDLE and handle is None:
         return
     if handle is not _NO_PROCESS_HANDLE and stored != handle:
-        _close_owned_process_handle(handle)
+        _release_owned_process_handle(handle)
         return
     stored = _owned_process_handles.pop(key, None)
     if stored is not None:
-        _close_owned_process_handle(stored)
+        _release_owned_process_handle(stored)
 
 
 def _list_modules(pid: int, *, use_extended: bool = False) -> list[str]:
@@ -881,6 +895,7 @@ class Application:
             except Exception:
                 self._image_path = None
         self._owned_process_handle: Any | None = None
+        self._owned_process_released = False
         try:
             pid = self.process_id
         except Exception:
@@ -894,6 +909,8 @@ class Application:
             if handle == 0:
                 handle = None
             self._owned_process_handle = handle
+            if handle is not None:
+                _owned_process_apps.add(self)
             self._launch_creation_time = (
                 _process_creation_time_from_handle(handle) if handle is not None else None
             )
@@ -1113,6 +1130,9 @@ class Application:
                 _discard_owned_process_handle(old_pid, getattr(self, "_owned_process_handle", None))
                 _unanchored_pids.discard(old_pid)
                 self._owned_process_handle = new_handle
+                self._owned_process_released = False
+                if new_handle is not None:
+                    _owned_process_apps.add(self)
                 _live_pids.discard(old_pid)
                 _live_pids.add(actual_pid)
                 _session_pids.discard(old_pid)
@@ -1238,6 +1258,7 @@ class Application:
         """Bind a unique new packaged Notepad window, including delayed activation."""
         if (
             not self._owns_process
+            or getattr(self, "_owned_process_released", False)
             or getattr(self, "_launch_handoff_resolved", False)
             or not _is_notepad_launcher(getattr(self, "_image_path", None))
         ):
@@ -1479,6 +1500,8 @@ class Application:
         fail-closed: a missing anchor is an error, never a reason to reopen a
         PID that may already belong to somebody else.
         """
+        if getattr(self, "_owned_process_released", False):
+            return
         missing = object()
         handle = getattr(self, "_owned_process_handle", missing)
         if handle is missing:
@@ -1580,6 +1603,8 @@ class Application:
                 child.close(timeout=timeout)
             except Exception:
                 pass
+        if getattr(self, "_owned_process_released", False):
+            return
         # This Application is done with the process either way; a crash dump
         # taken afterwards should no longer scope its capture to it.
         _attached_pids.discard(self.process_id)
@@ -1641,6 +1666,10 @@ class Application:
                 child.kill()
             except Exception as exc:
                 first_error = first_error or exc
+        if getattr(self, "_owned_process_released", False):
+            if first_error is not None:
+                raise first_error
+            return
         if not self._owns_process:
             self._warn_not_owned("kill")
             if first_error is not None:
