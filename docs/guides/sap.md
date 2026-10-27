@@ -119,8 +119,10 @@ accessibility mode): UI Automation exposes a single Edit control on the logon
 screen, the command field with automation id `1001`. The User, Password,
 Client and Language fields are not UIA controls at all, so `keyboard_login()`
 raises `ApplicationError` before touching anything, leaves every field and the
-status bar unchanged and submits nothing. On this client the Scripting login
-(`find_by_id("wnd[0]/usr/pwdRSYST-BCODE").set_text(...)`, as the bundled
+status bar unchanged and submits nothing. Enabling SAP GUI's accessibility
+mode (Options, Accessibility & Scripting, Accessibility) and restarting SAP
+Logon does not change what UI Automation exposes. On this client the Scripting
+login (`find_by_id("wnd[0]/usr/pwdRSYST-BCODE").set_text(...)`, as the bundled
 `tests/sap/conftest.py` does) is the supported path.
 
 ## Locators

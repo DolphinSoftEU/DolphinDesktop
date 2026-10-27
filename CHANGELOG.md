@@ -44,8 +44,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   screen: UIA inventory of the login fields, safe rejection when the client
   exposes none, and, where it does, literal typing of SendKeys metacharacters
   plus abort on focus starting on Client/Language or moving mid-login.
-  Recorded on SAP GUI 800 (8000.1.15, default options): the logon fields are
-  not UIA controls, `keyboard_login()` refuses without changing any field or
+  Recorded on SAP GUI 800 (8000.1.15, with and without accessibility mode):
+  the logon fields are not UIA controls, `keyboard_login()` refuses without changing any field or
   submitting, and the Scripting login remains the supported path (see
   `docs/guides/sap.md`).
 
