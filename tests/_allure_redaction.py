@@ -7,8 +7,41 @@ import os
 import subprocess
 import sys
 import uuid
+from decimal import Decimal
+from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from xml.etree import ElementTree
+
+
+def typed_parameter_cases() -> list[tuple[Any, set[str]]]:
+    """Typed inputs for the shared collector, including nested enum payloads."""
+
+    class Credential(Enum):
+        code = ("739184",)
+
+    return [
+        (Path("739184"), {"739184"}),
+        (
+            uuid.UUID("73918452-7361-4739-8184-527361739184"),
+            {"73918452-7361-4739-8184-527361739184"},
+        ),
+        (Decimal("739184.01"), {"739184.01"}),
+        (Credential.code, {"Credential.code", "code", "739184"}),
+        ({"nested": [Path("739184"), Decimal("739184.01")]}, {"739184", "739184.01"}),
+    ]
+
+
+def junit_session(directory: Path) -> Any:
+    """Minimal session for the JUnit publication boundary, without starting pytest."""
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            rootpath=directory,
+            getoption=lambda name, default=None: str(directory / "junit.xml"),
+        )
+    )
+
 
 CHILD = """
 import os
@@ -66,6 +99,7 @@ def run_allure_case(
     *,
     source: str = CHILD,
     canary: str | None = None,
+    pytest_args: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Return the terminal output and on-disk JSON/attachments from a child pytest run."""
     child = directory / "test_allure_case.py"
@@ -100,6 +134,11 @@ def run_allure_case(
             "--dolphin-trace=off",
             "--alluredir",
             str(report_dir),
+            "--junitxml",
+            str(directory / "junit.xml"),
+            "-o",
+            "junit_logging=all",
+            *pytest_args,
         ],
         cwd=directory,
         env=environment,
@@ -115,6 +154,11 @@ def run_allure_case(
         "exit_code": result.returncode,
         "terminal": result.stdout + result.stderr,
         "canary": canary,
+        "junit": (directory / "junit.xml").read_text(encoding="utf-8"),
+        "testcases": [
+            dict(element.attrib)
+            for element in ElementTree.parse(directory / "junit.xml").iter("testcase")
+        ],
         "leaks": [name for name, content in files.items() if canary.encode() in content],
         "documents": {
             name: json.loads(content) for name, content in files.items() if name.endswith(".json")

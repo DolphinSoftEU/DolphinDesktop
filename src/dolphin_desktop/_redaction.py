@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from ast import literal_eval
 from contextvars import ContextVar
+from decimal import Decimal
+from enum import Enum
+from pathlib import PurePath
 from typing import Any
+from uuid import UUID
 
 from ._logging import _redact, unwrap_secret
 
@@ -37,6 +42,13 @@ def _sensitive_values(value: Any, *, serialized: bool = False) -> set[str]:
         if depth > 32:
             return
         current = unwrap_secret(current)
+        if isinstance(current, Enum):
+            collect(str(current), depth + 1)
+            collect(current.name, depth + 1)
+            collect(current.value, depth + 1)
+            return
+        if isinstance(current, (PurePath, UUID, Decimal)):
+            current = str(current)
         if isinstance(current, (dict, list, tuple, set, frozenset)):
             identity = id(current)
             if identity in visited:
@@ -65,8 +77,19 @@ def _sensitive_values(value: Any, *, serialized: bool = False) -> set[str]:
 
 
 def _redact_with_values(text: str, values: tuple[str, ...]) -> str:
-    """Apply ordinary redaction and literal masking of known parameter leaves."""
+    """Mask short leaves as whole tokens; longer leaves also inside other text.
+
+    A one-character PIN must not destroy every word containing that character.
+    For leaves of up to three characters, Unicode word boundaries preserve
+    unrelated words/numbers. Callers must avoid embedding these short secrets
+    in larger tokens, or sanitize those strings explicitly before publishing.
+    """
     text = _redact(text)
     for value in values:
-        text = text.replace(value, "***")
+        if not value:
+            continue
+        if len(value) <= 3:
+            text = re.sub(r"(?<!\w)" + re.escape(value) + r"(?!\w)", "***", text)
+        else:
+            text = text.replace(value, "***")
     return text

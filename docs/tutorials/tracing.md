@@ -121,6 +121,15 @@ dictionary/list parameters. Captured stdout/stderr uses a snapshot of the
 sensitive parameters taken before fixtures run, so bare printed values are
 masked even without `pin=` or a `Secret` wrapper. Sensitive values added through
 `allure.dynamic.parameter()` also extend this test's redaction context.
+The snapshot includes `Path`, `UUID`, `Decimal` and `Enum` values (including
+enum payloads), also when nested in standard containers. Other custom objects
+must expose a supported scalar representation and use safe `ids=`.
+Values of 1–3 characters are masked as standalone Unicode tokens to preserve
+unrelated words and numbers; sanitize concatenated short secrets explicitly
+or wrap them in `Secret` for unconditional masking.
+With `--junitxml`, the completed XML is sanitized after pytest writes it,
+including test names and captured streams from xdist workers. Publish it only
+after pytest exits normally; forced termination can prevent this final pass.
 Pytest collection IDs and live verbose output are unchanged; use non-sensitive
 `ids=` when sharing them.
 

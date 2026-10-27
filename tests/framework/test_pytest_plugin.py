@@ -1060,6 +1060,7 @@ def pytest_sessionfinish(session, exitstatus):
         config = SimpleNamespace(
             addinivalue_line=lambda key, value: lines.append((key, value)),
             add_cleanup=cleanups.append,
+            pluginmanager=pytest.PytestPluginManager(),
         )
         try:
             plugin.pytest_configure(config)

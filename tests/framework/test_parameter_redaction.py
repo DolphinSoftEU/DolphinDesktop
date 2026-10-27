@@ -5,6 +5,29 @@ from __future__ import annotations
 import pytest
 
 from dolphin_desktop._redaction import _redact_with_values, _sensitive_values
+from tests._allure_redaction import typed_parameter_cases
+
+
+@pytest.mark.parametrize(("value", "expected"), typed_parameter_cases())
+def test_typed_and_nested_enum_payloads_protect_their_display_spellings(value, expected):
+    leaves = _sensitive_values(value)
+    assert expected <= leaves
+    secrets = tuple(sorted(leaves, key=len, reverse=True))
+    for text in expected:
+        assert _redact_with_values("operation " + text, secrets) == "operation ***"
+
+
+@pytest.mark.parametrize("value", ["o", "1", "12", "123", ".", "ą"])
+def test_short_secrets_use_literal_unicode_token_boundaries(value):
+    text = f"operation attempt 1001 [ {value} ] '{value}' customer-{value}"
+    assert _redact_with_values(text, (value,)) == (
+        "operation attempt 1001 [ *** ] '***' customer-***"
+    )
+    assert _redact_with_values(f"prefix{value}suffix", (value,)) == f"prefix{value}suffix"
+
+
+def test_long_secrets_still_mask_embedded_values_and_empty_values_are_ignored():
+    assert _redact_with_values("prefix739184suffix", ("739184", "")) == "prefix***suffix"
 
 
 @pytest.mark.parametrize(

@@ -17,6 +17,95 @@ from dolphin_desktop._allure import _PLUGIN_NAME, _AllureRedactor, _redact_item
 from tests._allure_redaction import run_allure_case
 
 
+@pytest.mark.parametrize("kind", ["path", "uuid", "decimal", "enum", "int-enum"])
+@pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
+def test_typed_secrets_are_removed_from_real_allure_and_junit(tmp_path, kind, workers):
+    expressions = {
+        "path": 'Path(os.environ["KAN469_CANARY"])',
+        "uuid": 'UUID(os.environ["KAN469_CANARY"])',
+        "decimal": 'Decimal(os.environ["KAN469_CANARY"])',
+        "enum": "Credential.code",
+        "int-enum": "NumericCredential.code",
+    }
+    canary = {
+        "path": "KAN469_CANARY_739184",
+        "uuid": "73918452-7361-4739-8184-527361739184",
+        "decimal": "739184527361.1234",
+        "enum": "KAN469_CANARY_739184",
+        "int-enum": "739184527361",
+    }[kind]
+    source = """
+import os
+import sys
+from pathlib import Path
+from uuid import UUID
+from decimal import Decimal
+from enum import Enum, IntEnum
+import pytest
+
+class Credential(Enum):
+    code = os.environ["KAN469_CANARY"]
+
+class NumericCredential(IntEnum):
+    code = 739184527361
+
+value = VALUE
+
+@pytest.mark.parametrize("pin", [value], ids=lambda p: "customer-" + str(p))
+def test_login(pin, request):
+    assert request.node.nodeid.endswith("[customer-" + str(pin) + "]")
+    print("Authenticating with", pin)
+    print("operation stderr", pin, file=sys.stderr)
+    if isinstance(pin, Enum):
+        print("enum payload", pin.value)
+
+@pytest.mark.parametrize("pin", [value], ids=lambda p: "customer-" + str(p))
+def test_failure(pin):
+    raise RuntimeError("operation failed " + str(pin))
+""".replace("VALUE", expressions[kind])
+    case = run_allure_case(
+        tmp_path,
+        "call",
+        "pin",
+        "entry-point",
+        source=source,
+        canary=canary,
+        pytest_args=("-n", "2") if workers else (),
+    )
+    assert case["exit_code"] == 1, case["terminal"]
+    assert not case["leaks"], case["leaks"]
+    assert canary not in case["junit"]
+    assert len(case["testcases"]) == 2
+    assert {item["name"] for item in case["testcases"]} == {
+        "test_login[customer-***]",
+        "test_failure[customer-***]",
+    }
+    assert "operation failed ***" in case["junit"]
+    assert "Authenticating with ***" in "\n".join(case["attachments"].values())
+    assert 'failures="1"' in case["junit"] and 'tests="2"' in case["junit"]
+
+
+@pytest.mark.parametrize("value", ["o", "1", "12", "123"])
+def test_short_secrets_preserve_diagnostics_in_real_artifacts(tmp_path, value):
+    source = """
+import os
+import sys
+import pytest
+
+@pytest.mark.parametrize("pin", [os.environ["KAN469_CANARY"]])
+def test_operation(pin):
+    print("operation attempt 1001", pin)
+    print("operation stderr", pin, file=sys.stderr)
+"""
+    case = run_allure_case(tmp_path, "success", "pin", "entry-point", source=source, canary=value)
+    assert case["exit_code"] == 0, case["terminal"]
+    attachments = "\n".join(case["attachments"].values())
+    assert "operation attempt 1001 ***" in attachments
+    assert "operation stderr ***" in attachments
+    assert "operation attempt 1001 ***" in case["junit"]
+    assert case["testcases"][0]["name"] == "test_operation[***]"
+
+
 @pytest.mark.parametrize("shape", ["scalar", "dict", "nested"])
 @pytest.mark.parametrize("fails", [False, True], ids=["success", "failure"])
 @pytest.mark.parametrize("order", ["dolphin-first", "allure-first", "entry-point"])
@@ -55,6 +144,7 @@ def test_login(pin, diagnostic):
     case = run_allure_case(tmp_path, "call" if fails else "success", "pin", order, source=source)
     assert case["exit_code"] == (1 if fails else 0), case["terminal"]
     assert case["leaks"] == [], f"Canary leaked to {case['leaks']}"
+    assert case["canary"] not in case["junit"]
     result = next(
         value for name, value in case["documents"].items() if name.endswith("-result.json")
     )
@@ -99,6 +189,7 @@ def test_login(pin):
     )
     assert case["exit_code"] == 0, case["terminal"]
     assert case["leaks"] == []
+    assert case["canary"] not in case["junit"]
     result = next(
         value for name, value in case["documents"].items() if name.endswith("-result.json")
     )
@@ -276,6 +367,7 @@ def test_real_allure_redacts_results_fixtures_steps_and_attachments(tmp_path, ph
     case = run_allure_case(tmp_path, phase, style, order)
     assert case["exit_code"] == (0 if phase in {"success", "xfail"} else 1), case["terminal"]
     assert case["leaks"] == [], f"Canary leaked into Allure files: {case['leaks']}"
+    assert case["canary"] not in case["junit"]
     assert case["canary"] not in case["terminal"]
     results = [value for name, value in case["documents"].items() if name.endswith("-result.json")]
     assert len(results) == 1

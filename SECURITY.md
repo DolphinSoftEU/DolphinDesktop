@@ -118,9 +118,26 @@ global registry used by `Secret`.
 Sensitive values supplied through `allure.dynamic.parameter()` extend the
 current test's context, including structured values that are later replaced
 with a display mask in Allure metadata.
-This sanitizes Allure metadata; it does not change pytest's collection IDs or
-live verbose collection output. Prefer non-sensitive `ids=` when sharing that
-output.
+Supported leaves include strings, bytes, numbers, `None`, `pathlib.PurePath`
+(including `Path`), `uuid.UUID`, `Decimal` and `Enum` (its display, name and
+payload), also inside standard containers. Arbitrary objects are not converted
+through user-defined `str`/`repr`; expose a supported scalar representation
+and use non-sensitive `ids=` for such objects.
+
+For short parameter values (1–3 characters), automatic masking applies to
+standalone tokens, using Unicode word boundaries. Thus `o` is masked in
+`Authenticating with o`, while `operation` and unrelated numbers remain readable.
+Longer values are masked even inside other text. Do not concatenate short
+secrets into larger words/identifiers: sanitize those strings explicitly, use
+non-sensitive `ids=`, or register a `Secret` for unconditional literal masking.
+
+With `--junitxml`, Dolphin sanitizes the completed XML at session finish,
+after pytest's writer runs and before the pytest process returns. Test names,
+diagnostics and captured streams are masked, also when using xdist. Verdicts,
+counters and timings are preserved. Publish the file only after pytest exits;
+an interrupted/killed process may leave the original writer's XML unprocessed.
+Pytest's execution/collection IDs and live verbose output remain unchanged;
+use non-sensitive `ids=` when sharing those outputs.
 
 **Native Allure attachments are caller-owned.** The automatic protection above
 covers report models and captured stdout/stderr, not arbitrary bodies passed

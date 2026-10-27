@@ -232,6 +232,9 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    from ._junit import _JUnitRedactor
+
+    config.pluginmanager.register(_JUnitRedactor(), "dolphin_desktop.junit_redaction")
     config.addinivalue_line(
         "markers",
         "dolphin(timeout=..., video_mode=..., headless=...): per-test dolphin config overrides",
@@ -869,7 +872,9 @@ def pytest_runtest_makereport(  # type: ignore[misc]
     # JUnit and terminal reporters consume the same TestReport after this hook.
     # Sanitise the report itself so neither the failure nor captured output can
     # serialize the original secret before artifact-specific copies are made.
-    _redact_report(report, tuple(sorted(_item_parameter_values(item), key=len, reverse=True)))
+    secrets = tuple(sorted(_item_parameter_values(item), key=len, reverse=True))
+    report._dolphin_parameter_values = secrets
+    _redact_report(report, secrets)
     if call.when == "call":
         from ._exceptions import ElementNotFoundError, WaitTimeoutError
 

@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Sensitive parameter snapshots now include `Path`, `UUID`, `Decimal` and
+  `Enum` leaves. Completed JUnit XML is sanitized at session finish, including
+  xdist results, without changing pytest execution IDs. Short parameter values
+  (1–3 characters) use token masking to retain readable diagnostics; concatenated
+  short secrets require explicit sanitization (KAN-469 review).
+
 * Sensitive pytest parameter values now also mask bare values in captured
   stdout/stderr. A shared collector handles nested containers and Allure reprs,
   so custom IDs extracting a dictionary value are masked too. Values are
