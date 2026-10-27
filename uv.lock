@@ -494,6 +494,7 @@ build = [
     { name = "twine" },
 ]
 dev = [
+    { name = "allure-pytest" },
     { name = "build" },
     { name = "hatchling" },
     { name = "mypy" },
@@ -546,6 +547,7 @@ build = [
     { name = "twine", specifier = ">=7.0.0" },
 ]
 dev = [
+    { name = "allure-pytest", specifier = ">=2.13" },
     { name = "build", specifier = ">=1.5.0" },
     { name = "hatchling", specifier = "==1.30.1" },
     { name = "mypy", specifier = ">=1.10" },

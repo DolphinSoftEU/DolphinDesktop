@@ -16,6 +16,44 @@ import pytest
 from dolphin_desktop import UnsupportedPatternError, _trace
 from dolphin_desktop._locator import Locator
 from dolphin_desktop._window import Window
+from tests._allure_redaction import run_in_thread
+
+
+def test_trace_keeps_its_parameter_context_for_threaded_actions_and_late_values(
+    tmp_path, monkeypatch
+):
+    from dolphin_desktop._redaction import _PARAMETER_VALUES
+
+    values = {"PRIVATE_CANARY_739184"}
+    token = _PARAMETER_VALUES.set(values)
+    monkeypatch.setattr(_trace, "_capture_screenshot", lambda path: path.write_bytes(b"jpeg"))
+    monkeypatch.setattr(
+        _trace, "_dump_uia_tree", lambda *args, **kwargs: '{"name":"PRIVATE_CANARY_739184"}'
+    )
+    try:
+        session = _trace.TraceSession(
+            "test_login[PRIVATE_CANARY_739184]", tmp_path / "run", "always"
+        )
+        _PARAMETER_VALUES.set({"UNRELATED_VALUE"})
+        values.add("LATE_CANARY_739184")
+        run_in_thread(
+            lambda: session.record_step(
+                "operation PRIVATE_CANARY_739184", "LATE_CANARY_739184", element=object()
+            )
+        )
+        session.finish(
+            "failed", error_message="PRIVATE_CANARY_739184", error_traceback="LATE_CANARY_739184"
+        )
+        with closing(sqlite3.connect(tmp_path / "run" / "trace.db")) as connection:
+            assert connection.execute(
+                "SELECT test_nodeid, error_message, error_traceback FROM runs"
+            ).fetchone() == ("test_login[***]", "***", "***")
+            assert connection.execute(
+                "SELECT action, selector, uia_tree FROM steps"
+            ).fetchone() == ("operation ***", "***", '{"name":"***"}')
+        assert b"PRIVATE_CANARY_739184" not in (tmp_path / "run" / "trace.db").read_bytes()
+    finally:
+        _PARAMETER_VALUES.reset(token)
 
 
 class _FailingConnection:

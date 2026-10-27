@@ -42,10 +42,11 @@ class TestTraceRunDirName:
         name = plugin._trace_run_dir_name("tests/test_x.py::test_y" + "z" * 500)
         assert len(name) <= 100
 
-    def test_name_starts_with_the_sanitised_nodeid(self):
-        assert plugin._trace_run_dir_name("tests/test_x.py::test_y").startswith(
-            "tests_test_x.py__test_y_"
-        )
+    def test_names_never_include_parameter_values(self):
+        nodeid = "test_login[KAN469_PRIVATE_739184]"
+        for build in (plugin._trace_run_dir_name, plugin._artifact_file_stem):
+            assert "KAN469_PRIVATE_739184" not in build(nodeid)
+            assert "test_login" not in build(nodeid)
 
 
 # Screenshot / video file naming
@@ -442,6 +443,38 @@ class TestMakereportIsolation:
         assert report.sections[0] == ("Captured stdout", "token=***")
         assert report.sections[1] == ("malformed",)
         assert report.sections[2] == ("too many fields", "kept", "ignored")
+
+    def test_parameter_snapshot_is_immutable_and_does_not_leak_to_the_next_test(self):
+        from dolphin_desktop._redaction import _PARAMETER_VALUES
+
+        token = _PARAMETER_VALUES.set(None)
+        try:
+            value = {"code": "SNAPSHOT_CANARY_739184"}
+            item = SimpleNamespace(
+                callspec=SimpleNamespace(params={"pin": value}), stash=pytest.Stash()
+            )
+            plugin.pytest_runtest_setup(item)
+            value.clear()
+            report = SimpleNamespace(
+                sections=[("Captured stdout", "Authenticating with SNAPSHOT_CANARY_739184")],
+                capstderr="SNAPSHOT_CANARY_739184",
+                longrepr=("test.py", 12, "Skipped: SNAPSHOT_CANARY_739184"),
+            )
+            plugin._redact_report(
+                report, tuple(sorted(plugin._item_parameter_values(item), key=len, reverse=True))
+            )
+            assert report.sections == [("Captured stdout", "Authenticating with ***")]
+            assert report.capstderr == "***"
+            assert report.longrepr == ("test.py", 12, "Skipped: ***")
+            next_item = SimpleNamespace(
+                callspec=SimpleNamespace(params={"public": "SNAPSHOT_CANARY_739184"}),
+                stash=pytest.Stash(),
+            )
+            plugin.pytest_runtest_setup(next_item)
+            assert plugin._item_parameter_values(next_item) == set()
+            assert _PARAMETER_VALUES.get() == set()
+        finally:
+            _PARAMETER_VALUES.reset(token)
 
     def test_collection_error_does_not_escape(self, monkeypatch, caplog):
         def _boom(item, call, report):
@@ -923,8 +956,7 @@ def pytest_sessionfinish(session, exitstatus):
         monkeypatch.setattr(plugin, "_effective_retry_count", lambda _config: 1)
         monkeypatch.setattr(plugin, "_is_transient_failure", lambda _report: next(transient))
         monkeypatch.setattr(
-            plugin.time,
-            "sleep",
+            "time.sleep",
             lambda _seconds: (_ for _ in ()).throw(AssertionError("retry must not sleep")),
         )
         run_calls: list[tuple] = []
@@ -1024,11 +1056,32 @@ def pytest_sessionfinish(session, exitstatus):
 
     def test_configure_registers_both_markers(self):
         lines: list[tuple[str, str]] = []
-        config = SimpleNamespace(addinivalue_line=lambda key, value: lines.append((key, value)))
-        plugin.pytest_configure(config)
+        cleanups = []
+        config = SimpleNamespace(
+            addinivalue_line=lambda key, value: lines.append((key, value)),
+            add_cleanup=cleanups.append,
+            pluginmanager=pytest.PytestPluginManager(),
+            getoption=lambda name, default=None: default,
+        )
+        try:
+            plugin.pytest_configure(config)
+        finally:
+            for cleanup in reversed(cleanups):
+                cleanup()
         assert [key for key, _value in lines] == ["markers", "markers"]
         assert "dolphin(timeout" in lines[0][1]
         assert "dolphin_headless" in lines[1][1]
+
+    def test_configure_redaction_without_optional_allure(self, monkeypatch):
+        original_import = builtins.__import__
+
+        def without_allure(name, *args, **kwargs):
+            if name == "allure_commons":
+                raise ModuleNotFoundError("allure_commons is not installed")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", without_allure)
+        plugin._configure_allure_redaction(SimpleNamespace())
 
     def test_addoption_registers_all_dolphin_options(self):
         added: list[tuple[tuple, dict]] = []
@@ -1921,6 +1974,23 @@ class TestLazyPluginLoadCoverage:
 
 
 class TestSessionReports:
+    def test_teardown_updates_only_its_row_when_masked_display_ids_collide(self, tmp_path):
+        plugin._session_reports.clear()
+        items = []
+        try:
+            for value in ("PRIVATE_A_739184", "PRIVATE_B_739184"):
+                item = _Item(tmp_path, f"test_login[{value}]")
+                item.callspec = SimpleNamespace(params={"pin": value})
+                plugin._collect_artifacts(item, SimpleNamespace(when="call"), _report(failed=False))
+                items.append(item)
+            assert [row["nodeid"] for row in plugin._session_reports] == ["test_login[***]"] * 2
+            plugin._record_teardown_failure(
+                items[0], _report(failed=True, longrepr="cleanup failed")
+            )
+            assert [row["outcome"] for row in plugin._session_reports] == ["error", "passed"]
+        finally:
+            plugin._session_reports.clear()
+
     def test_sessionfinish_returns_without_reports(self, monkeypatch):
         from dolphin_desktop import _application
 
