@@ -1,9 +1,9 @@
 {
   "dolphin_qt5_agent.dll": {
-    "sha256": "a1e272b79134c766837f7f0677a2bbee1f4dd537a8057c2891c1b6a3e0c984c9",
-    "size": 122368,
+    "sha256": "739a3a06f9634b2954ceef5506a902801543a59ead3e73fe2fd0cdc770d64aae",
+    "size": 124928,
     "protocol_version": 2,
-    "source_tree": "647850d2d5622535cb81dad639768f8cd721ca66",
+    "source_tree": "3119b1fda56f77ab0d2a41354d482479eec02d7e",
     "qt_version": "5.15.2",
     "msvc_toolset": "MSVC 19.50.35726",
     "vc_tools_version": "14.50.35717",
@@ -12,10 +12,10 @@
     "ninja_version": "1.11.1.git.kitware.jobserver-1"
   },
   "dolphin_qt6_agent.dll": {
-    "sha256": "99731a6700e36421bea33582d1c21129d5a8d655267f2c76253ea81dd4e08afe",
-    "size": 140800,
+    "sha256": "8713fbcf0412cc34627a6940d9d21958139687b6f24001896af8917c010136a9",
+    "size": 142848,
     "protocol_version": 2,
-    "source_tree": "647850d2d5622535cb81dad639768f8cd721ca66",
+    "source_tree": "3119b1fda56f77ab0d2a41354d482479eec02d7e",
     "qt_version": "6.10.3",
     "msvc_toolset": "MSVC 19.50.35726",
     "vc_tools_version": "14.50.35717",

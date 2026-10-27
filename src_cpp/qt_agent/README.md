@@ -46,6 +46,9 @@ injection.
 temporary directory, check exports, and compare the result against both the
 existing DLL and every recorded manifest field. They never replace the DLL
 or regenerate its manifest. A mismatched hash, source tree or toolchain fails.
+Build directories are removed in `finally`, including on verification or
+compiler failure. CMake/build output and errors remain in
+`artifacts/qt-agent-builds/` (or the shared builder's `-LogDirectory`).
 
 From the same developer environment, run:
 
@@ -56,7 +59,9 @@ From the same developer environment, run:
 This archives HEAD into two clean checkouts with different path lengths,
 including spaces, and relocates the Qt SDK through directory junctions. It
 verifies both ABIs in each location and retains logs in
-`artifacts/qt-agent-reproducibility/`. Before committing a change, stage the
+`artifacts/qt-agent-reproducibility/`, including build diagnostics in `build/`.
+Both temporary checkouts and SDK junctions are removed on success or failure;
+the installed SDK targets are preserved. Before committing a change, stage the
 source, rebuilt DLLs and manifest and use `-Revision (git write-tree)` to test
 that exact snapshot without creating a commit.
 
@@ -78,6 +83,12 @@ process's logon SID and `PIPE_REJECT_REMOTE_CLIENTS`. It checks the connecting
 client PID and a separate per-attach secret before dispatching any operation.
 Request bytes, JSON depth and node count, response bytes, connection idle time
 and pipe writes are bounded in the native server.
+An oversized request receives `code: request_too_large` and the wire-size
+`limit` (including the newline), without parsing or dispatching its JSON.
+The rejected connection drains input using a fixed buffer for at most five
+seconds while the client reads the error and closes; it cannot dispatch further
+RPC. Disconnect, timeout and other RPC errors are not accepted as evidence of
+size rejection by the boundary regression.
 
 The stop export requests shutdown and joins the pipe thread. It deliberately
 does not unload the DLL from under Qt callbacks; the module remains mapped

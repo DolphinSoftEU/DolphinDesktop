@@ -13,7 +13,7 @@ from importlib.util import find_spec
 
 import pytest
 
-from dolphin_desktop import Desktop, QtAgentRpcError, QtAgentTimeoutError, sleep
+from dolphin_desktop import Desktop, QtAgentRpcError, sleep
 from dolphin_desktop._qt_inject import QtAgentClient, _AgentStartConfig, _start_agent
 from tests.qt._qt_helpers import (
     QT5_SCRIPT,
@@ -65,7 +65,7 @@ def _private_bytes(pid: int) -> int:
         kernel32.CloseHandle(handle)
 
 
-@pytest.mark.timeout(90)
+@pytest.mark.timeout(180)
 @pytest.mark.parametrize(
     ("binding", "version", "script", "title"),
     [("PyQt5", "5", QT5_SCRIPT, QT5_WINDOW_TITLE), ("PySide6", "6", QT6_SCRIPT, QT6_WINDOW_TITLE)],
@@ -78,16 +78,30 @@ def test_native_oversized_requests_recover_without_memory_growth(binding, versio
     try:
         agent = app.qt_agent
         assert agent.ping() == "pong"
+        limit = 8 * 1024 * 1024
         header = json.dumps({"id": 1000, "op": "ping", "auth": agent._auth_token})
-        raw = header[:-1].encode() + b',"padding":"' + b"x" * (8 * 1024 * 1024) + b'"}\n'
+        prefix = header[:-1].encode() + b',"padding":"'
+        suffix = b'"}\n'
+
+        def raw_ping(wire_size):
+            # Include the newline in the exact wire size, as the native server does.
+            raw = prefix + b"x" * (wire_size - len(prefix) - len(suffix)) + suffix
+            assert len(raw) == wire_size
+            agent._write_line(raw)
+            return json.loads(agent._read_line(time.monotonic() + 10, "raw size boundary"))
+
+        for size in (limit - 1, limit):
+            assert raw_ping(size) == {"id": 1000, "ok": True, "result": "pong"}
+            assert agent.ping() == "pong", "Accepted boundary request poisoned the connection"
         samples = []
         for _ in range(6):
-            with pytest.raises(QtAgentRpcError) as rejected:
-                agent._write_line(raw)
-                agent._read_line(time.monotonic() + 5, "raw oversized request")
-            assert not isinstance(rejected.value, QtAgentTimeoutError), (
-                "A timeout does not prove native oversized-request rejection"
-            )
+            # A timeout, disconnect or unrelated RPC error fails this test.
+            assert raw_ping(limit + 1) == {
+                "ok": False,
+                "code": "request_too_large",
+                "error": "request exceeds size limit",
+                "limit": limit,
+            }
             assert agent.reattach().ping() == "pong"
             samples.append(_private_bytes(agent.pid))
         print(f"Qt{version} private bytes after oversized requests: {samples}")

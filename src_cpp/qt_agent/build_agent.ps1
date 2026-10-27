@@ -6,7 +6,8 @@ param(
     [string]$QtMajor,
     [Parameter(Mandatory = $true)]
     [string]$QtRoot,
-    [switch]$Verify
+    [switch]$Verify,
+    [string]$LogDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,73 +81,94 @@ if ($sourceTree -notmatch '^[0-9a-f]{40}$') {
     throw 'The staged native source has no valid Git tree id'
 }
 
-$buildDir = Join-Path $env:TEMP "dolphin-qt-agent-qt$QtMajor-$sourceTree-$([guid]::NewGuid().ToString('N'))"
-$outputDir = Join-Path $buildDir 'output'
-$cmakeArgs = @(
-    '-S', $PSScriptRoot,
-    '-B', $buildDir,
-    '-G', 'Ninja',
-    "-DCMAKE_MAKE_PROGRAM=$($ninja.Source)",
-    "-DCMAKE_PREFIX_PATH=$QtRoot",
-    "-DDOLPHIN_QT_SDK_ROOT=$QtRoot",
-    "-DDOLPHIN_QT_MAJOR=$QtMajor",
-    "-DDOLPHIN_AGENT_OUTPUT_DIR=$outputDir",
-    '-DCMAKE_SYSTEM_VERSION=10.0.26100.0',
-    '-DCMAKE_BUILD_TYPE=Release'
-)
-& $cmake.Source @cmakeArgs
-if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (exit $LASTEXITCODE)" }
-& $cmake.Source --build $buildDir --config Release
-if ($LASTEXITCODE -ne 0) { throw "Qt agent build failed (exit $LASTEXITCODE)" }
+$tempRoot = (Resolve-Path -LiteralPath $env:TEMP).Path
+$buildName = "dolphin-qt-agent-qt$QtMajor-$sourceTree-$([guid]::NewGuid().ToString('N'))"
+$buildDir = Join-Path $tempRoot $buildName
+if (-not $LogDirectory) { $LogDirectory = Join-Path $repoRoot 'artifacts\qt-agent-builds' }
+New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
+$buildLog = Join-Path $LogDirectory "$buildName.log"
+Write-Host "Build diagnostics: $buildLog"
+try {
+    $outputDir = Join-Path $buildDir 'output'
+    $cmakeArgs = @(
+        '-S', $PSScriptRoot,
+        '-B', $buildDir,
+        '-G', 'Ninja',
+        "-DCMAKE_MAKE_PROGRAM=$($ninja.Source)",
+        "-DCMAKE_PREFIX_PATH=$QtRoot",
+        "-DDOLPHIN_QT_SDK_ROOT=$QtRoot",
+        "-DDOLPHIN_QT_MAJOR=$QtMajor",
+        "-DDOLPHIN_AGENT_OUTPUT_DIR=$outputDir",
+        '-DCMAKE_SYSTEM_VERSION=10.0.26100.0',
+        '-DCMAKE_BUILD_TYPE=Release'
+    )
+    & $cmake.Source @cmakeArgs *>&1 | Tee-Object -FilePath $buildLog -Append
+    if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (exit $LASTEXITCODE)" }
+    & $cmake.Source --build $buildDir --config Release *>&1 | Tee-Object -FilePath $buildLog -Append
+    if ($LASTEXITCODE -ne 0) { throw "Qt agent build failed (exit $LASTEXITCODE)" }
 
-$dllName = "dolphin_qt${QtMajor}_agent.dll"
-$dllPath = Join-Path $outputDir $dllName
-if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
-    throw "Build completed without producing $dllPath"
-}
-$exports = (& dumpbin.exe /nologo /exports $dllPath 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0 -or
-    $exports -notmatch 'dolphin_qt_agent_start_v2' -or
-    $exports -notmatch 'dolphin_qt_agent_stop_v2') {
-    throw "$dllName is missing the authenticated start/stop exports"
-}
+    $dllName = "dolphin_qt${QtMajor}_agent.dll"
+    $dllPath = Join-Path $outputDir $dllName
+    if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
+        throw "Build completed without producing $dllPath"
+    }
+    $exports = (& dumpbin.exe /nologo /exports $dllPath 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or
+        $exports -notmatch 'dolphin_qt_agent_start_v2' -or
+        $exports -notmatch 'dolphin_qt_agent_stop_v2') {
+        throw "$dllName is missing the authenticated start/stop exports"
+    }
 
-$manifestPath = Join-Path $repoRoot 'src\dolphin_desktop\_qt_agent\agent_manifest.json'
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-$hash = (Get-FileHash -LiteralPath $dllPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$size = (Get-Item -LiteralPath $dllPath).Length
-$entry = [pscustomobject][ordered]@{
-    sha256 = $hash
-    size = $size
-    protocol_version = 2
-    source_tree = $sourceTree
-    qt_version = $expected.Qt
-    msvc_toolset = $expected.MsvcLabel
-    vc_tools_version = $env:VCToolsVersion
-    windows_sdk = $env:WindowsSDKVersion.TrimEnd('\')
-    cmake_version = '3.31.10'
-    ninja_version = '1.11.1.git.kitware.jobserver-1'
-}
-if ($Verify) {
-    $shippedPath = Join-Path $repoRoot "src\dolphin_desktop\_qt_agent\$dllName"
-    $shippedHash = (Get-FileHash -LiteralPath $shippedPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $record = $manifest.$dllName
-    foreach ($field in $entry.PSObject.Properties.Name) {
-        if ($record.$field -cne $entry.$field) {
-            throw "$dllName reproducibility failed: manifest $field=$($record.$field), rebuild=$($entry.$field)"
+    $manifestPath = Join-Path $repoRoot 'src\dolphin_desktop\_qt_agent\agent_manifest.json'
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $hash = (Get-FileHash -LiteralPath $dllPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $size = (Get-Item -LiteralPath $dllPath).Length
+    $entry = [pscustomobject][ordered]@{
+        sha256 = $hash
+        size = $size
+        protocol_version = 2
+        source_tree = $sourceTree
+        qt_version = $expected.Qt
+        msvc_toolset = $expected.MsvcLabel
+        vc_tools_version = $env:VCToolsVersion
+        windows_sdk = $env:WindowsSDKVersion.TrimEnd('\')
+        cmake_version = '3.31.10'
+        ninja_version = '1.11.1.git.kitware.jobserver-1'
+    }
+    if ($Verify) {
+        $shippedPath = Join-Path $repoRoot "src\dolphin_desktop\_qt_agent\$dllName"
+        $shippedHash = (Get-FileHash -LiteralPath $shippedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $record = $manifest.$dllName
+        foreach ($field in $entry.PSObject.Properties.Name) {
+            if ($record.$field -cne $entry.$field) {
+                throw "$dllName reproducibility failed: manifest $field=$($record.$field), rebuild=$($entry.$field)"
+            }
         }
+        if ($shippedHash -cne $hash) {
+            throw "$dllName reproducibility failed: shipped=$shippedHash, rebuild=$hash"
+        }
+        Write-Host "Verified shipped $dllName against source tree $sourceTree : $hash" -ForegroundColor Green
+        return
     }
-    if ($shippedHash -cne $hash) {
-        throw "$dllName reproducibility failed: shipped=$shippedHash, rebuild=$hash"
-    }
-    Write-Host "Verified shipped $dllName against source tree $sourceTree : $hash" -ForegroundColor Green
-    return
-}
-Copy-Item -LiteralPath $dllPath -Destination (Join-Path $repoRoot "src\dolphin_desktop\_qt_agent\$dllName")
-$manifest | Add-Member -NotePropertyName $dllName -NotePropertyValue $entry -Force
-$manifestJson = $manifest | ConvertTo-Json -Depth 5
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText($manifestPath, $manifestJson + [Environment]::NewLine, $utf8NoBom)
+    Copy-Item -LiteralPath $dllPath -Destination (Join-Path $repoRoot "src\dolphin_desktop\_qt_agent\$dllName")
+    $manifest | Add-Member -NotePropertyName $dllName -NotePropertyValue $entry -Force
+    $manifestJson = $manifest | ConvertTo-Json -Depth 5
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($manifestPath, $manifestJson + [Environment]::NewLine, $utf8NoBom)
 
-Write-Host "Built $dllName from staged tree $sourceTree" -ForegroundColor Green
-Write-Host "SHA-256: $hash ($size bytes)"
+    Write-Host "Built $dllName from staged tree $sourceTree" -ForegroundColor Green
+    Write-Host "SHA-256: $hash ($size bytes)"
+} catch {
+    $_ | Out-String | Add-Content -LiteralPath $buildLog
+    throw
+} finally {
+    # Check the exact generated target before recursive deletion.
+    $cleanupPath = [IO.Path]::GetFullPath($buildDir)
+    if ((Split-Path $cleanupPath -Parent) -ne $tempRoot -or
+        (Split-Path $cleanupPath -Leaf) -ne $buildName) {
+        throw "Refusing to remove unexpected build directory: $cleanupPath"
+    }
+    if (Test-Path -LiteralPath $cleanupPath) {
+        Remove-Item -LiteralPath $cleanupPath -Recurse -Force
+    }
+}

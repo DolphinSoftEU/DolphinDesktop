@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Qt agent builds and reproducibility checks now remove temporary directories
+  on success and failure while retaining diagnostics. Native request-size
+  tests verify limit−1, limit and limit+1 against an explicit
+  `request_too_large` response. The secret scanner baseline records the
+  reviewed native artifact hashes as non-secrets (KAN-470 review).
+
 * Qt agent DLLs now reproduce across checkout and Qt SDK paths. Native build
   inputs are pinned, and CI compares clean Qt5/Qt6 rebuilds with the shipped
   binaries and manifest before packaging or release (KAN-470). Real-agent
