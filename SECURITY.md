@@ -99,10 +99,79 @@ self-healing journal (`selfheal.jsonl`) and UIA tree dumps — and, for
 structured data such as a selector's criteria dict, a sensitive *key* masks
 its whole value whatever its type.
 
+With Dolphin's pytest plugin enabled, the optional Allure integration also
+redacts completed result/container models before any reporter serializes them.
+This covers `statusDetails.message` and `statusDetails.trace` for tests, fixture
+setup/teardown and nested steps, including diagnostics that Allure builds
+directly from an exception instead of pytest's report. Parameters and labels
+named by sensitive keys such as `pin` have their entire value masked. Test
+statuses, IDs and attachment references retain their original meaning.
+
+Values of sensitive Allure parameters are also masked when repeated in display
+names, including pytest's default parameter IDs and custom `ids=` strings.
+Sensitive pytest parameters are snapshotted before fixture setup. Their scalar
+leaves are also detected below sensitive dictionary keys inside otherwise public
+parameters, such as `payload={"pin": value, "operation": "public"}`. Only the
+sensitive subtree is collected; public siblings remain readable. These
+leaves, including nested dictionary/list values, also mask captured stdout and
+stderr when printed without a key or `Secret` wrapper. The same values protect
+Allure display names when custom IDs extract a leaf such as `pin["code"]`.
+This context belongs to the individual test; it does not add values to the
+global registry used by `Secret`.
+Sensitive values supplied through `allure.dynamic.parameter()` extend the
+current test's context, including structured values that are later replaced
+with a display mask in Allure metadata.
+Supported leaves include strings, bytes, numbers, `None`, `pathlib.PurePath`
+(including `Path`), `uuid.UUID`, `Decimal` and `Enum` (its display, name and
+payload), also inside standard containers. Arbitrary objects are not converted
+through user-defined `str`/`repr`; expose a supported scalar representation
+and use non-sensitive `ids=` for such objects.
+
+For short parameter values (1–3 characters), automatic masking applies to
+standalone tokens, using Unicode word boundaries. Thus `o` is masked in
+`Authenticating with o`, while `operation` and unrelated numbers remain readable.
+Longer values are masked even inside other text. Do not concatenate short
+secrets into larger words/identifiers: sanitize those strings explicitly, use
+non-sensitive `ids=`, or register a `Secret` for unconditional literal masking.
+
+With `--junitxml`, Dolphin sanitizes the completed XML at session finish,
+after pytest's writer runs and before the pytest process returns. Each testcase
+is matched to its own sensitive values using a temporary opaque property,
+removed from the finished XML. A parameter in one test does not mask another
+test's name or diagnostics. Test names, diagnostics, captured streams and custom
+attribute values are masked, also when using xdist. Suite-level metadata uses
+ordinary text redaction without applying individual tests' parameter values.
+Sensitive `property` names (for example `password`) mask the entire `value`
+attribute, including `record_property()` and suite-level properties, without
+requiring prior `Secret` registration. Testcase properties also protect repeated
+values inside that same testcase.
+Verdicts, counters and timings are preserved. Publish the file only after pytest exits;
+an interrupted/killed process may leave the original writer's XML unprocessed.
+HTML fallback rows and SQLite trace identifiers use the same per-test masking.
+Trace text fields retain their owning test's parameter context, including actions
+recorded on another thread. Trace directories and screenshot/video filenames use
+opaque random names, independent of parameter values.
+
+Pytest's terminal writer masks recognized sensitive identifiers in verbose test
+output and collection listings. With xdist, start lines are deferred until the
+completed report supplies the worker's sensitive-value snapshot. This changes
+display text; execution/collection IDs and report identities remain unchanged.
+Pytest's local `.pytest_cache` retains original IDs for selection and `--lf`;
+do not publish it as a report. Prefer safe `ids=` when sharing execution metadata.
+Direct writes with capture disabled (`-s`) and third-party output that bypasses
+pytest's terminal writer remain caller-owned.
+
+**Native Allure attachments are caller-owned.** The automatic protection above
+covers report models and captured stdout/stderr, not arbitrary bodies passed
+directly to `allure.attach()` or files passed to `allure.attach.file()`.
+Registering a value with `Secret` does not intercept these SDK calls. Sanitize
+the text or file before passing it to Allure; for example, format a `Secret`
+into the text (`f"pin={Secret(pin)}"`) rather than attaching its revealed value.
+
 The surest control is not the pattern but `Secret`: wrap a value in
 `dolphin_desktop.Secret("…")` before handing it to `type_text` (UIA, CDP
 and mainframe locators accept it). The action receives the real characters;
-the literal value is then masked wherever it appears in any artifact,
+the literal value is then masked wherever it appears in Dolphin-managed artifact text,
 independent of the pattern and of any variable name. `str(secret)` and
 `repr(secret)` never reveal it.
 
@@ -302,7 +371,7 @@ future refactor cannot preserve a prose claim while dropping the regression:
 | --- | --- | --- | --- |
 | KAN-467 | DESKTOP-199 | `tests/framework/test_mainframe.py::test_s3270_rejects_unsafe_host_before_spawn_or_stdin` | s3270 host input cannot inject another emulator action; the process is not spawned. |
 | KAN-468 | DESKTOP-200 | `tests/framework/test_security_mainframe.py::test_tn5250_tls_handshake_verifies_the_certificate`; DESKTOP-200 TLS UAT | Verified TLS is enforced for native TN5250 and the s3270 `L:` path when explicitly requested; remote plaintext requires `allow_plaintext=True`. |
-| KAN-469 | KAN-535 / DESKTOP-201 | `tests/framework/test_security_core.py::test_trace_db_never_stores_a_secret`, `::test_crash_dump_zip_never_stores_a_secret`, `::test_allure_text_attachment_is_redacted`; `tests/framework/test_security_mainframe.py::test_s3270_trace_names_the_action_not_the_typed_text`, `::test_hllapi_payload_functions_are_not_dumped` | Textual `pin=` values and structurally keyed PINs are redacted at trace, crash ZIP, and Allure boundaries; s3270/HLLAPI diagnostic logs hide typed text. |
+| KAN-469 | KAN-535 / DESKTOP-201 | `tests/framework/test_security_core.py::test_trace_db_never_stores_a_secret`, `::test_crash_dump_zip_never_stores_a_secret`, `::test_allure_text_attachment_is_redacted`; `tests/framework/test_allure_redaction.py`; `tests/framework/test_security_mainframe.py::test_s3270_trace_names_the_action_not_the_typed_text`, `::test_hllapi_payload_functions_are_not_dumped` | Textual PINs and marked secrets are redacted in real Allure result/container JSON, steps, parameters and captured attachments, as well as trace/crash artifacts and mainframe diagnostic logs. |
 | KAN-472 | DESKTOP-203 | `tests/framework/test_security_core.py::test_terminate_skips_when_identity_was_never_recorded`, `::test_terminate_skips_when_current_identity_cannot_be_read` | Cleanup does not terminate a PID unless its recorded creation time can be confirmed. |
 | KAN-473 | DESKTOP-204 | `tests/framework/test_java.py::test_session_is_singleton_and_init_uses_only_trusted_absolute_dll_path`; `tests/framework/test_mainframe.py::test_resolve_hllapi_dll_success_and_failure` | JAB and HLLAPI DLL loading use explicit trusted paths; relative and DLL search-order/PATH fallback is refused. |
 | KAN-475 | DESKTOP-205 | `tests/framework/test_desktop.py::test_cdp_rejects_http_endpoint_owned_by_foreign_pid`; `tests/framework/test_security_core.py::test_verify_cdp_port_owner_rejects_unknown_owner` | A live CDP endpoint is accepted only when its listener PID is known and belongs to the launched process tree. |

@@ -108,6 +108,58 @@ captured stdout/stderr and diagnostic logs remain available after secret
 redaction. A failed screenshot capture does not leave a partial PNG or a
 misleading artifact link.
 
+For Allure, redaction runs before result/container serialization, covering test
+and fixture exception messages, tracebacks, nested steps and parameters or
+labels named by sensitive keys such as `pin`. Captured stdout/stderr is masked
+before attachment. This applies with automatic or explicit plugin loading;
+Allure remains an optional dependency. Test statuses and attachment references
+are preserved.
+
+Sensitive parameter values are also removed from Allure display names with
+default pytest IDs or custom `ids=`, including IDs extracted from nested
+dictionary/list parameters. Captured stdout/stderr uses a snapshot of the
+sensitive parameters taken before fixtures run, so bare printed values are
+masked even without `pin=` or a `Secret` wrapper. Sensitive values added through
+`allure.dynamic.parameter()` also extend this test's redaction context.
+Sensitive dictionary keys are detected inside public parameters too (for example
+`payload={"pin": value, "operation": "public"}`); public siblings stay readable.
+The snapshot includes `Path`, `UUID`, `Decimal` and `Enum` values (including
+enum payloads), also when nested in standard containers. Other custom objects
+must expose a supported scalar representation and use safe `ids=`.
+Values of 1–3 characters are masked as standalone Unicode tokens to preserve
+unrelated words and numbers; sanitize concatenated short secrets explicitly
+or wrap them in `Secret` for unconditional masking.
+With `--junitxml`, the completed XML is sanitized after pytest writes it,
+including test names and captured streams from xdist workers. Publish it only
+after pytest exits normally; forced termination can prevent this final pass.
+Parameter values apply only to their own testcase, including its custom XML
+attributes, so unrelated test names and messages remain intact. Temporary opaque
+properties link reports to testcases and are removed from the finished XML.
+JUnit properties with sensitive names, such as `record_property("password", value)`,
+have their complete `value` masked without requiring `Secret` registration.
+HTML rows and trace SQLite identifiers use per-test masking too. Trace text
+retains its test's sensitive-value context for actions executed on other threads.
+Trace directories and screenshot/video files use opaque random names.
+Verbose terminal and collection displays mask recognized sensitive identifiers;
+xdist start lines wait for the report's parameter snapshot. Pytest's internal IDs
+remain unchanged, including those in its local `.pytest_cache` (do not publish
+that cache). Use safe `ids=` when sharing execution metadata. Direct writes with
+capture disabled (`-s`) are outside pytest terminal-writer redaction.
+
+Direct `allure.attach()` and `allure.attach.file()` calls bypass Dolphin's text
+redaction. Their caller must sanitize the body or file first. For example:
+
+```python
+import allure
+from dolphin_desktop import Secret
+
+allure.attach(f"pin={Secret(pin)}", name="diagnostics", attachment_type=allure.attachment_type.TEXT)
+```
+
+The formatted text contains `pin=***`. Attaching the raw value or a file that
+contains it remains outside automatic redaction, even if the value was
+previously registered through `Secret`.
+
 Redaction applies to text, not screenshot or video pixels. A captured desktop
 can show credentials or other private information, including in windows outside
 the application under test. Limit access to these artifacts and set CI

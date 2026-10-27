@@ -209,10 +209,14 @@ class Secret:
         window.get_by_role("Edit", name="Password").type_text(Secret(pw))
 
     The action receives the real text through :meth:`reveal`; every
-    diagnostic surface — dolphin's logs, ``trace.db``, crash ZIPs, the Allure
-    attachments and the pytest failure text — masks the literal value
+    Dolphin-managed diagnostic surface — logs, ``trace.db``, crash ZIPs, captured
+    Allure stdout/stderr and pytest failure text — masks the literal value
     wherever it appears, regardless of what the variable holding it was
     called. ``str(secret)`` and ``repr(secret)`` never return the value.
+
+    Native ``allure.attach()`` / ``allure.attach.file()`` calls are not
+    intercepted: format this object into the attachment text (which masks it),
+    or sanitize the file before handing it to the Allure SDK.
     """
 
     __slots__ = ("_value",)

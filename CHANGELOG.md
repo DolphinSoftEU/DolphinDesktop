@@ -22,6 +22,50 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* xdist verbose start lines now recognize invocation-relative and name-only
+  test IDs as well as root-relative IDs, preventing sensitive parameter IDs
+  from leaking when pytest runs from a subdirectory (KAN-469 review).
+
+* Sensitive parameter IDs are now masked in fallback HTML, trace SQLite and
+  verbose pytest/collection output without changing execution identities.
+  Artifact filenames use opaque random names. Trace text keeps its owning
+  parameter context for threaded actions; xdist defers start lines until a safe
+  display ID is known (KAN-469 review).
+
+* Sensitive JUnit properties now mask their complete value by property name.
+  Sensitive dictionary keys are detected beneath public pytest/Allure parameter
+  names, protecting custom IDs and captured output while retaining public sibling
+  values (KAN-469 review).
+
+* JUnit parameter redaction is now scoped to each testcase, including custom
+  XML attributes, so one test's sensitive values cannot alter unrelated test
+  names or diagnostics. Temporary opaque properties preserve the association
+  across xdist workers and are removed from the final XML (KAN-469 review).
+
+* Sensitive parameter snapshots now include `Path`, `UUID`, `Decimal` and
+  `Enum` leaves. Completed JUnit XML is sanitized at session finish, including
+  xdist results, without changing pytest execution IDs. Short parameter values
+  (1–3 characters) use token masking to retain readable diagnostics; concatenated
+  short secrets require explicit sanitization (KAN-469 review).
+
+* Sensitive pytest parameter values now also mask bare values in captured
+  stdout/stderr. A shared collector handles nested containers and Allure reprs,
+  so custom IDs extracting a dictionary value are masked too. Values are
+  snapshotted before fixtures mutate them and scoped to the individual test;
+  technical Allure IDs remain unchanged (KAN-469 review).
+
+* Allure redaction now also removes sensitive parameter values repeated in
+  test display names, including default and custom pytest IDs, while preserving
+  technical identifiers and attachment references. Documentation explicitly
+  limits automatic attachment redaction to captured streams; native
+  `allure.attach()` / `allure.attach.file()` payloads must be sanitized by their
+  caller (KAN-469 review).
+
+* Allure results and fixture containers now redact exception messages, traces,
+  nested steps and sensitive parameters before serialization. Captured streams
+  are sanitized before reporters attach them, independently of plugin order;
+  statuses and attachment references remain intact (KAN-469).
+
 * Raise the minimum Pillow version to 13.0.0 and refresh the audited lockfile
   to certifi 2026.10.19, filelock 4.2.1 and virtualenv 21.14.13. These releases
   support Python 3.11–3.13. Minimum-dependency failures now retain their original

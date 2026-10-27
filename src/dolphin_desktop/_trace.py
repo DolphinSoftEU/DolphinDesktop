@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import quote
 
 from ._logging import _redact, get_logger, redact_value
+from ._redaction import _PARAMETER_VALUES, _redact_identifier
 
 _log = get_logger("trace")
 
@@ -189,7 +190,9 @@ class TraceSession:
             raise ValueError(f"Invalid trace mode: {mode!r}")
 
         self.run_id: str = uuid.uuid4().hex[:12]
-        self.test_nodeid = _redact(test_nodeid)
+        current_values = _PARAMETER_VALUES.get()
+        self._parameter_values = current_values if current_values is not None else set()
+        self.test_nodeid = self._redact(test_nodeid)
         self.run_dir = run_dir
         self.mode = mode
 
@@ -217,6 +220,9 @@ class TraceSession:
         )
         self._db.commit()
 
+    def _redact(self, text: str) -> str:
+        return _redact_identifier(text, self._parameter_values)
+
     def record_step(
         self,
         action: str,
@@ -241,10 +247,10 @@ class TraceSession:
         if self.mode == "off":
             return
 
-        action = _redact(action)
-        selector = _redact(selector) if selector is not None else None
+        action = self._redact(action)
+        selector = self._redact(selector) if selector is not None else None
         failed = error is not None
-        error = _redact(error or "Action failed without an error message") if failed else None
+        error = self._redact(error or "Action failed without an error message") if failed else None
 
         with self._lock:
             if self._closed:
@@ -253,7 +259,7 @@ class TraceSession:
             seq = self._seq
         ts = time.time() - self._started_at
         result = "error" if failed else "ok"
-        action = _redact(str(action))
+        action = self._redact(str(action))
         selector = _redact_optional(selector)
         error = _redact_optional(error)
 
@@ -273,6 +279,8 @@ class TraceSession:
                 uia_tree = _dump_uia_tree(element)
             elif self.mode == "always":
                 uia_tree = _dump_uia_tree(element, include_root=True)
+        if uia_tree is not None:
+            uia_tree = self._redact(uia_tree)
 
         try:
             with self._lock:
@@ -313,8 +321,8 @@ class TraceSession:
 
         Never raises — see :meth:`record_step`.
         """
-        error_message = _redact(error_message) if error_message is not None else None
-        error_traceback = _redact(error_traceback) if error_traceback is not None else None
+        error_message = self._redact(error_message) if error_message is not None else None
+        error_traceback = self._redact(error_traceback) if error_traceback is not None else None
         with self._lock:
             if self._closed:
                 return
