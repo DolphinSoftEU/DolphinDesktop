@@ -218,6 +218,31 @@ QML support. CI rebuilds both ABIs in two clean locations and compares them
 to the shipped DLLs without updating the manifest. This verification gates
 package creation and release provenance.
 
+CI provisions MSVC independently of the runner's installed Visual Studio.
+The component ID `Microsoft.VisualStudio.Component.VC.14.50.18.0.x86.x64`
+does not pin a servicing revision: it previously delivered compiler
+19.50.35739 while these DLLs require 19.50.35726. CI now downloads the exact
+compiler, resource, header and CRT VSIX payloads listed in
+`.github/toolchains/msvc.json`, verifies their sizes and SHA-256 values,
+and extracts them into a fresh directory. The payload URLs/hashes originate
+from Microsoft's Visual Studio 18.4.0 catalog; installed runner compilers
+are not used for the Qt build.
+
+For a local reproduction with the same isolated compiler:
+
+```powershell
+uv run --no-sync python .github/scripts/install_msvc.py --destination C:\build-tools\dolphin-msvc
+. .github/scripts/enter_msvc.ps1 -ToolchainRoot C:\build-tools\dolphin-msvc
+```
+
+The Windows SDK 10.0.26100.0 must already be installed. Put the locked
+CMake/Ninja executables from `.venv/Scripts` first on PATH, set
+`DOLPHIN_QT5_ROOT` / `DOLPHIN_QT6_ROOT`, then run
+`.github/scripts/verify_qt_agents.ps1`. The initializer replaces compiler,
+include and library search paths with the downloaded toolchain and checks
+the actual compiler banner. A different compiler revision is still rejected;
+DLL/manifest verification remains required.
+
 The bundled DLLs are `IMAGE_FILE_MACHINE_AMD64` and use the authenticated v2
 start and stop exports. Python refuses to call the legacy unauthenticated
 start export. The manifest records each DLL's protocol, staged source tree,

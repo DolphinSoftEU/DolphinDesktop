@@ -31,17 +31,20 @@ jobs:
       - name: Install locked native build tools
         run: uv sync --locked --only-group native-build --python 3.13
 
-      - name: Install pinned MSVC and Windows SDK components
+      - name: Install Windows SDK component
         shell: pwsh
         run: |
           $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
           $vs = & "$installer\vswhere.exe" -latest -products '*' -property installationPath
           $process = Start-Process "$installer\vs_installer.exe" -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
             'modify', '--installPath', "`"$vs`"", '--quiet', '--norestart',
-            '--add', 'Microsoft.VisualStudio.Component.VC.14.50.18.0.x86.x64',
             '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.26100'
           )
           if ($process.ExitCode -notin @(0, 3010)) { throw "VS install failed: $($process.ExitCode)" }
+
+      - name: Download and verify exact MSVC compiler and CRT payloads
+        shell: pwsh
+        run: uv run --no-sync python .github/scripts/install_msvc.py --destination "$env:RUNNER_TEMP/dolphin-msvc"
 
       - name: Install pinned Qt SDKs
         shell: pwsh
@@ -54,6 +57,7 @@ jobs:
       - name: Compare clean rebuilds to shipped DLLs in two locations
         shell: pwsh
         env:
+          DOLPHIN_MSVC_ROOT: ${{ runner.temp }}\dolphin-msvc
           DOLPHIN_QT5_ROOT: ${{ runner.temp }}\qt\5.15.2\msvc2019_64
           DOLPHIN_QT6_ROOT: ${{ runner.temp }}\qt\6.10.3\msvc2022_64
         run: .github/scripts/verify_qt_agents_ci.ps1

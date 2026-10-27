@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Qt agent CI now downloads hash-pinned MSVC 19.50.35726 compiler and CRT
+  payloads independently of Visual Studio component servicing, preventing
+  compiler 19.50.35739 from being selected for the shipped DLL rebuild
+  (KAN-470 toolchain review).
+
 * Qt agent builds and reproducibility checks now remove temporary directories
   on success and failure while retaining diagnostics. Native request-size
   tests verify limit−1, limit and limit+1 against an explicit
