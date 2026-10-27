@@ -17,6 +17,49 @@ from dolphin_desktop._allure import _PLUGIN_NAME, _AllureRedactor, _redact_item
 from tests._allure_redaction import run_allure_case
 
 
+@pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
+@pytest.mark.parametrize("family", ["xunit1", "xunit2"])
+def test_junit_keeps_unrelated_test_names_and_diagnostics(tmp_path, workers, family):
+    source = """
+import pytest
+
+@pytest.mark.parametrize("pin", ["login"])
+def test_authenticate(pin, request, record_property, record_xml_attribute):
+    assert request.node.nodeid.endswith("test_authenticate[login]")
+    record_property("diagnostic", pin)
+    record_xml_attribute("vendor", pin)
+    print("Authenticating with", pin)
+
+def test_login(record_xml_attribute):
+    record_xml_attribute("vendor", "login")
+    print("public login diagnostic")
+
+@pytest.mark.parametrize("pin", ["SECOND_CANARY_739184"])
+def test_other(pin):
+    print("public login diagnostic")
+    print("Authenticating with", pin)
+"""
+    args = ("-o", "junit_family=" + family)
+    if workers:
+        args += ("-n", "2")
+    case = run_allure_case(
+        tmp_path, "success", "pin", "entry-point", source=source, pytest_args=args
+    )
+    assert case["exit_code"] == 0, case["terminal"]
+    names = {test["name"]: test for test in case["testcases"]}
+    assert set(names) == {"test_authenticate[***]", "test_login", "test_other[***]"}
+    assert "public login diagnostic" in case["junit"]
+    assert "Authenticating with login" not in case["junit"]
+    assert "SECOND_CANARY_739184" not in case["junit"]
+    assert 'name="diagnostic" value="***"' in case["junit"]
+    assert "__dolphin_junit_redaction_token" not in case["junit"]
+    # pytest's record_xml_attribute is local to the writer and is not
+    # transported by xdist. Serial xunit1 exercises its custom attributes.
+    if family == "xunit1" and not workers:
+        assert names["test_authenticate[***]"]["vendor"] == "***"
+        assert names["test_login"]["vendor"] == "login"
+
+
 @pytest.mark.parametrize("kind", ["path", "uuid", "decimal", "enum", "int-enum"])
 @pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
 def test_typed_secrets_are_removed_from_real_allure_and_junit(tmp_path, kind, workers):

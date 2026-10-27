@@ -25,6 +25,7 @@ def test_junit_publication_masks_text_and_preserves_schema_and_verdicts(session)
     )
     report._dolphin_parameter_values = ("739184", "1")
     redactor.pytest_runtest_logreport(report)
+    marker_name, token = report.user_properties[-1]
     hook = redactor.pytest_sessionfinish(session)
     next(hook)
     output = session.config.getoption("xmlpath")
@@ -33,7 +34,8 @@ def test_junit_publication_masks_text_and_preserves_schema_and_verdicts(session)
         '<testsuite tests="1" failures="1" time="1.0">'
         '<testcase name="test_login[739184]" classname="operation" line="1">'
         '<failure message="operation 739184">operation 1 &amp; 739184</failure>tail 739184'
-        '<properties><property name="note" value="739184" /></properties>'
+        '<properties><property name="note" value="739184" />'
+        f'<property name="{marker_name}" value="{token}" /></properties>'
         "</testcase></testsuite>",
         encoding="utf-8",
     )
@@ -46,6 +48,71 @@ def test_junit_publication_masks_text_and_preserves_schema_and_verdicts(session)
     assert "operation *** &amp; ***" in xml
     assert "tail ***" in xml
     assert report.nodeid == "test_login[739184]"
+    assert token not in xml and marker_name not in xml
+
+
+def test_junit_secrets_are_scoped_to_their_test_and_include_custom_attributes(session):
+    redactor = _JUnitRedactor()
+    report = pytest.TestReport(
+        nodeid="test_auth[login]",
+        location=("test_auth.py", 1, "test_auth"),
+        keywords={},
+        outcome="passed",
+        longrepr=None,
+        when="call",
+    )
+    report._dolphin_parameter_values = ("login",)
+    redactor.pytest_runtest_logreport(report)
+    marker_name, token = report.user_properties[-1]
+    hook = redactor.pytest_sessionfinish(session)
+    next(hook)
+    output = session.config.rootpath.joinpath(session.config.getoption("xmlpath"))
+    output.write_text(
+        '<testsuite name="test_login" tests="2" failures="0">'
+        '<testcase name="test_auth[login]" vendor="login" time="1.0">'
+        f'<properties><property name="{marker_name}" value="{token}" /></properties>'
+        '<system-out custom="login" time="login">login</system-out></testcase>'
+        '<testcase name="test_login" vendor="login"><system-out>login</system-out></testcase>'
+        "</testsuite>",
+        encoding="utf-8",
+    )
+    with pytest.raises(StopIteration):
+        next(hook)
+    xml = output.read_text(encoding="utf-8")
+    assert '<testsuite name="test_login" tests="2" failures="0">' in xml
+    assert '<testcase name="test_auth[***]" vendor="***" time="1.0">' in xml
+    assert '<system-out custom="***" time="***">***</system-out>' in xml
+    assert '<testcase name="test_login" vendor="login"><system-out>login</system-out>' in xml
+    assert marker_name not in xml and token not in xml and "<properties" not in xml
+
+
+def test_junit_merges_test_phases_and_reuses_serialized_worker_marker():
+    worker = _JUnitRedactor()
+    controller = _JUnitRedactor()
+    tokens = []
+    for when, values in (("setup", ("EARLY_VALUE",)), ("call", ()), ("teardown", ("LATE_VALUE",))):
+        report = pytest.TestReport(
+            nodeid="test_auth[opaque-id]",
+            location=("test_auth.py", 1, "test_auth"),
+            keywords={},
+            outcome="passed",
+            longrepr=None,
+            when=when,
+        )
+        report._dolphin_parameter_values = values
+        worker.pytest_runtest_logreport(report)
+        token = report._dolphin_junit_token
+        # Report serialization turns tuples into lists. The controller must
+        # retain the worker's opaque identity and not duplicate its property.
+        report.user_properties = [list(prop) for prop in report.user_properties]
+        report.worker_id = "gw0"
+        report.item_index = 0
+        controller.pytest_runtest_logreport(report)
+        assert len(report.user_properties) == 1
+        assert report._dolphin_junit_token == token
+        tokens.append(token)
+    assert len(set(tokens)) == 1
+    assert controller.values[tokens[0]] == {"EARLY_VALUE", "LATE_VALUE"}
 
 
 @pytest.mark.parametrize(

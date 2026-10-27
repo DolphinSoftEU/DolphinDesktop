@@ -234,7 +234,8 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
 def pytest_configure(config: pytest.Config) -> None:
     from ._junit import _JUnitRedactor
 
-    config.pluginmanager.register(_JUnitRedactor(), "dolphin_desktop.junit_redaction")
+    if config.getoption("xmlpath", default=None):
+        config.pluginmanager.register(_JUnitRedactor(), "dolphin_desktop.junit_redaction")
     config.addinivalue_line(
         "markers",
         "dolphin(timeout=..., video_mode=..., headless=...): per-test dolphin config overrides",

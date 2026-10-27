@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* JUnit parameter redaction is now scoped to each testcase, including custom
+  XML attributes, so one test's sensitive values cannot alter unrelated test
+  names or diagnostics. Temporary opaque properties preserve the association
+  across xdist workers and are removed from the final XML (KAN-469 review).
+
 * Sensitive parameter snapshots now include `Path`, `UUID`, `Decimal` and
   `Enum` leaves. Completed JUnit XML is sanitized at session finish, including
   xdist results, without changing pytest execution IDs. Short parameter values

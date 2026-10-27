@@ -132,9 +132,13 @@ secrets into larger words/identifiers: sanitize those strings explicitly, use
 non-sensitive `ids=`, or register a `Secret` for unconditional literal masking.
 
 With `--junitxml`, Dolphin sanitizes the completed XML at session finish,
-after pytest's writer runs and before the pytest process returns. Test names,
-diagnostics and captured streams are masked, also when using xdist. Verdicts,
-counters and timings are preserved. Publish the file only after pytest exits;
+after pytest's writer runs and before the pytest process returns. Each testcase
+is matched to its own sensitive values using a temporary opaque property,
+removed from the finished XML. A parameter in one test does not mask another
+test's name or diagnostics. Test names, diagnostics, captured streams and custom
+attribute values are masked, also when using xdist. Suite-level metadata uses
+ordinary text redaction without applying individual tests' parameter values.
+Verdicts, counters and timings are preserved. Publish the file only after pytest exits;
 an interrupted/killed process may leave the original writer's XML unprocessed.
 Pytest's execution/collection IDs and live verbose output remain unchanged;
 use non-sensitive `ids=` when sharing those outputs.

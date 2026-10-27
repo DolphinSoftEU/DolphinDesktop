@@ -130,6 +130,9 @@ or wrap them in `Secret` for unconditional masking.
 With `--junitxml`, the completed XML is sanitized after pytest writes it,
 including test names and captured streams from xdist workers. Publish it only
 after pytest exits normally; forced termination can prevent this final pass.
+Parameter values apply only to their own testcase, including its custom XML
+attributes, so unrelated test names and messages remain intact. Temporary opaque
+properties link reports to testcases and are removed from the finished XML.
 Pytest collection IDs and live verbose output are unchanged; use non-sensitive
 `ids=` when sharing them.
 

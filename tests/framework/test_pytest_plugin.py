@@ -1061,6 +1061,7 @@ def pytest_sessionfinish(session, exitstatus):
             addinivalue_line=lambda key, value: lines.append((key, value)),
             add_cleanup=cleanups.append,
             pluginmanager=pytest.PytestPluginManager(),
+            getoption=lambda name, default=None: default,
         )
         try:
             plugin.pytest_configure(config)
