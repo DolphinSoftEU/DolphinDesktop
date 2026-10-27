@@ -39,6 +39,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* `tests/sap/test_keyboard_login_live.py` runs the documented SAP GUI 800
+  validation of `SapGui.keyboard_login()` (KAN-577) against a real logon
+  screen: UIA inventory of the login fields, safe rejection when the client
+  exposes none, and, where it does, literal typing of SendKeys metacharacters
+  plus abort on focus starting on Client/Language or moving mid-login.
+  Recorded on SAP GUI 800 (8000.1.15, default options): the logon fields are
+  not UIA controls, `keyboard_login()` refuses without changing any field or
+  submitting, and the Scripting login remains the supported path (see
+  `docs/guides/sap.md`).
+
 * Office macro security tests (KAN-574) now ship pre-built benign macro
   documents (`tests/fixtures/office/benign.xlsm`, `benign.docm`, each with one
   macro that only rewrites a marker inside the document) instead of generating
