@@ -22,6 +22,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* xdist verbose start lines now recognize invocation-relative and name-only
+  test IDs as well as root-relative IDs, preventing sensitive parameter IDs
+  from leaking when pytest runs from a subdirectory (KAN-469 review).
+
 * Sensitive parameter IDs are now masked in fallback HTML, trace SQLite and
   verbose pytest/collection output without changing execution identities.
   Artifact filenames use opaque random names. Trace text keeps its owning

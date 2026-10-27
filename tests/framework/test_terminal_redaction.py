@@ -68,3 +68,45 @@ def test_terminal_redactor_can_run_without_a_terminal_reporter():
     redactor = _TerminalRedactor(lambda item: set())
     redactor.pytest_sessionstart(session)
     assert writer.write is original and not cleanups
+
+
+@pytest.mark.parametrize(
+    "display",
+    [
+        "tests/test_auth.py::test_login[SECRET123]",
+        "test_auth.py::test_login[SECRET123]",
+        "test_login[SECRET123]",
+    ],
+)
+def test_xdist_deferral_recognizes_all_display_forms_and_remains_scoped(display):
+    session, writer, writes, cleanups = terminal_session(workers=True)
+    session.config.cwd_relative_nodeid = lambda nodeid: nodeid.removeprefix("tests/")
+    original = writer.write
+    redactor = _TerminalRedactor(lambda item: set())
+    redactor.pytest_configure(session.config)
+    redactor.pytest_sessionstart(session)
+    nodeid = "tests/test_auth.py::test_login[SECRET123]"
+    start = redactor.pytest_runtest_logstart(nodeid)
+    next(start)
+    writer.write(display)
+    writer.write("unrelated worker progress")
+    with pytest.raises(StopIteration):
+        next(start)
+    report = pytest.TestReport(
+        nodeid=nodeid,
+        location=("tests/test_auth.py", 1, "test_login"),
+        keywords={},
+        outcome="passed",
+        longrepr=None,
+        when="call",
+    )
+    report._dolphin_parameter_values = ("SECRET123",)
+    redactor.pytest_runtest_logreport(report)
+    writer.write("PASSED " + display)
+    assert writes == [
+        ("unrelated worker progress", {}),
+        ("PASSED " + display.replace("SECRET123", "***"), {}),
+    ]
+    assert report.nodeid == nodeid
+    cleanups[0]()
+    assert writer.write is original

@@ -151,9 +151,12 @@ def run_allure_case(
     source: str = CHILD,
     canary: str | None = None,
     pytest_args: tuple[str, ...] = (),
+    invocation_subdir: str | None = None,
 ) -> dict[str, Any]:
     """Return the terminal output and on-disk JSON/attachments from a child pytest run."""
-    child = directory / "test_allure_case.py"
+    invocation_dir = directory / invocation_subdir if invocation_subdir else directory
+    invocation_dir.mkdir(parents=True, exist_ok=True)
+    child = invocation_dir / "test_allure_case.py"
     child.write_text(source, encoding="utf-8")
     if canary is None:
         canary = "KAN469_" + uuid.uuid4().hex
@@ -191,7 +194,7 @@ def run_allure_case(
             "junit_logging=all",
             *pytest_args,
         ],
-        cwd=directory,
+        cwd=invocation_dir,
         env=environment,
         capture_output=True,
         text=True,

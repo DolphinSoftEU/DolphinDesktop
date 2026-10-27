@@ -11,6 +11,11 @@ from ._logging import _redact
 from ._redaction import _redact_identifier
 
 
+def _display_identifiers(nodeid: str, config: pytest.Config) -> tuple[str, str, str]:
+    """Use the same root-relative, invocation-relative and name-only display forms."""
+    return nodeid, config.cwd_relative_nodeid(nodeid), nodeid.rsplit("::", 1)[-1]
+
+
 class _TerminalRedactor:
     def __init__(self, parameter_values: Callable[[pytest.Item], set[str]]) -> None:
         self.parameter_values = parameter_values
@@ -18,7 +23,7 @@ class _TerminalRedactor:
         self._deferred_nodeid: str | None = None
 
     def _remember(self, nodeid: str, values: set[str], config: pytest.Config) -> None:
-        for identifier in (nodeid, config.cwd_relative_nodeid(nodeid), nodeid.rsplit("::", 1)[-1]):
+        for identifier in _display_identifiers(nodeid, config):
             safe = _redact_identifier(identifier, values)
             if safe != identifier:
                 self.identifiers[identifier] = safe
@@ -40,7 +45,10 @@ class _TerminalRedactor:
         original = writer.write
 
         def write(text: str, **kwargs: Any) -> None:
-            if self._deferred_nodeid is not None and self._deferred_nodeid in text:
+            if self._deferred_nodeid is not None and any(
+                identifier in text
+                for identifier in _display_identifiers(self._deferred_nodeid, self.config)
+            ):
                 return
             original(self.redact(text), **kwargs)
 

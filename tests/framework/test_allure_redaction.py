@@ -17,6 +17,49 @@ from dolphin_desktop._allure import _PLUGIN_NAME, _AllureRedactor, _redact_item
 from tests._allure_redaction import inspect_dolphin_artifacts, run_allure_case
 
 
+@pytest.mark.parametrize("invocation_subdir", ["tests", "tests/nested"])
+@pytest.mark.parametrize("phase", ["success", "call", "teardown"])
+def test_xdist_verbose_subdirectory_start_does_not_publish_sensitive_id(
+    tmp_path, invocation_subdir, phase
+):
+    source = """
+import os
+import pytest
+
+@pytest.fixture
+def cleanup(pin):
+    yield
+    if os.environ["KAN469_PHASE"] == "teardown":
+        raise RuntimeError("cleanup " + pin)
+
+@pytest.mark.parametrize("pin", [os.environ["KAN469_CANARY"]], ids=lambda value: "case-" + value)
+def test_login(pin, cleanup, request):
+    assert request.node.nodeid.startswith("tests/")
+    assert request.node.nodeid.endswith("[case-" + pin + "]")
+    if os.environ["KAN469_PHASE"] == "call":
+        raise RuntimeError("authentication " + pin)
+
+def test_public():
+    assert True
+"""
+    case = run_allure_case(
+        tmp_path,
+        phase,
+        "pin",
+        "entry-point",
+        source=source,
+        canary="SECRET123",
+        pytest_args=("-vv", "-n", "2"),
+        invocation_subdir=invocation_subdir,
+    )
+    assert case["exit_code"] == (0 if phase == "success" else 1), case["terminal"]
+    assert case["canary"] not in case["terminal"], case["terminal"]
+    assert "test_allure_case.py::test_login[case-***]" in case["terminal"]
+    assert "PASSED test_allure_case.py::test_public" in case["terminal"]
+    assert case["canary"] not in case["junit"]
+    assert not case["leaks"], case["leaks"]
+
+
 def test_verbose_collection_masks_sensitive_identifiers(tmp_path):
     source = """
 import os
