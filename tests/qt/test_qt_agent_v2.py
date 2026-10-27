@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import json
 import subprocess
 import sys
 import threading
@@ -12,7 +13,7 @@ from importlib.util import find_spec
 
 import pytest
 
-from dolphin_desktop import Desktop, QtAgentRpcError, sleep
+from dolphin_desktop import Desktop, QtAgentRpcError, QtAgentTimeoutError, sleep
 from dolphin_desktop._qt_inject import QtAgentClient, _AgentStartConfig, _start_agent
 from tests.qt._qt_helpers import (
     QT5_SCRIPT,
@@ -23,6 +24,79 @@ from tests.qt._qt_helpers import (
 )
 
 pytestmark = pytest.mark.qt_agent
+
+
+def _private_bytes(pid: int) -> int:
+    class MemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wt.DWORD),
+            ("page_faults", wt.DWORD),
+            *[
+                (name, ctypes.c_size_t)
+                for name in (
+                    "peak_working_set",
+                    "working_set",
+                    "peak_paged_pool",
+                    "paged_pool",
+                    "peak_nonpaged_pool",
+                    "nonpaged_pool",
+                    "pagefile",
+                    "peak_pagefile",
+                    "private",
+                )
+            ],
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+    kernel32.OpenProcess.restype = wt.HANDLE
+    kernel32.CloseHandle.argtypes = [wt.HANDLE]
+    psapi.GetProcessMemoryInfo.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD]
+    psapi.GetProcessMemoryInfo.restype = wt.BOOL
+    handle = kernel32.OpenProcess(0x0400 | 0x0010, False, pid)
+    assert handle, ctypes.WinError(ctypes.get_last_error())
+    try:
+        counters = MemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        assert psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
+        return counters.private
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@pytest.mark.timeout(90)
+@pytest.mark.parametrize(
+    ("binding", "version", "script", "title"),
+    [("PyQt5", "5", QT5_SCRIPT, QT5_WINDOW_TITLE), ("PySide6", "6", QT6_SCRIPT, QT6_WINDOW_TITLE)],
+    ids=["qt5", "qt6"],
+)
+def test_native_oversized_requests_recover_without_memory_growth(binding, version, script, title):
+    """Bypass Python validation: oversized raw bytes must reach the native server."""
+    assert find_spec(binding) is not None
+    app, _window = launch_demo(Desktop(), script, title)
+    try:
+        agent = app.qt_agent
+        assert agent.ping() == "pong"
+        header = json.dumps({"id": 1000, "op": "ping", "auth": agent._auth_token})
+        raw = header[:-1].encode() + b',"padding":"' + b"x" * (8 * 1024 * 1024) + b'"}\n'
+        samples = []
+        for _ in range(6):
+            with pytest.raises(QtAgentRpcError) as rejected:
+                agent._write_line(raw)
+                agent._read_line(time.monotonic() + 5, "raw oversized request")
+            assert not isinstance(rejected.value, QtAgentTimeoutError), (
+                "A timeout does not prove native oversized-request rejection"
+            )
+            assert agent.reattach().ping() == "pong"
+            samples.append(_private_bytes(agent.pid))
+        print(f"Qt{version} private bytes after oversized requests: {samples}")
+        # Allow allocator warmup, then reject retained growth proportional to
+        # the 8 MiB request across the four remaining repetitions.
+        assert max(samples[2:]) - min(samples[2:]) < 4 * 1024 * 1024
+    finally:
+        app.kill()
+
 
 _TOKEN_QUERY = 0x0008
 _TOKEN_DUPLICATE = 0x0002

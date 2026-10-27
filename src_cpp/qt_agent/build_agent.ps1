@@ -1,13 +1,23 @@
+#requires -Version 7.0
 # Shared, pinned Qt agent build. Run from an x64 MSVC developer shell.
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('5', '6')]
     [string]$QtMajor,
     [Parameter(Mandatory = $true)]
-    [string]$QtRoot
+    [string]$QtRoot,
+    [switch]$Verify
 )
 
 $ErrorActionPreference = 'Stop'
+foreach ($name in @('CL', '_CL_', 'LINK', '_LINK_', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS')) {
+    if (Test-Path "Env:$name") { throw "Remove build override $name before building" }
+}
+if ($env:VCToolsVersion -ne '14.50.35717' -or
+    $env:WindowsSDKVersion.TrimEnd('\') -ne '10.0.26100.0' -or
+    $env:VSCMD_ARG_TGT_ARCH -ne 'x64') {
+    throw 'Use vcvars64.bat 10.0.26100.0 -vcvars_ver=14.50.35717'
+}
 if (-not (Test-Path -LiteralPath $QtRoot -PathType Container)) {
     throw "Qt $QtMajor SDK not found: $QtRoot"
 }
@@ -40,6 +50,12 @@ $cmake = Get-Command cmake.exe -ErrorAction SilentlyContinue
 $ninja = Get-Command ninja.exe -ErrorAction SilentlyContinue
 if ($null -eq $cmake) { throw 'cmake.exe is missing from PATH' }
 if ($null -eq $ninja) { throw 'ninja.exe is missing from PATH' }
+if ((& $cmake.Source --version | Select-Object -First 1) -cne 'cmake version 3.31.10') {
+    throw 'Expected CMake 3.31.10'
+}
+if ((& $ninja.Source --version) -cne '1.11.1.git.kitware.jobserver-1') {
+    throw 'Expected Ninja from PyPI ninja==1.11.1.4'
+}
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $sourceStatus = @(& git -C $repoRoot status --porcelain --untracked-files=all -- src_cpp/qt_agent)
@@ -65,13 +81,17 @@ if ($sourceTree -notmatch '^[0-9a-f]{40}$') {
 }
 
 $buildDir = Join-Path $env:TEMP "dolphin-qt-agent-qt$QtMajor-$sourceTree-$([guid]::NewGuid().ToString('N'))"
+$outputDir = Join-Path $buildDir 'output'
 $cmakeArgs = @(
     '-S', $PSScriptRoot,
     '-B', $buildDir,
     '-G', 'Ninja',
     "-DCMAKE_MAKE_PROGRAM=$($ninja.Source)",
     "-DCMAKE_PREFIX_PATH=$QtRoot",
+    "-DDOLPHIN_QT_SDK_ROOT=$QtRoot",
     "-DDOLPHIN_QT_MAJOR=$QtMajor",
+    "-DDOLPHIN_AGENT_OUTPUT_DIR=$outputDir",
+    '-DCMAKE_SYSTEM_VERSION=10.0.26100.0',
     '-DCMAKE_BUILD_TYPE=Release'
 )
 & $cmake.Source @cmakeArgs
@@ -80,7 +100,7 @@ if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (exit $LASTEXITCODE)" }
 if ($LASTEXITCODE -ne 0) { throw "Qt agent build failed (exit $LASTEXITCODE)" }
 
 $dllName = "dolphin_qt${QtMajor}_agent.dll"
-$dllPath = Join-Path $repoRoot "src\dolphin_desktop\_qt_agent\$dllName"
+$dllPath = Join-Path $outputDir $dllName
 if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
     throw "Build completed without producing $dllPath"
 }
@@ -102,7 +122,27 @@ $entry = [pscustomobject][ordered]@{
     source_tree = $sourceTree
     qt_version = $expected.Qt
     msvc_toolset = $expected.MsvcLabel
+    vc_tools_version = $env:VCToolsVersion
+    windows_sdk = $env:WindowsSDKVersion.TrimEnd('\')
+    cmake_version = '3.31.10'
+    ninja_version = '1.11.1.git.kitware.jobserver-1'
 }
+if ($Verify) {
+    $shippedPath = Join-Path $repoRoot "src\dolphin_desktop\_qt_agent\$dllName"
+    $shippedHash = (Get-FileHash -LiteralPath $shippedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $record = $manifest.$dllName
+    foreach ($field in $entry.PSObject.Properties.Name) {
+        if ($record.$field -cne $entry.$field) {
+            throw "$dllName reproducibility failed: manifest $field=$($record.$field), rebuild=$($entry.$field)"
+        }
+    }
+    if ($shippedHash -cne $hash) {
+        throw "$dllName reproducibility failed: shipped=$shippedHash, rebuild=$hash"
+    }
+    Write-Host "Verified shipped $dllName against source tree $sourceTree : $hash" -ForegroundColor Green
+    return
+}
+Copy-Item -LiteralPath $dllPath -Destination (Join-Path $repoRoot "src\dolphin_desktop\_qt_agent\$dllName")
 $manifest | Add-Member -NotePropertyName $dllName -NotePropertyValue $entry -Force
 $manifestJson = $manifest | ConvertTo-Json -Depth 5
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)

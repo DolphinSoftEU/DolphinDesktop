@@ -27,6 +27,17 @@ def load(name: str) -> dict:
     return yaml.load((WORKFLOWS / name).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
 
+def test_native_reproducibility_is_required_before_packaging() -> None:
+    jobs = load("ci.yml")["jobs"]
+    assert "qt-agent-reproducibility" in jobs["package"]["needs"]
+    job = jobs["qt-agent-reproducibility"]
+    assert "if" not in job and "continue-on-error" not in job
+    check = next(step for step in job["steps"] if "two locations" in step.get("name", ""))
+    assert "if" not in check and "continue-on-error" not in check
+    assert check["run"] == ".github/scripts/verify_qt_agents_ci.ps1"
+    assert "ref" not in job["steps"][0].get("with", {})
+
+
 @pytest.mark.parametrize("name", ["ci.yml", "docs.yml", "release.yml"])
 def test_permissions_and_immutable_actions(name: str) -> None:
     workflow = load(name)

@@ -10,18 +10,18 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # reproduce both shipped ABIs without depending on package search order.
 set(DOLPHIN_QT_MAJOR "" CACHE STRING "Qt major version to build (5 or 6)")
 if(DOLPHIN_QT_MAJOR STREQUAL "5")
-    find_package(Qt5 REQUIRED COMPONENTS Core Widgets)
+    find_package(Qt5 5.15.2 EXACT REQUIRED COMPONENTS Core Widgets)
     set(QT_VERSION_MAJOR 5)
 elseif(DOLPHIN_QT_MAJOR STREQUAL "6")
-    find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+    find_package(Qt6 6.10.3 EXACT REQUIRED COMPONENTS Core Widgets)
     set(QT_VERSION_MAJOR 6)
 else()
     find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets)
 endif()
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets Network)
 
-# Qml / Quick are optional — only needed when we want QML introspection.
-find_package(Qt${QT_VERSION_MAJOR} OPTIONAL_COMPONENTS Qml Quick)
+# Shipped builds must not silently lose QML support on a smaller SDK.
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Qml Quick)
 
 set(AGENT_NAME "dolphin_qt${QT_VERSION_MAJOR}_agent")
 
@@ -60,8 +60,16 @@ if(WIN32)
         NOMINMAX=1
     )
     if(MSVC)
-        target_compile_options(${AGENT_NAME} PRIVATE /Brepro)
-        target_link_options(${AGENT_NAME} PRIVATE /Brepro)
+        # Qt headers expand __FILE__ even in Release builds. Normalize source,
+        # generated source and SDK paths before they reach object files.
+        set(DOLPHIN_QT_SDK_ROOT "" CACHE PATH "Root of the pinned Qt SDK")
+        target_compile_options(${AGENT_NAME} PRIVATE /Brepro /experimental:deterministic
+            "/pathmap:${CMAKE_SOURCE_DIR}=dolphin/qt_agent"
+            "/pathmap:${CMAKE_BINARY_DIR}=dolphin/build"
+            "/pathmap:${DOLPHIN_QT_SDK_ROOT}=dolphin/qt-sdk"
+        )
+        target_link_options(${AGENT_NAME} PRIVATE /Brepro /INCREMENTAL:NO
+            "/PDBALTPATH:${AGENT_NAME}.pdb")
     endif()
 endif()
 

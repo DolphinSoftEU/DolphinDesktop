@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Qt agent DLLs now reproduce across checkout and Qt SDK paths. Native build
+  inputs are pinned, and CI compares clean Qt5/Qt6 rebuilds with the shipped
+  binaries and manifest before packaging or release (KAN-470). Real-agent
+  regressions also cover repeated oversized requests and retained memory.
+
 * xdist verbose start lines now recognize invocation-relative and name-only
   test IDs as well as root-relative IDs, preventing sensitive parameter IDs
   from leaking when pytest runs from a subdirectory (KAN-469 review).

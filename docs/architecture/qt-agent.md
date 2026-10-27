@@ -212,6 +212,11 @@ The C++ source and pinned build scripts are in `src_cpp/qt_agent/`. The scripts
 build the Qt 5.15.2 and Qt 6.10.3 variants with MSVC 19.50.35726, verify the v2
 start/stop exports, and record the staged source tree, toolchain, size and
 SHA-256 in `agent_manifest.json`.
+The build also pins Windows SDK 10.0.26100.0, CMake 3.31.10 and the Ninja
+1.11.1.4 PyPI distribution, normalizes source/build/Qt SDK paths, and requires
+QML support. CI rebuilds both ABIs in two clean locations and compares them
+to the shipped DLLs without updating the manifest. This verification gates
+package creation and release provenance.
 
 The bundled DLLs are `IMAGE_FILE_MACHINE_AMD64` and use the authenticated v2
 start and stop exports. Python refuses to call the legacy unauthenticated
