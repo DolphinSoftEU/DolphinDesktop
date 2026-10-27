@@ -39,6 +39,18 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Office macro security tests (KAN-574) now ship pre-built benign macro
+  documents (`tests/fixtures/office/benign.xlsm`, `benign.docm`, each with one
+  macro that only rewrites a marker inside the document) instead of generating
+  them through the VBA project object model, which Office refuses unless the
+  operator trusts VBA project access. The negative test (default `open()` does
+  not run the macro) and its positive control therefore run with Office's
+  default security settings. `tests/fixtures/office/make_macro_fixtures.py`
+  documents how the files were produced. The Word OLE-link fixture inserts the
+  LINK field as an empty field with its full code, because asking Word for a
+  LINK field directly builds the OLE object inside `Fields.Add`, which can take
+  a minute or never return; the two link tests allow 300 s for OLE activation.
+
 * xdist verbose start lines now recognize invocation-relative and name-only
   test IDs as well as root-relative IDs, preventing sensitive parameter IDs
   from leaking when pytest runs from a subdirectory (KAN-469 review).

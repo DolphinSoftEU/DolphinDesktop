@@ -27,11 +27,18 @@ def test_default_open_blocks_macro_after_positive_control(office_macro_document)
         assert _marker(app) == "macro-not-run"
 
 
+# Resolving an OLE link starts an out-of-process Office server; on a cold or
+# slow machine a single activation can take close to a minute.
+_LINK_TIMEOUT = pytest.mark.timeout(300)
+
+
+@_LINK_TIMEOUT
 def test_default_open_keeps_cached_external_link_value(excel_link_document):
     with ExcelApp.open(excel_link_document, visible=False) as app:
         assert app.active_workbook.sheet(1).cell(1, 1).value == "cached-value"
 
 
+@_LINK_TIMEOUT
 def test_word_default_open_keeps_cached_ole_link_value(word_link_document):
     with WordApp.open(word_link_document, visible=False) as app:
         assert app.active_document.text.strip() == "cached-value"
