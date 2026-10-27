@@ -13,6 +13,31 @@ def session(tmp_path):
     return junit_session(tmp_path)
 
 
+def test_junit_properties_use_their_original_name_and_keep_test_ownership(session):
+    hook = _JUnitRedactor().pytest_sessionfinish(session)
+    next(hook)
+    output = session.config.rootpath.joinpath(session.config.getoption("xmlpath"))
+    output.write_text(
+        '<testsuite><properties><property name="password" value="SUITE_CANARY" />'
+        '<property name="operation" value="public-operation" /></properties>'
+        '<testcase name="test_login">'
+        '<properties><property name="password" value="TEST_CANARY" />'
+        '<property name="operation" value="public-operation" /></properties>'
+        "<system-out>TEST_CANARY public-operation</system-out></testcase>"
+        '<testcase name="test_unrelated"><system-out>TEST_CANARY</system-out></testcase>'
+        "</testsuite>",
+        encoding="utf-8",
+    )
+    with pytest.raises(StopIteration):
+        next(hook)
+    xml = output.read_text(encoding="utf-8")
+    assert "SUITE_CANARY" not in xml
+    assert xml.count('name="password" value="***"') == 2
+    assert xml.count('name="operation" value="public-operation"') == 2
+    assert "<system-out>*** public-operation</system-out>" in xml
+    assert '<testcase name="test_unrelated"><system-out>TEST_CANARY</system-out>' in xml
+
+
 def test_junit_publication_masks_text_and_preserves_schema_and_verdicts(session):
     redactor = _JUnitRedactor()
     report = pytest.TestReport(

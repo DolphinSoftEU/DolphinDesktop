@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Sensitive JUnit properties now mask their complete value by property name.
+  Sensitive dictionary keys are detected beneath public pytest/Allure parameter
+  names, protecting custom IDs and captured output while retaining public sibling
+  values (KAN-469 review).
+
 * JUnit parameter redaction is now scoped to each testcase, including custom
   XML attributes, so one test's sensitive values cannot alter unrelated test
   names or diagnostics. Temporary opaque properties preserve the association

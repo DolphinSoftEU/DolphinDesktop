@@ -121,6 +121,8 @@ dictionary/list parameters. Captured stdout/stderr uses a snapshot of the
 sensitive parameters taken before fixtures run, so bare printed values are
 masked even without `pin=` or a `Secret` wrapper. Sensitive values added through
 `allure.dynamic.parameter()` also extend this test's redaction context.
+Sensitive dictionary keys are detected inside public parameters too (for example
+`payload={"pin": value, "operation": "public"}`); public siblings stay readable.
 The snapshot includes `Path`, `UUID`, `Decimal` and `Enum` values (including
 enum payloads), also when nested in standard containers. Other custom objects
 must expose a supported scalar representation and use safe `ids=`.
@@ -133,6 +135,8 @@ after pytest exits normally; forced termination can prevent this final pass.
 Parameter values apply only to their own testcase, including its custom XML
 attributes, so unrelated test names and messages remain intact. Temporary opaque
 properties link reports to testcases and are removed from the finished XML.
+JUnit properties with sensitive names, such as `record_property("password", value)`,
+have their complete `value` masked without requiring `Secret` registration.
 Pytest collection IDs and live verbose output are unchanged; use non-sensitive
 `ids=` when sharing them.
 

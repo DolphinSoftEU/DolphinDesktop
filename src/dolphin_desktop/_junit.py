@@ -10,7 +10,8 @@ from xml.etree import ElementTree
 
 import pytest
 
-from ._redaction import _redact_with_values
+from ._logging import is_sensitive_key
+from ._redaction import _redact_with_values, _sensitive_values
 
 _TEST_TOKEN_PROPERTY = "__dolphin_junit_redaction_token"
 _CONTROL_ATTRIBUTES = {
@@ -35,10 +36,15 @@ def _redact_xml(
                 if prop.get("name") == _TEST_TOKEN_PROPERTY and token in values:
                     own_values.update(values[token])
                     properties.remove(prop)
+                elif is_sensitive_key(prop.get("name")):
+                    own_values.update(_sensitive_values(prop.get("value", ""), serialized=True))
             if not len(properties):
                 element.remove(properties)
         secrets = tuple(sorted(own_values, key=len, reverse=True))
     protected = _CONTROL_ATTRIBUTES.get(element.tag, frozenset())
+    if element.tag == "property" and is_sensitive_key(element.get("name")):
+        if "value" in element.attrib:
+            element.set("value", "***")
     for name, value in list(element.attrib.items()):
         if name not in protected:
             element.set(name, _redact_with_values(value, secrets))

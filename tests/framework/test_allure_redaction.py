@@ -17,6 +17,98 @@ from dolphin_desktop._allure import _PLUGIN_NAME, _AllureRedactor, _redact_item
 from tests._allure_redaction import run_allure_case
 
 
+def test_allure_model_finds_nested_keys_without_a_pytest_parameter_context():
+    from dolphin_desktop._redaction import _PARAMETER_VALUES
+
+    token = _PARAMETER_VALUES.set(None)
+    try:
+        result = AllureResult(
+            name="test_login[739184]",
+            parameters=[
+                Parameter(
+                    name="payload",
+                    value=repr({"items": [{"pin": "739184", "operation": "public-operation"}]}),
+                )
+            ],
+        )
+        _redact_item(result)
+        assert result.name == "test_login[***]"
+        assert "739184" not in result.parameters[0].value
+        assert "public-operation" in result.parameters[0].value
+    finally:
+        _PARAMETER_VALUES.reset(token)
+
+
+@pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
+@pytest.mark.parametrize("dynamic", [False, True], ids=["pytest-parameter", "allure-dynamic"])
+def test_nested_sensitive_keys_protect_artifacts_without_masking_public_fields(
+    tmp_path, workers, dynamic
+):
+    source = """
+import os
+import sys
+import allure
+import pytest
+
+payload = {"items": [{"pin": os.environ["KAN469_CANARY"], "operation": "public-operation"}]}
+
+@pytest.mark.parametrize("payload", [payload], ids=lambda data: data["items"][0]["pin"])
+def test_login(payload):
+    print("Authenticating with", payload["items"][0]["pin"])
+    print("stderr", payload["items"][0]["pin"], file=sys.stderr)
+    print(payload["items"][0]["operation"])
+"""
+    if dynamic:
+        source = source.replace(
+            '@pytest.mark.parametrize("payload", [payload], '
+            'ids=lambda data: data["items"][0]["pin"])\ndef test_login(payload):',
+            'def test_login():\n    allure.dynamic.parameter("payload", payload)\n'
+            '    allure.dynamic.title("test_login[" + payload["items"][0]["pin"] + "]")',
+        )
+    case = run_allure_case(
+        tmp_path,
+        "success",
+        "pin",
+        "entry-point",
+        source=source,
+        pytest_args=("-n", "2") if workers else (),
+    )
+    assert case["exit_code"] == 0, case["terminal"]
+    assert not case["leaks"], case["leaks"]
+    assert case["canary"] not in case["junit"]
+    assert "public-operation" in case["junit"]
+    results = [value for name, value in case["documents"].items() if name.endswith("-result.json")]
+    assert results[0]["name"] == "test_login[***]"
+    parameter = next(value for value in results[0]["parameters"] if value["name"] == "payload")
+    assert "public-operation" in parameter["value"] and "***" in parameter["value"]
+    attachments = "\n".join(case["attachments"].values())
+    assert "Authenticating with ***" in attachments and "stderr ***" in attachments
+    assert "public-operation" in attachments
+
+
+@pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
+@pytest.mark.parametrize("family", ["xunit1", "xunit2"])
+def test_sensitive_record_property_values_are_masked_in_real_junit(tmp_path, workers, family):
+    source = """
+import os
+
+def test_login(record_property):
+    record_property("password", os.environ["KAN469_CANARY"])
+    record_property("operation", "public-operation")
+
+def test_unrelated(record_property):
+    record_property("operation", "public-operation")
+"""
+    args = ("-o", "junit_family=" + family) + (("-n", "2") if workers else ())
+    case = run_allure_case(
+        tmp_path, "success", "pin", "entry-point", source=source, pytest_args=args
+    )
+    assert case["exit_code"] == 0, case["terminal"]
+    assert case["canary"] not in case["junit"]
+    assert 'name="password" value="***"' in case["junit"]
+    assert case["junit"].count('name="operation" value="public-operation"') == 2
+
+
 @pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
 @pytest.mark.parametrize("family", ["xunit1", "xunit2"])
 def test_junit_keeps_unrelated_test_names_and_diagnostics(tmp_path, workers, family):

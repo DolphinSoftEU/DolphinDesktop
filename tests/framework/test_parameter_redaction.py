@@ -8,6 +8,20 @@ from dolphin_desktop._redaction import _redact_with_values, _sensitive_values
 from tests._allure_redaction import typed_parameter_cases
 
 
+def test_public_containers_only_collect_values_below_sensitive_keys():
+    shared = {"code": "739184", "label": "private-label"}
+    payload = {
+        "public": shared,
+        "items": [{"pin": shared, "operation": "visible-operation"}],
+        "attempt": 7,
+    }
+    payload["cycle"] = payload
+    assert _sensitive_values(payload, sensitive=False) == {"739184", "private-label"}
+    assert _sensitive_values({"operation": "visible-operation"}, sensitive=False) == set()
+    serialized = repr({"items": [{"pin": "739184", "label": "visible-operation"}]})
+    assert _sensitive_values(serialized, serialized=True, sensitive=False) == {"739184"}
+
+
 @pytest.mark.parametrize(("value", "expected"), typed_parameter_cases())
 def test_typed_and_nested_enum_payloads_protect_their_display_spellings(value, expected):
     leaves = _sensitive_values(value)

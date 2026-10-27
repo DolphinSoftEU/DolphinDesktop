@@ -110,6 +110,9 @@ statuses, IDs and attachment references retain their original meaning.
 Values of sensitive Allure parameters are also masked when repeated in display
 names, including pytest's default parameter IDs and custom `ids=` strings.
 Sensitive pytest parameters are snapshotted before fixture setup. Their scalar
+leaves are also detected below sensitive dictionary keys inside otherwise public
+parameters, such as `payload={"pin": value, "operation": "public"}`. Only the
+sensitive subtree is collected; public siblings remain readable. These
 leaves, including nested dictionary/list values, also mask captured stdout and
 stderr when printed without a key or `Secret` wrapper. The same values protect
 Allure display names when custom IDs extract a leaf such as `pin["code"]`.
@@ -138,6 +141,10 @@ removed from the finished XML. A parameter in one test does not mask another
 test's name or diagnostics. Test names, diagnostics, captured streams and custom
 attribute values are masked, also when using xdist. Suite-level metadata uses
 ordinary text redaction without applying individual tests' parameter values.
+Sensitive `property` names (for example `password`) mask the entire `value`
+attribute, including `record_property()` and suite-level properties, without
+requiring prior `Secret` registration. Testcase properties also protect repeated
+values inside that same testcase.
 Verdicts, counters and timings are preserved. Publish the file only after pytest exits;
 an interrupted/killed process may leave the original writer's XML unprocessed.
 Pytest's execution/collection IDs and live verbose output remain unchanged;

@@ -37,14 +37,21 @@ def _parameter_values(item: Any, *, depth: int = 0) -> set[str]:
         return set()
     values: set[str] = set()
     if has(type(item)):
-        if is_sensitive_key(getattr(item, "name", None)) and hasattr(item, "value"):
-            values.update(_sensitive_values(item.value, serialized=True))
+        if hasattr(item, "value"):
+            values.update(
+                _sensitive_values(
+                    item.value,
+                    serialized=True,
+                    sensitive=is_sensitive_key(getattr(item, "name", None)),
+                )
+            )
         children = [
             getattr(item, field.name)
             for field in fields(type(item))
             if field.name not in _STRUCTURAL_FIELDS
         ]
     elif isinstance(item, dict):
+        values.update(_sensitive_values(item, sensitive=False))
         children = list(item.values())
     elif isinstance(item, (list, tuple)):
         children = list(item)
@@ -100,8 +107,8 @@ class _AllureRedactor:
     @allure_commons.hookimpl(optionalhook=True)
     def add_parameter(self, name: str, value: Any) -> None:
         current = _PARAMETER_VALUES.get()
-        if current is not None and is_sensitive_key(name):
-            current.update(_sensitive_values(value))
+        if current is not None:
+            current.update(_sensitive_values(value, sensitive=is_sensitive_key(name)))
 
     @allure_commons.hookimpl(hookwrapper=True, tryfirst=True)
     def report_result(self, result: Any) -> Iterator[None]:

@@ -70,8 +70,7 @@ def _item_parameter_values(item: pytest.Item) -> set[str]:
     values: set[str] = set()
     if isinstance(parameters, dict):
         for name, value in parameters.items():
-            if is_sensitive_key(name):
-                values.update(_sensitive_values(value))
+            values.update(_sensitive_values(value, sensitive=is_sensitive_key(name)))
     if isinstance(stash, pytest.Stash):
         stash[_PARAMETER_VALUES_KEY] = values
     return values
