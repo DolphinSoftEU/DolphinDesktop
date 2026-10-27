@@ -177,6 +177,57 @@ with PowerPointApp.open("report.pptx", visible=False) as ppt:
 ```
 
 Slide and shape indexes are 1-based; shapes can also be selected by name.
+
+Text formatting is exposed on shapes and on character ranges, so a test can
+assert how a slide looks, not only what it says:
+
+```python
+title = slide.add_textbox("Revenue up 12%", left=50, top=40, width=500, height=60)
+title.bold = True
+title.font_size = 32
+title.font_color = (200, 0, 0)
+title.characters(12, 3).italic = True  # "12%" only, 1-based positions
+
+assert title.bold is True
+assert title.italic is None            # mixed: part of the box is italic
+assert title.characters(12, 3).italic is True
+assert slide.shape_names == [title.name]
+
+logo = slide.add_picture("logo.png", left=600, top=40)
+assert not logo.has_text and logo.width > 0
+presentation.move_slide(presentation.slide_count, 1)  # bring the last slide first
+```
+
+Formatting reads return `None` when a range mixes values. Pictures are embedded,
+never linked, so the saved file does not depend on the source path.
+
+Tables, charts, speaker notes, layout titles and hyperlinks are covered too:
+
+```python
+slide = presentation.add_slide(layout=11)          # title-only layout
+slide.title = "Q3 by region"
+slide.notes = "Mention the EMEA restatement."
+
+table = slide.add_table(3, 2, values=[["Region", "Revenue"], ["EMEA", 120], ["APAC", 95]])
+assert table.table.values[1] == ["EMEA", "120"]
+table.table.cell(1, 1).bold = True
+
+chart = slide.add_chart(["Q1", "Q2", "Q3"], {"EMEA": [100, 110, 120]}, title="EMEA trend")
+assert chart.chart.series_values("EMEA") == [100.0, 110.0, 120.0]
+
+link = slide.add_textbox("Full report")
+link.hyperlink = "https://example.test/report"
+```
+
+`add_chart()` writes each series as literal arrays on the chart, so the embedded
+Excel workbook is never opened and Excel does not need to be installed. PowerPoint
+only inserts charts into a presentation that has a document window, so build
+chart decks with `create(visible=True)` / `open(visible=True)`; on a hidden
+presentation `add_chart()` raises `RuntimeError` instead of a bare COM error.
+Reading an existing chart works on hidden presentations too. A visible shared
+PowerPoint stays open after `quit()`; pass `exclusive=True` when the test should
+also end the process. To check the exported PDF itself (page count, text), parse it with a
+PDF library in your test. The repository's own live tests do that with `pypdf`.
 `open()` disables VBA macros by default and restores the previous
 `AutomationSecurity` setting after opening, including on failure. As with the
 other Office wrappers, `allow_macros=True` is an explicit opt-in for trusted

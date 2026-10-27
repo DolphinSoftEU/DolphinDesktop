@@ -6,6 +6,23 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ## [Unreleased]
 
+### Added
+
+* PowerPoint facade: text formatting (`bold`, `italic`, `underline`,
+  `font_name`, `font_size`, `font_color`) on shapes and on 1-based character
+  ranges via `PowerPointTextRange` / `characters()`, with `None` reported for
+  mixed formatting; `paragraphs`, `has_text` and shape geometry
+  (`left`/`top`/`width`/`height`); `PowerPointSlide.shapes`, `shape_names` and
+  `add_picture()` (embedded, never linked); `PowerPointPresentation.slides`,
+  `slide_size` and `move_slide()`. Tables (`add_table()`, `PowerPointTable`
+  with cell ranges, `values`, row/column add and delete), charts
+  (`add_chart()` writing literal series arrays, no Excel needed; `PowerPointChart`
+  with type, title, categories and series values), speaker `notes`, layout
+  `title`, text `hyperlink` and `PowerPointPresentation.has_window`.
+  Live PowerPoint tests under
+  `tests/office/test_powerpoint_live.py` (marker `integration`) exercise the
+  whole facade against an installed PowerPoint and skip when it is absent.
+
 ### Breaking changes
 
 * Java Access Bridge now requires an explicitly configured absolute `JAVA_HOME`

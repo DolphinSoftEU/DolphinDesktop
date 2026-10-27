@@ -67,6 +67,18 @@ separately; see the [Support Matrix](../support-matrix.md#office-com-excel-word-
 
 ::: dolphin_desktop._powerpoint.PowerPointShape
 
+## PowerPointTextRange
+
+::: dolphin_desktop._powerpoint.PowerPointTextRange
+
+## PowerPointTable
+
+::: dolphin_desktop._powerpoint.PowerPointTable
+
+## PowerPointChart
+
+::: dolphin_desktop._powerpoint.PowerPointChart
+
 ## OutlookApp
 
 ::: dolphin_desktop._outlook.OutlookApp
