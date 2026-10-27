@@ -152,9 +152,12 @@ PowerPoint is not registered): create/open/connect, slide-shape-text round
 trips, formatting, tables, charts, save/reopen persistence, PDF page count and
 text via `pypdf`, shared-session preservation, exclusive process exit and
 controlled errors for missing files, slides and shapes. DESKTOP-241 (Outlook)
-needs a dedicated MAPI profile with a disposable store and stays in the
-separate `dolphin-desktop.ta` automation repository (`tests/zt_16_office_com`:
-draft folder effects, shared-session preservation, exclusive process exit).
+ships as `tests/office/test_outlook_live.py`: draft create/read/modify/find,
+move between folders, soft and permanent delete with folder effects, MSG
+save/reopen with attachments, appointments, `connect()` to a running Outlook
+without quitting it, exclusive process exit and controlled errors. It needs
+classic Outlook plus a dedicated MAPI profile with one local PST store and no
+account (`tests/fixtures/office/make_outlook_profile.py`), and skips otherwise.
 Repeat UAT independently for Office 2019/Microsoft 365 and x86/x64.
 A missing COM server or Outlook profile is a skip, not a real COM PASS.
 Unit stand-ins in this library do not establish real-stack PASS.

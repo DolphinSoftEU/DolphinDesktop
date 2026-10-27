@@ -297,6 +297,29 @@ opened here; saved drafts/appointments remain saved. Items retrieved from
 existing folders are not automatically closed. Shared Outlook sessions are
 preserved. Failed saves/closes raise and retain the affected items for retry.
 
+### A disposable profile for live tests
+
+`OutlookApp.start()` refuses to run without a configured MAPI profile, and a
+real mailbox is the wrong place for automated drafts. Create a profile that has
+one local Personal Folders file and no account; everything the facade does
+(drafts, folders, move/delete, MSG files, appointments) works offline and
+nothing can be sent:
+
+```text
+uv run python tests/fixtures/office/make_outlook_profile.py
+```
+
+Then start classic Outlook once by hand and finish its welcome wizard with
+"do not connect to an e-mail account" / "use Outlook without an email account".
+From then on `tests/office/test_outlook_live.py` runs against that profile; it
+cleans up every item it creates. Remove the profile in Control Panel, Mail,
+Show Profiles when it is no longer needed.
+
+Permanent deletion goes through a proxy re-fetched by EntryID: on PST stores
+Outlook silently ignores `Delete()` on the proxy that `Move()` returned, so the
+facade re-fetches after every move and verifies that a permanent delete really
+removed the item, raising `RuntimeError` otherwise.
+
 ## Exclusive Office sessions for UAT
 
 `PowerPointApp.create/open(..., exclusive=True)` and

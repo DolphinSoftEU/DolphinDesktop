@@ -41,6 +41,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Outlook `OutlookMail.delete(permanent=True)` now really removes the draft.
+  On PST stores Outlook silently ignores `Delete()` on the item proxy that
+  `Move()` returns, so after each move the facade re-fetches the item by EntryID
+  and after a permanent delete it verifies the item is gone, raising
+  `RuntimeError` when Outlook kept it. Found by the new live suite
+  `tests/office/test_outlook_live.py` (DESKTOP-241: drafts, folders, move and
+  delete effects, MSG round trip with attachments, appointments, `connect()` to
+  a running Outlook, exclusive process exit, controlled errors), which runs
+  against a disposable PST-only MAPI profile created by
+  `tests/fixtures/office/make_outlook_profile.py` and skips without one.
+
 * `tests/sap/test_keyboard_login_live.py` runs the documented SAP GUI 800
   validation of `SapGui.keyboard_login()` (KAN-577) against a real logon
   screen: UIA inventory of the login fields, safe rejection when the client
