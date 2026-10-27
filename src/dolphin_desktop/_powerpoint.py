@@ -437,8 +437,14 @@ class PowerPointSlide(_ComOwner):
         return self._adopt(PowerPointShape(com_shape))
 
     def shape(self, name_or_index: str | int) -> PowerPointShape:
-        """Return a shape by name or 1-based index."""
-        return self._track(self._com.Shapes.Item(name_or_index))
+        """Return a shape by name or 1-based index; LookupError when there is none."""
+        try:
+            com_shape = self._com.Shapes.Item(name_or_index)
+        except Exception as exc:
+            raise LookupError(
+                f"No shape {name_or_index!r} on slide {self.index} (shapes: {self.shape_names})"
+            ) from exc
+        return self._track(com_shape)
 
     @property
     def shapes(self) -> list[PowerPointShape]:
@@ -650,8 +656,14 @@ class PowerPointPresentation(_ComOwner):
         return self._adopt(PowerPointSlide(com_slide))
 
     def slide(self, index: int) -> PowerPointSlide:
-        """Return a slide by 1-based index."""
-        return self._track(self._com.Slides.Item(index))
+        """Return a slide by 1-based index; LookupError when there is none."""
+        try:
+            com_slide = self._com.Slides.Item(index)
+        except Exception as exc:
+            raise LookupError(
+                f"No slide {index} in {self.name!r} ({self.slide_count} slide(s))"
+            ) from exc
+        return self._track(com_slide)
 
     @property
     def slides(self) -> list[PowerPointSlide]:
@@ -762,6 +774,9 @@ class PowerPointApp:
         if not isinstance(allow_macros, bool):
             raise TypeError("allow_macros must be a bool")
         resolved = Path(path).resolve()
+        if not resolved.is_file():
+            # Checked before any COM activation so a typo never starts PowerPoint.
+            raise FileNotFoundError(str(resolved))
         com, session = _start_office(
             _require_win32com(),
             "PowerPoint.Application",

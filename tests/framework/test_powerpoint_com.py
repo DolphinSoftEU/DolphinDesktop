@@ -91,6 +91,7 @@ def test_open_sets_and_restores_security(client, tmp_path, allow_macros, open_fa
 
     com.Presentations.Open.side_effect = open_presentation
     path = tmp_path / "slides.pptx"
+    path.touch()  # open() checks for the file before any COM activation
     if open_fails:
         with pytest.raises(OSError, match="corrupt"):
             PowerPointApp.open(path, visible=False, allow_macros=allow_macros)
@@ -111,6 +112,7 @@ def test_open_rejects_non_bool_before_com_access(client):
 def test_open_rejects_operator_presentation(client, tmp_path):
     com = client.Dispatch.return_value
     path = tmp_path / "operator.pptx"
+    path.touch()
     com.Presentations.Count = 1
     existing = com.Presentations.Item.return_value
     existing.FullName = str(path)
@@ -197,6 +199,7 @@ def test_security_restoration_failure_closes_only_new_document(client, tmp_path)
         side_effect=[2, None, OSError("restore failed")],
     )
     with pytest.raises(OSError, match="restore failed"):
+        (tmp_path / "slides.pptx").touch()
         PowerPointApp.open(tmp_path / "slides.pptx")
     com.Presentations.Open.return_value.Close.assert_called_once_with()
     com.Quit.assert_not_called()
@@ -207,6 +210,7 @@ def test_failed_security_restore_preserves_original_error_if_close_also_fails(cl
     type(com).AutomationSecurity = PropertyMock(side_effect=[2, None, OSError("restore failed")])
     com.Presentations.Open.return_value.Close.side_effect = OSError("close failed")
     with pytest.raises(OSError, match="restore failed"):
+        (tmp_path / "slides.pptx").touch()
         PowerPointApp.open(tmp_path / "slides.pptx")
 
 

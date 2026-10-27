@@ -626,3 +626,29 @@ def test_exported_pdf_has_one_page_per_slide_with_the_slide_text(tmp_path):
     assert len(reader.pages) == len(labels)
     for page, label in zip(reader.pages, labels, strict=True):
         assert label in " ".join((page.extract_text() or "").split())
+
+
+# ---------------------------------------------------------------------------
+# Controlled errors (DESKTOP-240 item 10)
+# ---------------------------------------------------------------------------
+
+
+def test_opening_a_missing_file_fails_before_powerpoint_starts(tmp_path):
+    before = _powerpoint_pids()
+    with pytest.raises(FileNotFoundError):
+        PowerPointApp.open(tmp_path / "does-not-exist.pptx", visible=False)
+    assert _powerpoint_pids() == before
+
+
+def test_missing_slide_and_shape_raise_lookup_errors():
+    with PowerPointApp.create(visible=False) as app:
+        deck = app.active_presentation
+        slide = deck.add_slide()
+        slide.add_textbox("only shape")
+        with pytest.raises(LookupError, match="No slide 5"):
+            deck.slide(5)
+        with pytest.raises(LookupError, match="No shape 'logo'"):
+            slide.shape("logo")
+        with pytest.raises(LookupError, match="No shape 9"):
+            slide.shape(9)
+        assert slide.shape(1).text == "only shape"  # the deck is still usable

@@ -311,3 +311,38 @@ def test_closing_releases_tables_charts_and_cell_ranges():
     assert table._com is None
     assert cell._com is None
     assert chart._com is None
+
+
+# ---------------------------------------------------------------------------
+# Controlled errors (DESKTOP-240 item 10)
+# ---------------------------------------------------------------------------
+
+
+def test_open_missing_file_raises_before_touching_com(monkeypatch, tmp_path):
+    client = MagicMock()
+    monkeypatch.setattr(ppt, "_require_win32com", lambda: client)
+    with pytest.raises(FileNotFoundError):
+        ppt.PowerPointApp.open(tmp_path / "missing.pptx")
+    client.Dispatch.assert_not_called()
+
+
+def test_missing_shape_and_slide_raise_lookup_error():
+    slide_com = MagicMock(SlideIndex=2)
+    slide_com.Shapes.Count = 1
+    caption = MagicMock(Name="caption")
+
+    def item(key):
+        if key == 1:
+            return caption
+        raise Exception("not found")
+
+    slide_com.Shapes.Item.side_effect = item
+    slide = ppt.PowerPointSlide(slide_com)
+    with pytest.raises(LookupError, match="No shape 'logo' on slide 2"):
+        slide.shape("logo")
+
+    deck_com = MagicMock(Name="deck.pptx")
+    deck_com.Slides.Count = 1
+    deck_com.Slides.Item.side_effect = Exception("not found")
+    with pytest.raises(LookupError, match=r"No slide 7 in 'deck.pptx'"):
+        ppt.PowerPointPresentation(deck_com).slide(7)

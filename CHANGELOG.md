@@ -14,7 +14,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   mixed formatting; `paragraphs`, `has_text` and shape geometry
   (`left`/`top`/`width`/`height`); `PowerPointSlide.shapes`, `shape_names` and
   `add_picture()` (embedded, never linked); `PowerPointPresentation.slides`,
-  `slide_size` and `move_slide()`. Tables (`add_table()`, `PowerPointTable`
+  `slide_size` and `move_slide()`. `PowerPointApp.open()` raises
+  `FileNotFoundError` before starting PowerPoint, and `slide()` / `shape()`
+  raise `LookupError` naming what exists. Tables (`add_table()`, `PowerPointTable`
   with cell ranges, `values`, row/column add and delete), charts
   (`add_chart()` writing literal series arrays, no Excel needed; `PowerPointChart`
   with type, title, categories and series values), speaker `notes`, layout
