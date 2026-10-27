@@ -4,8 +4,25 @@ from __future__ import annotations
 
 import pytest
 
-from dolphin_desktop._redaction import _redact_with_values, _sensitive_values
+from dolphin_desktop._redaction import (
+    _PARAMETER_VALUES,
+    _redact_identifier,
+    _redact_with_values,
+    _sensitive_values,
+)
 from tests._allure_redaction import typed_parameter_cases
+
+
+def test_display_identifier_uses_only_the_selected_parameter_context():
+    nodeid = "test_login[739184]"
+    token = _PARAMETER_VALUES.set(None)
+    try:
+        assert _redact_identifier(nodeid) == nodeid
+        _PARAMETER_VALUES.set({"739184"})
+        assert _redact_identifier(nodeid) == "test_login[***]"
+        assert _redact_identifier(nodeid, set()) == nodeid
+    finally:
+        _PARAMETER_VALUES.reset(token)
 
 
 def test_public_containers_only_collect_values_below_sensitive_keys():

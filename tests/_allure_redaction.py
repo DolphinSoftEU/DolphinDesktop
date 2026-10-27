@@ -4,15 +4,66 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import uuid
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from xml.etree import ElementTree
+
+
+def inspect_dolphin_artifacts(directory: Path, canary: str) -> dict[str, Any]:
+    leaks = []
+    runs = []
+    html = []
+    for path in directory.rglob("*"):
+        # pytest's execution cache deliberately retains original node IDs
+        # for selection/--lf. It is not a Dolphin report or publishable output.
+        if ".pytest_cache" in path.relative_to(directory).parts:
+            continue
+        if canary in str(path.relative_to(directory)):
+            leaks.append(str(path.relative_to(directory)))
+        if not path.is_file():
+            continue
+        if canary.encode() in path.read_bytes():
+            leaks.append(str(path.relative_to(directory)))
+        if path.suffix == ".db":
+            with closing(sqlite3.connect(path)) as connection:
+                runs.extend(connection.execute("SELECT test_nodeid, status FROM runs").fetchall())
+        if path.suffix == ".html":
+            html.append(path.read_text(encoding="utf-8"))
+        if zipfile.is_zipfile(path):
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    if canary in name or canary.encode() in archive.read(name):
+                        leaks.append(f"{path.name}:{name}")
+    return {"leaks": leaks, "runs": runs, "html": html}
+
+
+def terminal_session(*, enabled: bool = True, workers: bool = False) -> tuple[Any, Any, list, list]:
+    writes: list = []
+    cleanups: list = []
+    writer = SimpleNamespace(write=lambda text, **kwargs: writes.append((text, kwargs)))
+    reporter = SimpleNamespace(_tw=writer)
+    config = SimpleNamespace(
+        cwd_relative_nodeid=lambda nodeid: nodeid,
+        getoption=lambda name, default=None: 2 if workers and name == "numprocesses" else default,
+        pluginmanager=SimpleNamespace(getplugin=lambda name: reporter if enabled else None),
+        add_cleanup=cleanups.append,
+    )
+    return SimpleNamespace(config=config), writer, writes, cleanups
+
+
+def run_in_thread(callback: Any) -> Any:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(callback).result(timeout=10)
 
 
 def typed_parameter_cases() -> list[tuple[Any, set[str]]]:
@@ -150,9 +201,11 @@ def run_allure_case(
         check=False,
     )
     files = {path.name: path.read_bytes() for path in report_dir.iterdir()}
+    terminal = result.stdout + result.stderr
+    (directory / "terminal.txt").write_text(terminal, encoding="utf-8")
     return {
         "exit_code": result.returncode,
-        "terminal": result.stdout + result.stderr,
+        "terminal": terminal,
         "canary": canary,
         "junit": (directory / "junit.xml").read_text(encoding="utf-8"),
         "testcases": [

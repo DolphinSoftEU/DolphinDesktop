@@ -42,10 +42,11 @@ class TestTraceRunDirName:
         name = plugin._trace_run_dir_name("tests/test_x.py::test_y" + "z" * 500)
         assert len(name) <= 100
 
-    def test_name_starts_with_the_sanitised_nodeid(self):
-        assert plugin._trace_run_dir_name("tests/test_x.py::test_y").startswith(
-            "tests_test_x.py__test_y_"
-        )
+    def test_names_never_include_parameter_values(self):
+        nodeid = "test_login[KAN469_PRIVATE_739184]"
+        for build in (plugin._trace_run_dir_name, plugin._artifact_file_stem):
+            assert "KAN469_PRIVATE_739184" not in build(nodeid)
+            assert "test_login" not in build(nodeid)
 
 
 # Screenshot / video file naming
@@ -955,8 +956,7 @@ def pytest_sessionfinish(session, exitstatus):
         monkeypatch.setattr(plugin, "_effective_retry_count", lambda _config: 1)
         monkeypatch.setattr(plugin, "_is_transient_failure", lambda _report: next(transient))
         monkeypatch.setattr(
-            plugin.time,
-            "sleep",
+            "time.sleep",
             lambda _seconds: (_ for _ in ()).throw(AssertionError("retry must not sleep")),
         )
         run_calls: list[tuple] = []
@@ -1974,6 +1974,23 @@ class TestLazyPluginLoadCoverage:
 
 
 class TestSessionReports:
+    def test_teardown_updates_only_its_row_when_masked_display_ids_collide(self, tmp_path):
+        plugin._session_reports.clear()
+        items = []
+        try:
+            for value in ("PRIVATE_A_739184", "PRIVATE_B_739184"):
+                item = _Item(tmp_path, f"test_login[{value}]")
+                item.callspec = SimpleNamespace(params={"pin": value})
+                plugin._collect_artifacts(item, SimpleNamespace(when="call"), _report(failed=False))
+                items.append(item)
+            assert [row["nodeid"] for row in plugin._session_reports] == ["test_login[***]"] * 2
+            plugin._record_teardown_failure(
+                items[0], _report(failed=True, longrepr="cleanup failed")
+            )
+            assert [row["outcome"] for row in plugin._session_reports] == ["error", "passed"]
+        finally:
+            plugin._session_reports.clear()
+
     def test_sessionfinish_returns_without_reports(self, monkeypatch):
         from dolphin_desktop import _application
 

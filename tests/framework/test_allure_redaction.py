@@ -14,7 +14,29 @@ from allure_commons.model2 import TestStepResult as AllureStep
 from pluggy import PluginManager
 
 from dolphin_desktop._allure import _PLUGIN_NAME, _AllureRedactor, _redact_item
-from tests._allure_redaction import run_allure_case
+from tests._allure_redaction import inspect_dolphin_artifacts, run_allure_case
+
+
+def test_verbose_collection_masks_sensitive_identifiers(tmp_path):
+    source = """
+import os
+import pytest
+
+@pytest.mark.parametrize("pin", [os.environ["KAN469_CANARY"]])
+def test_login(pin):
+    assert True
+"""
+    case = run_allure_case(
+        tmp_path,
+        "success",
+        "pin",
+        "entry-point",
+        source=source,
+        pytest_args=("--collect-only", "-vv"),
+    )
+    assert case["exit_code"] == 0, case["terminal"]
+    assert case["canary"] not in case["terminal"], case["terminal"]
+    assert "test_login[***]" in case["terminal"]
 
 
 def test_allure_model_finds_nested_keys_without_a_pytest_parameter_context():
@@ -651,3 +673,54 @@ def test_redaction_registration_is_idempotent_and_scoped_to_configuration(monkey
     assert isinstance(manager.get_plugin(_PLUGIN_NAME), _AllureRedactor)
     second.cleanups.pop()()
     assert not manager.get_plugins()
+
+
+@pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
+@pytest.mark.parametrize("phase", ["success", "call", "teardown"])
+def test_active_trace_html_and_verbose_terminal_do_not_publish_secret_ids(tmp_path, workers, phase):
+    source = """
+import os
+import pytest
+from dolphin_desktop import _trace
+
+@pytest.fixture
+def cleanup(pin):
+    yield
+    if os.environ["KAN469_PHASE"] == "teardown":
+        raise RuntimeError("cleanup operation " + pin)
+
+@pytest.mark.parametrize(
+    "pin", [os.environ["KAN469_CANARY"], os.environ["KAN469_CANARY"] + "SECOND"]
+)
+def test_authenticate(pin, cleanup, request):
+    assert request.node.nodeid.endswith("[" + pin + "]")
+    session = _trace.current_session()
+    assert session is not None
+    session.record_step("operation " + pin, pin)
+    print("Authenticating with", pin)
+    if os.environ["KAN469_PHASE"] == "call":
+        raise RuntimeError("failed operation " + pin)
+
+def test_login():
+    assert True
+"""
+    args = (
+        "--dolphin-trace=always",
+        "--dolphin-html",
+        str(tmp_path / "dolphin-report.html"),
+        "-vv",
+    )
+    if workers:
+        args += ("-n", "2")
+    case = run_allure_case(tmp_path, phase, "pin", "entry-point", source=source, pytest_args=args)
+    assert case["exit_code"] == (0 if phase == "success" else 1), case["terminal"]
+    assert case["canary"] not in case["terminal"], case["terminal"]
+    artifacts = inspect_dolphin_artifacts(tmp_path, case["canary"])
+    assert not artifacts["leaks"], artifacts["leaks"]
+    assert len(artifacts["runs"]) == 3
+    assert sum("test_authenticate[***]" in nodeid for nodeid, _ in artifacts["runs"]) == 2
+    html = "\n".join(artifacts["html"])
+    assert "test_authenticate[***]" in html and "test_login" in html
+    if phase == "teardown":
+        reports = [text for text in artifacts["html"] if "Dolphin Test Report" in text]
+        assert sum(text.count(">ERROR</td>") for text in reports) == 2

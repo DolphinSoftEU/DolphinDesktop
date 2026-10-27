@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Sensitive parameter IDs are now masked in fallback HTML, trace SQLite and
+  verbose pytest/collection output without changing execution identities.
+  Artifact filenames use opaque random names. Trace text keeps its owning
+  parameter context for threaded actions; xdist defers start lines until a safe
+  display ID is known (KAN-469 review).
+
 * Sensitive JUnit properties now mask their complete value by property name.
   Sensitive dictionary keys are detected beneath public pytest/Allure parameter
   names, protecting custom IDs and captured output while retaining public sibling

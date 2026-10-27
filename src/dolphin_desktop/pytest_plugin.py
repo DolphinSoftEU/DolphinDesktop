@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
-import time
 import uuid
 import zipfile
 from argparse import ArgumentTypeError
@@ -18,13 +16,19 @@ import pytest
 from ._desktop import Desktop
 from ._logging import _redact, is_sensitive_key
 from ._logging import get_logger as _get_logger
-from ._redaction import _PARAMETER_VALUES, _redact_with_values, _sensitive_values
+from ._redaction import (
+    _PARAMETER_VALUES,
+    _redact_identifier,
+    _redact_with_values,
+    _sensitive_values,
+)
 
 _TRACE_SESSION_KEY: pytest.StashKey[Any] = pytest.StashKey()
 _VIDEO_RECORDER_KEY: pytest.StashKey[Any] = pytest.StashKey()
 _RETRY_ATTEMPT_KEY: pytest.StashKey[int] = pytest.StashKey()
 _RETRY_MAX_KEY: pytest.StashKey[int] = pytest.StashKey()
 _PARAMETER_VALUES_KEY: pytest.StashKey[set[str]] = pytest.StashKey()
+_HTML_REPORT_KEY: pytest.StashKey[dict[str, Any]] = pytest.StashKey()
 _DOLPHIN_TRANSIENT_ATTR = "_dolphin_transient_failure"
 
 _session_reports: list[dict[str, Any]] = []
@@ -76,6 +80,10 @@ def _item_parameter_values(item: pytest.Item) -> set[str]:
     return values
 
 
+def _item_display_id(item: pytest.Item) -> str:
+    return _redact_identifier(item.nodeid, _item_parameter_values(item))
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item: pytest.Item) -> None:
     """Snapshot secret inputs before fixtures and bind this test's diagnostic context."""
@@ -115,7 +123,7 @@ def _reap_test_processes(item: pytest.Item) -> None:
                 _application._live_pids.discard(pid)
                 _application._session_pids.discard(pid)
                 _application.forget_process_identity(pid)
-                log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
+                log.debug("Killed zombie process PID=%d after test %s", pid, _item_display_id(item))
             except Exception as exc:
                 # Keep both the handle and PID registered. The session
                 # finalizer or a later explicit cleanup can retry and the
@@ -123,7 +131,7 @@ def _reap_test_processes(item: pytest.Item) -> None:
                 log.warning(
                     "Could not clean up anchored process PID=%d after test %s: %s",
                     pid,
-                    item.nodeid,
+                    _item_display_id(item),
                     exc,
                 )
             continue
@@ -134,7 +142,9 @@ def _reap_test_processes(item: pytest.Item) -> None:
             # at all, since re-opening a bare PID here is exactly the reuse
             # risk anchoring exists to avoid.
             log.warning(
-                "Skipping cleanup for unanchored process PID=%d after test %s", pid, item.nodeid
+                "Skipping cleanup for unanchored process PID=%d after test %s",
+                pid,
+                _item_display_id(item),
             )
             continue
         try:
@@ -146,7 +156,7 @@ def _reap_test_processes(item: pytest.Item) -> None:
             if _application.terminate_tracked_pid(pid, log):
                 _application._live_pids.discard(pid)
                 _application._session_pids.discard(pid)
-                log.debug("Killed zombie process PID=%d after test %s", pid, item.nodeid)
+                log.debug("Killed zombie process PID=%d after test %s", pid, _item_display_id(item))
         except Exception:
             pass
 
@@ -215,7 +225,7 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
         if attempt < max_retries and _is_transient_failure(call_report):
             log.info(
                 "Retrying test %s (attempt %d/%d) after transient error",
-                item.nodeid,
+                _item_display_id(item),
                 attempt + 1,
                 max_retries,
             )
@@ -232,7 +242,11 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
 def pytest_configure(config: pytest.Config) -> None:
     from ._junit import _JUnitRedactor
+    from ._terminal import _TerminalRedactor
 
+    config.pluginmanager.register(
+        _TerminalRedactor(_item_parameter_values), "dolphin_desktop.terminal"
+    )
     if config.getoption("xmlpath", default=None):
         config.pluginmanager.register(_JUnitRedactor(), "dolphin_desktop.junit_redaction")
     config.addinivalue_line(
@@ -500,27 +514,13 @@ def _dolphin_marker_config(request: pytest.FixtureRequest) -> Iterator[None]:
 
 
 def _trace_run_dir_name(nodeid: str) -> str:
-    """Build a collision-free trace run directory name for *nodeid*.
-
-    The timestamp only has 1-second resolution, which is not enough to separate
-    retry attempts of one test (they are 0.5s apart) or two xdist workers running
-    parametrisations whose truncated nodeids are identical — two TraceSessions
-    sharing one trace.db corrupt each other's run selection and rmtree.
-    """
-    safe = re.sub(r"[^\w._-]", "_", nodeid)[:60]
-    return f"{safe}_{int(time.time())}_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+    """Use an opaque random run name, independent of parameter values and retries."""
+    return f"trace_{uuid.uuid4().hex}"
 
 
 def _artifact_file_stem(nodeid: str) -> str:
-    """Build a collision-free artifact file name (no extension) for *nodeid*.
-
-    Truncating the sanitised nodeid alone is not unique: two parametrisations
-    sharing their first 60 characters, a retry attempt, or two xdist workers all
-    produce the same stem, so one overwrites the other's ``.png`` / ``.mp4`` and
-    both report rows end up pointing at the survivor.
-    """
-    safe = re.sub(r"[^\w._-]", "_", nodeid)[:60]
-    return f"{safe}_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+    """Use an opaque random file stem; never copy a node ID into a filename."""
+    return f"artifact_{uuid.uuid4().hex}"
 
 
 @pytest.fixture(autouse=True)
@@ -541,7 +541,7 @@ def _dolphin_trace(request: pytest.FixtureRequest) -> Iterator[None]:
 
     try:
         session = _trace.TraceSession(
-            test_nodeid=request.node.nodeid,
+            test_nodeid=_item_display_id(request.node),
             run_dir=run_dir,
             mode=mode,
         )
@@ -772,7 +772,7 @@ def _handle_video(item: pytest.Item, report: pytest.TestReport, phase: str) -> P
         return output_path
     except RuntimeError as exc:
         item.add_report_section(phase, "dolphin video (skipped)", str(exc))
-        _get_logger("plugin").warning("video for %s was not saved: %s", item.nodeid, exc)
+        _get_logger("plugin").warning("video for %s was not saved: %s", _item_display_id(item), exc)
         return None
     finally:
         recorder.discard()
@@ -809,7 +809,7 @@ def _capture_failure_screenshot(item: pytest.Item, phase: str = "call") -> Path 
         return path
     except Exception as exc:
         _get_logger("plugin").warning(
-            "Failure screenshot not captured for %s: %s", item.nodeid, exc
+            "Failure screenshot not captured for %s: %s", _item_display_id(item), exc
         )
         return None
 
@@ -889,7 +889,7 @@ def pytest_runtest_makereport(  # type: ignore[misc]
         # An exception raised after the yield of a hookwrapper reaches pytest as an
         # INTERNALERROR and masks the very failure this hook is reporting on.
         _get_logger("plugin").warning(
-            "dolphin artifact collection failed for %s: %s", item.nodeid, exc
+            "dolphin artifact collection failed for %s: %s", _item_display_id(item), exc
         )
 
 
@@ -963,7 +963,7 @@ def _collect_artifacts(item: pytest.Item, call: pytest.CallInfo, report: pytest.
     # accumulate for HTML fallback report
     _session_reports.append(
         {
-            "nodeid": item.nodeid,
+            "nodeid": _item_display_id(item),
             "outcome": report.outcome,
             "duration": getattr(report, "duration", 0.0),
             "screenshot": str(screenshot_path) if screenshot_path else None,
@@ -971,6 +971,8 @@ def _collect_artifacts(item: pytest.Item, call: pytest.CallInfo, report: pytest.
             "video": str(video_path) if video_path else None,
         }
     )
+
+    item.stash[_HTML_REPORT_KEY] = _session_reports[-1]
 
 
 def _record_teardown_failure(item: pytest.Item, report: pytest.TestReport) -> None:
@@ -991,6 +993,11 @@ def _record_teardown_failure(item: pytest.Item, report: pytest.TestReport) -> No
     # same locals in scope that made the call-phase text sensitive.
     error_msg = _redact(str(report.longrepr)) if report.longrepr else "teardown failed"
     item.add_report_section("teardown", "dolphin", error_msg)
+    row = item.stash.get(_HTML_REPORT_KEY, None)
+    if row is not None:
+        row["outcome"] = "error"
+        row["teardown_error"] = error_msg
+        return
     for entry in reversed(_session_reports):
         if entry.get("nodeid") == item.nodeid:
             entry["outcome"] = "error"
@@ -998,7 +1005,7 @@ def _record_teardown_failure(item: pytest.Item, report: pytest.TestReport) -> No
             return
     _session_reports.append(
         {
-            "nodeid": item.nodeid,
+            "nodeid": _item_display_id(item),
             "outcome": "error",
             "duration": getattr(report, "duration", 0.0),
             "screenshot": None,

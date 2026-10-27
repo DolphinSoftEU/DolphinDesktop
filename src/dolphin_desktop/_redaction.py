@@ -101,3 +101,10 @@ def _redact_with_values(text: str, values: tuple[str, ...]) -> str:
         else:
             text = text.replace(value, "***")
     return text
+
+
+def _redact_identifier(identifier: str, values: set[str] | None = None) -> str:
+    """Sanitize a displayed/stored identifier while retaining pytest's original ID."""
+    if values is None:
+        values = _PARAMETER_VALUES.get() or set()
+    return _redact_with_values(identifier, tuple(sorted(values, key=len, reverse=True)))

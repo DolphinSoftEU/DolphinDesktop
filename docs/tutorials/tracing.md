@@ -137,8 +137,14 @@ attributes, so unrelated test names and messages remain intact. Temporary opaque
 properties link reports to testcases and are removed from the finished XML.
 JUnit properties with sensitive names, such as `record_property("password", value)`,
 have their complete `value` masked without requiring `Secret` registration.
-Pytest collection IDs and live verbose output are unchanged; use non-sensitive
-`ids=` when sharing them.
+HTML rows and trace SQLite identifiers use per-test masking too. Trace text
+retains its test's sensitive-value context for actions executed on other threads.
+Trace directories and screenshot/video files use opaque random names.
+Verbose terminal and collection displays mask recognized sensitive identifiers;
+xdist start lines wait for the report's parameter snapshot. Pytest's internal IDs
+remain unchanged, including those in its local `.pytest_cache` (do not publish
+that cache). Use safe `ids=` when sharing execution metadata. Direct writes with
+capture disabled (`-s`) are outside pytest terminal-writer redaction.
 
 Direct `allure.attach()` and `allure.attach.file()` calls bypass Dolphin's text
 redaction. Their caller must sanitize the body or file first. For example:

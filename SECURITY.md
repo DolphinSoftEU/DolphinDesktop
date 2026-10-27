@@ -147,8 +147,19 @@ requiring prior `Secret` registration. Testcase properties also protect repeated
 values inside that same testcase.
 Verdicts, counters and timings are preserved. Publish the file only after pytest exits;
 an interrupted/killed process may leave the original writer's XML unprocessed.
-Pytest's execution/collection IDs and live verbose output remain unchanged;
-use non-sensitive `ids=` when sharing those outputs.
+HTML fallback rows and SQLite trace identifiers use the same per-test masking.
+Trace text fields retain their owning test's parameter context, including actions
+recorded on another thread. Trace directories and screenshot/video filenames use
+opaque random names, independent of parameter values.
+
+Pytest's terminal writer masks recognized sensitive identifiers in verbose test
+output and collection listings. With xdist, start lines are deferred until the
+completed report supplies the worker's sensitive-value snapshot. This changes
+display text; execution/collection IDs and report identities remain unchanged.
+Pytest's local `.pytest_cache` retains original IDs for selection and `--lf`;
+do not publish it as a report. Prefer safe `ids=` when sharing execution metadata.
+Direct writes with capture disabled (`-s`) and third-party output that bypasses
+pytest's terminal writer remain caller-owned.
 
 **Native Allure attachments are caller-owned.** The automatic protection above
 covers report models and captured stdout/stderr, not arbitrary bodies passed
