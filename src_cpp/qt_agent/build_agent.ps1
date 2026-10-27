@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'build_cleanup.ps1')
 foreach ($name in @('CL', '_CL_', 'LINK', '_LINK_', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS')) {
     if (Test-Path "Env:$name") { throw "Remove build override $name before building" }
 }
@@ -81,13 +82,14 @@ if ($sourceTree -notmatch '^[0-9a-f]{40}$') {
     throw 'The staged native source has no valid Git tree id'
 }
 
-$tempRoot = (Resolve-Path -LiteralPath $env:TEMP).Path
+$tempRoot = ConvertTo-QtAgentBuildPath (Resolve-Path -LiteralPath $env:TEMP).Path
 $buildName = "dolphin-qt-agent-qt$QtMajor-$sourceTree-$([guid]::NewGuid().ToString('N'))"
 $buildDir = Join-Path $tempRoot $buildName
 if (-not $LogDirectory) { $LogDirectory = Join-Path $repoRoot 'artifacts\qt-agent-builds' }
 New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
 $buildLog = Join-Path $LogDirectory "$buildName.log"
 Write-Host "Build diagnostics: $buildLog"
+$buildError = $null
 try {
     $outputDir = Join-Path $buildDir 'output'
     $cmakeArgs = @(
@@ -159,16 +161,13 @@ try {
     Write-Host "Built $dllName from staged tree $sourceTree" -ForegroundColor Green
     Write-Host "SHA-256: $hash ($size bytes)"
 } catch {
-    $_ | Out-String | Add-Content -LiteralPath $buildLog
+    $buildError = $_
+    try {
+        $buildError | Out-String | Add-Content -LiteralPath $buildLog -ErrorAction Stop
+    } catch {
+        Write-Warning -WarningAction Continue "Could not append build diagnostics to '$buildLog': $($_.Exception.Message)"
+    }
     throw
 } finally {
-    # Check the exact generated target before recursive deletion.
-    $cleanupPath = [IO.Path]::GetFullPath($buildDir)
-    if ((Split-Path $cleanupPath -Parent) -ne $tempRoot -or
-        (Split-Path $cleanupPath -Leaf) -ne $buildName) {
-        throw "Refusing to remove unexpected build directory: $cleanupPath"
-    }
-    if (Test-Path -LiteralPath $cleanupPath) {
-        Remove-Item -LiteralPath $cleanupPath -Recurse -Force
-    }
+    Remove-QtAgentBuildDirectory -Path $buildDir -Parent $tempRoot -Name $buildName -PrimaryError $buildError
 }

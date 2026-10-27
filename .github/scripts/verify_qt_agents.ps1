@@ -6,13 +6,15 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+. (Join-Path $repoRoot 'src_cpp\qt_agent\build_cleanup.ps1')
 $evidence = Join-Path $repoRoot 'artifacts\qt-agent-reproducibility'
 New-Item -ItemType Directory -Force -Path $evidence | Out-Null
-$tempRoot = (Resolve-Path -LiteralPath $env:TEMP).Path
+$tempRoot = ConvertTo-QtAgentBuildPath (Resolve-Path -LiteralPath $env:TEMP).Path
 $scratchName = "dolphin-rebuild-$([guid]::NewGuid().ToString('N'))"
 $scratch = Join-Path $tempRoot $scratchName
 New-Item -ItemType Directory -Path $scratch | Out-Null
 $sdkLinks = [Collections.Generic.List[string]]::new()
+$verificationError = $null
 try {
     $archive = Join-Path $scratch 'source.zip'
     & git -C $repoRoot archive --format=zip "--output=$archive" $Revision
@@ -46,24 +48,10 @@ try {
         }
     }
     Write-Host "Both shipped ABIs reproduced in two clean locations. Logs: $evidence"
+} catch {
+    $verificationError = $_
+    throw
 } finally {
-    $cleanupPath = [IO.Path]::GetFullPath($scratch)
-    if ((Split-Path $cleanupPath -Parent) -ne $tempRoot -or
-        (Split-Path $cleanupPath -Leaf) -ne $scratchName) {
-        throw "Refusing to remove unexpected verification directory: $cleanupPath"
-    }
-    # Unlink SDK junctions before removing the disposable checkout.
-    foreach ($link in $sdkLinks) {
-        $linkPath = [IO.Path]::GetFullPath($link)
-        if (-not $linkPath.StartsWith($cleanupPath + [IO.Path]::DirectorySeparatorChar,
-                                    [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Refusing to remove unexpected SDK junction: $linkPath"
-        }
-        if (Test-Path -LiteralPath $linkPath) {
-            $item = Get-Item -LiteralPath $linkPath
-            if ($item.LinkType -ne 'Junction') { throw "Expected an SDK junction: $linkPath" }
-            Remove-Item -LiteralPath $linkPath -Force
-        }
-    }
-    Remove-Item -LiteralPath $cleanupPath -Recurse -Force
+    Remove-QtAgentBuildDirectory -Path $scratch -Parent $tempRoot -Name $scratchName `
+        -Junctions $sdkLinks.ToArray() -PrimaryError $verificationError
 }

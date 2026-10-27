@@ -49,6 +49,11 @@ or regenerate its manifest. A mismatched hash, source tree or toolchain fails.
 Build directories are removed in `finally`, including on verification or
 compiler failure. CMake/build output and errors remain in
 `artifacts/qt-agent-builds/` (or the shared builder's `-LogDirectory`).
+Both builders share path normalization for temporary roots and deletion
+targets, including trailing separators and Windows path spelling. A cleanup
+failure fails an otherwise successful build; if the build already failed,
+cleanup emits a warning and preserves the original error. Failure to append
+diagnostics also preserves the build error.
 
 From the same developer environment, run:
 

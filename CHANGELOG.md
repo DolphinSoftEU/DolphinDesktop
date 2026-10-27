@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Qt native build and verification cleanup now share Windows path
+  normalization, including trailing separators. Secondary cleanup or log-write
+  errors preserve the original build failure instead of hiding it
+  (KAN-470 CI cleanup review).
+
 * Qt agent CI now downloads hash-pinned MSVC 19.50.35726 compiler and CRT
   payloads independently of Visual Studio component servicing, preventing
   compiler 19.50.35739 from being selected for the shipped DLL rebuild

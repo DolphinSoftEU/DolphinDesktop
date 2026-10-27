@@ -242,6 +242,13 @@ CMake/Ninja executables from `.venv/Scripts` first on PATH, set
 include and library search paths with the downloaded toolchain and checks
 the actual compiler banner. A different compiler revision is still rejected;
 DLL/manifest verification remains required.
+Both the shared builder and the verification script normalize the temporary
+parent and deletion target through `build_cleanup.ps1`. Equivalent Windows
+paths, including trailing separators, cannot trigger a false cleanup refusal.
+Cleanup errors fail otherwise successful builds; after a primary build error,
+they produce warnings while preserving that primary error. The CI entry point
+accepts `-Revision (git write-tree)` for validation of a staged source snapshot
+before committing, with `HEAD` remaining the default in CI.
 
 The bundled DLLs are `IMAGE_FILE_MACHINE_AMD64` and use the authenticated v2
 start and stop exports. Python refuses to call the legacy unauthenticated
