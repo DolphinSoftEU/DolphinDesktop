@@ -16,6 +16,60 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  qt-agent-reproducibility:
+    name: "Qt agent reproducibility / Qt5 and Qt6"
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+
+      - name: Install locked native build tools
+        run: uv sync --locked --only-group native-build --python 3.13
+
+      - name: Install Windows SDK component
+        shell: pwsh
+        run: |
+          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $vs = & "$installer\vswhere.exe" -latest -products '*' -property installationPath
+          $process = Start-Process "$installer\vs_installer.exe" -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
+            'modify', '--installPath', "`"$vs`"", '--quiet', '--norestart',
+            '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.26100'
+          )
+          if ($process.ExitCode -notin @(0, 3010)) { throw "VS install failed: $($process.ExitCode)" }
+
+      - name: Download and verify exact MSVC compiler and CRT payloads
+        shell: pwsh
+        run: uv run --no-sync python .github/scripts/install_msvc.py --destination "$env:RUNNER_TEMP/dolphin-msvc"
+
+      - name: Install pinned Qt SDKs
+        shell: pwsh
+        run: |
+          uv run --no-sync aqt install-qt windows desktop 5.15.2 win64_msvc2019_64 -O "$env:RUNNER_TEMP/qt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run --no-sync aqt install-qt windows desktop 6.10.3 win64_msvc2022_64 -O "$env:RUNNER_TEMP/qt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Compare clean rebuilds to shipped DLLs in two locations
+        shell: pwsh
+        env:
+          DOLPHIN_MSVC_ROOT: ${{ runner.temp }}\dolphin-msvc
+          DOLPHIN_QT5_ROOT: ${{ runner.temp }}\qt\5.15.2\msvc2019_64
+          DOLPHIN_QT6_ROOT: ${{ runner.temp }}\qt\6.10.3\msvc2022_64
+        run: .github/scripts/verify_qt_agents_ci.ps1
+
+      - name: Upload native reproducibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qt-agent-reproducibility
+          path: artifacts/qt-agent-reproducibility/
+          if-no-files-found: error
+
   minimum-dependencies:
     name: "Minimum dependencies / Python ${{ matrix.python-version }} / ${{ matrix.profile }}"
     runs-on: windows-latest
@@ -269,7 +323,9 @@ jobs:
             "test_native_object_lifetime_overloads_and_bounded_stop[qt5]",
             "test_native_object_lifetime_overloads_and_bounded_stop[qt6]",
             "test_agent_pipe_security_boundaries[qt5]",
-            "test_agent_pipe_security_boundaries[qt6]"
+            "test_agent_pipe_security_boundaries[qt6]",
+            "test_native_oversized_requests_recover_without_memory_growth[qt5]",
+            "test_native_oversized_requests_recover_without_memory_growth[qt6]"
           )
           $actual = @{}
           foreach ($case in $cases) {
@@ -288,7 +344,7 @@ jobs:
   package:
     name: Build package
     runs-on: windows-latest
-    needs: [unit, component-windows, package-linux, security, minimum-dependencies]
+    needs: [unit, component-windows, package-linux, security, minimum-dependencies, qt-agent-reproducibility]
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       version: ${{ steps.version.outputs.version }}

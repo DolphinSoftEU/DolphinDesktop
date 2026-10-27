@@ -1,0 +1,56 @@
+{
+  "catalog": "VisualStudio/18.4.0+11605.240",
+  "compiler": "19.50.35726",
+  "tools_directory": "14.50.35717",
+  "windows_sdk": "10.0.26100.0",
+  "packages": [
+    {
+      "id": "Microsoft.VC.14.50.18.0.CRT.Headers.base",
+      "version": "14.50.35717",
+      "fileName": "Microsoft.VC.14.50.18.0.CRT.Headers.base.vsix",
+      "sha256": "428bcda4a867056ab696aeca95b1057f5282aa9a8121481e7787fae7548efde2",
+      "size": 2057481,
+      "url": "https://download.visualstudio.microsoft.com/download/pr/eef0996f-4334-4b1a-a344-4d13e27ac052/428bcda4a867056ab696aeca95b1057f5282aa9a8121481e7787fae7548efde2/Microsoft.VC.14.50.18.0.CRT.Headers.base.vsix"
+    },
+    {
+      "id": "Microsoft.VC.14.50.18.0.CRT.x64.Desktop.base",
+      "version": "14.50.35721",
+      "fileName": "Microsoft.VC.14.50.18.0.CRT.x64.Desktop.base.vsix",
+      "sha256": "5072bd8183709b8cd05b8406beed28698426ec98ee11037afbf771151e1c41ff",
+      "size": 51740265,
+      "url": "https://download.visualstudio.microsoft.com/download/pr/439f6ef1-972b-4d0d-8989-f4db143181cd/5072bd8183709b8cd05b8406beed28698426ec98ee11037afbf771151e1c41ff/Microsoft.VC.14.50.18.0.CRT.x64.Desktop.base.vsix"
+    },
+    {
+      "id": "Microsoft.VC.14.50.18.0.Tools.HostX64.TargetX64.base",
+      "version": "14.50.35726",
+      "fileName": "Microsoft.VC.14.50.18.0.Tools.HostX64.TargetX64.base.vsix",
+      "sha256": "300c008dcfbdeb31c1ad581fabcd2c62c00b20b2adece123e3185c6593b9de81",
+      "size": 28453124,
+      "url": "https://download.visualstudio.microsoft.com/download/pr/86c5eaf6-8fd6-43ce-b7d1-89137b2c3ec7/300c008dcfbdeb31c1ad581fabcd2c62c00b20b2adece123e3185c6593b9de81/Microsoft.VC.14.50.18.0.Tools.HostX64.TargetX64.base.vsix"
+    },
+    {
+      "id": "Microsoft.VC.14.50.18.0.Tools.HostX64.TargetX64.Res.base",
+      "version": "14.50.35726",
+      "fileName": "Microsoft.VC.14.50.18.0.Tools.HostX64.TargetX64.Res.base.enu.vsix",
+      "sha256": "b8047c47ad8273b1f54ae17d3fa793deda722296033e69d5ee22afed821e4bc9",
+      "size": 239028,
+      "url": "https://download.visualstudio.microsoft.com/download/pr/86c5eaf6-8fd6-43ce-b7d1-89137b2c3ec7/b8047c47ad8273b1f54ae17d3fa793deda722296033e69d5ee22afed821e4bc9/Microsoft.VC.14.50.18.0.Tools.HostX64.TargetX64.Res.base.enu.vsix"
+    },
+    {
+      "id": "Microsoft.VC.14.50.18.0.CRT.x64.OneCore.Desktop.base",
+      "version": "14.50.35721",
+      "fileName": "Microsoft.VC.14.50.18.0.CRT.x64.OneCore.Desktop.base.vsix",
+      "sha256": "f68bbcfdfd66d786f218909d5b918b924703690c5f475b853cd556dfb1207fde",
+      "size": 55902178,
+      "url": "https://download.visualstudio.microsoft.com/download/pr/439f6ef1-972b-4d0d-8989-f4db143181cd/f68bbcfdfd66d786f218909d5b918b924703690c5f475b853cd556dfb1207fde/Microsoft.VC.14.50.18.0.CRT.x64.OneCore.Desktop.base.vsix"
+    },
+    {
+      "id": "Microsoft.VC.14.50.18.0.CRT.x64.Store.base",
+      "version": "14.50.35721",
+      "fileName": "Microsoft.VC.14.50.18.0.CRT.x64.Store.base.vsix",
+      "sha256": "6b2c1616e86c36304c0e141f51fbd9b9438d0f3e7cca37a3a42bc8dfa4f09854",
+      "size": 28628660,
+      "url": "https://download.visualstudio.microsoft.com/download/pr/439f6ef1-972b-4d0d-8989-f4db143181cd/6b2c1616e86c36304c0e141f51fbd9b9438d0f3e7cca37a3a42bc8dfa4f09854/Microsoft.VC.14.50.18.0.CRT.x64.Store.base.vsix"
+    }
+  ]
+}

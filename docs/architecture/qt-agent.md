@@ -212,6 +212,43 @@ The C++ source and pinned build scripts are in `src_cpp/qt_agent/`. The scripts
 build the Qt 5.15.2 and Qt 6.10.3 variants with MSVC 19.50.35726, verify the v2
 start/stop exports, and record the staged source tree, toolchain, size and
 SHA-256 in `agent_manifest.json`.
+The build also pins Windows SDK 10.0.26100.0, CMake 3.31.10 and the Ninja
+1.11.1.4 PyPI distribution, normalizes source/build/Qt SDK paths, and requires
+QML support. CI rebuilds both ABIs in two clean locations and compares them
+to the shipped DLLs without updating the manifest. This verification gates
+package creation and release provenance.
+
+CI provisions MSVC independently of the runner's installed Visual Studio.
+The component ID `Microsoft.VisualStudio.Component.VC.14.50.18.0.x86.x64`
+does not pin a servicing revision: it previously delivered compiler
+19.50.35739 while these DLLs require 19.50.35726. CI now downloads the exact
+compiler, resource, header and CRT VSIX payloads listed in
+`.github/toolchains/msvc.json`, verifies their sizes and SHA-256 values,
+and extracts them into a fresh directory. The payload URLs/hashes originate
+from Microsoft's Visual Studio 18.4.0 catalog; installed runner compilers
+are not used for the Qt build.
+
+For a local reproduction with the same isolated compiler:
+
+```powershell
+uv run --no-sync python .github/scripts/install_msvc.py --destination C:\build-tools\dolphin-msvc
+. .github/scripts/enter_msvc.ps1 -ToolchainRoot C:\build-tools\dolphin-msvc
+```
+
+The Windows SDK 10.0.26100.0 must already be installed. Put the locked
+CMake/Ninja executables from `.venv/Scripts` first on PATH, set
+`DOLPHIN_QT5_ROOT` / `DOLPHIN_QT6_ROOT`, then run
+`.github/scripts/verify_qt_agents.ps1`. The initializer replaces compiler,
+include and library search paths with the downloaded toolchain and checks
+the actual compiler banner. A different compiler revision is still rejected;
+DLL/manifest verification remains required.
+Both the shared builder and the verification script normalize the temporary
+parent and deletion target through `build_cleanup.ps1`. Equivalent Windows
+paths, including trailing separators, cannot trigger a false cleanup refusal.
+Cleanup errors fail otherwise successful builds; after a primary build error,
+they produce warnings while preserving that primary error. The CI entry point
+accepts `-Revision (git write-tree)` for validation of a staged source snapshot
+before committing, with `HEAD` remaining the default in CI.
 
 The bundled DLLs are `IMAGE_FILE_MACHINE_AMD64` and use the authenticated v2
 start and stop exports. Python refuses to call the legacy unauthenticated

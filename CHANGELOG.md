@@ -22,6 +22,27 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Qt native build and verification cleanup now share Windows path
+  normalization, including trailing separators. Secondary cleanup or log-write
+  errors preserve the original build failure instead of hiding it
+  (KAN-470 CI cleanup review).
+
+* Qt agent CI now downloads hash-pinned MSVC 19.50.35726 compiler and CRT
+  payloads independently of Visual Studio component servicing, preventing
+  compiler 19.50.35739 from being selected for the shipped DLL rebuild
+  (KAN-470 toolchain review).
+
+* Qt agent builds and reproducibility checks now remove temporary directories
+  on success and failure while retaining diagnostics. Native request-size
+  tests verify limit−1, limit and limit+1 against an explicit
+  `request_too_large` response. The secret scanner baseline records the
+  reviewed native artifact hashes as non-secrets (KAN-470 review).
+
+* Qt agent DLLs now reproduce across checkout and Qt SDK paths. Native build
+  inputs are pinned, and CI compares clean Qt5/Qt6 rebuilds with the shipped
+  binaries and manifest before packaging or release (KAN-470). Real-agent
+  regressions also cover repeated oversized requests and retained memory.
+
 * xdist verbose start lines now recognize invocation-relative and name-only
   test IDs as well as root-relative IDs, preventing sensitive parameter IDs
   from leaking when pytest runs from a subdirectory (KAN-469 review).
