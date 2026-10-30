@@ -63,6 +63,18 @@ def _modern_grid_screen(grid_id, column_count):
     return _user_area(_node("wnd[0]/usr/cntlGRID1", "GuiCustomControl", splitter))
 
 
+def _two_grid_screen(first_id, first_columns, second_id, second_columns):
+    """Two ALV containers on one screen, in document order; either may be empty."""
+    first = _node(first_id, "GuiShell", SubType="GridView", ColumnCount=first_columns, RowCount=0)
+    second = _node(
+        second_id, "GuiShell", SubType="GridView", ColumnCount=second_columns, RowCount=5
+    )
+    return _user_area(
+        _node("wnd[0]/usr/cntlGRID1", "GuiCustomControl", first),
+        _node("wnd[0]/usr/cntlGRID2", "GuiCustomControl", second),
+    )
+
+
 def _classic_grid_screen(grid_id, column_count):
     """Older releases expose the grid under its logical type name."""
     grid = _node(grid_id, "GuiGridView", ColumnCount=column_count, RowCount=3)
@@ -183,3 +195,40 @@ def test_grid_never_returns_a_splitter_that_merely_wraps_the_grid():
 
     assert grid._id != "wnd[0]/usr/cntlGRID1/shellcont/shell/shellcont[0]/shell"
     assert grid._id == SM04_GRID
+
+
+GRID_A = "wnd[0]/usr/cntlGRID1/shellcont/shell"
+GRID_B = "wnd[0]/usr/cntlGRID2/shellcont/shell"
+
+
+def test_empty_first_grid_does_not_hide_a_populated_second_grid_on_the_same_screen():
+    """Review follow-up: all grids of a screen are tried before moving on."""
+    fake = FakeSap({"SM04": _two_grid_screen(GRID_A, 0, GRID_B, 9)})
+
+    grid = _grid(fake.session)
+
+    assert grid._id == GRID_B
+    assert grid.column_count() == 9
+    assert fake.visited == ["SM04"], "SM66 must not be visited when SM04 has a usable grid"
+
+
+def test_first_populated_grid_wins_when_several_have_columns():
+    fake = FakeSap({"SM04": _two_grid_screen(GRID_A, 4, GRID_B, 9)})
+
+    grid = _grid(fake.session)
+
+    assert grid._id == GRID_A
+
+
+def test_two_empty_grids_fall_back_to_the_next_transaction():
+    fake = FakeSap(
+        {
+            "SM04": _two_grid_screen(GRID_A, 0, GRID_B, 0),
+            "SM66": _modern_grid_screen(SM66_GRID, 18),
+        }
+    )
+
+    grid = _grid(fake.session)
+
+    assert grid._id == SM66_GRID
+    assert fake.visited == ["SM04", "SM66"]

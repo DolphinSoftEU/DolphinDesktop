@@ -39,18 +39,25 @@ def _goto(session, tcode: str) -> None:
 
 
 def _grid(session):
-    """Return a locator for the first ALV grid with columns in SM04 / SM66, or skip."""
+    """Return a locator for the first ALV grid with columns in SM04 / SM66, or skip.
+
+    Every grid on the screen is considered, in document order: a screen may
+    publish an empty ALV container next to the populated one, and the empty
+    one must not hide the other. Only when no grid on the screen has columns
+    does the next transaction get its turn.
+    """
     for tcode in _GRID_TCODES:
         _goto(session, tcode)
         try:
-            grid = session.find_first_in_tree("GuiGridView", parent_id="wnd[0]/usr", timeout=5)
+            grids = session.find_all_in_tree("GuiGridView", parent_id="wnd[0]/usr", timeout=5)
         except ElementNotFoundError:
             continue
-        # A grid that publishes no columns (an empty ALV container, or a
-        # transaction with nothing to show right now) cannot exercise cell
-        # access, so the next transaction gets its turn instead.
-        if grid.column_count() > 0:
-            return grid
+        for grid in grids:
+            # A grid that publishes no columns (an empty ALV container, or a
+            # transaction with nothing to show right now) cannot exercise cell
+            # access; try the next grid, then the next transaction.
+            if grid.column_count() > 0:
+                return grid
     pytest.skip("no ALV grid with columns found in SM04 / SM66 on this system")
 
 
