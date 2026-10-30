@@ -1,8 +1,9 @@
 """Regenerate the benign macro documents used by ``tests/office/test_macro_security.py``.
 
-The committed ``benign.xlsm`` / ``benign.docm`` each carry one macro that only
-rewrites a marker inside the document itself (``macro-not-run`` -> ``macro-ran``)
-when the document opens. Nothing else: no file, registry, network or shell access.
+The committed ``benign.xlsm`` / ``benign.docm`` / ``benign.pptm`` each carry one
+macro that only rewrites a marker inside the document itself (``macro-not-run``
+-> ``macro-ran``); Excel and Word run theirs on open, PowerPoint's has to be
+asked for by name. Nothing else: no file, registry, network or shell access.
 
 Office refuses programmatic access to a document's VBA project unless the
 operator trusts "access to the VBA project object model" (Trust Center ->
@@ -35,6 +36,16 @@ EXCEL_MACRO = (
 WORD_MACRO = (
     f'Private Sub Document_Open()\n    ThisDocument.Content.Text = "{MARKER_AFTER}"\nEnd Sub'
 )
+# PowerPoint has no open-time macro event, so this one is a plain public Sub.
+# The negative test asks PowerPoint to run it by name; with macros disabled the
+# request is refused and the marker stays untouched.
+POWERPOINT_MODULE = "DolphinMacro"
+POWERPOINT_MACRO = (
+    "Public Sub MarkRan()\n"
+    "    ActivePresentation.Slides(1).Shapes(1).TextFrame.TextRange.Text = "
+    f'"{MARKER_AFTER}"\n'
+    "End Sub"
+)
 
 
 _VBEXT_CT_DOCUMENT = 100  # vbext_ComponentType.vbext_ct_Document
@@ -63,10 +74,21 @@ def _build(kind: str) -> Path:
     app = client.DispatchEx(f"{kind}.Application")
     document = None
     try:
-        app.Visible = False
+        if kind != "PowerPoint":
+            app.Visible = False  # PowerPoint refuses Visible=False; it gets no window instead
         app.DisplayAlerts = 0
         app.AutomationSecurity = 3  # never run anything while authoring
-        if kind == "Excel":
+        if kind == "PowerPoint":
+            document = app.Presentations.Add(0)  # no window
+            slide = document.Slides.Add(1, 12)  # blank layout
+            box = slide.Shapes.AddTextbox(1, 36, 36, 600, 100)
+            box.TextFrame.TextRange.Text = MARKER_BEFORE
+            module = document.VBProject.VBComponents.Add(1)  # vbext_ct_StdModule
+            module.Name = POWERPOINT_MODULE
+            module.CodeModule.AddFromString(POWERPOINT_MACRO)
+            path = HERE / "benign.pptm"
+            document.SaveAs(str(path), 25)  # ppSaveAsOpenXMLPresentationMacroEnabled
+        elif kind == "Excel":
             document = app.Workbooks.Add()
             document.Sheets(1).Cells(1, 1).Value = MARKER_BEFORE
             module = _document_module(document.VBProject, str(document.CodeName))
@@ -85,13 +107,16 @@ def _build(kind: str) -> Path:
     finally:
         try:
             if document is not None:
-                document.Close(0)
+                if kind == "PowerPoint":
+                    document.Close()
+                else:
+                    document.Close(0)
         finally:
             app.Quit()
 
 
 def main() -> int:
-    for kind in ("Excel", "Word"):
+    for kind in ("Excel", "Word", "PowerPoint"):
         try:
             path = _build(kind)
         except Exception as exc:

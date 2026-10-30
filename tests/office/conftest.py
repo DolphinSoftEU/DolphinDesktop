@@ -12,7 +12,7 @@ _FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "office"
 # where "trust access to the VBA project object model" was enabled on purpose.
 # Each file carries a single macro that rewrites a marker inside the document
 # itself when it opens; nothing outside the document is touched.
-_MACRO_FILES = {"Excel": "benign.xlsm", "Word": "benign.docm"}
+_MACRO_FILES = {"Excel": "benign.xlsm", "Word": "benign.docm", "PowerPoint": "benign.pptm"}
 
 
 @pytest.fixture(params=["Excel", "Word"])
@@ -121,3 +121,20 @@ def word_link_document(tmp_path):
         finally:
             app.Quit()
     return target_path
+
+
+@pytest.fixture
+def powerpoint_macro_document(tmp_path):
+    """Copy of the shipped .pptm plus the (module, macro) names it carries."""
+    import zipfile
+
+    pytest.importorskip("win32com.client")
+    source = _FIXTURES / _MACRO_FILES["PowerPoint"]
+    if not source.is_file():
+        pytest.skip(f"{source.name} missing; regenerate with make_macro_fixtures.py")
+    with zipfile.ZipFile(source) as package:
+        assert "ppt/vbaProject.bin" in package.namelist(), "fixture lost its VBA project"
+        assert b"MarkRan" in package.read("ppt/vbaProject.bin"), "fixture lost its macro"
+    path = tmp_path / source.name
+    path.write_bytes(source.read_bytes())
+    return path, "DolphinMacro", "MarkRan"

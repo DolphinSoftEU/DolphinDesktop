@@ -2,7 +2,7 @@
 
 import pytest
 
-from dolphin_desktop import ExcelApp, WordApp
+from dolphin_desktop import ExcelApp, PowerPointApp, WordApp
 
 pytestmark = pytest.mark.integration
 
@@ -46,3 +46,21 @@ def test_word_default_open_keeps_cached_ole_link_value(word_link_document):
         # and has changed, rather than treating a broken link as a security pass.
         app.active_document._com.Fields.Update()
         assert app.active_document.text.strip() == "changed-source"
+
+
+def test_powerpoint_default_open_keeps_pptm_macros_disabled(powerpoint_macro_document):
+    """A .pptm opens with macros disabled: PowerPoint refuses to run the macro by name.
+
+    PowerPoint has no open-time macro event, so there is no "did it run on
+    open" marker to read. Instead the test asks for the macro explicitly through
+    ``Application.Run``; with macros disabled PowerPoint rejects the request and
+    the slide text is unchanged. Macros are never enabled anywhere in this test.
+    """
+    path, module, macro = powerpoint_macro_document
+    with PowerPointApp.open(path, visible=False) as app:
+        deck = app.active_presentation
+        assert deck.slide(1).shape(1).text == "macro-not-run"
+        with pytest.raises(Exception, match=r"(?i)macro|makro|disabled|wyłączon"):
+            app._com.Run(f"{path.name}!{module}.{macro}")
+        assert deck.slide(1).shape(1).text == "macro-not-run"
+        assert int(app._com.AutomationSecurity) != 3, "ForceDisable applies only while opening"
