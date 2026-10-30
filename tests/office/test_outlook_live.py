@@ -59,6 +59,30 @@ def _wait_until_no_process(timeout: float = 30.0) -> bool:
     return True
 
 
+def _start_exclusive_ready(attempts: int = 5):
+    """Start an exclusive Outlook, retrying the MAPI-not-ready startup race.
+
+    Back-to-back exclusive tests restart OUTLOOK.EXE fast; a freshly started
+    process can answer COM before its MAPI namespace has a usable store, which
+    surfaces as "MAPI profile unavailable". The profile itself is fine (checked
+    in _require_outlook), so retry a few times before giving up.
+    """
+    import time as _time
+
+    last_exc: Exception | None = None
+    for _ in range(attempts):
+        if not _wait_until_no_process():
+            pytest.skip("an Outlook is already running; exclusive mode never claims it")
+        try:
+            return OutlookApp.start(exclusive=True)
+        except RuntimeError as exc:
+            if "MAPI profile unavailable" not in str(exc):
+                raise
+            last_exc = exc
+            _time.sleep(2)
+    raise AssertionError(f"Outlook MAPI never became ready after {attempts} starts: {last_exc}")
+
+
 @pytest.fixture(autouse=True)
 def _require_outlook():
     if not _outlook_registered():
@@ -70,10 +94,11 @@ def _require_outlook():
 @pytest.fixture
 def outlook():
     """An exclusive Outlook process on the default profile; quit at teardown."""
-    if not _wait_until_no_process():
-        pytest.skip("an Outlook is already running; exclusive mode never claims it")
-    with OutlookApp.start(exclusive=True) as app:
+    app = _start_exclusive_ready()
+    try:
         yield app
+    finally:
+        app.quit()
     assert not _pids(), "exclusive Outlook must be gone after quit()"
 
 

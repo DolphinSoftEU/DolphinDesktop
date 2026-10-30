@@ -30,7 +30,8 @@ pytestmark = [pytest.mark.external, pytest.mark.timeout(180)]
 _USER_IDS = {"RSYST-BNAME", "txtRSYST-BNAME", "ctxtRSYST-BNAME"}
 _F_CLIENT = "wnd[0]/usr/txtRSYST-MANDT"
 _F_USER = "wnd[0]/usr/txtRSYST-BNAME"
-_F_PASSWORD = "wnd[0]/usr/pwdRSYST-BCODE"
+# The SAP GUI component id of the password field, not a password value.
+_F_PASSWORD = "wnd[0]/usr/pwdRSYST-BCODE"  # pragma: allowlist secret
 _F_LANG = "wnd[0]/usr/txtRSYST-LANGU"
 # Twelve characters: the User field is CHAR 12 and SAP upper-cases it.
 _LITERAL_PROBE = "{TAB}{ENTER}"
