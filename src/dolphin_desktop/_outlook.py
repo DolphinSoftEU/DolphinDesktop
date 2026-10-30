@@ -217,9 +217,16 @@ class OutlookMail(OutlookItem):
         return OutlookAttachment(self._com.Attachments.Item(index), _owner=self._owner)
 
     def add_attachment(self, path: str | Path) -> OutlookAttachment:
-        """Attach a local file by value."""
+        """Attach a local file by value; FileNotFoundError when it does not exist.
+
+        Outlook itself ignores a missing path without raising, which would
+        leave the message silently without the attachment.
+        """
+        resolved = Path(path).resolve()
+        if not resolved.is_file():
+            raise FileNotFoundError(str(resolved))
         return OutlookAttachment(
-            self._com.Attachments.Add(str(Path(path).resolve()), 1),
+            self._com.Attachments.Add(str(resolved), 1),
             _owner=self._owner,
         )
 

@@ -221,3 +221,14 @@ def test_attachment_add_uses_by_value_and_resolves_the_path(client, tmp_path):
         mail_com.Attachments.Item.return_value.SaveAsFile.assert_called_once_with(
             str((tmp_path / "out.txt").resolve())
         )
+
+
+def test_add_attachment_refuses_a_missing_file_before_touching_com(client, tmp_path):
+    com = client.Dispatch.return_value
+    mail_com = _draft_com()
+    com.CreateItem.return_value = mail_com
+    with OutlookApp.start() as app:
+        mail = app.create_mail(subject="UAT")
+        with pytest.raises(FileNotFoundError):
+            mail.add_attachment(tmp_path / "missing.txt")
+        mail_com.Attachments.Add.assert_not_called()

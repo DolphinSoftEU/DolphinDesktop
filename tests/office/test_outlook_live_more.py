@@ -47,6 +47,18 @@ def _pids() -> list[int]:
     return _office_pids(_IMAGE)
 
 
+def _wait_until_no_process(timeout: float = 30.0) -> bool:
+    """A shared-mode instance exits on its own shortly after its last document closes."""
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _pids():
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(1)
+    return True
+
+
 def _outlook_exe() -> str:
     with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"Outlook.Application\CLSID") as key:
         clsid = winreg.QueryValue(key, None)
@@ -64,7 +76,7 @@ def _require_outlook():
 
 @pytest.fixture
 def outlook():
-    if _pids():
+    if not _wait_until_no_process():
         pytest.skip("an Outlook is already running; exclusive mode never claims it")
     with OutlookApp.start(exclusive=True) as app:
         yield app
@@ -157,7 +169,8 @@ def test_several_attachments_keep_their_order_and_bytes(outlook, tmp_path):
 def test_add_attachment_with_missing_file_is_a_controlled_error(outlook, tmp_path):
     mail = outlook.create_mail(subject=f"{_UAT_PREFIX} missing attachment")
     try:
-        with pytest.raises(Exception):  # noqa: B017 - COM error class varies by Office build
+        # Outlook would silently ignore the missing file; the facade refuses first.
+        with pytest.raises(FileNotFoundError):
             mail.add_attachment(tmp_path / "nope.txt")
         assert mail.attachment_count == 0
     finally:
@@ -202,7 +215,7 @@ def test_unsaved_draft_closed_without_saving_leaves_no_trace(outlook):
 
 
 def test_quit_with_save_changes_persists_unsaved_drafts():
-    if _pids():
+    if not _wait_until_no_process():
         pytest.skip("an Outlook is already running; exclusive mode never claims it")
     subject = f"{_UAT_PREFIX} saved on quit"
     app = OutlookApp.start(exclusive=True)
@@ -285,7 +298,7 @@ def test_unsupported_item_class_in_msg_is_rejected(outlook, tmp_path):
 
 
 def test_exclusive_start_refuses_when_outlook_is_already_running():
-    if _pids():
+    if not _wait_until_no_process():
         pytest.skip("an Outlook is already running; this test starts its own")
     proc = subprocess.Popen([_outlook_exe()])
     try:
@@ -317,7 +330,7 @@ def test_exclusive_start_refuses_when_outlook_is_already_running():
 
 
 def test_connect_without_a_running_outlook_is_a_controlled_error():
-    if _pids():
+    if not _wait_until_no_process():
         pytest.skip("an Outlook is running; this test needs none")
     with pytest.raises(RuntimeError, match="No running classic Outlook"):
         OutlookApp.connect()

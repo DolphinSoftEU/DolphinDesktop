@@ -39,6 +39,18 @@ def _powerpoint_pids() -> list[int]:
     return _office_pids(_IMAGE)
 
 
+def _wait_until_no_process(timeout: float = 30.0) -> bool:
+    """A shared-mode instance exits on its own shortly after its last document closes."""
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _powerpoint_pids():
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(1)
+    return True
+
+
 @pytest.fixture(autouse=True)
 def _require_powerpoint():
     if not _powerpoint_registered():
@@ -62,7 +74,7 @@ def png(tmp_path):
 
 def test_exclusive_session_owns_and_quits_its_own_process():
     """exclusive=True starts a fresh POWERPNT.EXE and Quit() really ends it."""
-    if _powerpoint_pids():
+    if not _wait_until_no_process():
         pytest.skip("an operator PowerPoint is running; exclusive mode never claims it")
 
     app = PowerPointApp.create(visible=False, exclusive=True)
@@ -459,7 +471,7 @@ def test_table_values_survive_save_and_reopen(tmp_path):
 @pytest.fixture
 def visible_exclusive_app():
     """A visible deck (charts need a window) in an exclusive process (so it quits)."""
-    if _powerpoint_pids():
+    if not _wait_until_no_process():
         pytest.skip("an operator PowerPoint is running; exclusive mode never claims it")
     with PowerPointApp.create(visible=True, exclusive=True) as app:
         yield app
@@ -497,7 +509,7 @@ def test_chart_exposes_categories_series_and_title(visible_exclusive_app):
 
 
 def test_chart_type_and_data_survive_save_and_reopen(tmp_path):
-    if _powerpoint_pids():
+    if not _wait_until_no_process():
         pytest.skip("an operator PowerPoint is running; exclusive mode never claims it")
     pptx = tmp_path / "chart.pptx"
     with PowerPointApp.create(visible=True, exclusive=True) as app:
@@ -577,7 +589,7 @@ def test_hyperlink_on_text_round_trips_and_persists(tmp_path):
 def test_visible_presentation_gets_a_window_and_hidden_one_does_not():
     # Exclusive first: a shared hidden instance can still be shutting down
     # when the next check for foreign POWERPNT.EXE processes runs.
-    if _powerpoint_pids():
+    if not _wait_until_no_process():
         pytest.skip("an operator PowerPoint is running; exclusive mode never claims it")
     with PowerPointApp.create(visible=True, exclusive=True) as app:
         assert app.active_presentation.has_window

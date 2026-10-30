@@ -56,11 +56,22 @@ def test_powerpoint_default_open_keeps_pptm_macros_disabled(powerpoint_macro_doc
     ``Application.Run``; with macros disabled PowerPoint rejects the request and
     the slide text is unchanged. Macros are never enabled anywhere in this test.
     """
+    from dolphin_desktop._office_session import _office_pids
+
     path, module, macro = powerpoint_macro_document
-    with PowerPointApp.open(path, visible=False) as app:
+    if _office_pids("POWERPNT.EXE"):
+        pytest.skip("a PowerPoint is running; this test owns its process so nothing lingers")
+    # Exclusive so the macro-enabled file never outlives the test in a shared process.
+    with PowerPointApp.open(path, visible=False, exclusive=True) as app:
         deck = app.active_presentation
         assert deck.slide(1).shape(1).text == "macro-not-run"
-        with pytest.raises(Exception, match=r"(?i)macro|makro|disabled|wyłączon"):
+        # With macros disabled PowerPoint does not even load the VBA project, so
+        # the macro is "not defined" from its point of view; the fixture check in
+        # the conftest proves the project and the macro are in the file.
+        with pytest.raises(
+            Exception, match=r"(?i)not defined|nie .*zdefiniow|macro|makro|disabled"
+        ):
             app._com.Run(f"{path.name}!{module}.{macro}")
         assert deck.slide(1).shape(1).text == "macro-not-run"
         assert int(app._com.AutomationSecurity) != 3, "ForceDisable applies only while opening"
+    assert not _office_pids("POWERPNT.EXE")

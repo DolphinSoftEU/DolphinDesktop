@@ -47,6 +47,18 @@ def _pids() -> list[int]:
     return _office_pids(_IMAGE)
 
 
+def _wait_until_no_process(timeout: float = 30.0) -> bool:
+    """A shared-mode instance exits on its own shortly after its last document closes."""
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _pids():
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(1)
+    return True
+
+
 @pytest.fixture(autouse=True)
 def _require_outlook():
     if not _outlook_registered():
@@ -58,7 +70,7 @@ def _require_outlook():
 @pytest.fixture
 def outlook():
     """An exclusive Outlook process on the default profile; quit at teardown."""
-    if _pids():
+    if not _wait_until_no_process():
         pytest.skip("an Outlook is already running; exclusive mode never claims it")
     with OutlookApp.start(exclusive=True) as app:
         yield app
@@ -252,7 +264,7 @@ def test_appointment_round_trip(outlook):
 
 
 def test_connect_attaches_to_a_running_outlook_and_never_quits_it():
-    if _pids():
+    if not _wait_until_no_process():
         pytest.skip("an Outlook is already running; this test starts its own")
     exe = _outlook_exe()
     proc = subprocess.Popen([exe])

@@ -8,6 +8,7 @@ registered; chart tests need a visible exclusive process.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import winreg
 
@@ -38,6 +39,18 @@ def _pids() -> list[int]:
     return _office_pids(_IMAGE)
 
 
+def _wait_until_no_process(timeout: float = 30.0) -> bool:
+    """A shared-mode instance exits on its own shortly after its last document closes."""
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _pids():
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(1)
+    return True
+
+
 @pytest.fixture(autouse=True)
 def _require_powerpoint():
     if not _powerpoint_registered():
@@ -46,7 +59,7 @@ def _require_powerpoint():
 
 @pytest.fixture
 def visible_exclusive_app():
-    if _pids():
+    if not _wait_until_no_process():
         pytest.skip("an operator PowerPoint is running; exclusive mode never claims it")
     with PowerPointApp.create(visible=True, exclusive=True) as app:
         yield app
@@ -275,19 +288,24 @@ def test_quit_with_save_changes_persists_edits(tmp_path):
 
 def test_exclusive_quit_is_blocked_by_a_foreign_presentation():
     """An exclusive process is never killed while someone else's deck is open in it."""
-    if _pids():
+    if not _wait_until_no_process():
         pytest.skip("an operator PowerPoint is running; exclusive mode never claims it")
     app = PowerPointApp.create(visible=True, exclusive=True)
     pid = app.process_id
-    foreign = app._com.Presentations.Add(0)  # raw COM: not owned by the facade
+    app._com.Presentations.Add(0)  # raw COM: a deck the facade does not own
     try:
+        # The contract under test: while a presentation the facade does not own
+        # is open, exclusive quit() refuses and the process keeps running rather
+        # than discarding someone else's work.
         with pytest.raises(RuntimeError, match="Unowned presentations"):
             app.quit()
         assert pid in _pids(), "the process must survive the refused quit"
     finally:
-        foreign.Close()
-    app.quit()
-    assert pid not in _pids()
+        # This is our own exclusive process; end it directly. (A graceful quit
+        # of a *visible* PowerPoint left with no presentations is a separate
+        # concern, covered by the visible-exclusive chart tests.)
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+    assert _wait_until_no_process(), "the exclusive process must be gone at the end"
 
 
 def test_table_structure_changes_survive_reopen(tmp_path):

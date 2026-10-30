@@ -18,6 +18,8 @@ literal-typing checks use the visible User field.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from tests.sap.conftest import _preflight_required, sap_config
 
@@ -50,7 +52,21 @@ def logon_screen(sap_gui):
     cfg = sap_config()
     if not cfg["connection"]:
         _skip_or_fail("DOLPHIN_SAP_CONNECTION is not set (name of the SAP Logon entry)")
-    session = sap_gui.open_connection(cfg["connection"], timeout=30)
+    # Opening a connection raises the SAP GUI "a script is opening a connection"
+    # security dialog; the handler dismisses it, but the OpenConnection call can
+    # still lose the race once and come back as E_ACCESSDENIED. Retry a few times
+    # before giving up so a single popup race is not reported as a hard error.
+    session = None
+    last_exc: Exception | None = None
+    for _ in range(5):
+        try:
+            session = sap_gui.open_connection(cfg["connection"], timeout=30)
+            break
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(1.0)
+    else:
+        _skip_or_fail(f"could not open the SAP connection (scripting popup race): {last_exc}")
     if session is None:
         _skip_or_fail("scripting session not accessible; enable sapgui/user_scripting")
     try:
