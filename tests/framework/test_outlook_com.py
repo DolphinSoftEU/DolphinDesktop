@@ -109,6 +109,8 @@ def test_mail_fields_attachments_and_local_save(client, tmp_path):
         assert mail.html_body == "<p>html</p>"
         mail._com.EntryID = "entry"
         assert mail.entry_id == "entry"
+        # add_attachment refuses a missing file, so the attachment must exist.
+        (tmp_path / "input.txt").write_text("x", encoding="utf-8")
         attachment = mail.add_attachment(tmp_path / "input.txt")
         mail._com.Attachments.Add.assert_called_once_with(str(tmp_path / "input.txt"), 1)
         attachment._com.FileName = "input.txt"
