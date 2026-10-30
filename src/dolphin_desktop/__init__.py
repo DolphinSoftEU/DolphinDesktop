@@ -143,7 +143,15 @@ from ._oracle_forms import (
     OracleFormsWindow,
 )
 from ._outlook import OutlookApp, OutlookAppointment, OutlookAttachment, OutlookFolder, OutlookMail
-from ._powerpoint import PowerPointApp, PowerPointPresentation, PowerPointShape, PowerPointSlide
+from ._powerpoint import (
+    PowerPointApp,
+    PowerPointChart,
+    PowerPointPresentation,
+    PowerPointShape,
+    PowerPointSlide,
+    PowerPointTable,
+    PowerPointTextRange,
+)
 from ._qt_elements import (
     GraphicsViewElement,
     QmlElement,
@@ -233,9 +241,12 @@ __all__ = [
     "OutlookFolder",
     "OutlookMail",
     "PowerPointApp",
+    "PowerPointChart",
     "PowerPointPresentation",
     "PowerPointShape",
     "PowerPointSlide",
+    "PowerPointTable",
+    "PowerPointTextRange",
     "QmlElement",
     "QtAgentClient",
     "QtAgentInjectError",

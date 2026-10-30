@@ -136,7 +136,10 @@ class OutlookMail(OutlookItem):
         if moved is None:
             self._closed = True  # outcome unknown; never reuse a potentially stale proxy
             raise RuntimeError("Outlook Move returned no item; verify the destination folder")
-        self._com = moved
+        # The proxy Move() returns is only half alive on PST stores: Delete() on
+        # it silently does nothing. Re-fetch the item by its new EntryID so every
+        # later operation acts on a proxy Outlook fully honours.
+        self._com = owner._fresh_item(moved)
         return self
 
     def delete(self, *, permanent: bool = False) -> None:
@@ -155,8 +158,14 @@ class OutlookMail(OutlookItem):
         if permanent:
             if not in_deleted:
                 raise ValueError("Permanent deletion requires the draft to be in Deleted Items")
-            self._com.Delete()
+            entry_id, store_id = str(self._com.EntryID), str(parent.StoreID)
+            owner._fresh_item(self._com).Delete()
             self._closed = True
+            if owner._item_exists(entry_id, store_id):
+                raise RuntimeError(
+                    "Outlook kept the draft in Deleted Items after Delete(); "
+                    "permanent deletion did not take effect"
+                )
         else:
             if in_deleted:
                 raise ValueError("Draft is already in Deleted Items; use explicit permanent=True")
@@ -208,9 +217,16 @@ class OutlookMail(OutlookItem):
         return OutlookAttachment(self._com.Attachments.Item(index), _owner=self._owner)
 
     def add_attachment(self, path: str | Path) -> OutlookAttachment:
-        """Attach a local file by value."""
+        """Attach a local file by value; FileNotFoundError when it does not exist.
+
+        Outlook itself ignores a missing path without raising, which would
+        leave the message silently without the attachment.
+        """
+        resolved = Path(path).resolve()
+        if not resolved.is_file():
+            raise FileNotFoundError(str(resolved))
         return OutlookAttachment(
-            self._com.Attachments.Add(str(Path(path).resolve()), 1),
+            self._com.Attachments.Add(str(resolved), 1),
             _owner=self._owner,
         )
 
@@ -350,6 +366,20 @@ class OutlookApp:
             self._namespace = namespace
         except Exception as exc:
             raise RuntimeError("Outlook MAPI profile unavailable or no accessible store") from exc
+
+    def _fresh_item(self, com: Any) -> Any:
+        """Re-fetch *com* by EntryID; fall back to *com* when the store cannot."""
+        try:
+            return self._namespace.GetItemFromID(str(com.EntryID), str(com.Parent.StoreID))
+        except Exception:
+            return com
+
+    def _item_exists(self, entry_id: str, store_id: str) -> bool:
+        try:
+            self._namespace.GetItemFromID(entry_id, store_id)
+        except Exception:
+            return False
+        return True
 
     def _lookup_item(self, com: Any) -> OutlookItem:
         # Only drafts created here may regain ownership after a folder lookup.

@@ -1,68 +1,36 @@
-"""Generate harmless macro fixtures without changing Office security policies."""
+"""Office fixtures: shipped macro documents and generated harmless link documents."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+
+_FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "office"
+
+# Generated once by tests/fixtures/office/make_macro_fixtures.py on a machine
+# where "trust access to the VBA project object model" was enabled on purpose.
+# Each file carries a single macro that rewrites a marker inside the document
+# itself when it opens; nothing outside the document is touched.
+_MACRO_FILES = {"Excel": "benign.xlsm", "Word": "benign.docm", "PowerPoint": "benign.pptm"}
 
 
 @pytest.fixture(params=["Excel", "Word"])
 def office_macro_document(request, tmp_path):
-    client = pytest.importorskip("win32com.client")
+    """A copy of the benign macro document plus an identical control copy.
+
+    Office refuses to add macros programmatically unless the operator trusts
+    the VBA project object model, so the documents are shipped pre-built
+    rather than generated here; the tests therefore run with Office's default
+    security settings and never change them.
+    """
+    pytest.importorskip("win32com.client")
     kind = request.param
-    try:
-        app = client.DispatchEx(f"{kind}.Application")
-    except Exception as exc:
-        pytest.skip(f"{kind} COM unavailable: {exc}")
-
-    document = None
-    fixture_error = None
-    try:
-        app.Visible = False
-        app.DisplayAlerts = 0
-        app.AutomationSecurity = 3
-        if kind == "Excel":
-            document = app.Workbooks.Add()
-            document.Sheets(1).Cells(1, 1).Value = "macro-not-run"
-            module_name = "ThisWorkbook"
-            macro = (
-                "Private Sub Workbook_Open()\n"
-                '    ThisWorkbook.Worksheets(1).Cells(1, 1).Value = "macro-ran"\n'
-                "End Sub"
-            )
-        else:
-            document = app.Documents.Add()
-            document.Content.Text = "macro-not-run"
-            module_name = "ThisDocument"
-            macro = (
-                'Private Sub Document_Open()\n    ThisDocument.Content.Text = "macro-ran"\nEnd Sub'
-            )
-
-        try:
-            module = document.VBProject.VBComponents(module_name).CodeModule
-        except Exception as exc:
-            fixture_error = (
-                f"{kind} fixture creation needs existing trusted VBA project access; "
-                f"security settings were not changed: {exc}"
-            )
-        if fixture_error is None:
-            module.AddFromString(macro)
-            module = None
-            path = tmp_path / ("benign.xlsm" if kind == "Excel" else "benign.docm")
-            if kind == "Excel":
-                document.SaveAs(str(path), 52)  # xlOpenXMLWorkbookMacroEnabled
-            else:
-                document.SaveAs2(str(path), 13)  # wdFormatXMLDocumentMacroEnabled
-    finally:
-        try:
-            if document is not None:
-                document.Close(0)
-        finally:
-            document = None
-            app.Quit()
-            app = None
-
-    if fixture_error is not None:
-        pytest.skip(fixture_error)
+    source = _FIXTURES / _MACRO_FILES[kind]
+    if not source.is_file():
+        pytest.skip(f"{source.name} missing; regenerate with make_macro_fixtures.py")
+    path = tmp_path / source.name
+    path.write_bytes(source.read_bytes())
     control_path = path.with_name(f"control{path.suffix}")
     control_path.write_bytes(path.read_bytes())
     return kind, path, control_path
@@ -125,11 +93,15 @@ def word_link_document(tmp_path):
         source.Close(0)
         source = None
         target = app.Documents.Add()
-        # wdFieldLink=56. The \a switch marks this OLE link for automatic updates;
-        # \t renders the cached result as text without activating an OLE object.
+        # The \a switch marks this OLE link for automatic updates; \t renders
+        # the cached result as text without activating an OLE object. The field
+        # is inserted as wdFieldEmpty (-1) with the full LINK code: asking for
+        # wdFieldLink (56) makes Word build the OLE object inside Fields.Add,
+        # which on some machines takes a minute or never returns. Update()
+        # below resolves the link once, on our terms.
         link_path = str(source_path).replace("\\", "\\\\")
         field = target.Fields.Add(
-            target.Range(0, 0), 56, f'Word.Document.12 "{link_path}" "" \\a \\t', False
+            target.Range(0, 0), -1, f'LINK Word.Document.12 "{link_path}" "" \\a \\t', False
         )
         field.Update()
         assert field.Result.Text.strip() == "cached-value"
@@ -149,3 +121,20 @@ def word_link_document(tmp_path):
         finally:
             app.Quit()
     return target_path
+
+
+@pytest.fixture
+def powerpoint_macro_document(tmp_path):
+    """Copy of the shipped .pptm plus the (module, macro) names it carries."""
+    import zipfile
+
+    pytest.importorskip("win32com.client")
+    source = _FIXTURES / _MACRO_FILES["PowerPoint"]
+    if not source.is_file():
+        pytest.skip(f"{source.name} missing; regenerate with make_macro_fixtures.py")
+    with zipfile.ZipFile(source) as package:
+        assert "ppt/vbaProject.bin" in package.namelist(), "fixture lost its VBA project"
+        assert b"MarkRan" in package.read("ppt/vbaProject.bin"), "fixture lost its macro"
+    path = tmp_path / source.name
+    path.write_bytes(source.read_bytes())
+    return path, "DolphinMacro", "MarkRan"

@@ -6,18 +6,265 @@ operator's process. Never quit that process or close untracked presentations.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from ._office import _require_win32com
 from ._office_session import _OfficeSession, _start_office
 
+# Office MsoTriState values: formatting reads return None for msoTriStateMixed.
+_MSO_TRUE = -1
+_MSO_FALSE = 0
+_MSO_MIXED = -2
 
-class PowerPointShape:
-    """A named PowerPoint shape with optional editable text."""
+_PP_PLACEHOLDER_BODY = 2  # PpPlaceholderType.ppPlaceholderBody: the notes text
+_PP_MOUSE_CLICK = 1  # PpMouseActivation.ppMouseClick
+_XL_COLUMN_CLUSTERED = 51  # XlChartType default for add_chart()
+
+
+def _tristate(value: Any) -> bool | None:
+    state = int(value)
+    if state == _MSO_MIXED:
+        return None
+    return state != _MSO_FALSE
+
+
+def _mso(value: bool) -> int:
+    return _MSO_TRUE if value else _MSO_FALSE
+
+
+def _rgb_from_office(value: Any) -> tuple[int, int, int]:
+    """Office packs colours as B*65536 + G*256 + R."""
+    packed = int(value)
+    return packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF
+
+
+def _rgb_to_office(rgb: tuple[int, int, int]) -> int:
+    red, green, blue = rgb
+    for channel in (red, green, blue):
+        if not 0 <= int(channel) <= 255:
+            raise ValueError(f"RGB channels must be 0..255, got {rgb!r}")
+    return int(red) | (int(green) << 8) | (int(blue) << 16)
+
+
+class _ComOwner:
+    """Shared release bookkeeping: children are released before the parent."""
 
     def __init__(self, _com: Any) -> None:
         self._com = _com
+        self._children: list[_ComOwner] = []
+
+    def _adopt(self, child: _ComOwnerT) -> _ComOwnerT:
+        self._children.append(child)
+        return child
+
+    def _release_com(self) -> None:
+        for child in self._children:
+            child._release_com()
+        self._children.clear()
+        self._com = None
+
+
+_ComOwnerT = TypeVar("_ComOwnerT", bound=_ComOwner)
+
+
+class PowerPointTextRange(_ComOwner):
+    """A run of text with its font formatting.
+
+    Formatting reads return ``None`` when the range mixes values (bold and
+    plain words in one box, say); writes apply to every character in the
+    range. Character positions are 1-based, as in PowerPoint itself.
+    """
+
+    @property
+    def text(self) -> str:
+        return str(self._com.Text)
+
+    @text.setter
+    def text(self, value: str) -> None:
+        self._com.Text = value
+
+    @property
+    def length(self) -> int:
+        """Number of characters in the range."""
+        return int(self._com.Length)
+
+    @property
+    def bold(self) -> bool | None:
+        return _tristate(self._com.Font.Bold)
+
+    @bold.setter
+    def bold(self, value: bool) -> None:
+        self._com.Font.Bold = _mso(value)
+
+    @property
+    def italic(self) -> bool | None:
+        return _tristate(self._com.Font.Italic)
+
+    @italic.setter
+    def italic(self, value: bool) -> None:
+        self._com.Font.Italic = _mso(value)
+
+    @property
+    def underline(self) -> bool | None:
+        return _tristate(self._com.Font.Underline)
+
+    @underline.setter
+    def underline(self, value: bool) -> None:
+        self._com.Font.Underline = _mso(value)
+
+    @property
+    def font_name(self) -> str:
+        """Font family; empty when the range mixes fonts."""
+        return str(self._com.Font.Name or "")
+
+    @font_name.setter
+    def font_name(self, value: str) -> None:
+        self._com.Font.Name = value
+
+    @property
+    def font_size(self) -> float:
+        """Font size in points."""
+        return float(self._com.Font.Size)
+
+    @font_size.setter
+    def font_size(self, value: float) -> None:
+        self._com.Font.Size = float(value)
+
+    @property
+    def font_color(self) -> tuple[int, int, int]:
+        """Font colour as an ``(red, green, blue)`` tuple."""
+        return _rgb_from_office(self._com.Font.Color.RGB)
+
+    @font_color.setter
+    def font_color(self, value: tuple[int, int, int]) -> None:
+        self._com.Font.Color.RGB = _rgb_to_office(value)
+
+    @property
+    def hyperlink(self) -> str:
+        """Mouse-click hyperlink address of the range, or ``""`` when there is none."""
+        return str(self._com.ActionSettings(_PP_MOUSE_CLICK).Hyperlink.Address or "")
+
+    @hyperlink.setter
+    def hyperlink(self, address: str) -> None:
+        self._com.ActionSettings(_PP_MOUSE_CLICK).Hyperlink.Address = address
+
+    def characters(self, start: int, length: int | None = None) -> PowerPointTextRange:
+        """Sub-range starting at 1-based *start*; *length* defaults to the rest."""
+        if start < 1:
+            raise ValueError("start is 1-based and must be >= 1")
+        if length is None:
+            length = self.length - start + 1
+        return self._adopt(PowerPointTextRange(self._com.Characters(start, length)))
+
+    @property
+    def paragraphs(self) -> list[str]:
+        """Paragraph texts without their trailing paragraph marks."""
+        count = int(self._com.Paragraphs().Count)
+        return [str(self._com.Paragraphs(i).Text).rstrip("\r\n") for i in range(1, count + 1)]
+
+
+class PowerPointTable(_ComOwner):
+    """A table shape's grid; rows and columns are 1-based like PowerPoint."""
+
+    @property
+    def rows(self) -> int:
+        return int(self._com.Rows.Count)
+
+    @property
+    def columns(self) -> int:
+        return int(self._com.Columns.Count)
+
+    def cell(self, row: int, column: int) -> PowerPointTextRange:
+        """The text of one cell as a formattable range."""
+        return self._adopt(
+            PowerPointTextRange(self._com.Cell(row, column).Shape.TextFrame.TextRange)
+        )
+
+    def row_values(self, row: int) -> list[str]:
+        return [self.cell(row, column).text for column in range(1, self.columns + 1)]
+
+    @property
+    def values(self) -> list[list[str]]:
+        """All cell texts, row by row."""
+        return [self.row_values(row) for row in range(1, self.rows + 1)]
+
+    def set_values(self, rows: Sequence[Sequence[Any]], *, start_row: int = 1) -> None:
+        """Write *rows* into the table from *start_row*; the grid must be large enough."""
+        for offset, values in enumerate(rows):
+            row = start_row + offset
+            if row > self.rows or len(values) > self.columns:
+                raise ValueError(
+                    f"{len(rows)} row(s) of up to {max(len(v) for v in rows)} value(s) do "
+                    f"not fit a {self.rows}x{self.columns} table from row {start_row}"
+                )
+            for column, value in enumerate(values, start=1):
+                self.cell(row, column).text = str(value)
+
+    def add_row(self, before: int | None = None) -> None:
+        """Append a row, or insert one before the 1-based *before* row."""
+        if before is None:
+            self._com.Rows.Add()
+        else:
+            self._com.Rows.Add(before)
+
+    def add_column(self, before: int | None = None) -> None:
+        if before is None:
+            self._com.Columns.Add()
+        else:
+            self._com.Columns.Add(before)
+
+    def delete_row(self, row: int) -> None:
+        self._com.Rows(row).Delete()
+
+    def delete_column(self, column: int) -> None:
+        self._com.Columns(column).Delete()
+
+
+class PowerPointChart(_ComOwner):
+    """Read-mostly view of a chart shape: type, title, categories and series."""
+
+    @property
+    def chart_type(self) -> int:
+        """The XlChartType value (51 is a clustered column chart)."""
+        return int(self._com.ChartType)
+
+    @property
+    def has_title(self) -> bool:
+        return bool(self._com.HasTitle)
+
+    @property
+    def title(self) -> str:
+        return str(self._com.ChartTitle.Text) if self.has_title else ""
+
+    @title.setter
+    def title(self, value: str) -> None:
+        self._com.HasTitle = _MSO_TRUE
+        self._com.ChartTitle.Text = value
+
+    @property
+    def series_count(self) -> int:
+        return int(self._com.SeriesCollection().Count)
+
+    @property
+    def series_names(self) -> list[str]:
+        return [str(self._com.SeriesCollection(i).Name) for i in range(1, self.series_count + 1)]
+
+    @property
+    def categories(self) -> list[str]:
+        """Category labels of the first series."""
+        if self.series_count == 0:
+            return []
+        return [str(value) for value in self._com.SeriesCollection(1).XValues]
+
+    def series_values(self, name_or_index: str | int) -> list[float]:
+        """Numeric values of one series, by 1-based index or by name."""
+        return [float(value) for value in self._com.SeriesCollection(name_or_index).Values]
+
+
+class PowerPointShape(_ComOwner):
+    """A named PowerPoint shape: text, formatting, geometry, table or chart."""
 
     @property
     def name(self) -> str:
@@ -25,25 +272,156 @@ class PowerPointShape:
         return str(self._com.Name)
 
     @property
-    def text(self) -> str:
-        """Read shape text; raise ValueError for shapes without a text frame."""
+    def has_text(self) -> bool:
+        """Whether the shape carries a text frame (pictures and lines do not)."""
+        return bool(self._com.HasTextFrame)
+
+    def _frame(self) -> Any:
         if not self._com.HasTextFrame:
             raise ValueError(f"Shape {self.name!r} has no text frame")
-        return str(self._com.TextFrame.TextRange.Text)
+        return self._com.TextFrame
+
+    @property
+    def text_range(self) -> PowerPointTextRange:
+        """The whole text of the shape as a formattable range."""
+        return self._adopt(PowerPointTextRange(self._frame().TextRange))
+
+    def characters(self, start: int, length: int | None = None) -> PowerPointTextRange:
+        """A 1-based sub-range of the shape text; see :meth:`PowerPointTextRange.characters`."""
+        return self.text_range.characters(start, length)
+
+    @property
+    def text(self) -> str:
+        """Read shape text; raise ValueError for shapes without a text frame."""
+        return str(self._frame().TextRange.Text)
 
     @text.setter
     def text(self, value: str) -> None:
-        if not self._com.HasTextFrame:
-            raise ValueError(f"Shape {self.name!r} has no text frame")
-        self._com.TextFrame.TextRange.Text = value
+        self._frame().TextRange.Text = value
+
+    @property
+    def paragraphs(self) -> list[str]:
+        return self.text_range.paragraphs
+
+    @property
+    def bold(self) -> bool | None:
+        return self.text_range.bold
+
+    @bold.setter
+    def bold(self, value: bool) -> None:
+        self.text_range.bold = value
+
+    @property
+    def italic(self) -> bool | None:
+        return self.text_range.italic
+
+    @italic.setter
+    def italic(self, value: bool) -> None:
+        self.text_range.italic = value
+
+    @property
+    def underline(self) -> bool | None:
+        return self.text_range.underline
+
+    @underline.setter
+    def underline(self, value: bool) -> None:
+        self.text_range.underline = value
+
+    @property
+    def font_name(self) -> str:
+        return self.text_range.font_name
+
+    @font_name.setter
+    def font_name(self, value: str) -> None:
+        self.text_range.font_name = value
+
+    @property
+    def font_size(self) -> float:
+        return self.text_range.font_size
+
+    @font_size.setter
+    def font_size(self, value: float) -> None:
+        self.text_range.font_size = value
+
+    @property
+    def font_color(self) -> tuple[int, int, int]:
+        return self.text_range.font_color
+
+    @font_color.setter
+    def font_color(self, value: tuple[int, int, int]) -> None:
+        self.text_range.font_color = value
+
+    @property
+    def hyperlink(self) -> str:
+        return self.text_range.hyperlink
+
+    @hyperlink.setter
+    def hyperlink(self, address: str) -> None:
+        self.text_range.hyperlink = address
+
+    # Tables and charts.
+
+    @property
+    def has_table(self) -> bool:
+        return bool(self._com.HasTable)
+
+    @property
+    def table(self) -> PowerPointTable:
+        if not self._com.HasTable:
+            raise ValueError(f"Shape {self.name!r} is not a table")
+        return self._adopt(PowerPointTable(self._com.Table))
+
+    @property
+    def has_chart(self) -> bool:
+        return bool(self._com.HasChart)
+
+    @property
+    def chart(self) -> PowerPointChart:
+        if not self._com.HasChart:
+            raise ValueError(f"Shape {self.name!r} is not a chart")
+        return self._adopt(PowerPointChart(self._com.Chart))
+
+    # Geometry, in points.
+
+    @property
+    def left(self) -> float:
+        return float(self._com.Left)
+
+    @left.setter
+    def left(self, value: float) -> None:
+        self._com.Left = float(value)
+
+    @property
+    def top(self) -> float:
+        return float(self._com.Top)
+
+    @top.setter
+    def top(self, value: float) -> None:
+        self._com.Top = float(value)
+
+    @property
+    def width(self) -> float:
+        return float(self._com.Width)
+
+    @width.setter
+    def width(self, value: float) -> None:
+        self._com.Width = float(value)
+
+    @property
+    def height(self) -> float:
+        return float(self._com.Height)
+
+    @height.setter
+    def height(self, value: float) -> None:
+        self._com.Height = float(value)
+
+    def delete(self) -> None:
+        """Remove this shape from its slide."""
+        self._com.Delete()
 
 
-class PowerPointSlide:
-    """A slide with shape lookup and text-box creation."""
-
-    def __init__(self, _com: Any) -> None:
-        self._com = _com
-        self._shapes: list[PowerPointShape] = []
+class PowerPointSlide(_ComOwner):
+    """A slide with shape lookup, text boxes, pictures, tables, charts and notes."""
 
     @property
     def index(self) -> int:
@@ -55,11 +433,76 @@ class PowerPointSlide:
         """Number of shapes on the slide."""
         return int(self._com.Shapes.Count)
 
+    def _track(self, com_shape: Any) -> PowerPointShape:
+        return self._adopt(PowerPointShape(com_shape))
+
     def shape(self, name_or_index: str | int) -> PowerPointShape:
-        """Return a shape by name or 1-based index."""
-        shape = PowerPointShape(self._com.Shapes.Item(name_or_index))
-        self._shapes.append(shape)
-        return shape
+        """Return a shape by name or 1-based index; LookupError when there is none."""
+        try:
+            com_shape = self._com.Shapes.Item(name_or_index)
+        except Exception as exc:
+            raise LookupError(
+                f"No shape {name_or_index!r} on slide {self.index} (shapes: {self.shape_names})"
+            ) from exc
+        return self._track(com_shape)
+
+    @property
+    def shapes(self) -> list[PowerPointShape]:
+        """All shapes on the slide, in z-order."""
+        return [self._track(self._com.Shapes.Item(i)) for i in range(1, self.shape_count + 1)]
+
+    @property
+    def shape_names(self) -> list[str]:
+        return [str(self._com.Shapes.Item(i).Name) for i in range(1, self.shape_count + 1)]
+
+    # Layout placeholders and notes.
+
+    @property
+    def has_title(self) -> bool:
+        """Whether the slide layout provides a title placeholder."""
+        return bool(self._com.Shapes.HasTitle)
+
+    @property
+    def title(self) -> str:
+        """Text of the layout's title placeholder; ValueError when the layout has none."""
+        if not self.has_title:
+            raise ValueError("slide layout has no title placeholder")
+        return str(self._com.Shapes.Title.TextFrame.TextRange.Text)
+
+    @title.setter
+    def title(self, value: str) -> None:
+        if not self.has_title:
+            raise ValueError("slide layout has no title placeholder")
+        self._com.Shapes.Title.TextFrame.TextRange.Text = value
+
+    def _notes_placeholder(self) -> Any | None:
+        shapes = self._com.NotesPage.Shapes
+        for i in range(1, int(shapes.Count) + 1):
+            shape = shapes.Item(i)
+            try:
+                placeholder_type = int(shape.PlaceholderFormat.Type)
+            except Exception:
+                continue  # not a placeholder
+            if placeholder_type == _PP_PLACEHOLDER_BODY:
+                return shape
+        return None
+
+    @property
+    def notes(self) -> str:
+        """Speaker notes text, ``""`` when the notes page has no body placeholder."""
+        placeholder = self._notes_placeholder()
+        if placeholder is None:
+            return ""
+        return str(placeholder.TextFrame.TextRange.Text)
+
+    @notes.setter
+    def notes(self, value: str) -> None:
+        placeholder = self._notes_placeholder()
+        if placeholder is None:
+            raise RuntimeError("slide notes page has no body placeholder to write into")
+        placeholder.TextFrame.TextRange.Text = value
+
+    # Shape creation.
 
     def add_textbox(
         self,
@@ -71,23 +514,122 @@ class PowerPointSlide:
         height: float = 100,
     ) -> PowerPointShape:
         """Add horizontal text; position and size are in points."""
-        shape = PowerPointShape(self._com.Shapes.AddTextbox(1, left, top, width, height))
-        self._shapes.append(shape)
+        shape = self._track(self._com.Shapes.AddTextbox(1, left, top, width, height))
         shape.text = text
         return shape
+
+    def add_picture(
+        self,
+        path: str | Path,
+        *,
+        left: float = 36,
+        top: float = 36,
+        width: float | None = None,
+        height: float | None = None,
+    ) -> PowerPointShape:
+        """Embed an image file; omitted width/height keep the picture's own size."""
+        resolved = Path(path).resolve()
+        if not resolved.is_file():
+            raise FileNotFoundError(str(resolved))
+        return self._track(
+            self._com.Shapes.AddPicture(
+                str(resolved),
+                _MSO_FALSE,  # LinkToFile: embed, never link to a path
+                _MSO_TRUE,  # SaveWithDocument
+                left,
+                top,
+                -1 if width is None else width,
+                -1 if height is None else height,
+            )
+        )
+
+    def add_table(
+        self,
+        rows: int,
+        columns: int,
+        *,
+        left: float = 36,
+        top: float = 36,
+        width: float = 600,
+        height: float = 200,
+        values: Sequence[Sequence[Any]] | None = None,
+    ) -> PowerPointShape:
+        """Add a *rows* x *columns* table, optionally filled from *values* row by row."""
+        if rows < 1 or columns < 1:
+            raise ValueError("a table needs at least one row and one column")
+        shape = self._track(self._com.Shapes.AddTable(rows, columns, left, top, width, height))
+        if values is not None:
+            shape.table.set_values(values)
+        return shape
+
+    def add_chart(
+        self,
+        categories: Sequence[Any],
+        series: Mapping[str, Sequence[float]],
+        *,
+        chart_type: int = _XL_COLUMN_CLUSTERED,
+        left: float = 36,
+        top: float = 36,
+        width: float = 600,
+        height: float = 300,
+        title: str | None = None,
+    ) -> PowerPointShape:
+        """Add a chart fed from *categories* and named *series*.
+
+        Series are written as literal arrays on the chart itself, so the
+        embedded Excel workbook is never opened and Excel is not required.
+        PowerPoint refuses to insert charts into a presentation that has no
+        document window, so the presentation must come from
+        ``create(visible=True)`` / ``open(visible=True)`` or be the operator's.
+        """
+        if not categories or not series:
+            raise ValueError("a chart needs at least one category and one series")
+        for name, values in series.items():
+            if len(values) != len(categories):
+                raise ValueError(
+                    f"series {name!r} has {len(values)} value(s) for {len(categories)} categories"
+                )
+        if not self._presentation_has_window():
+            raise RuntimeError(
+                "PowerPoint cannot insert a chart into a presentation without a "
+                "document window; create or open it with visible=True"
+            )
+        shape_com = self._com.Shapes.AddChart2(-1, chart_type, left, top, width, height, True)
+        chart = shape_com.Chart
+        # AddChart2 applies a style that may change the type (a line chart
+        # comes back as line-with-markers); pin the requested type.
+        chart.ChartType = chart_type
+        collection = chart.SeriesCollection()
+        for index in range(int(collection.Count), 0, -1):
+            collection(index).Delete()  # the template's sample series
+        labels = tuple(categories)
+        for name, values in series.items():
+            new_series = collection.NewSeries()
+            new_series.Name = name
+            new_series.XValues = labels
+            new_series.Values = tuple(float(value) for value in values)
+        shape = self._track(shape_com)
+        if title is not None:
+            shape.chart.title = title
+        return shape
+
+    def _presentation_has_window(self) -> bool:
+        try:
+            return int(self._com.Parent.Windows.Count) > 0
+        except Exception:
+            return False
 
     def delete(self) -> None:
         """Delete this slide from its presentation."""
         self._com.Delete()
 
 
-class PowerPointPresentation:
+class PowerPointPresentation(_ComOwner):
     """Presentation with slide access, persistence and PDF export."""
 
     def __init__(self, _com: Any) -> None:
-        self._com = _com
+        super().__init__(_com)
         self._closed = False
-        self._slides: list[PowerPointSlide] = []
 
     @property
     def name(self) -> str:
@@ -99,17 +641,42 @@ class PowerPointPresentation:
         """Number of slides."""
         return int(self._com.Slides.Count)
 
+    @property
+    def slide_size(self) -> tuple[float, float]:
+        """Slide ``(width, height)`` in points."""
+        setup = self._com.PageSetup
+        return float(setup.SlideWidth), float(setup.SlideHeight)
+
+    @property
+    def has_window(self) -> bool:
+        """Whether PowerPoint shows this presentation in a document window."""
+        return int(self._com.Windows.Count) > 0
+
+    def _track(self, com_slide: Any) -> PowerPointSlide:
+        return self._adopt(PowerPointSlide(com_slide))
+
     def slide(self, index: int) -> PowerPointSlide:
-        """Return a slide by 1-based index."""
-        slide = PowerPointSlide(self._com.Slides.Item(index))
-        self._slides.append(slide)
-        return slide
+        """Return a slide by 1-based index; LookupError when there is none."""
+        try:
+            com_slide = self._com.Slides.Item(index)
+        except Exception as exc:
+            raise LookupError(
+                f"No slide {index} in {self.name!r} ({self.slide_count} slide(s))"
+            ) from exc
+        return self._track(com_slide)
+
+    @property
+    def slides(self) -> list[PowerPointSlide]:
+        """All slides in presentation order."""
+        return [self._track(self._com.Slides.Item(i)) for i in range(1, self.slide_count + 1)]
 
     def add_slide(self, *, layout: int = 12) -> PowerPointSlide:
-        """Append a slide using a PpSlideLayout value (12 means blank)."""
-        slide = PowerPointSlide(self._com.Slides.Add(self.slide_count + 1, layout))
-        self._slides.append(slide)
-        return slide
+        """Append a slide using a PpSlideLayout value (12 blank, 11 title only, 1 title)."""
+        return self._track(self._com.Slides.Add(self.slide_count + 1, layout))
+
+    def move_slide(self, index: int, new_index: int) -> None:
+        """Move the slide at 1-based *index* so that it becomes *new_index*."""
+        self._com.Slides.Item(index).MoveTo(new_index)
 
     def save(self) -> None:
         """Save changes to the existing presentation file."""
@@ -134,15 +701,6 @@ class PowerPointPresentation:
         self._com.Close()
         self._closed = True
         self._release_com()
-
-    def _release_com(self) -> None:
-        for slide in self._slides:
-            for shape in slide._shapes:
-                shape._com = None
-            slide._shapes.clear()
-            slide._com = None
-        self._slides.clear()
-        self._com = None
 
 
 class PowerPointApp:
@@ -216,6 +774,9 @@ class PowerPointApp:
         if not isinstance(allow_macros, bool):
             raise TypeError("allow_macros must be a bool")
         resolved = Path(path).resolve()
+        if not resolved.is_file():
+            # Checked before any COM activation so a typo never starts PowerPoint.
+            raise FileNotFoundError(str(resolved))
         com, session = _start_office(
             _require_win32com(),
             "PowerPoint.Application",
