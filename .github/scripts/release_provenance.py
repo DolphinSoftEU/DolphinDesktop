@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 
 REQUIRED_JOBS = {
+    "Qt agent reproducibility / Qt5 and Qt6",
     "Unit / Python 3.11 / Windows",
     "Unit / Python 3.12 / Windows",
     "Unit / Python 3.13 / Windows",

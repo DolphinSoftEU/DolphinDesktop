@@ -7,17 +7,25 @@ The Python-side protocol and lifecycle are documented in
 
 ## Reproducible Windows builds
 
-Stage the intended source, then build from an x64 MSVC developer shell with
+Stage the intended source, then build with the downloaded toolchain and
 no unstaged changes under `src_cpp/qt_agent`. The scripts pin the Qt and MSVC
 toolchain versions, use a fresh Ninja build directory, verify the authenticated
 start/stop exports, and update the DLL's SHA-256, size, protocol version and
 staged Git tree in
 `src/dolphin_desktop/_qt_agent/agent_manifest.json`.
 
-Install CMake 3.30+, Ninja, and the matching Qt SDK with Core, Widgets,
-Network, Qml and Quick modules. Then set the SDK paths and run:
+Use PowerShell 7, MSVC tools 14.50.35717 (compiler 19.50.35726), Windows SDK
+package 10.0.26100.7705 (directory 10.0.26100.0), and the matching Qt SDK with Core, Widgets, Network, Qml and
+Quick modules. QML is required, so incomplete SDKs fail instead of producing a
+different artifact. Install the locked CMake 3.31.10, Ninja 1.11.1.4 (PyPI)
+and aqtinstall 3.3.0 tools with `uv sync --locked --group native-build`.
+Download the exact MSVC and Windows SDK packages locked in
+`.github/toolchains/msvc.json`, then initialize their environment in PowerShell
+7 with `.venv/Scripts` first on PATH:
 
 ```powershell
+uv run --no-sync python .github/scripts/install_msvc.py --destination C:\build-tools\dolphin-msvc
+. .github/scripts/enter_msvc.ps1 -ToolchainRoot C:\build-tools\dolphin-msvc
 $env:DOLPHIN_QT5_ROOT = 'C:\Qt\5.15.2\msvc2019_64'
 $env:DOLPHIN_QT6_ROOT = 'C:\Qt\6.10.3\msvc2022_64'
 .\src_cpp\qt_agent\build_qt5.ps1
@@ -28,12 +36,56 @@ Both SDKs use MSVC compiler 19.50.35726 in this build environment. Qt 5.15.2
 is installed as `msvc2019_64`; Qt 6.10.3 is installed as `msvc2022_64`. The
 build scripts reject different compiler and Qt versions so the manifest
 cannot silently attribute an artifact to an unrecorded toolchain.
+The Windows SDK servicing revision is recorded separately in the manifest:
+the directory name 10.0.26100.0 alone does not identify its headers/libraries.
+CI uses the downloaded SDK, including rc/mt, instead of registry-installed SDKs.
 
 The generated DLLs are written to `src/dolphin_desktop/_qt_agent/`. Review
 the DLLs and manifest together; the manifest's `source_tree` identifies the
 staged source snapshot used for each binary. The checked-in DLLs are protocol
 v2 builds, and Python verifies their manifest size and SHA-256 before
 injection.
+
+### Verify shipped artifacts
+
+`build_qt5.ps1 -Verify` and `build_qt6.ps1 -Verify` build into a fresh
+temporary directory, check exports, and compare the result against both the
+existing DLL and every recorded manifest field. They never replace the DLL
+or regenerate its manifest. A mismatched hash, source tree or toolchain fails.
+Build directories are removed in `finally`, including on verification or
+compiler failure. CMake/build output and errors remain in
+`artifacts/qt-agent-builds/` (or the shared builder's `-LogDirectory`).
+Both builders share path normalization for temporary roots and deletion
+targets, including trailing separators and Windows path spelling. A cleanup
+failure fails an otherwise successful build; if the build already failed,
+cleanup emits a warning and preserves the original error. Failure to append
+diagnostics also preserves the build error.
+
+From the same developer environment, run:
+
+```powershell
+.github/scripts/verify_qt_agents.ps1
+```
+
+This archives HEAD into two clean checkouts with different path lengths,
+including spaces, and relocates the Qt SDK through directory junctions. It
+verifies both ABIs in each location and retains logs in
+`artifacts/qt-agent-reproducibility/`, including build diagnostics in `build/`.
+Both temporary checkouts and SDK junctions are removed on success or failure;
+the installed SDK targets are preserved. Before committing a change, stage the
+source, rebuilt DLLs and manifest and use `-Revision (git write-tree)` to test
+that exact snapshot without creating a commit.
+
+`/Brepro` alone did not reproduce DLLs across checkout locations. The compiler
+also needs `/experimental:deterministic` and `/pathmap` for source, generated
+source and Qt SDK paths, including paths expanded by Qt headers. The linker
+uses a fixed PDB name and disables incremental linking. The scripts reject
+environment flag overrides and record the compiler tools, Windows SDK,
+CMake and Ninja versions alongside each binary's hash and source tree.
+
+CI installs these pinned inputs, runs the same verification in two locations,
+and uploads logs. This job gates package creation and release provenance;
+merely updating a manifest cannot make a different shipped DLL pass.
 
 ## IPC security
 
@@ -42,7 +94,19 @@ process's logon SID and `PIPE_REJECT_REMOTE_CLIENTS`. It checks the connecting
 client PID and a separate per-attach secret before dispatching any operation.
 Request bytes, JSON depth and node count, response bytes, connection idle time
 and pipe writes are bounded in the native server.
+An oversized request receives `code: request_too_large` and the wire-size
+`limit` (including the newline), without parsing or dispatching its JSON.
+The rejected connection drains input using a fixed buffer for at most five
+seconds while the client reads the error and closes; it cannot dispatch further
+RPC. Disconnect, timeout and other RPC errors are not accepted as evidence of
+size rejection by the boundary regression.
 
 The stop export requests shutdown and joins the pipe thread. It deliberately
 does not unload the DLL from under Qt callbacks; the module remains mapped
 until the target process exits.
+The server pins the controller process object with a SYNCHRONIZE handle and
+registers a Windows thread-pool wait for its exit. Abrupt controller death
+sets the existing stop flag, closes the pipe and ends the worker; it does not
+require Python cleanup. A fresh controller can start another session in the
+same AUT. Destruction disarms the wait and joins pending callbacks before
+closing its process handle or destroying callback state.

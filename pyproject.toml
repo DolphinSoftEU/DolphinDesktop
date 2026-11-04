@@ -92,6 +92,7 @@ cdp = [
 all = ["dolphin-desktop[cdp,fast,pytest,vision]"]
 
 [dependency-groups]
+native-build = ["cmake==3.31.10", "ninja==1.11.1.4", "aqtinstall==3.3.0"]
 build = ["build>=1.5.0", "hatchling==1.30.1", "twine>=7.0.0"]
 security = ["bandit>=1.8", "detect-secrets==1.5.0", "pip-audit>=2.9"]
 qt-tests = [

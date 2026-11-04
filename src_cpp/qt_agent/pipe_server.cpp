@@ -437,6 +437,34 @@ bool expected_client(HANDLE pipe, quint32 client_pid)
     return connected_pid == client_pid;
 }
 
+void CALLBACK controller_exited(PTP_CALLBACK_INSTANCE, void* context, PTP_WAIT, TP_WAIT_RESULT)
+{
+    // No Qt calls, lifecycle locks or cleanup in this callback. The pipe/GUI
+    // wait loops observe stop_ and the existing server worker exits normally.
+    static_cast<PipeServer*>(context)->stop();
+}
+
+// DisconnectNamedPipe discards unread replies. Give the client bounded time
+// to consume the rejection and close, draining further input without parsing,
+// dispatching RPC or retaining attacker-controlled buffers.
+void finish_rejected_client(HANDLE pipe, const std::atomic<bool>& stop)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    char discard[4096];
+    while (!stop.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) return;
+        if (available) {
+            DWORD read = 0;
+            if (!ReadFile(pipe, discard, std::min<DWORD>(available, sizeof(discard)),
+                          &read, nullptr) || read == 0) return;
+        } else {
+            Sleep(kPollMs);
+        }
+    }
+}
+
 #endif  // _WIN32
 
 }  // namespace
@@ -445,9 +473,35 @@ PipeServer::PipeServer(QString pipe_name, QString session_secret, quint32 client
     : pipe_name_(std::move(pipe_name)),
       session_secret_(std::move(session_secret)),
       client_pid_(client_pid)
-{}
+{
+#ifdef _WIN32
+    // Acquire while the start RPC's controller is alive. Retaining this handle
+    // prevents the stored PID from being reassigned to another process.
+    client_process_ = OpenProcess(SYNCHRONIZE, FALSE, client_pid_);
+    if (!client_process_) throw std::runtime_error("cannot pin controller process");
+    auto wait = CreateThreadpoolWait(controller_exited, this, nullptr);
+    if (!wait) {
+        CloseHandle(client_process_);
+        client_process_ = nullptr;
+        throw std::runtime_error("cannot watch controller process");
+    }
+    client_wait_ = wait;
+    SetThreadpoolWait(wait, client_process_, nullptr);
+#endif
+}
 
-PipeServer::~PipeServer() = default;
+PipeServer::~PipeServer()
+{
+#ifdef _WIN32
+    if (client_wait_) {
+        auto wait = static_cast<PTP_WAIT>(client_wait_);
+        SetThreadpoolWait(wait, nullptr, nullptr);
+        WaitForThreadpoolWaitCallbacks(wait, TRUE);
+        CloseThreadpoolWait(wait);
+    }
+    if (client_process_) CloseHandle(client_process_);
+#endif
+}
 
 void PipeServer::stop() { stop_.store(true, std::memory_order_release); }
 
@@ -496,6 +550,20 @@ void PipeServer::run()
             while (!stop_) {
                 QByteArray line;
                 const ReadResult read_result = read_line(pipe, stop_, pending, line);
+                if (read_result == ReadResult::TooLarge) {
+                    // Do not parse an oversized document just to recover its id.
+                    pending.clear();
+                    const QJsonObject rejection{
+                        {"ok", false},
+                        {"code", QStringLiteral("request_too_large")},
+                        {"error", QStringLiteral("request exceeds size limit")},
+                        {"limit", static_cast<int>(kMaxRequestBytes)},
+                    };
+                    if (write_line(pipe, QJsonDocument(rejection).toJson(QJsonDocument::Compact), stop_)) {
+                        finish_rejected_client(pipe, stop_);
+                    }
+                    break;
+                }
                 if (read_result != ReadResult::Line) break;
 
                 QJsonParseError parse_error;

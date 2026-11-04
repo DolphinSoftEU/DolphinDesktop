@@ -212,6 +212,52 @@ The C++ source and pinned build scripts are in `src_cpp/qt_agent/`. The scripts
 build the Qt 5.15.2 and Qt 6.10.3 variants with MSVC 19.50.35726, verify the v2
 start/stop exports, and record the staged source tree, toolchain, size and
 SHA-256 in `agent_manifest.json`.
+The build also pins Windows SDK package 10.0.26100.7705 (directory
+10.0.26100.0), CMake 3.31.10 and the Ninja
+1.11.1.4 PyPI distribution, normalizes source/build/Qt SDK paths, and requires
+QML support. CI rebuilds both ABIs in two clean locations and compares them
+to the shipped DLLs without updating the manifest. This verification gates
+package creation and release provenance.
+
+CI provisions MSVC independently of the runner's installed Visual Studio.
+The component ID `Microsoft.VisualStudio.Component.VC.14.50.18.0.x86.x64`
+does not pin a servicing revision: it previously delivered compiler
+19.50.35739 while these DLLs require 19.50.35726. CI now downloads the exact
+compiler, resource, header and CRT VSIX payloads, plus Windows SDK NuGet packages, listed in
+`.github/toolchains/msvc.json`, verifies their sizes and SHA-256 values,
+and extracts them into a fresh directory. The MSVC payload URLs/hashes originate
+from Microsoft's Visual Studio 18.4.0 catalog; the SDK comes from Microsoft's
+Microsoft.Windows.SDK.CPP and Microsoft.Windows.SDK.CPP.x64 packages. Installed
+runner compilers and registry-selected Windows SDKs are not used for the Qt build.
+
+For a local reproduction with the same isolated compiler:
+
+```powershell
+uv run --no-sync python .github/scripts/install_msvc.py --destination C:\build-tools\dolphin-msvc
+. .github/scripts/enter_msvc.ps1 -ToolchainRoot C:\build-tools\dolphin-msvc
+```
+
+Put the locked CMake/Ninja executables from `.venv/Scripts` first on PATH, set
+`DOLPHIN_QT5_ROOT` / `DOLPHIN_QT6_ROOT`, then run
+`.github/scripts/verify_qt_agents.ps1`. The initializer replaces compiler,
+include and library search paths with the downloaded toolchain and checks
+the actual compiler banner. A different compiler revision is still rejected;
+DLL/manifest verification remains required.
+
+The SDK directory name does not pin its servicing revision. A controlled
+Qt5 rebuild with SDK package 10.0.26100.9457 reproduced the hosted failure hash
+exactly; SDK package 10.0.26100.7705 reproduces the shipped DLL. The manifest
+therefore records `windows_sdk_package_version` separately from the SDK
+directory version, and CI downloads hash-pinned SDK headers, import libraries,
+rc and mt together with MSVC. System-installed SDK servicing cannot change
+these build inputs.
+Both the shared builder and the verification script normalize the temporary
+parent and deletion target through `build_cleanup.ps1`. Equivalent Windows
+paths, including trailing separators, cannot trigger a false cleanup refusal.
+Cleanup errors fail otherwise successful builds; after a primary build error,
+they produce warnings while preserving that primary error. The CI entry point
+accepts `-Revision (git write-tree)` for validation of a staged source snapshot
+before committing, with `HEAD` remaining the default in CI.
 
 The bundled DLLs are `IMAGE_FILE_MACHINE_AMD64` and use the authenticated v2
 start and stop exports. Python refuses to call the legacy unauthenticated
@@ -251,6 +297,10 @@ not match. Build instructions are in `src_cpp/qt_agent/README.md`.
   a request is read. Client and server enforce request size, JSON depth and
   complexity limits; server responses and idle connections are bounded too.
   The client verifies the server PID and refuses a reused target PID.
+  The server also retains a SYNCHRONIZE handle to the controller process.
+  A Windows thread-pool wait stops the worker if that process exits, including
+  `TerminateProcess`; this expires the old pipe without Python `close()` or
+  unloading the DLL. A new owner can attach to the same running AUT afterward.
   See `SECURITY.md` for the threat model.
 - **Per-Qt-major-version DLL** — Qt 5 and Qt 6 ABIs differ. We ship both,
   named `dolphin_qt5_agent.dll` and `dolphin_qt6_agent.dll`; the loader
@@ -260,6 +310,21 @@ not match. Build instructions are in `src_cpp/qt_agent/README.md`.
   short of cooperative integration.
 - **Sandboxed apps** — UWP / packaged apps with isolated containers cannot
   be injected without elevated privileges and AppContainer-aware tooling.
+
+## Validation coverage
+
+The required Qt5/Qt6 component suite includes six abrupt-owner-death scenarios:
+an authenticated idle connection, a disconnected transport waiting for
+reconnection, and an unfinished JSON frame, each with both Qt versions. The
+test checks a real authenticated ping, the actual controller PID, explicit
+Win32 `TerminateProcess`, its exit code, absence of Python cleanup, continued
+AUT liveness, stable disappearance of the old pipe and a new owner's successful
+attach/ping/introspection. These scenarios may not be skipped in CI.
+
+Restricted-token and localhost-SMB tests remain controls for the local security
+boundary. They do not establish results for a second logged-in account or an
+independent remote machine. See [the system isolation checklist](../guides/qt-agent-system-isolation.md)
+for the remaining environment-dependent checks.
 
 ## Python API
 
