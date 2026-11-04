@@ -9,15 +9,15 @@ discipline: every item created here is removed before the test ends.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
-import warnings
 import winreg
 from datetime import datetime, timedelta
 
 import pytest
+from tests.office._cleanup import purge_by_subject, purge_calendar_appt, purge_draft
+from tests.office._uat_guard import assert_dedicated_store, uat_store_name
 
 from dolphin_desktop import OutlookApp, OutlookAppointment, OutlookMail
 
@@ -85,7 +85,7 @@ def _start_exclusive_ready(attempts: int = 5):
         try:
             app = OutlookApp.start(exclusive=True)
             try:
-                _assert_dedicated_store(app)
+                assert_dedicated_store(app)
             except BaseException:
                 app.quit()
                 raise
@@ -139,42 +139,11 @@ def _quit_and_confirm_gone(app: OutlookApp, *, save_changes: bool = False) -> No
         time.sleep(0.5)
 
 
-_UAT_ENV = "DOLPHIN_OUTLOOK_UAT"
-
-
-def _uat_store_name() -> str | None:
-    """The display name of the dedicated test store the operator opted in to."""
-    name = os.environ.get(_UAT_ENV, "").strip()
-    return name or None
-
-
-def _assert_dedicated_store(app: OutlookApp) -> None:
-    """Refuse to mutate anything unless the mailbox is the opted-in test store.
-
-    These tests create, move and permanently delete items. They run against the
-    default MAPI profile, so before any mutation the store behind that profile
-    must be verified to be the dedicated, disposable test store named in
-    DOLPHIN_OUTLOOK_UAT: a local .pst with no mail account. Anything else
-    (a personal or work mailbox) fails hard rather than being touched.
-    """
-    expected = _uat_store_name()
-    assert expected, "DOLPHIN_OUTLOOK_UAT must be set (checked in _require_outlook)"
-    store = app.default_folder("drafts")._com.Store
-    name = str(store.DisplayName)
-    path = str(getattr(store, "FilePath", "") or "")
-    if name != expected or not path.lower().endswith(".pst"):
-        raise AssertionError(
-            f"refusing to run destructive Outlook tests against store {name!r} "
-            f"(path {path!r}); expected the dedicated PST named {expected!r}. "
-            f"Set {_UAT_ENV} to that store's display name and make it the default profile."
-        )
-
-
 @pytest.fixture(autouse=True)
 def _require_outlook():
     if not _outlook_registered():
         pytest.skip("classic Outlook (Outlook.Application) is not registered on this machine")
-    if not _uat_store_name():
+    if not uat_store_name():
         pytest.skip(
             "destructive Outlook tests are opt-in: set DOLPHIN_OUTLOOK_UAT to the display "
             "name of a dedicated, disposable test store (a local PST with no mail account, "
@@ -192,47 +161,6 @@ def outlook():
     finally:
         _quit_and_confirm_gone(app)
     assert _wait_until_no_process(), "exclusive Outlook must be gone after quit()"
-
-
-def _purge(mail: OutlookMail) -> None:
-    # delete(permanent=True) verifies the item is gone (MAPI_E_NOT_FOUND) and
-    # raises otherwise, so a failure here is a real leftover. Called from each
-    # test's finally: when the body already failed, do not mask it (warn and move
-    # on); when the body passed, re-raise so a destructive test never reports
-    # success while leaving a draft behind.
-    body_already_failing = sys.exc_info()[0] is not None
-    try:
-        if mail.parent_folder.name != mail._owner.default_folder("deleted").name:
-            mail.delete()
-        mail.delete(permanent=True)
-    except Exception as exc:
-        if body_already_failing:
-            warnings.warn(
-                f"Outlook cleanup failed during an already-failing test: {exc!r}",
-                stacklevel=2,
-            )
-            return
-        raise AssertionError(f"Outlook test cleanup left a draft behind: {exc!r}") from exc
-
-
-def _purge_by_subject(app: OutlookApp, folder: str, subject: str) -> int:
-    """Remove items created by an earlier session; returns how many were removed."""
-    removed = 0
-    namespace = app._namespace
-    target = app.default_folder(folder)
-    entry_ids = [target.item(i).entry_id for i in range(1, target.item_count + 1)]
-    for entry_id in entry_ids:
-        item = namespace.GetItemFromID(entry_id, target.store_id)
-        if str(item.Subject) == subject:
-            item.Delete()  # to Deleted Items
-            removed += 1
-    deleted = app.default_folder("deleted")
-    entry_ids = [deleted.item(i).entry_id for i in range(1, deleted.item_count + 1)]
-    for entry_id in entry_ids:
-        item = namespace.GetItemFromID(entry_id, deleted.store_id)
-        if str(item.Subject) == subject:
-            item.Delete()  # permanently
-    return removed
 
 
 def _count(app: OutlookApp, folder: str) -> int:
@@ -263,7 +191,7 @@ def test_all_recipient_fields_and_html_body_persist(outlook):
         # Outlook derives the plain body from the HTML one.
         assert "Hello UAT" in " ".join(found.body.split())
     finally:
-        _purge(mail)
+        purge_draft(mail)
 
 
 def test_several_attachments_keep_their_order_and_bytes(outlook, tmp_path):
@@ -286,7 +214,7 @@ def test_several_attachments_keep_their_order_and_bytes(outlook, tmp_path):
         files[2].unlink()
         assert mail.attachment(3).name == "part2.txt"
     finally:
-        _purge(mail)
+        purge_draft(mail)
 
 
 def test_add_attachment_with_missing_file_is_a_controlled_error(outlook, tmp_path):
@@ -324,7 +252,7 @@ def test_folder_items_iterate_in_order_and_reject_index_zero(outlook):
             drafts.item(drafts.item_count + 1)
     finally:
         for mail in created:
-            _purge(mail)
+            purge_draft(mail)
     assert _count(outlook, "drafts") == before
 
 
@@ -351,7 +279,7 @@ def test_quit_with_save_changes_persists_unsaved_drafts():
         drafts = again.default_folder("drafts")
         subjects = [drafts.item(i).subject for i in range(1, drafts.item_count + 1)]
         assert subject in subjects
-        assert _purge_by_subject(again, "drafts", subject) == 1
+        assert purge_by_subject(again, "drafts", subject) == 1
     finally:
         _quit_and_confirm_gone(again)
 
@@ -363,7 +291,7 @@ def test_opened_msg_item_cannot_be_moved(outlook, tmp_path):
         mail.save()
         mail.save_as(msg)
     finally:
-        _purge(mail)
+        purge_draft(mail)
     foreign = outlook.open_item(msg)
     try:
         with pytest.raises(PermissionError):
@@ -475,7 +403,8 @@ def test_default_folders_by_numeric_id_match_their_names(outlook):
 
 
 def test_calendar_item_by_index_is_an_appointment(outlook):
-    appt = outlook.create_appointment(subject=f"{_UAT_PREFIX} indexed appt")
+    subject = f"{_UAT_PREFIX} indexed appt"
+    appt = outlook.create_appointment(subject=subject)
     appt.start = datetime(2032, 5, 6, 9, 0)
     appt.end = datetime(2032, 5, 6, 9, 30)
     appt.save()
@@ -489,11 +418,8 @@ def test_calendar_item_by_index_is_an_appointment(outlook):
         ]
         assert len(matches) == 1
         assert isinstance(matches[0], OutlookAppointment)
-        assert matches[0].subject == f"{_UAT_PREFIX} indexed appt"
+        assert matches[0].subject == subject
         matches[0].close()
     finally:
         appt.close()
-        try:
-            outlook._namespace.GetItemFromID(entry).Delete()
-        except Exception:
-            pass
+        purge_calendar_appt(outlook, entry, subject)

@@ -11,14 +11,14 @@ Every draft this module creates is deleted permanently before the test ends.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
-import warnings
 import winreg
 
 import pytest
+from tests.office._cleanup import purge_calendar_appt, purge_draft
+from tests.office._uat_guard import assert_dedicated_store, uat_store_name
 
 from dolphin_desktop import OutlookApp, OutlookAppointment, OutlookMail
 
@@ -78,7 +78,7 @@ def _start_exclusive_ready(attempts: int = 5):
         try:
             app = OutlookApp.start(exclusive=True)
             try:
-                _assert_dedicated_store(app)
+                assert_dedicated_store(app)
             except BaseException:
                 app.quit()
                 raise
@@ -132,42 +132,11 @@ def _quit_and_confirm_gone(app: OutlookApp, *, save_changes: bool = False) -> No
         time.sleep(0.5)
 
 
-_UAT_ENV = "DOLPHIN_OUTLOOK_UAT"
-
-
-def _uat_store_name() -> str | None:
-    """The display name of the dedicated test store the operator opted in to."""
-    name = os.environ.get(_UAT_ENV, "").strip()
-    return name or None
-
-
-def _assert_dedicated_store(app: OutlookApp) -> None:
-    """Refuse to mutate anything unless the mailbox is the opted-in test store.
-
-    These tests create, move and permanently delete items. They run against the
-    default MAPI profile, so before any mutation the store behind that profile
-    must be verified to be the dedicated, disposable test store named in
-    DOLPHIN_OUTLOOK_UAT: a local .pst with no mail account. Anything else
-    (a personal or work mailbox) fails hard rather than being touched.
-    """
-    expected = _uat_store_name()
-    assert expected, "DOLPHIN_OUTLOOK_UAT must be set (checked in _require_outlook)"
-    store = app.default_folder("drafts")._com.Store
-    name = str(store.DisplayName)
-    path = str(getattr(store, "FilePath", "") or "")
-    if name != expected or not path.lower().endswith(".pst"):
-        raise AssertionError(
-            f"refusing to run destructive Outlook tests against store {name!r} "
-            f"(path {path!r}); expected the dedicated PST named {expected!r}. "
-            f"Set {_UAT_ENV} to that store's display name and make it the default profile."
-        )
-
-
 @pytest.fixture(autouse=True)
 def _require_outlook():
     if not _outlook_registered():
         pytest.skip("classic Outlook (Outlook.Application) is not registered on this machine")
-    if not _uat_store_name():
+    if not uat_store_name():
         pytest.skip(
             "destructive Outlook tests are opt-in: set DOLPHIN_OUTLOOK_UAT to the display "
             "name of a dedicated, disposable test store (a local PST with no mail account, "
@@ -186,28 +155,6 @@ def outlook():
     finally:
         _quit_and_confirm_gone(app)
     assert _wait_until_no_process(), "exclusive Outlook must be gone after quit()"
-
-
-def _purge(mail: OutlookMail) -> None:
-    """Remove a draft for good, whatever folder it is in now."""
-    # delete(permanent=True) verifies the item is gone (MAPI_E_NOT_FOUND) and
-    # raises otherwise, so a failure here is a real leftover. Called from each
-    # test's finally: when the body already failed, do not mask it (warn and move
-    # on); when the body passed, re-raise so a destructive test never reports
-    # success while leaving a draft behind.
-    body_already_failing = sys.exc_info()[0] is not None
-    try:
-        if mail.parent_folder.name != mail._owner.default_folder("deleted").name:
-            mail.delete()
-        mail.delete(permanent=True)
-    except Exception as exc:
-        if body_already_failing:
-            warnings.warn(
-                f"Outlook cleanup failed during an already-failing test: {exc!r}",
-                stacklevel=2,
-            )
-            return
-        raise AssertionError(f"Outlook test cleanup left a draft behind: {exc!r}") from exc
 
 
 def _count(app: OutlookApp, folder: str) -> int:
@@ -264,7 +211,7 @@ def test_draft_create_read_modify_find(outlook):
         assert found.to == "uat@example.invalid"
         assert found.cc == "second@example.invalid"
     finally:
-        _purge(mail)
+        purge_draft(mail)
     assert _count(outlook, "drafts") == before
 
 
@@ -301,7 +248,7 @@ def test_draft_can_be_moved_between_default_folders(outlook):
         assert mail.parent_folder.name == outlook.default_folder("drafts").name
         assert _count(outlook, "inbox") == inbox_before
     finally:
-        _purge(mail)
+        purge_draft(mail)
 
 
 def test_permanent_delete_outside_deleted_items_is_refused(outlook):
@@ -312,7 +259,7 @@ def test_permanent_delete_outside_deleted_items_is_refused(outlook):
             mail.delete(permanent=True)
         assert mail.parent_folder.name == outlook.default_folder("drafts").name
     finally:
-        _purge(mail)
+        purge_draft(mail)
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +279,7 @@ def test_save_as_msg_and_reopen_without_gaining_ownership(outlook, tmp_path):
         mail.save()
         mail.save_as(msg)
     finally:
-        _purge(mail)
+        purge_draft(mail)
     assert msg.is_file() and msg.stat().st_size > 0
 
     reopened = outlook.open_item(msg)
@@ -352,33 +299,33 @@ def test_save_as_msg_and_reopen_without_gaining_ownership(outlook, tmp_path):
 def test_appointment_round_trip(outlook):
     from datetime import datetime, timedelta
 
+    subject = "dolphin uat appt"
     start = datetime(2030, 1, 15, 10, 0)
-    appt = outlook.create_appointment(subject="dolphin uat appt")
+    appt = outlook.create_appointment(subject=subject)
     appt.start = start
     appt.end = start + timedelta(hours=1)
     appt.location = "room 1"
     appt.save()
+    # Capture the entry id right after save(), before any assertion can fail:
+    # cleanup in finally must never hit an unbound name on an early failure.
+    entry = appt.entry_id
     try:
         assert isinstance(appt, OutlookAppointment)
-        found = outlook.default_folder("calendar").find_item(appt.entry_id)
+        found = outlook.default_folder("calendar").find_item(entry)
         assert isinstance(found, OutlookAppointment)
-        assert found.subject == "dolphin uat appt"
+        assert found.subject == subject
         assert found.location == "room 1"
         # pywin32 hands back aware datetimes in UTC; Outlook stored local 10:00.
         local_start = found.start.astimezone()
         assert (local_start.hour, local_start.minute) == (10, 0)
         assert (found.end - found.start).total_seconds() == 3600
-        entry = appt.entry_id
         found.close()
     finally:
-        # The facade deletes only owned mail drafts; remove the calendar entry
-        # through a raw COM handle after closing our wrappers, so quit() has
-        # nothing stale left to close.
+        # The facade deletes only owned mail drafts, so the calendar entry is
+        # removed here -- permanently, and verified gone. purge_calendar_appt
+        # closes the loop: a leftover fails the test unless the body already did.
         appt.close()
-        try:
-            outlook._namespace.GetItemFromID(entry).Delete()
-        except Exception:
-            pass
+        purge_calendar_appt(outlook, entry, subject)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +351,7 @@ def test_connect_attaches_to_a_running_outlook_and_never_quits_it():
             pytest.skip("Outlook did not register as the active COM object within 120 s")
         assert not app.owns_process
         assert app.process_id is None
-        _assert_dedicated_store(app)
+        assert_dedicated_store(app)
         drafts = app.default_folder("drafts")
         count = drafts.item_count
         mail = app.create_mail(subject="dolphin uat via connect")
@@ -412,7 +359,7 @@ def test_connect_attaches_to_a_running_outlook_and_never_quits_it():
         try:
             assert _count(app, "drafts") == count + 1
         finally:
-            _purge(mail)
+            purge_draft(mail)
         app.quit()
         assert proc.poll() is None, (
             "quit() on a connected session must not end the operator's Outlook"
