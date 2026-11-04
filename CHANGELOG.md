@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder now classifies stable native Edit fields correctly when pywin32
+  returns thread/process IDs as a list. Hook signatures preserve pointer-sized
+  arguments and results on x86/x64; installation failures are reported and
+  partially installed hooks are removed. Regressions cover real native focus
+  transitions with a delayed queue and a readable ordinary-text control (KAN-576).
+
 * Qt agents now watch the authenticated controller's process object and expire
   their pipe when the controller is forcibly terminated. Qt5/Qt6 regressions
   cover connected, disconnected and partial-frame states and recovery by a
