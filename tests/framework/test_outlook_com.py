@@ -5,10 +5,25 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import pywintypes
 
 import dolphin_desktop
 from dolphin_desktop import OutlookApp, OutlookAppointment, OutlookMail
 from dolphin_desktop import _outlook as outlook
+
+# MAPI_E_NOT_FOUND (0x8004010F) is what Outlook raises for a gone item; the fake
+# store below mimics that so the facade's delete-verification sees a real code.
+_MAPI_E_NOT_FOUND = -2147221233
+
+
+def _not_found_error() -> pywintypes.com_error:
+    text = "the specified message could not be found"
+    return pywintypes.com_error(
+        -2147352567,
+        "Exception occurred.",
+        (4096, "Microsoft Outlook", text, None, 0, _MAPI_E_NOT_FOUND),
+        None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -109,6 +124,8 @@ def test_mail_fields_attachments_and_local_save(client, tmp_path):
         assert mail.html_body == "<p>html</p>"
         mail._com.EntryID = "entry"
         assert mail.entry_id == "entry"
+        # add_attachment refuses a missing file, so the attachment must exist.
+        (tmp_path / "input.txt").write_text("x", encoding="utf-8")
         attachment = mail.add_attachment(tmp_path / "input.txt")
         mail._com.Attachments.Add.assert_called_once_with(str(tmp_path / "input.txt"), 1)
         attachment._com.FileName = "input.txt"
@@ -264,6 +281,9 @@ class _Draft:
         self.Subject = self.Body = self.To = ""
         self.invalid = False
         self.closes = 0
+        # Outlook quirk reproduced on real PST stores: the proxy returned by
+        # Move() ignores Delete(); only a proxy fetched by EntryID deletes.
+        self.half_alive = False
 
     def Save(self):  # noqa: N802
         assert not self.invalid, "stale COM proxy"
@@ -279,12 +299,15 @@ class _Draft:
         moved.Subject, moved.Body, moved.To = self.Subject, self.Body, self.To
         moved.Parent = folder
         moved.Save()
+        moved.half_alive = True
         self.invalid = True
         return moved
 
     def Delete(self):  # noqa: N802
         assert self.Parent is self.store.deleted
         assert not self.invalid
+        if self.half_alive:
+            return  # silently ignored, exactly like Outlook does
         self.Parent.messages.remove(self)
         self.invalid = True
 
@@ -304,12 +327,21 @@ class _Store:
     def GetDefaultFolder(self, folder_id):  # noqa: N802
         return {16: self.drafts, 3: self.deleted}[folder_id]
 
+    def GetItemFromID(self, entry_id, store_id=None):  # noqa: N802
+        for folder in (self.drafts, self.deleted, self.target):
+            for message in folder.messages:
+                if message.EntryID == entry_id:
+                    message.half_alive = False  # a fresh proxy
+                    return message
+        raise _not_found_error()  # as Outlook reports a gone item: MAPI_E_NOT_FOUND
+
 
 def test_owned_draft_move_delete_and_folder_effects(client):
     store = _Store()
     com = client.Dispatch.return_value
     com.CreateItem.side_effect = lambda _: _Draft(store)
     com.GetNamespace.return_value.GetDefaultFolder.side_effect = store.GetDefaultFolder
+    com.GetNamespace.return_value.GetItemFromID.side_effect = store.GetItemFromID
     with OutlookApp.start() as app:
         source = app.default_folder("drafts")
         target = source.folder("UAT")
@@ -502,3 +534,44 @@ def test_folder_and_item_errors_are_controlled(client, tmp_path):
         namespace.OpenSharedItem.side_effect = OSError("file missing")
         with pytest.raises(LookupError, match="item file unavailable"):
             app.open_item(tmp_path / "missing.msg")
+
+
+def test_permanent_delete_uses_a_fresh_proxy_and_verifies_removal(client):
+    """Delete() on the proxy Move() returned is a no-op on PST stores (seen live)."""
+    store = _Store()
+    com = client.Dispatch.return_value
+    com.CreateItem.side_effect = lambda _: _Draft(store)
+    namespace = com.GetNamespace.return_value
+    namespace.GetDefaultFolder.side_effect = store.GetDefaultFolder
+    namespace.GetItemFromID.side_effect = store.GetItemFromID
+    with OutlookApp.start() as app:
+        draft = app.create_mail(subject="UAT")
+        draft.save()
+        draft.delete()
+        moved_proxy = draft._com
+        assert not moved_proxy.half_alive, "move() must rebind to a fresh EntryID proxy"
+        draft.delete(permanent=True)
+        assert store.deleted.Count == 0
+        assert draft._closed
+
+
+def test_permanent_delete_reports_when_outlook_keeps_the_item(client):
+    store = _Store()
+    com = client.Dispatch.return_value
+    com.CreateItem.side_effect = lambda _: _Draft(store)
+    namespace = com.GetNamespace.return_value
+    namespace.GetDefaultFolder.side_effect = store.GetDefaultFolder
+
+    def stubborn_lookup(entry_id, store_id=None):
+        item = store.GetItemFromID(entry_id, store_id)
+        item.half_alive = True  # make even the "fresh" proxy ignore Delete()
+        return item
+
+    namespace.GetItemFromID.side_effect = stubborn_lookup
+    with OutlookApp.start() as app:
+        draft = app.create_mail(subject="UAT")
+        draft.save()
+        draft.delete()
+        with pytest.raises(RuntimeError, match="permanent deletion did not take effect"):
+            draft.delete(permanent=True)
+        assert store.deleted.Count == 1
