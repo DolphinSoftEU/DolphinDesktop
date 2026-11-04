@@ -5,10 +5,25 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import pywintypes
 
 import dolphin_desktop
 from dolphin_desktop import OutlookApp, OutlookAppointment, OutlookMail
 from dolphin_desktop import _outlook as outlook
+
+# MAPI_E_NOT_FOUND (0x8004010F) is what Outlook raises for a gone item; the fake
+# store below mimics that so the facade's delete-verification sees a real code.
+_MAPI_E_NOT_FOUND = -2147221233
+
+
+def _not_found_error() -> pywintypes.com_error:
+    text = "the specified message could not be found"
+    return pywintypes.com_error(
+        -2147352567,
+        "Exception occurred.",
+        (4096, "Microsoft Outlook", text, None, 0, _MAPI_E_NOT_FOUND),
+        None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -318,7 +333,7 @@ class _Store:
                 if message.EntryID == entry_id:
                     message.half_alive = False  # a fresh proxy
                     return message
-        raise Exception("The item has been moved or deleted")
+        raise _not_found_error()  # as Outlook reports a gone item: MAPI_E_NOT_FOUND
 
 
 def test_owned_draft_move_delete_and_folder_effects(client):
