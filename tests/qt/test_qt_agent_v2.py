@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import json
+import multiprocessing
 import subprocess
 import sys
 import threading
@@ -14,6 +16,7 @@ import pytest
 
 from dolphin_desktop import Desktop, QtAgentRpcError, sleep
 from dolphin_desktop._qt_inject import QtAgentClient, _AgentStartConfig, _start_agent
+from tests.qt._qt_controller import park_controller
 from tests.qt._qt_helpers import (
     QT5_SCRIPT,
     QT5_WINDOW_TITLE,
@@ -23,6 +26,197 @@ from tests.qt._qt_helpers import (
 )
 
 pytestmark = pytest.mark.qt_agent
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("state", ["connected", "disconnected", "partial"])
+@pytest.mark.parametrize(
+    ("binding", "version", "script", "title"),
+    [("PyQt5", "5", QT5_SCRIPT, QT5_WINDOW_TITLE), ("PySide6", "6", QT6_SCRIPT, QT6_WINDOW_TITLE)],
+    ids=["qt5", "qt6"],
+)
+def test_terminated_controller_expires_session(binding, version, script, title, state, tmp_path):
+    """Terminate the actual owner process; require autonomous pipe shutdown and recovery."""
+    assert find_spec(binding) is not None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+    kernel32.OpenProcess.restype = wt.HANDLE
+    kernel32.TerminateProcess.argtypes = [wt.HANDLE, wt.UINT]
+    kernel32.TerminateProcess.restype = wt.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    kernel32.WaitForSingleObject.restype = wt.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wt.BOOL
+    kernel32.WaitNamedPipeW.argtypes = [wt.LPCWSTR, wt.DWORD]
+    kernel32.WaitNamedPipeW.restype = wt.BOOL
+    kernel32.CloseHandle.argtypes = [wt.HANDLE]
+
+    app, _window = launch_demo(Desktop(), script, title)
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe()
+    marker = tmp_path / "graceful-cleanup.txt"
+    owner = context.Process(
+        target=park_controller,
+        args=(app.process_id, version, state, child, str(marker)),
+        daemon=True,
+    )
+    process_handle = None
+    aut_handle = None
+    recovered = None
+    try:
+        owner.start()
+        child.close()
+        assert parent.poll(20), "controller did not complete its authenticated ping"
+        ready = parent.recv()
+        assert ready["status"] == "ready", ready
+        assert ready["pid"] == owner.pid, "must terminate the owner, not a venv launcher"
+        old_pipe = ready["pipe_name"]
+        process_handle = kernel32.OpenProcess(0x0001 | 0x00100000 | 0x1000, False, owner.pid)
+        aut_handle = kernel32.OpenProcess(0x00100000, False, app.process_id)
+        assert process_handle and aut_handle, ctypes.WinError(ctypes.get_last_error())
+        assert kernel32.WaitForSingleObject(process_handle, 0) == 258
+        if state == "disconnected":
+            listening_deadline = time.monotonic() + 5
+            while not kernel32.WaitNamedPipeW(old_pipe, 50):
+                assert ctypes.get_last_error() in (2, 231)
+                assert time.monotonic() < listening_deadline, (
+                    "server was not listening before death"
+                )
+                sleep(0.02)
+        assert kernel32.TerminateProcess(process_handle, 0x470), ctypes.WinError(
+            ctypes.get_last_error()
+        )
+        assert kernel32.WaitForSingleObject(process_handle, 5000) == 0
+        exit_code = wt.DWORD()
+        assert kernel32.GetExitCodeProcess(process_handle, ctypes.byref(exit_code))
+        assert exit_code.value == 0x470
+        owner.join(5)
+        assert owner.exitcode == 0x470
+        assert not marker.exists(), "Python finally/close ran; this was not abrupt death"
+        assert kernel32.WaitForSingleObject(aut_handle, 0) == 258, "AUT died with the owner"
+
+        deadline = time.monotonic() + 5
+        missing_since = None
+        while time.monotonic() < deadline:
+            available = kernel32.WaitNamedPipeW(old_pipe, 50)
+            error = ctypes.get_last_error()
+            if not available and error == 2:  # ERROR_FILE_NOT_FOUND: every old instance is gone.
+                if missing_since is None:
+                    missing_since = time.monotonic()
+                if time.monotonic() - missing_since >= 0.2:
+                    break
+            else:
+                assert available or error == 231, f"unexpected pipe status: {error}"
+                missing_since = None
+            sleep(0.02)
+        else:
+            pytest.fail("agent still listens after TerminateProcess")
+        # No stop export is called between owner death and this fresh attach.
+        recovered = QtAgentClient.attach(app.process_id, version)
+        assert recovered._pipe_name != old_pipe
+        assert recovered.ping() == "pong"
+        assert recovered.find(className="QPushButton")
+    finally:
+        if owner.pid is not None:
+            if owner.is_alive():
+                owner.kill()
+            owner.join(5)
+            owner.close()
+        parent.close()
+        child.close()
+        for handle in (process_handle, aut_handle):
+            if handle:
+                kernel32.CloseHandle(handle)
+        if recovered is not None:
+            recovered.close()
+        app.kill()
+
+
+def _private_bytes(pid: int) -> int:
+    class MemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wt.DWORD),
+            ("page_faults", wt.DWORD),
+            *[
+                (name, ctypes.c_size_t)
+                for name in (
+                    "peak_working_set",
+                    "working_set",
+                    "peak_paged_pool",
+                    "paged_pool",
+                    "peak_nonpaged_pool",
+                    "nonpaged_pool",
+                    "pagefile",
+                    "peak_pagefile",
+                    "private",
+                )
+            ],
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+    kernel32.OpenProcess.restype = wt.HANDLE
+    kernel32.CloseHandle.argtypes = [wt.HANDLE]
+    psapi.GetProcessMemoryInfo.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD]
+    psapi.GetProcessMemoryInfo.restype = wt.BOOL
+    handle = kernel32.OpenProcess(0x0400 | 0x0010, False, pid)
+    assert handle, ctypes.WinError(ctypes.get_last_error())
+    try:
+        counters = MemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        assert psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
+        return counters.private
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    ("binding", "version", "script", "title"),
+    [("PyQt5", "5", QT5_SCRIPT, QT5_WINDOW_TITLE), ("PySide6", "6", QT6_SCRIPT, QT6_WINDOW_TITLE)],
+    ids=["qt5", "qt6"],
+)
+def test_native_oversized_requests_recover_without_memory_growth(binding, version, script, title):
+    """Bypass Python validation: oversized raw bytes must reach the native server."""
+    assert find_spec(binding) is not None
+    app, _window = launch_demo(Desktop(), script, title)
+    try:
+        agent = app.qt_agent
+        assert agent.ping() == "pong"
+        limit = 8 * 1024 * 1024
+        header = json.dumps({"id": 1000, "op": "ping", "auth": agent._auth_token})
+        prefix = header[:-1].encode() + b',"padding":"'
+        suffix = b'"}\n'
+
+        def raw_ping(wire_size):
+            # Include the newline in the exact wire size, as the native server does.
+            raw = prefix + b"x" * (wire_size - len(prefix) - len(suffix)) + suffix
+            assert len(raw) == wire_size
+            agent._write_line(raw)
+            return json.loads(agent._read_line(time.monotonic() + 10, "raw size boundary"))
+
+        for size in (limit - 1, limit):
+            assert raw_ping(size) == {"id": 1000, "ok": True, "result": "pong"}
+            assert agent.ping() == "pong", "Accepted boundary request poisoned the connection"
+        samples = []
+        for _ in range(6):
+            # A timeout, disconnect or unrelated RPC error fails this test.
+            assert raw_ping(limit + 1) == {
+                "ok": False,
+                "code": "request_too_large",
+                "error": "request exceeds size limit",
+                "limit": limit,
+            }
+            assert agent.reattach().ping() == "pong"
+            samples.append(_private_bytes(agent.pid))
+        print(f"Qt{version} private bytes after oversized requests: {samples}")
+        # Allow allocator warmup, then reject retained growth proportional to
+        # the 8 MiB request across the four remaining repetitions.
+        assert max(samples[2:]) - min(samples[2:]) < 4 * 1024 * 1024
+    finally:
+        app.kill()
+
 
 _TOKEN_QUERY = 0x0008
 _TOKEN_DUPLICATE = 0x0002

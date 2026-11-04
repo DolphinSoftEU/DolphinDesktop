@@ -227,6 +227,18 @@ def test_every_native_wheel_check_must_pass_before_artifact_selection(system, py
         provenance["select_artifact"](api, REPO, SHA, "master")
 
 
+@pytest.mark.parametrize("outcome", ["missing", "skipped", "failure"])
+def test_native_reproducibility_must_pass_before_artifact_selection(outcome):
+    api = API()
+    name = "Qt agent reproducibility / Qt5 and Qt6"
+    if outcome == "missing":
+        api.jobs = [job for job in api.jobs if job["name"] != name]
+    else:
+        next(job for job in api.jobs if job["name"] == name)["conclusion"] = outcome
+    with pytest.raises(ValueError, match="Required CI/security/platform jobs"):
+        provenance["select_artifact"](api, REPO, SHA, "master")
+
+
 def test_latest_failed_run_cannot_fall_back_to_old_success():
     api = API()
     older = deepcopy(api.run)
@@ -446,6 +458,7 @@ def test_ci_artifact_is_built_only_after_required_checks_and_smoke_test():
         "package-linux",
         "security",
         "minimum-dependencies",
+        "qt-agent-reproducibility",
     }
     assert "if" not in package and "continue-on-error" not in package
     names = [step.get("name") for step in package["steps"]]
