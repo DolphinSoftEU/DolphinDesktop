@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Qt agents now watch the authenticated controller's process object and expire
+  their pipe when the controller is forcibly terminated. Qt5/Qt6 regressions
+  cover connected, disconnected and partial-frame states and recovery by a
+  new owner without terminating the AUT (KAN-470 lifecycle review).
+
 * Qt agent builds now use hash-pinned Windows SDK 10.0.26100.7705 packages,
   including headers, import libraries and tools. The manifest records the
   SDK servicing version separately from its 10.0.26100.0 directory name,

@@ -12,7 +12,7 @@ public:
     PipeServer(QString pipe_name, QString session_secret, quint32 client_pid);
     ~PipeServer();
 
-    // Blocks until the client disconnects or stop() is called.
+    // Serves reconnects until the controller process exits or stop() is called.
     void run();
     void stop();
 
@@ -21,6 +21,11 @@ private:
     QString session_secret_;
     quint32 client_pid_;
     std::atomic<bool> stop_{false};
+#ifdef _WIN32
+    // Keep the process object pinned, not just its recyclable numeric PID.
+    void* client_process_ = nullptr;
+    void* client_wait_ = nullptr;
+#endif
 };
 
 }  // namespace dolphin

@@ -297,6 +297,10 @@ not match. Build instructions are in `src_cpp/qt_agent/README.md`.
   a request is read. Client and server enforce request size, JSON depth and
   complexity limits; server responses and idle connections are bounded too.
   The client verifies the server PID and refuses a reused target PID.
+  The server also retains a SYNCHRONIZE handle to the controller process.
+  A Windows thread-pool wait stops the worker if that process exits, including
+  `TerminateProcess`; this expires the old pipe without Python `close()` or
+  unloading the DLL. A new owner can attach to the same running AUT afterward.
   See `SECURITY.md` for the threat model.
 - **Per-Qt-major-version DLL** — Qt 5 and Qt 6 ABIs differ. We ship both,
   named `dolphin_qt5_agent.dll` and `dolphin_qt6_agent.dll`; the loader
@@ -306,6 +310,21 @@ not match. Build instructions are in `src_cpp/qt_agent/README.md`.
   short of cooperative integration.
 - **Sandboxed apps** — UWP / packaged apps with isolated containers cannot
   be injected without elevated privileges and AppContainer-aware tooling.
+
+## Validation coverage
+
+The required Qt5/Qt6 component suite includes six abrupt-owner-death scenarios:
+an authenticated idle connection, a disconnected transport waiting for
+reconnection, and an unfinished JSON frame, each with both Qt versions. The
+test checks a real authenticated ping, the actual controller PID, explicit
+Win32 `TerminateProcess`, its exit code, absence of Python cleanup, continued
+AUT liveness, stable disappearance of the old pipe and a new owner's successful
+attach/ping/introspection. These scenarios may not be skipped in CI.
+
+Restricted-token and localhost-SMB tests remain controls for the local security
+boundary. They do not establish results for a second logged-in account or an
+independent remote machine. See [the system isolation checklist](../guides/qt-agent-system-isolation.md)
+for the remaining environment-dependent checks.
 
 ## Python API
 

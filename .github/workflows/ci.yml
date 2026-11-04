@@ -314,7 +314,13 @@ jobs:
             "test_agent_pipe_security_boundaries[qt5]",
             "test_agent_pipe_security_boundaries[qt6]",
             "test_native_oversized_requests_recover_without_memory_growth[qt5]",
-            "test_native_oversized_requests_recover_without_memory_growth[qt6]"
+            "test_native_oversized_requests_recover_without_memory_growth[qt6]",
+            "test_terminated_controller_expires_session[qt5-connected]",
+            "test_terminated_controller_expires_session[qt5-disconnected]",
+            "test_terminated_controller_expires_session[qt5-partial]",
+            "test_terminated_controller_expires_session[qt6-connected]",
+            "test_terminated_controller_expires_session[qt6-disconnected]",
+            "test_terminated_controller_expires_session[qt6-partial]"
           )
           $actual = @{}
           foreach ($case in $cases) {

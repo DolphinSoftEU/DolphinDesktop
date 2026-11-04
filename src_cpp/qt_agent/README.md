@@ -104,3 +104,9 @@ size rejection by the boundary regression.
 The stop export requests shutdown and joins the pipe thread. It deliberately
 does not unload the DLL from under Qt callbacks; the module remains mapped
 until the target process exits.
+The server pins the controller process object with a SYNCHRONIZE handle and
+registers a Windows thread-pool wait for its exit. Abrupt controller death
+sets the existing stop flag, closes the pipe and ends the worker; it does not
+require Python cleanup. A fresh controller can start another session in the
+same AUT. Destruction disarms the wait and joins pending callbacks before
+closing its process handle or destroying callback state.
