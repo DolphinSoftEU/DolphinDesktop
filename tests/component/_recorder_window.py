@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import ast
+import json
+import os
 import queue
+import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +20,21 @@ win32api = pytest.importorskip("win32api")
 win32con = pytest.importorskip("win32con")
 win32gui = pytest.importorskip("win32gui")
 win32process = pytest.importorskip("win32process")
+
+
+def _desktop_unavailable(reason):
+    if os.environ.get("DOLPHIN_RECORDER_ACCEPTANCE") == "1":
+        pytest.fail(f"Recorder acceptance requires an interactive desktop: {reason}")
+    pytest.skip(reason)
+
+
+def _activate_owned_window(root):
+    try:
+        win32gui.SetForegroundWindow(root)
+    except win32gui.error as exc:
+        _desktop_unavailable(f"Interactive desktop refused activation of owned AUT: {exc}")
+    if win32gui.GetForegroundWindow() != root:
+        _desktop_unavailable("Interactive desktop did not activate owned AUT")
 
 
 def check_real_hook_lifecycle():
@@ -91,12 +110,7 @@ def record_native_transitions():
 
     try:
         win32gui.ShowWindow(root, win32con.SW_SHOW)
-        try:
-            win32gui.SetForegroundWindow(root)
-        except win32gui.error as exc:
-            pytest.skip(f"Interactive desktop refused activation of owned AUT: {exc}")
-        if win32gui.GetForegroundWindow() != root:
-            pytest.skip("Interactive desktop did not activate owned AUT")
+        _activate_owned_window(root)
         focus_control(controls[0])
         assert _recorder._capture_context().password is False
         focus_control(controls[1])
@@ -145,3 +159,116 @@ def record_native_transitions():
                 rec._evt_queue.get_nowait()
             except queue.Empty:
                 break
+
+
+def record_generate_replay(output):
+    """Record real input and execute the unmodified generated script on an owned AUT."""
+    from dolphin_desktop import Desktop
+
+    from ._real_window import ID_EDIT, ID_STATUS, STATUS_IDLE
+
+    ready = Path(output).with_suffix(".ready.json")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("_real_window.py")),
+            "--ready-file",
+            str(ready),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    rec = None
+    process_handle = None
+    app = None
+
+    def wait_until(predicate, timeout=5):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            assert process.poll() is None, "Owned AUT exited unexpectedly"
+            assert time.monotonic() < deadline, "Timed out waiting for owned AUT/recorder"
+            time.sleep(0.01)
+
+    try:
+        wait_until(ready.exists)
+        identity = json.loads(ready.read_text(encoding="utf-8"))
+        root, pid = identity["hwnd"], identity["pid"]
+        # Windows venv redirectors may put the AUT in a child of Popen.pid.
+        from dolphin_desktop._application import _enumerate_descendant_pids
+
+        assert pid in {process.pid} | _enumerate_descendant_pids(process.pid)
+        assert win32process.GetWindowThreadProcessId(root)[1] == pid
+        # Keep an identity anchor with SYNCHRONIZE | QUERY_LIMITED_INFORMATION | TERMINATE.
+        process_handle = win32api.OpenProcess(0x101001, False, pid)
+        rec = _recorder.Recorder(pid=pid)
+        edit = win32gui.GetDlgItem(root, ID_EDIT)
+        status = win32gui.GetDlgItem(root, ID_STATUS)
+        _activate_owned_window(root)
+        app = Desktop().connect(process=pid)
+        field = app.window(handle=root).get_by_automation_id(str(ID_EDIT))
+        status_field = app.window(handle=root).get_by_automation_id(str(ID_STATUS))
+        win32gui.SendMessage(edit, win32con.WM_SETTEXT, 0, "")
+        left, top, right, bottom = win32gui.GetWindowRect(edit)
+        point = ((left + right) // 2, (top + bottom) // 2)
+
+        def guard():
+            assert win32gui.GetForegroundWindow() == root, "Owned AUT lost foreground"
+            assert win32process.GetWindowThreadProcessId(root)[1] == pid
+            assert win32gui.WindowFromPoint(point) == edit, "Owned Edit is obscured"
+
+        guard()
+        rec.start()
+        win32api.SetCursorPos(point)
+        guard()
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        wait_until(lambda: rec._processed >= 1)
+        assert _recorder._capture_context().focus == edit
+        assert _recorder._capture_context().password is False
+        for _ in range(4):
+            guard()
+            assert _recorder._capture_context().focus == edit
+            win32api.keybd_event(ord("T"), 0, 0, 0)
+            win32api.keybd_event(ord("T"), 0, win32con.KEYEVENTF_KEYUP, 0)
+        wait_until(lambda: rec._processed >= 5)
+        wait_until(lambda: field.text() == "tttt")
+        rec.stop()
+        assert rec.wait(2)
+        rec._hook_thread.join(2)
+        assert not rec._hook_thread.is_alive()
+
+        actions = rec.actions()
+        assert [action.kind for action in actions] == ["click", "type_text"]
+        typed = actions[-1]
+        assert typed.data == "tttt"
+        assert typed.selector, "Recording must produce a usable field selector"
+        locator = app.window(handle=root).locator(**typed.selector)
+        assert locator._resolve().handle == edit
+        code = rec.generate_code(output)
+        assert "TODO" not in code
+        namespace = {}
+        exec(compile(Path(output).read_text(encoding="utf-8"), str(output), "exec"), namespace)
+        win32gui.SendMessage(edit, win32con.WM_SETTEXT, 0, "")
+        assert field.text() == ""
+        guard()
+        namespace["test_recorded"](process_id=pid)
+        wait_until(lambda: field.text() == "tttt")
+        assert status_field._resolve().handle == status
+        assert status_field.text() == STATUS_IDLE
+    finally:
+        if rec is not None:
+            rec.stop()
+            if rec._hook_thread is not None:
+                rec._hook_thread.join(3)
+                assert not rec._hook_thread.is_alive()
+        if app is not None:
+            app.detach()
+        if process_handle is not None:
+            try:
+                if win32process.GetExitCodeProcess(process_handle) == win32con.STILL_ACTIVE:
+                    win32api.TerminateProcess(process_handle, 0)
+            finally:
+                process_handle.Close()
+        if process.poll() is None:
+            process.terminate()
+        process.communicate(timeout=5)

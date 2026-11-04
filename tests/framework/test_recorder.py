@@ -1415,6 +1415,33 @@ def test_hook_callback_forwards_pointer_sized_lparam_to_real_winapi():
     assert ctypes.sizeof(_recorder._HOOKPROC._restype_) == ctypes.sizeof(ctypes.c_void_p)
 
 
+def test_wait_reports_message_loop_failure_after_successful_start(monkeypatch):
+    release = threading.Event()
+    api = _HookAPI({})
+
+    def fail_after_start(*args):
+        assert release.wait(2)
+        return -1
+
+    api.GetMessageW = fail_after_start
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec = Recorder(pid=100)
+    try:
+        rec.start()
+        assert rec.wait(0) is False
+        release.set()
+        with pytest.raises(OSError, match="failed during recording") as caught:
+            rec.wait(2)
+        assert caught.value.__cause__ is rec._hook_error
+        assert rec._proc_thread is None
+        assert rec._evt_queue.empty()
+    finally:
+        release.set()
+        rec.stop()
+        rec._hook_thread.join(2)
+    assert api.unhooked == [101, 202]
+
+
 def test_recorder_detects_double_clicks_and_escapes_window_titles() -> None:
     from dolphin_desktop._recorder import RecordedAction, _is_double_click, _title_re_literal
 

@@ -1,7 +1,11 @@
 """Real native focus classification and low-level hook regression for KAN-576."""
 
 import pytest
-from tests.component._recorder_window import check_real_hook_lifecycle, record_native_transitions
+from tests.component._recorder_window import (
+    check_real_hook_lifecycle,
+    record_generate_replay,
+    record_native_transitions,
+)
 
 from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
 
@@ -23,3 +27,7 @@ def test_real_hook_delayed_password_text_transitions():
     assert "tttt" in code
     for secret in ("qqqq", "ssss", "kkkk"):
         assert secret not in code
+
+
+def test_real_record_generate_replay_targets_native_edit(tmp_path):
+    record_generate_replay(tmp_path / "recorded.py")

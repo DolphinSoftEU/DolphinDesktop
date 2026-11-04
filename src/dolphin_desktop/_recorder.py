@@ -771,10 +771,17 @@ class Recorder:
         self._join_processor()
 
     def wait(self, timeout: float | None = None) -> bool:
-        """Block until ``stop()`` is called or the stop key is pressed."""
+        """Wait for recording to stop; return False when the timeout expires.
+
+        Raises:
+            OSError: The hook thread failed during recording. The original
+                exception is retained as the cause, after queued events drain.
+        """
         if not self._stopped.wait(timeout):
             return False
         self._join_processor()
+        if self._hook_error is not None:
+            raise OSError("Recorder hook loop failed during recording") from self._hook_error
         return True
 
     def _join_processor(self, timeout: float = _PROC_JOIN_TIMEOUT) -> None:
