@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import runpy
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -17,6 +20,7 @@ module = runpy.run_path(str(ROOT / ".github/scripts/install_msvc.py"))
 install = module["install"]
 extract_payload = module["extract_payload"]
 verify_payload = module["verify_payload"]
+extract_sdk_payload = module["extract_sdk_payload"]
 
 
 def make_archive(files: dict[str, bytes]) -> bytes:
@@ -111,3 +115,127 @@ def test_failed_install_does_not_publish_or_leave_temporary_files(tmp_path, monk
     with pytest.raises((ValueError, OSError)):
         install(tmp_path / "toolchain", lock)
     assert not list(tmp_path.iterdir())
+
+
+def sdk_archive(*, complete=True) -> bytes:
+    version = "10.0.26100.0"
+    files = {
+        f"c/Include/{version}/um/Windows.h": b"headers-7705",
+        f"c/Include/{version}/shared/sdkddkver.h": b"shared",
+        f"c/Include/{version}/ucrt/corecrt.h": b"ucrt",
+        f"c/bin/{version}/x64/rc.exe": b"rc-7705",
+        f"c/bin/{version}/x64/mt.exe": b"mt-7705",
+        "c/um/x64/kernel32.lib": b"import-library-7705",
+    }
+    if complete:
+        files["c/ucrt/x64/ucrt.lib"] = b"ucrt-library"
+    return make_archive(files)
+
+
+@pytest.mark.parametrize("failure", [None, "incomplete", "tamper", "untrusted_host"])
+def test_sdk_is_verified_and_published_with_compiler_or_everything_is_rolled_back(
+    tmp_path, monkeypatch, failure
+):
+    compiler = compiler_archive()
+    sdk = sdk_archive(complete=failure != "incomplete")
+    lock = fixture_lock(compiler)
+    lock["windows_sdk"] = "10.0.26100.0"
+    lock["windows_sdk_package_version"] = "10.0.26100.7705"
+    lock["windows_sdk_packages"] = [
+        {
+            "id": "fixture.sdk",
+            "version": "10.0.26100.7705",
+            "url": "https://api.nuget.org/fixture.nupkg",
+            "size": len(sdk),
+            "sha256": hashlib.sha256(sdk).hexdigest(),
+        }
+    ]
+    if failure == "tamper":
+        sdk = bytes([sdk[0] ^ 1]) + sdk[1:]
+    if failure == "untrusted_host":
+        lock["windows_sdk_packages"][0]["url"] = "https://example.invalid/fixture.nupkg"
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda url, **kw: io.BytesIO(sdk if url.endswith("nupkg") else compiler),
+    )
+    destination = tmp_path / "toolchain"
+    if failure:
+        with pytest.raises(ValueError):
+            install(destination, lock)
+        assert not list(tmp_path.iterdir())
+    else:
+        install(destination, lock)
+        assert (
+            destination / "WindowsSDK/Include/10.0.26100.0/um/Windows.h"
+        ).read_bytes() == b"headers-7705"
+        assert (
+            destination / "WindowsSDK/Lib/10.0.26100.0/um/x64/kernel32.lib"
+        ).read_bytes() == b"import-library-7705"
+        assert (destination / "WindowsSDK/bin/10.0.26100.0/x64/rc.exe").read_bytes() == b"rc-7705"
+        assert json.loads((destination / "toolchain.json").read_text()) == lock
+        assert list(tmp_path.iterdir()) == [destination]
+
+
+def test_sdk_archive_cannot_escape_installation(tmp_path):
+    path = tmp_path / "payload.nupkg"
+    path.write_bytes(make_archive({"c/Include/10.0.26100.0/../../escape": b"untrusted"}))
+    with pytest.raises(ValueError, match="Unsafe"):
+        extract_sdk_payload(path, tmp_path / "installation", "10.0.26100.0")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows toolchain environment")
+def test_initializer_ignores_registry_sdk_and_ambient_compiler_paths(tmp_path):
+    pwsh = shutil.which("pwsh")
+    assert pwsh
+    script = tmp_path / "environment.ps1"
+    script.write_text(
+        r"""
+param([string]$Repository, [string]$Sandbox)
+$ErrorActionPreference = 'Stop'
+$lock = Get-Content (Join-Path $Repository '.github/toolchains/msvc.json') -Raw | ConvertFrom-Json
+$lock | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Sandbox 'toolchain.json')
+$tools = Join-Path $Sandbox "VC/Tools/MSVC/$($lock.tools_directory)"
+$expectedSdk = Join-Path $Sandbox 'WindowsSDK'
+New-Item -ItemType Directory -Path $tools -Force | Out-Null
+foreach ($relative in @('Include/10.0.26100.0/ucrt', 'Include/10.0.26100.0/shared',
+                        'Include/10.0.26100.0/um', 'Lib/10.0.26100.0/ucrt/x64',
+                        'Lib/10.0.26100.0/um/x64', 'bin/10.0.26100.0/x64')) {
+    New-Item -ItemType Directory -Path (Join-Path $expectedSdk $relative) -Force | Out-Null
+}
+function Get-ItemProperty { throw 'Registry SDK must not be read' }
+function cl.exe { 'MSVC 19.50.35726' }
+$env:CC = $env:CXX = 'Z:/ambient/compiler.exe'
+$env:INCLUDE = $env:LIB = $env:LIBPATH = 'Z:/ambient'
+$env:WindowsSdkDir = 'Z:/registry-sdk'
+. (Join-Path $Repository '.github/scripts/enter_msvc.ps1') -ToolchainRoot $Sandbox
+if ($env:CXX -ne (Join-Path $tools 'bin/Hostx64/x64/cl.exe') -or $env:CC -ne $env:CXX) {
+    throw 'Ambient compiler selected'
+}
+if ($env:WindowsSdkDir.TrimEnd('\') -ne $expectedSdk -or
+    $env:DOLPHIN_WINDOWS_SDK_PACKAGE_VERSION -ne $lock.windows_sdk_package_version -or
+    $env:INCLUDE.Contains('Z:') -or $env:LIB.Contains('Z:') -or $env:LIBPATH.Contains('Z:')) {
+    throw 'Ambient SDK selected'
+}
+'PASS'
+""",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(script),
+            "-Repository",
+            str(ROOT),
+            "-Sandbox",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS" in result.stdout

@@ -48,6 +48,8 @@ def test_ci_provisions_the_exact_compiler_before_reproducing_qt_agents() -> None
     assert verify["env"]["DOLPHIN_MSVC_ROOT"] == "${{ runner.temp }}\\dolphin-msvc"
     commands = "\n".join(s.get("run", "") for s in steps)
     assert "Microsoft.VisualStudio.Component.VC.14.50.18.0.x86.x64" not in commands
+    assert "Microsoft.VisualStudio.Component.Windows11SDK.26100" not in commands
+    assert "vs_installer.exe" not in commands
 
 
 @pytest.mark.parametrize("name", ["ci.yml", "docs.yml", "release.yml"])

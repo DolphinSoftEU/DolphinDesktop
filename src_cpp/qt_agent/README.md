@@ -7,7 +7,7 @@ The Python-side protocol and lifecycle are documented in
 
 ## Reproducible Windows builds
 
-Stage the intended source, then build from an x64 MSVC developer shell with
+Stage the intended source, then build with the downloaded toolchain and
 no unstaged changes under `src_cpp/qt_agent`. The scripts pin the Qt and MSVC
 toolchain versions, use a fresh Ninja build directory, verify the authenticated
 start/stop exports, and update the DLL's SHA-256, size, protocol version and
@@ -15,14 +15,17 @@ staged Git tree in
 `src/dolphin_desktop/_qt_agent/agent_manifest.json`.
 
 Use PowerShell 7, MSVC tools 14.50.35717 (compiler 19.50.35726), Windows SDK
-10.0.26100.0, and the matching Qt SDK with Core, Widgets, Network, Qml and
+package 10.0.26100.7705 (directory 10.0.26100.0), and the matching Qt SDK with Core, Widgets, Network, Qml and
 Quick modules. QML is required, so incomplete SDKs fail instead of producing a
 different artifact. Install the locked CMake 3.31.10, Ninja 1.11.1.4 (PyPI)
 and aqtinstall 3.3.0 tools with `uv sync --locked --group native-build`.
-Initialize `vcvars64.bat 10.0.26100.0 -vcvars_ver=14.50.35717`, then run
-the following in PowerShell 7 with `.venv/Scripts` first on PATH:
+Download the exact MSVC and Windows SDK packages locked in
+`.github/toolchains/msvc.json`, then initialize their environment in PowerShell
+7 with `.venv/Scripts` first on PATH:
 
 ```powershell
+uv run --no-sync python .github/scripts/install_msvc.py --destination C:\build-tools\dolphin-msvc
+. .github/scripts/enter_msvc.ps1 -ToolchainRoot C:\build-tools\dolphin-msvc
 $env:DOLPHIN_QT5_ROOT = 'C:\Qt\5.15.2\msvc2019_64'
 $env:DOLPHIN_QT6_ROOT = 'C:\Qt\6.10.3\msvc2022_64'
 .\src_cpp\qt_agent\build_qt5.ps1
@@ -33,6 +36,9 @@ Both SDKs use MSVC compiler 19.50.35726 in this build environment. Qt 5.15.2
 is installed as `msvc2019_64`; Qt 6.10.3 is installed as `msvc2022_64`. The
 build scripts reject different compiler and Qt versions so the manifest
 cannot silently attribute an artifact to an unrecorded toolchain.
+The Windows SDK servicing revision is recorded separately in the manifest:
+the directory name 10.0.26100.0 alone does not identify its headers/libraries.
+CI uses the downloaded SDK, including rc/mt, instead of registry-installed SDKs.
 
 The generated DLLs are written to `src/dolphin_desktop/_qt_agent/`. Review
 the DLLs and manifest together; the manifest's `source_tree` identifies the

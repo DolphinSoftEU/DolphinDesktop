@@ -20,6 +20,9 @@ if ($env:VCToolsVersion -ne '14.50.35717' -or
     $env:VSCMD_ARG_TGT_ARCH -ne 'x64') {
     throw 'Use vcvars64.bat 10.0.26100.0 -vcvars_ver=14.50.35717'
 }
+if ($env:DOLPHIN_WINDOWS_SDK_PACKAGE_VERSION -ne '10.0.26100.7705') {
+    throw 'Use enter_msvc.ps1 with the pinned Windows SDK package 10.0.26100.7705'
+}
 if (-not (Test-Path -LiteralPath $QtRoot -PathType Container)) {
     throw "Qt $QtMajor SDK not found: $QtRoot"
 }
@@ -134,6 +137,7 @@ try {
         msvc_toolset = $expected.MsvcLabel
         vc_tools_version = $env:VCToolsVersion
         windows_sdk = $env:WindowsSDKVersion.TrimEnd('\')
+        windows_sdk_package_version = $env:DOLPHIN_WINDOWS_SDK_PACKAGE_VERSION
         cmake_version = '3.31.10'
         ninja_version = '1.11.1.git.kitware.jobserver-1'
     }

@@ -31,18 +31,7 @@ jobs:
       - name: Install locked native build tools
         run: uv sync --locked --only-group native-build --python 3.13
 
-      - name: Install Windows SDK component
-        shell: pwsh
-        run: |
-          $installer = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
-          $vs = & "$installer\vswhere.exe" -latest -products '*' -property installationPath
-          $process = Start-Process "$installer\vs_installer.exe" -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
-            'modify', '--installPath', "`"$vs`"", '--quiet', '--norestart',
-            '--add', 'Microsoft.VisualStudio.Component.Windows11SDK.26100'
-          )
-          if ($process.ExitCode -notin @(0, 3010)) { throw "VS install failed: $($process.ExitCode)" }
-
-      - name: Download and verify exact MSVC compiler and CRT payloads
+      - name: Download and verify exact MSVC, CRT and Windows SDK payloads
         shell: pwsh
         run: uv run --no-sync python .github/scripts/install_msvc.py --destination "$env:RUNNER_TEMP/dolphin-msvc"
 

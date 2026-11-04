@@ -1,4 +1,4 @@
-"""Materialize the exact Microsoft compiler/CRT payloads used by the Qt DLLs."""
+"""Materialize the exact Microsoft compiler, CRT and Windows SDK for the Qt DLLs."""
 
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 LOCK = Path(__file__).resolve().parents[1] / "toolchains" / "msvc.json"
 
 
-def extract_payload(archive: Path, destination: Path, tools_directory: str) -> None:
-    prefix = f"Contents/VC/Tools/MSVC/{tools_directory}/"
+def extract_archive(
+    archive: Path, destination: Path, map_path: Callable[[PurePosixPath], PurePosixPath | None]
+) -> None:
     with zipfile.ZipFile(archive) as payload:
         for entry in payload.infolist():
             # ZipInfo normalizes Windows separators and strips NUL suffixes;
@@ -29,16 +31,40 @@ def extract_payload(archive: Path, destination: Path, tools_directory: str) -> N
                 or any(character in raw_name for character in ("\\", ":", "\0"))
             ):
                 raise ValueError(f"Unsafe toolchain archive path: {entry.filename}")
-            if not entry.filename.startswith(prefix) or entry.is_dir():
+            relative = map_path(path)
+            if relative is None or entry.is_dir():
                 continue
             if (entry.external_attr >> 16) & 0o170000 == 0o120000:
                 raise ValueError("Toolchain archive contains a symbolic link")
-            target = destination.joinpath(*path.parts[1:])
+            target = destination.joinpath(*relative.parts)
             if not target.resolve().is_relative_to(destination.resolve()):
                 raise ValueError("Toolchain archive escapes the installation directory")
             target.parent.mkdir(parents=True, exist_ok=True)
             with payload.open(entry) as source, target.open("wb") as output:
                 shutil.copyfileobj(source, output)
+
+
+def extract_payload(archive: Path, destination: Path, tools_directory: str) -> None:
+    prefix = f"Contents/VC/Tools/MSVC/{tools_directory}/"
+    extract_archive(
+        archive,
+        destination,
+        lambda p: PurePosixPath(*p.parts[1:]) if p.as_posix().startswith(prefix) else None,
+    )
+
+
+def extract_sdk_payload(archive: Path, destination: Path, sdk_version: str) -> None:
+    def map_path(path: PurePosixPath) -> PurePosixPath | None:
+        parts = path.parts
+        if parts[:3] == ("c", "Include", sdk_version):
+            return PurePosixPath("WindowsSDK", *parts[1:])
+        if parts[:4] == ("c", "bin", sdk_version, "x64"):
+            return PurePosixPath("WindowsSDK", *parts[1:])
+        if len(parts) >= 3 and parts[0] == "c" and parts[1] in {"um", "ucrt"} and parts[2] == "x64":
+            return PurePosixPath("WindowsSDK", "Lib", sdk_version, *parts[1:])
+        return None
+
+    extract_archive(archive, destination, map_path)
 
 
 def verify_payload(path: Path, record: dict) -> None:
@@ -61,16 +87,22 @@ def install(destination: Path, lock: dict) -> None:
         scratch_path = Path(scratch)
         installation = scratch_path / "installation"
         installation.mkdir()
-        for number, record in enumerate(lock["packages"]):
+        packages = [(record, "msvc") for record in lock["packages"]]
+        packages += [(record, "sdk") for record in lock.get("windows_sdk_packages", [])]
+        for number, (record, kind) in enumerate(packages):
             url = urllib.parse.urlsplit(record["url"])
-            if url.scheme != "https" or url.netloc != "download.visualstudio.microsoft.com":
-                raise ValueError("MSVC payloads must come from Microsoft's HTTPS download host")
+            host = "api.nuget.org" if kind == "sdk" else "download.visualstudio.microsoft.com"
+            if url.scheme != "https" or url.netloc != host:
+                raise ValueError(f"Toolchain payload must come from Microsoft's HTTPS host: {host}")
             archive = scratch_path / f"{number}.vsix"
             with urllib.request.urlopen(record["url"], timeout=120) as source:
                 with archive.open("wb") as output:
                     shutil.copyfileobj(source, output)
             verify_payload(archive, record)
-            extract_payload(archive, installation, lock["tools_directory"])
+            if kind == "sdk":
+                extract_sdk_payload(archive, installation, lock["windows_sdk"])
+            else:
+                extract_payload(archive, installation, lock["tools_directory"])
             print(f"Verified {record['id']} {record['version']}", flush=True)
         tools = installation / "VC" / "Tools" / "MSVC" / lock["tools_directory"]
         for relative in (
@@ -82,6 +114,20 @@ def install(destination: Path, lock: dict) -> None:
         ):
             if not (tools / relative).is_file():
                 raise ValueError(f"Incomplete MSVC payloads: {relative}")
+        if lock.get("windows_sdk_packages"):
+            sdk = installation / "WindowsSDK"
+            version = lock["windows_sdk"]
+            for relative in (
+                f"Include/{version}/um/Windows.h",
+                f"Include/{version}/shared/sdkddkver.h",
+                f"Include/{version}/ucrt/corecrt.h",
+                f"Lib/{version}/um/x64/kernel32.lib",
+                f"Lib/{version}/ucrt/x64/ucrt.lib",
+                f"bin/{version}/x64/rc.exe",
+                f"bin/{version}/x64/mt.exe",
+            ):
+                if not (sdk / relative).is_file():
+                    raise ValueError(f"Incomplete Windows SDK payloads: {relative}")
         (installation / "toolchain.json").write_text(json.dumps(lock, indent=2) + "\n")
         installation.rename(destination)
 

@@ -127,6 +127,7 @@ else {
         }
         $env:VCToolsVersion = '14.50.35717'
         $env:WindowsSDKVersion = '10.0.26100.0\'
+        $env:DOLPHIN_WINDOWS_SDK_PACKAGE_VERSION = '10.0.26100.7705'
         $env:VSCMD_ARG_TGT_ARCH = 'x64'
         try {
             & (Join-Path $Repository 'src_cpp/qt_agent/build_agent.ps1') -QtMajor 5 -QtRoot $qt -LogDirectory (Join-Path $Sandbox 'logs')

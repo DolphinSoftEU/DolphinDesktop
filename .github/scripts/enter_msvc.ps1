@@ -10,7 +10,7 @@ if (($installed | ConvertTo-Json -Depth 8 -Compress) -cne
     throw 'Installed MSVC payloads do not match the checked-in toolchain lock'
 }
 $tools = (Resolve-Path (Join-Path $ToolchainRoot "VC\Tools\MSVC\$($lock.tools_directory)")).Path
-$sdk = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots').KitsRoot10
+$sdk = (Resolve-Path (Join-Path $ToolchainRoot 'WindowsSDK')).Path.TrimEnd('\') + '\'
 $version = $lock.windows_sdk
 foreach ($relative in @("Include\$version\ucrt", "Include\$version\shared", "Include\$version\um",
                         "Lib\$version\ucrt\x64", "Lib\$version\um\x64", "bin\$version\x64")) {
@@ -23,6 +23,11 @@ $env:VCToolsVersion = $lock.tools_directory
 $env:WindowsSdkDir = $sdk
 $env:WindowsSDKVersion = "$version\"
 $env:VSCMD_ARG_TGT_ARCH = 'x64'
+$env:DOLPHIN_MSVC_ROOT = (Resolve-Path $ToolchainRoot).Path
+$env:DOLPHIN_WINDOWS_SDK_PACKAGE_VERSION = $lock.windows_sdk_package_version
+$env:CC = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
+$env:CXX = $env:CC
+$env:LIBPATH = "$tools\lib\x64"
 $env:INCLUDE = "$tools\include;$sdk\Include\$version\ucrt;$sdk\Include\$version\shared;$sdk\Include\$version\um;$sdk\Include\$version\winrt"
 $env:LIB = "$tools\lib\x64;$sdk\Lib\$version\ucrt\x64;$sdk\Lib\$version\um\x64"
 $env:PATH = "$tools\bin\Hostx64\x64;$sdk\bin\$version\x64;$env:PATH"
@@ -31,3 +36,4 @@ if ($compiler -notmatch ('(?<![0-9.])' + [regex]::Escape($lock.compiler) + '(?![
     throw "Expected locked MSVC $($lock.compiler), found: $compiler"
 }
 Write-Host "Selected downloaded MSVC $($lock.compiler): $tools"
+Write-Host "Selected downloaded Windows SDK $($lock.windows_sdk_package_version): $sdk"

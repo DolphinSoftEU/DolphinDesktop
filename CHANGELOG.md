@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Qt agent builds now use hash-pinned Windows SDK 10.0.26100.7705 packages,
+  including headers, import libraries and tools. The manifest records the
+  SDK servicing version separately from its 10.0.26100.0 directory name,
+  fixing the reproduced CI hash mismatch caused by SDK 10.0.26100.9457
+  (KAN-470 SDK review).
+
 * Qt native build and verification cleanup now share Windows path
   normalization, including trailing separators. Secondary cleanup or log-write
   errors preserve the original build failure instead of hiding it
