@@ -958,6 +958,7 @@ def test_start_logs_scope_and_starts_both_daemon_threads(monkeypatch, app, expec
             made.append((target, daemon, name))
 
         def start(self):
+            rec._hook_ready.set()
             return None
 
     monkeypatch.setattr(threading, "Thread", FakeThread)
@@ -1333,7 +1334,7 @@ def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None
             self.events.append(event)
 
     callbacks: dict[int, object] = {}
-    api = _HookAPI(callbacks, handles=(0, None), message_returns=(1, 0))
+    api = _HookAPI(callbacks, message_returns=(1, 0))
     rec = Recorder()
     full_queue = FullQueue()
     rec._evt_queue = full_queue  # type: ignore[assignment]
@@ -1366,8 +1367,63 @@ def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None
     assert api.message_calls == 2
     assert api.translated == 1
     assert api.dispatched == 1
-    assert api.unhooked == []
+    assert api.unhooked == [101, 202]
     assert full_queue.events == [None]
+
+
+@pytest.mark.parametrize(("handles", "unhooked"), [((0,), []), ((101, 0), [101])])
+def test_start_reports_hook_installation_failure_and_cleans_up(monkeypatch, handles, unhooked):
+    api = _HookAPI({}, handles=handles)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec = Recorder(pid=100)
+
+    with pytest.raises(OSError):
+        rec.start()
+
+    rec._hook_thread.join(1)
+    assert not rec._hook_thread.is_alive()
+    assert rec._proc_thread is None
+    assert rec._stopped.is_set()
+    assert api.unhooked == unhooked
+    assert api.message_calls == 0
+    assert rec._evt_queue.get_nowait() is None
+
+
+def test_hook_message_failure_releases_both_hooks(monkeypatch):
+    api = _HookAPI({}, message_returns=(-1,))
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec = Recorder(pid=100)
+    rec._hook_loop()
+    assert isinstance(rec._hook_error, OSError)
+    assert api.unhooked == [101, 202]
+    assert rec._stopped.is_set()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="WinAPI ctypes ABI")
+def test_real_hook_abi_preserves_pointer_sized_arguments_and_results(monkeypatch):
+    # Exercise the production callback and the real ctypes CallNextHookEx
+    # boundary without installing a desktop-wide hook or sending any input.
+    expected = (1 << (ctypes.sizeof(ctypes.c_void_p) * 8 - 2)) + 123
+    seen = []
+
+    @_recorder._HOOKPROC
+    def next_hook(code, wparam, lparam):
+        seen.append((code, wparam, lparam))
+        return expected
+
+    @_recorder._HOOKPROC
+    def callback(code, wparam, lparam):
+        return _recorder._user32.CallNextHookEx(None, code, wparam, lparam)
+
+    # Construct a callable using exactly the configured native ABI.
+    native = _recorder._user32.CallNextHookEx
+    signature = ctypes.WINFUNCTYPE(native.restype, *native.argtypes)
+    boundary = signature(lambda hook, code, wp, lp: next_hook(code, wp, lp))
+    monkeypatch.setattr(_recorder._user32, "CallNextHookEx", boundary)
+    assert callback(-1, expected, expected) == expected
+    assert seen == [(-1, expected, expected)]
+    assert _recorder._user32.SetWindowsHookExW.restype is ctypes.wintypes.HANDLE
+    assert _recorder._user32.UnhookWindowsHookEx.argtypes == (ctypes.wintypes.HANDLE,)
 
 
 def test_recorder_detects_double_clicks_and_escapes_window_titles() -> None:
@@ -1504,8 +1560,9 @@ def test_app_resolution_accepts_multiple_windows_of_one_process(monkeypatch):
         (0, "Edit", 3, None),
     ],
 )
+@pytest.mark.parametrize("api_sequence", [tuple, list])
 def test_native_event_classification_is_stable_or_unknown(
-    monkeypatch, style, cls, second_focus, expected
+    monkeypatch, style, cls, second_focus, expected, api_sequence
 ):
     gui = SimpleNamespace(
         GetForegroundWindow=lambda: 1,
@@ -1516,7 +1573,7 @@ def test_native_event_classification_is_stable_or_unknown(
     monkeypatch.setitem(
         sys.modules,
         "win32process",
-        SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: (10, 100)),
+        SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: api_sequence((10, 100))),
     )
     monkeypatch.setattr(_recorder, "_get_root_hwnd", lambda hwnd: 1)
     monkeypatch.setattr(_recorder, "_get_window_info", lambda hwnd: ("Login", "Dialog"))

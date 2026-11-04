@@ -160,10 +160,14 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
 
 
 _HOOKPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
-    ctypes.c_longlong, ctypes.c_int, _wt.WPARAM, _wt.LPARAM
+    ctypes.c_ssize_t, ctypes.c_int, _wt.WPARAM, _wt.LPARAM
 )
 
-_user32 = ctypes.windll.user32 if sys.platform == "win32" else _UnavailableObject("recorder")
+_user32: Any = (
+    ctypes.WinDLL("user32", use_last_error=True)
+    if sys.platform == "win32"
+    else _UnavailableObject("recorder")
+)
 
 _log = get_logger("recorder")
 
@@ -493,6 +497,31 @@ class _GUITHREADINFO(ctypes.Structure):
     ]
 
 
+if sys.platform == "win32":
+    # ctypes defaults to C int arguments/results, which truncate x64 handles
+    # and LPARAMs. LRESULT follows pointer width on both x86 and x64.
+    _user32.CallNextHookEx.argtypes = (_wt.HANDLE, ctypes.c_int, _wt.WPARAM, _wt.LPARAM)
+    _user32.CallNextHookEx.restype = ctypes.c_ssize_t
+    _user32.SetWindowsHookExW.argtypes = (ctypes.c_int, _HOOKPROC, _wt.HINSTANCE, _wt.DWORD)
+    _user32.SetWindowsHookExW.restype = _wt.HANDLE
+    _user32.UnhookWindowsHookEx.argtypes = (_wt.HANDLE,)
+    _user32.UnhookWindowsHookEx.restype = _wt.BOOL
+    _user32.GetMessageW.argtypes = (ctypes.POINTER(_wt.MSG), _wt.HWND, _wt.UINT, _wt.UINT)
+    _user32.GetMessageW.restype = ctypes.c_int
+    _user32.TranslateMessage.argtypes = (ctypes.POINTER(_wt.MSG),)
+    _user32.TranslateMessage.restype = _wt.BOOL
+    _user32.DispatchMessageW.argtypes = (ctypes.POINTER(_wt.MSG),)
+    _user32.DispatchMessageW.restype = ctypes.c_ssize_t
+    _user32.PostThreadMessageW.argtypes = (_wt.DWORD, _wt.UINT, _wt.WPARAM, _wt.LPARAM)
+    _user32.PostThreadMessageW.restype = _wt.BOOL
+    _user32.PostQuitMessage.argtypes = (ctypes.c_int,)
+    _user32.PostQuitMessage.restype = None
+    _user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+    _user32.GetAsyncKeyState.restype = _wt.SHORT
+    _user32.GetGUIThreadInfo.argtypes = (_wt.DWORD, ctypes.POINTER(_GUITHREADINFO))
+    _user32.GetGUIThreadInfo.restype = _wt.BOOL
+
+
 def _native_focus(thread: int) -> tuple[int, int]:
     info = _GUITHREADINFO()
     info.cbSize = ctypes.sizeof(info)
@@ -549,7 +578,7 @@ def _capture_context(hwnd: int | None = None) -> _InputContext:
                 and again_active == root
                 and win32gui.GetForegroundWindow() == root
                 and win32gui.GetWindowLong(focus, -16) == style
-                and win32process.GetWindowThreadProcessId(root) == (thread, pid)
+                and tuple(win32process.GetWindowThreadProcessId(root)) == (thread, pid)
                 and win32process.GetWindowThreadProcessId(focus)[1] == pid
             ):
                 password = bool(style & 0x20)  # ES_PASSWORD
@@ -676,6 +705,8 @@ class Recorder:
         self._proc_idle = threading.Event()
         self._stopped = threading.Event()
         self._hook_thread_id: int = 0
+        self._hook_ready = threading.Event()
+        self._hook_error: OSError | None = None
 
         # Strong references — prevent GC while hooks are active
         self._mouse_cb: Any = None
@@ -707,10 +738,17 @@ class Recorder:
             scope,
         )
         self._stopped.clear()
+        self._hook_ready.clear()
+        self._hook_error = None
         self._hook_thread = threading.Thread(
             target=self._hook_loop, daemon=True, name="dolphin-rec-hook"
         )
         self._hook_thread.start()
+        if not self._hook_ready.wait(5.0):
+            self.stop()
+            raise OSError("Timed out installing recorder hooks")
+        if self._hook_error is not None:
+            raise self._hook_error
         self._proc_thread = threading.Thread(
             target=self._process_loop, daemon=True, name="dolphin-rec-proc"
         )
@@ -877,24 +915,36 @@ class Recorder:
         self._mouse_cb = _HOOKPROC(_mouse_proc)
         self._kbd_cb = _HOOKPROC(_kbd_proc)
 
-        mouse_hook = _user32.SetWindowsHookExW(_WH_MOUSE_LL, self._mouse_cb, None, 0)
-        kbd_hook = _user32.SetWindowsHookExW(_WH_KEYBOARD_LL, self._kbd_cb, None, 0)
+        mouse_hook = kbd_hook = None
+        try:
+            mouse_hook = _user32.SetWindowsHookExW(_WH_MOUSE_LL, self._mouse_cb, None, 0)
+            if not mouse_hook:
+                raise ctypes.WinError(ctypes.get_last_error())
+            kbd_hook = _user32.SetWindowsHookExW(_WH_KEYBOARD_LL, self._kbd_cb, None, 0)
+            if not kbd_hook:
+                raise ctypes.WinError(ctypes.get_last_error())
+            self._hook_ready.set()
 
-        msg = _wt.MSG()
-        while not stopped.is_set():
-            ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-            if ret <= 0:
-                break
-            _user32.TranslateMessage(ctypes.byref(msg))
-            _user32.DispatchMessageW(ctypes.byref(msg))
-
-        if mouse_hook:
-            _user32.UnhookWindowsHookEx(mouse_hook)
-        if kbd_hook:
-            _user32.UnhookWindowsHookEx(kbd_hook)
-
-        stopped.set()
-        evt_queue.put(None)
+            msg = _wt.MSG()
+            while not stopped.is_set():
+                ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret == -1:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if ret == 0:
+                    break
+                _user32.TranslateMessage(ctypes.byref(msg))
+                _user32.DispatchMessageW(ctypes.byref(msg))
+        except OSError as exc:
+            self._hook_error = exc
+            _log.error("Recorder hook failed: %s", exc)
+        finally:
+            if mouse_hook:
+                _user32.UnhookWindowsHookEx(mouse_hook)
+            if kbd_hook:
+                _user32.UnhookWindowsHookEx(kbd_hook)
+            stopped.set()
+            evt_queue.put(None)
+            self._hook_ready.set()
 
     # Processor thread
 
