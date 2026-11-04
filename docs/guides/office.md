@@ -324,8 +324,11 @@ longer needed.
 
 Permanent deletion goes through a proxy re-fetched by EntryID: on PST stores
 Outlook silently ignores `Delete()` on the proxy that `Move()` returned, so the
-facade re-fetches after every move and verifies that a permanent delete really
-removed the item, raising `RuntimeError` otherwise.
+facade re-fetches after every move and verifies the outcome. The verification
+re-fetches the item: an unambiguous `MAPI_E_NOT_FOUND` confirms it is gone, and
+any other failure (a store, session or permission error) is treated as an
+unknown outcome and raised as `RuntimeError`, never reported as a successful
+delete.
 
 ## Exclusive Office sessions for UAT
 

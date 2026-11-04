@@ -11,6 +11,26 @@ from ._office_session import _OfficeSession, _OfficeStartupError, _start_office
 
 _FOLDERS = {"inbox": 6, "drafts": 16, "sent": 5, "deleted": 3, "calendar": 9}
 
+# MAPI_E_NOT_FOUND (0x8004010F): Outlook's unambiguous "no such item". Any other
+# failure to resolve an item leaves its fate unknown.
+_MAPI_E_NOT_FOUND = -2147221233
+
+
+def _com_status_code(exc: BaseException) -> int | None:
+    """The MAPI/COM status code behind a pywintypes.com_error, or None.
+
+    IDispatch reports a provider error as DISP_E_EXCEPTION and puts the real
+    code in excepinfo[5]; use that when present, else the top-level HRESULT.
+    """
+    args = getattr(exc, "args", None)
+    if not args:
+        return None
+    if len(args) > 2 and isinstance(args[2], (tuple, list)) and len(args[2]) > 5:
+        scode = args[2][5]
+        if isinstance(scode, int):
+            return scode
+    return args[0] if isinstance(args[0], int) else None
+
 
 def _configured_profiles() -> list[str]:
     """Read profile names before COM activation can display first-run setup."""
@@ -377,25 +397,22 @@ class OutlookApp:
     def _item_still_present(self, entry_id: str, store_id: str) -> bool:
         """Whether the item is still retrievable; raise when the result is uncertain.
 
-        GetItemFromID failing does not by itself prove the item is gone: a
-        store, session or permission failure raises the same way. Only treat a
-        lookup failure as "gone" when a cheap liveness probe on the same MAPI
-        namespace still succeeds; otherwise surface the uncertainty so a
-        permanent delete is never reported as done on an unknown outcome.
+        A permanent delete is confirmed gone only by an unambiguous
+        MAPI_E_NOT_FOUND from Outlook. Any other failure to resolve the item
+        (a store, session or permission error, a different COM code, or a
+        non-COM exception) leaves the outcome unknown and raises, so a
+        permanent delete is never reported as done on a guess.
         """
         try:
             self._namespace.GetItemFromID(entry_id, store_id)
             return True
         except Exception as lookup_error:
-            try:
-                self._namespace.GetDefaultFolder(_FOLDERS["deleted"])
-            except Exception as liveness_error:
-                raise RuntimeError(
-                    "Could not verify permanent deletion: the Outlook MAPI session is "
-                    "not answering, so the outcome is unknown"
-                ) from liveness_error
-            _ = lookup_error
-            return False
+            if _com_status_code(lookup_error) == _MAPI_E_NOT_FOUND:
+                return False
+            raise RuntimeError(
+                "Could not verify permanent deletion: Outlook did not report the item "
+                f"as not-found, so the outcome is unknown ({lookup_error})"
+            ) from lookup_error
 
     def _lookup_item(self, com: Any) -> OutlookItem:
         # Only drafts created here may regain ownership after a folder lookup.

@@ -195,12 +195,24 @@ def outlook():
 
 
 def _purge(mail: OutlookMail) -> None:
+    # delete(permanent=True) verifies the item is gone (MAPI_E_NOT_FOUND) and
+    # raises otherwise, so a failure here is a real leftover. Called from each
+    # test's finally: when the body already failed, do not mask it (warn and move
+    # on); when the body passed, re-raise so a destructive test never reports
+    # success while leaving a draft behind.
+    body_already_failing = sys.exc_info()[0] is not None
     try:
         if mail.parent_folder.name != mail._owner.default_folder("deleted").name:
             mail.delete()
         mail.delete(permanent=True)
     except Exception as exc:
-        warnings.warn(f"Outlook test cleanup failed to purge a draft: {exc!r}", stacklevel=2)
+        if body_already_failing:
+            warnings.warn(
+                f"Outlook cleanup failed during an already-failing test: {exc!r}",
+                stacklevel=2,
+            )
+            return
+        raise AssertionError(f"Outlook test cleanup left a draft behind: {exc!r}") from exc
 
 
 def _purge_by_subject(app: OutlookApp, folder: str, subject: str) -> int:

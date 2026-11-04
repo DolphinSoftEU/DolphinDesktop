@@ -9,9 +9,24 @@ field order. All against mocks; the live counterpart is
 from unittest.mock import MagicMock, call
 
 import pytest
+import pywintypes
 
 from dolphin_desktop import OutlookApp
 from dolphin_desktop import _outlook as outlook
+
+MAPI_E_NOT_FOUND = -2147221233
+E_ACCESSDENIED = -2147024891
+
+
+def _com_error(scode: int, text: str = "x") -> pywintypes.com_error:
+    """A com_error shaped like the ones Outlook raises (real code in excepinfo[5])."""
+    return pywintypes.com_error(
+        -2147352567, "Exception occurred.", (4096, "Microsoft Outlook", text, None, 0, scode), None
+    )
+
+
+def _not_found() -> pywintypes.com_error:
+    return _com_error(MAPI_E_NOT_FOUND, "the specified message could not be found")
 
 
 @pytest.fixture
@@ -110,7 +125,7 @@ def test_permanent_delete_calls_delete_on_the_fresh_proxy_and_confirms_removal(c
         calls.append((entry_id, store_id))
         if len(calls) == 1:
             return fresh  # the re-fetch before Delete()
-        raise Exception("The item has been moved or deleted")  # the verification
+        raise _not_found()  # the verification: Outlook reports MAPI_E_NOT_FOUND
 
     namespace.GetItemFromID.side_effect = lookup
     with OutlookApp.start() as app:
@@ -124,7 +139,7 @@ def test_permanent_delete_calls_delete_on_the_fresh_proxy_and_confirms_removal(c
 
 def test_permanent_delete_falls_back_to_the_own_proxy_when_refetch_fails(client):
     _, namespace, draft_com = _draft_in_deleted_items(client)
-    namespace.GetItemFromID.side_effect = Exception("no GetItemFromID")
+    namespace.GetItemFromID.side_effect = _not_found()
     with OutlookApp.start() as app:
         draft = app.create_mail(subject="UAT")
         draft.delete(permanent=True)
@@ -234,14 +249,16 @@ def test_add_attachment_refuses_a_missing_file_before_touching_com(client, tmp_p
         mail_com.Attachments.Add.assert_not_called()
 
 
-def test_permanent_delete_is_uncertain_when_the_session_is_unavailable(client):
-    """A failed verification lookup is not proof of deletion if the session is down too."""
-    _, namespace, _draft_com = _draft_in_deleted_items(client)
-    namespace.GetItemFromID.side_effect = Exception("access denied")
-    namespace.GetDefaultFolder.side_effect = Exception("the MAPI session is not responding")
+def test_permanent_delete_is_uncertain_when_the_lookup_is_not_not_found(client):
+    """Only MAPI_E_NOT_FOUND confirms deletion; an access error is an unknown outcome."""
+    _, namespace, draft_com = _draft_in_deleted_items(client)
+    # The fresh-proxy re-fetch and the verification both hit a per-item access
+    # error (not a not-found), so the delete request runs but cannot be confirmed.
+    namespace.GetItemFromID.side_effect = _com_error(E_ACCESSDENIED, "access is denied")
     with OutlookApp.start() as app:
         draft = app.create_mail(subject="UAT")
         with pytest.raises(RuntimeError, match="Could not verify permanent deletion"):
             draft.delete(permanent=True)
+        draft_com.Delete.assert_called_once_with()  # the delete was still attempted
         # The draft proxy is not reused after an uncertain outcome.
         assert draft._closed

@@ -41,6 +41,15 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* PR #57 re-review follow-ups on Outlook:
+  - `delete(permanent=True)` now confirms removal by COM status code: only an
+    unambiguous `MAPI_E_NOT_FOUND` from the re-fetch counts as deleted; any
+    other failure (store, session or permission error, or a different code)
+    raises `RuntimeError` as an unknown outcome instead of a false success.
+  - the live-test cleanup helper fails the test when it cannot purge a draft it
+    created (a passing test can no longer leave items behind), while preserving
+    an already-failing test's original error.
+
 * PR #57 review follow-ups on the Office facades:
   - Outlook `delete(permanent=True)` no longer reads a failed verification
     lookup as success. A `GetItemFromID` failure is treated as "gone" only when
