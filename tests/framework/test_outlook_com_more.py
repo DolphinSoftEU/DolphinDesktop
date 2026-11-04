@@ -232,3 +232,16 @@ def test_add_attachment_refuses_a_missing_file_before_touching_com(client, tmp_p
         with pytest.raises(FileNotFoundError):
             mail.add_attachment(tmp_path / "missing.txt")
         mail_com.Attachments.Add.assert_not_called()
+
+
+def test_permanent_delete_is_uncertain_when_the_session_is_unavailable(client):
+    """A failed verification lookup is not proof of deletion if the session is down too."""
+    _, namespace, _draft_com = _draft_in_deleted_items(client)
+    namespace.GetItemFromID.side_effect = Exception("access denied")
+    namespace.GetDefaultFolder.side_effect = Exception("the MAPI session is not responding")
+    with OutlookApp.start() as app:
+        draft = app.create_mail(subject="UAT")
+        with pytest.raises(RuntimeError, match="Could not verify permanent deletion"):
+            draft.delete(permanent=True)
+        # The draft proxy is not reused after an uncertain outcome.
+        assert draft._closed

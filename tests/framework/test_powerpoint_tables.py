@@ -216,12 +216,14 @@ def test_add_chart_replaces_template_series_with_literal_arrays():
     assert shape._com is shape_com
 
 
-def test_add_chart_without_title_leaves_the_title_alone():
+def test_add_chart_without_title_disables_the_default_title():
+    # AddChart2 leaves a single-series chart with a default title; title=None
+    # must turn it off explicitly, not leave whatever AddChart2 produced.
     slide_com = MagicMock()
     slide_com.Parent.Windows.Count = 1
     chart = slide_com.Shapes.AddChart2.return_value.Chart
     chart.SeriesCollection.return_value.Count = 0
-    chart.HasTitle = MSO_FALSE
+    chart.HasTitle = MSO_TRUE  # the default AddChart2 would leave behind
     ppt.PowerPointSlide(slide_com).add_chart(["Q1"], {"a": [1]})
     assert chart.HasTitle == MSO_FALSE
 

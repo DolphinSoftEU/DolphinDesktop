@@ -188,6 +188,26 @@ def test_three_series_keep_independent_values(visible_exclusive_app):
         assert chart.series_values(name) == [float(v) for v in values]
 
 
+def test_chart_without_title_has_no_title_and_it_persists(tmp_path):
+    """title=None means no chart title, and that holds after save and reopen."""
+    if _pids():
+        pytest.skip("an operator PowerPoint is running; exclusive mode never claims it")
+    pptx = tmp_path / "untitled-chart.pptx"
+    # Charts need a window, so build it in a visible exclusive deck, then let the
+    # block close that deck and quit before reopening the saved file read-only.
+    with PowerPointApp.create(visible=True, exclusive=True) as app:
+        deck = app.active_presentation
+        chart = deck.add_slide().add_chart(["Q1", "Q2"], {"Units": [3, 4]}).chart
+        assert chart.has_title is False
+        assert chart.title == ""
+        deck.save_as(pptx)
+
+    with PowerPointApp.open(pptx, visible=False) as app:
+        reopened = app.active_presentation.slide(1).shape(1).chart
+        assert reopened.has_title is False
+        assert reopened.title == ""
+
+
 # ---------------------------------------------------------------------------
 # Z-order, mixed content, emptying a deck
 # ---------------------------------------------------------------------------

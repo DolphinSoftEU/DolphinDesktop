@@ -164,6 +164,7 @@ def test_closing_a_presentation_releases_nested_ranges_too():
     deck = ppt.PowerPointPresentation(com)
     slide = deck.slide(1)
     shape = slide.shape(1)
+    shape._com.TextFrame.TextRange.Length = 5  # characters() now range-checks against this
     whole = shape.text_range
     part = whole.characters(1, 2)
     deck.close()
@@ -172,3 +173,30 @@ def test_closing_a_presentation_releases_nested_ranges_too():
     assert shape._com is None
     assert whole._com is None
     assert part._com is None
+
+
+def test_characters_validates_bounds_before_touching_com():
+    com = MagicMock(Length=5)
+    rng = PowerPointTextRange(com)
+    # Valid: whole range and an interior run are accepted and hit COM.
+    rng.characters(1, 5)
+    rng.characters(3, 2)
+    assert com.Characters.call_count == 2
+    com.Characters.reset_mock()
+    for bad_args, pattern in [
+        ((0,), "1-based"),
+        ((6,), "past the end"),  # start beyond a 5-character range
+        ((1, 0), "at least one"),  # empty range
+        ((1, -2), "at least one"),  # negative length
+        ((4, 3), "runs past the end"),  # 4..6 overruns length 5
+    ]:
+        with pytest.raises(ValueError, match=pattern):
+            rng.characters(*bad_args)
+    com.Characters.assert_not_called()
+
+
+def test_characters_on_empty_text_rejects_any_start():
+    com = MagicMock(Length=0)
+    with pytest.raises(ValueError, match="past the end"):
+        PowerPointTextRange(com).characters(1)
+    com.Characters.assert_not_called()

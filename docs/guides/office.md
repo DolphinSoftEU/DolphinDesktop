@@ -311,9 +311,16 @@ uv run python tests/fixtures/office/make_outlook_profile.py
 
 Then start classic Outlook once by hand and finish its welcome wizard with
 "do not connect to an e-mail account" / "use Outlook without an email account".
-From then on `tests/office/test_outlook_live.py` runs against that profile; it
-cleans up every item it creates. Remove the profile in Control Panel, Mail,
-Show Profiles when it is no longer needed.
+
+The live Outlook tests are destructive (they create, move and permanently
+delete items) and are therefore opt-in: set `DOLPHIN_OUTLOOK_UAT` to the test
+store's display name (`Dolphin UAT Store` for the profile the script makes) to
+enable them; unset, they skip. Even with it set, each test verifies before any
+mutation that the default profile's drafts folder lives in a local `.pst` store
+with exactly that display name, and fails rather than touch anything else, so a
+personal or work mailbox is never modified. The tests clean up every item they
+create. Remove the profile in Control Panel, Mail, Show Profiles when it is no
+longer needed.
 
 Permanent deletion goes through a proxy re-fetched by EntryID: on PST stores
 Outlook silently ignores `Delete()` on the proxy that `Move()` returned, so the

@@ -9,9 +9,11 @@ discipline: every item created here is removed before the test ends.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
+import warnings
 import winreg
 from datetime import datetime, timedelta
 
@@ -81,7 +83,13 @@ def _start_exclusive_ready(attempts: int = 5):
         if not _wait_until_no_process():
             pytest.skip("an Outlook is already running; exclusive mode never claims it")
         try:
-            return OutlookApp.start(exclusive=True)
+            app = OutlookApp.start(exclusive=True)
+            try:
+                _assert_dedicated_store(app)
+            except BaseException:
+                app.quit()
+                raise
+            return app
         except RuntimeError as exc:
             if "MAPI profile unavailable" not in str(exc):
                 raise
@@ -90,10 +98,88 @@ def _start_exclusive_ready(attempts: int = 5):
     raise AssertionError(f"Outlook MAPI never became ready after {attempts} starts: {last_exc}")
 
 
+def _confirm_process_gone(pid: int | None, timeout: float = 60.0) -> None:
+    """Wait for the exclusive process to exit; force-kill as a last resort."""
+    if pid is None:
+        return
+    deadline = time.monotonic() + timeout
+    while pid in _pids():
+        if time.monotonic() >= deadline:
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+            return
+        time.sleep(1)
+
+
+def _quit_and_confirm_gone(app: OutlookApp, *, save_changes: bool = False) -> None:
+    """Quit an exclusive Outlook and make sure its process is gone.
+
+    OutlookApp.quit() requests the quit but raises "did not exit after Quit;
+    retry cleanup" when the process has not died within the session's short
+    wait. An exclusive Outlook driven through many create/delete cycles can
+    ignore that single Quit for a long time, so after a short grace period the
+    process is force-killed: it is our own disposable UAT process on a throwaway
+    PST, so nothing is lost. The call returns only once the pid is really gone.
+    """
+    pid = app.process_id
+    try:
+        app.quit(save_changes=save_changes)
+    except RuntimeError as exc:
+        if "retry cleanup" not in str(exc):
+            raise
+    if pid is None:
+        return
+    grace = time.monotonic() + 15
+    while pid in _pids():
+        if time.monotonic() >= grace:
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+            break
+        time.sleep(1)
+    reap = time.monotonic() + 15
+    while pid in _pids() and time.monotonic() < reap:
+        time.sleep(0.5)
+
+
+_UAT_ENV = "DOLPHIN_OUTLOOK_UAT"
+
+
+def _uat_store_name() -> str | None:
+    """The display name of the dedicated test store the operator opted in to."""
+    name = os.environ.get(_UAT_ENV, "").strip()
+    return name or None
+
+
+def _assert_dedicated_store(app: OutlookApp) -> None:
+    """Refuse to mutate anything unless the mailbox is the opted-in test store.
+
+    These tests create, move and permanently delete items. They run against the
+    default MAPI profile, so before any mutation the store behind that profile
+    must be verified to be the dedicated, disposable test store named in
+    DOLPHIN_OUTLOOK_UAT: a local .pst with no mail account. Anything else
+    (a personal or work mailbox) fails hard rather than being touched.
+    """
+    expected = _uat_store_name()
+    assert expected, "DOLPHIN_OUTLOOK_UAT must be set (checked in _require_outlook)"
+    store = app.default_folder("drafts")._com.Store
+    name = str(store.DisplayName)
+    path = str(getattr(store, "FilePath", "") or "")
+    if name != expected or not path.lower().endswith(".pst"):
+        raise AssertionError(
+            f"refusing to run destructive Outlook tests against store {name!r} "
+            f"(path {path!r}); expected the dedicated PST named {expected!r}. "
+            f"Set {_UAT_ENV} to that store's display name and make it the default profile."
+        )
+
+
 @pytest.fixture(autouse=True)
 def _require_outlook():
     if not _outlook_registered():
         pytest.skip("classic Outlook (Outlook.Application) is not registered on this machine")
+    if not _uat_store_name():
+        pytest.skip(
+            "destructive Outlook tests are opt-in: set DOLPHIN_OUTLOOK_UAT to the display "
+            "name of a dedicated, disposable test store (a local PST with no mail account, "
+            "see tests/fixtures/office/make_outlook_profile.py) to allow them"
+        )
     if not _profiles():
         pytest.skip("no Outlook MAPI profile; create the UAT profile first")
 
@@ -104,8 +190,8 @@ def outlook():
     try:
         yield app
     finally:
-        app.quit()
-    assert not _pids(), "exclusive Outlook must be gone after quit()"
+        _quit_and_confirm_gone(app)
+    assert _wait_until_no_process(), "exclusive Outlook must be gone after quit()"
 
 
 def _purge(mail: OutlookMail) -> None:
@@ -113,8 +199,8 @@ def _purge(mail: OutlookMail) -> None:
         if mail.parent_folder.name != mail._owner.default_folder("deleted").name:
             mail.delete()
         mail.delete(permanent=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        warnings.warn(f"Outlook test cleanup failed to purge a draft: {exc!r}", stacklevel=2)
 
 
 def _purge_by_subject(app: OutlookApp, folder: str, subject: str) -> int:
@@ -245,7 +331,7 @@ def test_quit_with_save_changes_persists_unsaved_drafts():
     try:
         app.create_mail(subject=subject, body="kept")
     finally:
-        app.quit(save_changes=True)
+        _quit_and_confirm_gone(app, save_changes=True)
     assert not _pids()
 
     again = _start_exclusive_ready()
@@ -255,7 +341,7 @@ def test_quit_with_save_changes_persists_unsaved_drafts():
         assert subject in subjects
         assert _purge_by_subject(again, "drafts", subject) == 1
     finally:
-        again.quit()
+        _quit_and_confirm_gone(again)
 
 
 def test_opened_msg_item_cannot_be_moved(outlook, tmp_path):

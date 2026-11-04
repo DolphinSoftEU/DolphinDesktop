@@ -161,7 +161,7 @@ class OutlookMail(OutlookItem):
             entry_id, store_id = str(self._com.EntryID), str(parent.StoreID)
             owner._fresh_item(self._com).Delete()
             self._closed = True
-            if owner._item_exists(entry_id, store_id):
+            if owner._item_still_present(entry_id, store_id):
                 raise RuntimeError(
                     "Outlook kept the draft in Deleted Items after Delete(); "
                     "permanent deletion did not take effect"
@@ -374,12 +374,28 @@ class OutlookApp:
         except Exception:
             return com
 
-    def _item_exists(self, entry_id: str, store_id: str) -> bool:
+    def _item_still_present(self, entry_id: str, store_id: str) -> bool:
+        """Whether the item is still retrievable; raise when the result is uncertain.
+
+        GetItemFromID failing does not by itself prove the item is gone: a
+        store, session or permission failure raises the same way. Only treat a
+        lookup failure as "gone" when a cheap liveness probe on the same MAPI
+        namespace still succeeds; otherwise surface the uncertainty so a
+        permanent delete is never reported as done on an unknown outcome.
+        """
         try:
             self._namespace.GetItemFromID(entry_id, store_id)
-        except Exception:
+            return True
+        except Exception as lookup_error:
+            try:
+                self._namespace.GetDefaultFolder(_FOLDERS["deleted"])
+            except Exception as liveness_error:
+                raise RuntimeError(
+                    "Could not verify permanent deletion: the Outlook MAPI session is "
+                    "not answering, so the outcome is unknown"
+                ) from liveness_error
+            _ = lookup_error
             return False
-        return True
 
     def _lookup_item(self, com: Any) -> OutlookItem:
         # Only drafts created here may regain ownership after a folder lookup.

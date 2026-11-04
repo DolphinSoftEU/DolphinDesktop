@@ -41,6 +41,24 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* PR #57 review follow-ups on the Office facades:
+  - Outlook `delete(permanent=True)` no longer reads a failed verification
+    lookup as success. A `GetItemFromID` failure is treated as "gone" only when
+    a liveness probe on the same MAPI namespace still answers; otherwise it
+    raises, so a store/session/permission failure is reported as an unknown
+    outcome rather than a completed delete.
+  - `PowerPointTextRange.characters()` validates the range against the text
+    length before calling COM: `start` must be within the text, the run must
+    not reach past the end, and a length below 1 is rejected, each with a
+    `ValueError` instead of a bare COM error.
+  - `PowerPointSlide.add_chart(..., title=None)` now explicitly turns the chart
+    title off instead of leaving the layout's default, so an untitled chart has
+    no title after creation and after reopen.
+  - The live Outlook tests are opt-in via `DOLPHIN_OUTLOOK_UAT` and verify the
+    target store is a dedicated local PST before any create/move/delete, so a
+    personal or work mailbox is never touched; their cleanup now reports
+    failures instead of swallowing them.
+
 * Outlook `OutlookMail.delete(permanent=True)` now really removes the draft.
   On PST stores Outlook silently ignores `Delete()` on the item proxy that
   `Move()` returns, so after each move the facade re-fetches the item by EntryID

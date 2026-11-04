@@ -151,11 +151,27 @@ class PowerPointTextRange(_ComOwner):
         self._com.ActionSettings(_PP_MOUSE_CLICK).Hyperlink.Address = address
 
     def characters(self, start: int, length: int | None = None) -> PowerPointTextRange:
-        """Sub-range starting at 1-based *start*; *length* defaults to the rest."""
+        """A sub-range starting at 1-based *start*, for *length* characters.
+
+        A range always selects at least one real character: *start* must be
+        within the text (1..length) and the run must not extend past the end.
+        An out-of-range *start*, or a *length* below 1 or reaching past the
+        end, raises ValueError instead of deferring to a COM error. *length*
+        defaults to the rest of the text from *start*.
+        """
         if start < 1:
             raise ValueError("start is 1-based and must be >= 1")
+        total = self.length
+        if start > total:
+            raise ValueError(f"start {start} is past the end of a {total}-character range")
         if length is None:
-            length = self.length - start + 1
+            length = total - start + 1
+        elif length < 1:
+            raise ValueError("length must be >= 1 (a range selects at least one character)")
+        if start + length - 1 > total:
+            raise ValueError(
+                f"characters({start}, {length}) runs past the end of a {total}-character range"
+            )
         return self._adopt(PowerPointTextRange(self._com.Characters(start, length)))
 
     @property
@@ -609,7 +625,11 @@ class PowerPointSlide(_ComOwner):
             new_series.XValues = labels
             new_series.Values = tuple(float(value) for value in values)
         shape = self._track(shape_com)
-        if title is not None:
+        if title is None:
+            # AddChart2 gives a single-series chart a default title; make
+            # title=None mean "no title" explicitly rather than leaving it.
+            chart.HasTitle = _MSO_FALSE
+        else:
             shape.chart.title = title
         return shape
 
