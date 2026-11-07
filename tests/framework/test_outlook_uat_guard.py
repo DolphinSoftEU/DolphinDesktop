@@ -115,11 +115,11 @@ def test_rejects_an_empty_folder_map_even_with_clean_counts():
 @pytest.mark.parametrize(
     "path",
     [
-        r"\server\share\DolphinUAT.pst",
+        "\\\\server\\share\\DolphinUAT.pst",
         "//server/share/DolphinUAT.pst",
-        r"\?\UNC\server\share\DolphinUAT.pst",
-        r"\?\C:\uat\DolphinUAT.pst",
-        r"\.\C:\uat\DolphinUAT.pst",
+        "\\\\?\\UNC\\server\\share\\DolphinUAT.pst",
+        "\\\\?\\C:\\uat\\DolphinUAT.pst",
+        "\\\\.\\C:\\uat\\DolphinUAT.pst",
     ],
 )
 def test_rejects_unc_and_device_paths(path):
@@ -127,7 +127,15 @@ def test_rejects_unc_and_device_paths(path):
         _verify(folders=dict.fromkeys(GUARDED_FOLDERS, (_NAME, path, _STORE_ID)))
 
 
-@pytest.mark.parametrize("path", [r"uat\DolphinUAT.pst", r"C:DolphinUAT.pst", "DolphinUAT.pst"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "uat\\DolphinUAT.pst",  # relative
+        "C:DolphinUAT.pst",  # drive-relative
+        "\\uat\\DolphinUAT.pst",  # rooted, but on whichever drive is current
+        "DolphinUAT.pst",
+    ],
+)
 def test_rejects_paths_that_are_not_absolute_drive_paths(path):
     with pytest.raises(AssertionError, match="not an absolute local drive path"):
         _verify(folders=dict.fromkeys(GUARDED_FOLDERS, (_NAME, path, _STORE_ID)))
