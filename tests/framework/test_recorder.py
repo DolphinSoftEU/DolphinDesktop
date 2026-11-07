@@ -1398,6 +1398,45 @@ def test_start_reports_hook_installation_failure(monkeypatch):
     assert rec._proc_thread is None
 
 
+def test_start_timeout_stops_capture_without_starting_processor(monkeypatch):
+    rec = Recorder(pid=100)
+    hook_thread = Mock(spec=threading.Thread)
+    make_thread = Mock(return_value=hook_thread)
+    ready_wait = Mock(return_value=False)
+    monkeypatch.setattr(threading, "Thread", make_thread)
+    monkeypatch.setattr(rec._hook_ready, "wait", ready_wait)
+
+    with pytest.raises(TimeoutError, match="Recorder hooks did not initialize"):
+        rec.start()
+
+    ready_wait.assert_called_once_with(5.0)
+    hook_thread.start.assert_called_once_with()
+    assert make_thread.call_count == 1
+    assert rec._proc_thread is None
+    assert rec._stopped.is_set()
+    assert rec._evt_queue.get_nowait() is None
+    assert rec._evt_queue.empty()
+
+
+def test_unhook_failure_still_removes_remaining_hook_and_signals_completion(monkeypatch):
+    api = _HookAPI({}, message_returns=(0,))
+    unhook = Mock(side_effect=[0, 1])
+    api.UnhookWindowsHookEx = unhook
+    error = Mock()
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(_recorder._log, "error", error)
+    rec = Recorder(pid=100)
+
+    rec._hook_loop()
+
+    assert [call.args for call in unhook.call_args_list] == [(101,), (202,)]
+    error.assert_called_once_with("Could not remove recorder hook")
+    assert rec._stopped.is_set()
+    assert rec._hook_ready.is_set()
+    assert rec._evt_queue.get_nowait() is None
+    assert rec._evt_queue.empty()
+
+
 def test_hook_callback_forwards_pointer_sized_lparam_to_real_winapi():
     # Negative nCode forwards without dereferencing lParam; no installed hook or
     # injected input is needed to exercise the actual ctypes boundary.
