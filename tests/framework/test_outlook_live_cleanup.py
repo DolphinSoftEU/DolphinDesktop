@@ -37,6 +37,9 @@ class _FakeApp:
     def default_folder(self, _name: str) -> _FakeFolder:
         return _FakeFolder(self._subjects)
 
+    def create_mail(self, *, subject: str = "", body: str = "") -> SimpleNamespace:
+        return SimpleNamespace(subject=subject, body=body)
+
 
 class _SkipLike(BaseException):
     """Stands in for pytest.skip's Skipped: a BaseException, not an Exception."""
@@ -95,6 +98,34 @@ def test_a_failure_before_the_purge_still_triggers_a_sweep(spies, monkeypatch):
         more._verify_and_purge_persisted("subj")
     assert spies["quits"] == 1  # the reopened app is quit
     assert spies["best_effort"] == 1  # and the draft is still swept
+
+
+# ---------------------------------------------------------------------------
+# The whole test: a failing first quit must still sweep the persisted draft
+# ---------------------------------------------------------------------------
+
+
+def test_a_failing_first_quit_still_sweeps_the_persisted_draft(monkeypatch):
+    swept: list[str] = []
+    verified: list[str] = []
+    monkeypatch.setattr(more, "_start_exclusive_ready", lambda: _FakeApp(["subj"]))
+
+    def failing_first_quit(app, **kwargs):
+        # Outlook has already written the draft to the PST; confirming the exit
+        # then times out.
+        raise RuntimeError("timeout confirming the process exited")
+
+    monkeypatch.setattr(more, "_quit_and_confirm_gone", failing_first_quit)
+    monkeypatch.setattr(more, "_best_effort_purge", lambda subject: swept.append(subject))
+    monkeypatch.setattr(
+        more, "_verify_and_purge_persisted", lambda subject: verified.append(subject)
+    )
+
+    with pytest.raises(RuntimeError, match="timeout confirming"):
+        more.test_quit_with_save_changes_persists_unsaved_drafts()
+
+    assert verified == []  # the first quit failed, so verify was never reached
+    assert swept == [f"{more._UAT_PREFIX} saved on quit"]  # yet the draft is still swept
 
 
 # ---------------------------------------------------------------------------

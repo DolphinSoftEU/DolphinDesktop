@@ -320,14 +320,23 @@ def test_unsaved_draft_closed_without_saving_leaves_no_trace(outlook):
 def test_quit_with_save_changes_persists_unsaved_drafts():
     subject = f"{_UAT_PREFIX} saved on quit"
     app = _start_exclusive_ready()
+    reached_verify = False
     try:
-        app.create_mail(subject=subject, body="kept")
+        try:
+            app.create_mail(subject=subject, body="kept")
+        finally:
+            _quit_and_confirm_gone(app, save_changes=True)
+        # The draft is now persisted in the PST; _verify_and_purge_persisted owns
+        # the reopen/assert/remove and its own cleanup from here on.
+        reached_verify = True
+        _verify_and_purge_persisted(subject)
     finally:
-        _quit_and_confirm_gone(app, save_changes=True)
-    # The draft is now persisted in the PST; _verify_and_purge_persisted does the
-    # reopen/assert/remove under one cleanup umbrella so it never leaks, whatever
-    # fails after this point.
-    _verify_and_purge_persisted(subject)
+        # The first quit (save_changes=True) can raise after Outlook already wrote
+        # the draft to the PST -- e.g. a timeout confirming the process exited --
+        # so if we never reached _verify_and_purge_persisted, sweep here. The
+        # best-effort purge never raises, so it cannot mask the original error.
+        if not reached_verify:
+            _best_effort_purge(subject)
 
 
 def test_opened_msg_item_cannot_be_moved(outlook, tmp_path):
