@@ -762,12 +762,19 @@ class Recorder:
         self._proc_thread.start()
 
     def stop(self) -> None:
-        """Stop recording, unhook, and wait for the queued events to be processed."""
+        """Stop the hook producer, then drain all events queued before it exited.
+
+        Raises:
+            TimeoutError: The hook thread or event drain did not finish.
+        """
         if not self._stopped.is_set():
+            self._stopped.set()
             if self._hook_thread_id:
                 _user32.PostThreadMessageW(self._hook_thread_id, _WM_QUIT, 0, 0)
-            self._evt_queue.put(None)
-            self._stopped.set()
+            # A running producer owns the final sentinel. A callback already
+            # in progress may still enqueue its event after this stop request.
+            if self._hook_thread is None:
+                self._evt_queue.put(None)
         self._join_processor()
 
     def wait(self, timeout: float | None = None) -> bool:
@@ -776,6 +783,8 @@ class Recorder:
         Raises:
             OSError: The hook thread failed during recording. The original
                 exception is retained as the cause, after queued events drain.
+            TimeoutError: Hook shutdown or the event drain stalled; recording
+                completion could not be confirmed.
         """
         if not self._stopped.wait(timeout):
             return False
@@ -793,16 +802,25 @@ class Recorder:
 
         *timeout* bounds a stalled drain, not the whole drain: a processor that is
         still consuming events keeps the wait alive, so a long recording is never
-        truncated, while a wedged one is abandoned — with a warning, because the
-        recording it produced is then incomplete.
+        truncated. A stalled shutdown raises before readers can flush pending
+        text or generate an incomplete script alongside the worker.
 
         An empty queue is not the idle signal: an event leaves the queue before it is
         interpreted, so a processor wedged inside the UIA focus probe of the keystroke
         it just dequeued also leaves it empty.  Only ``_proc_idle`` says the processor
         is parked in ``get()`` holding nothing.
         """
+        if not self._stopped.is_set():
+            return
+        producer = self._hook_thread
+        if producer is not None:
+            if producer is threading.current_thread():
+                raise RuntimeError("Cannot drain recorder events from the hook thread")
+            producer.join(timeout)
+            if producer.is_alive():
+                raise TimeoutError("Recorder hook thread did not stop; recording is incomplete")
         thread = self._proc_thread
-        if thread is None or not self._stopped.is_set():
+        if thread is None:
             return
         if thread is threading.current_thread():
             return
@@ -818,11 +836,7 @@ class Recorder:
                 grace = True
                 continue
             if self._proc_idle.is_set():
-                if self._evt_queue.empty():
-                    # Parked with nothing left to hand over — the hook thread has not
-                    # posted its sentinel yet, which is not a stalled drain.
-                    return
-                if grace:
+                if not self._evt_queue.empty() and grace:
                     # An event landed as the wait expired; the get() about to return it
                     # gets one more pass before the drain is called stalled.
                     grace = False
@@ -834,6 +848,7 @@ class Recorder:
             timeout,
             self._evt_queue.qsize(),
         )
+        raise TimeoutError("Recorder event drain stalled; recording is incomplete")
 
     def actions(self) -> list[RecordedAction]:
         """Return a copy of recorded actions (flushes any pending text first)."""
@@ -955,10 +970,21 @@ class Recorder:
             _log.error("Recorder hook loop failed: %s", exc)
         finally:
             for handle in (mouse_hook, kbd_hook):
-                if handle and not _user32.UnhookWindowsHookEx(handle):
-                    _log.error("Could not remove recorder hook")
-            stopped.set()
+                if not handle:
+                    continue
+                try:
+                    if not _user32.UnhookWindowsHookEx(handle):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                except Exception as exc:
+                    if self._hook_error is None:
+                        self._hook_error = exc
+                    else:
+                        self._hook_error.add_note(f"Additional hook cleanup failure: {exc}")
+                    _log.error("Could not remove recorder hook: %s", exc)
+            # Low-level callbacks run on this installing thread. Its message
+            # loop has returned, so no callback can enqueue behind this marker.
             evt_queue.put(None)
+            stopped.set()
             self._hook_ready.set()
 
     # Processor thread

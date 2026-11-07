@@ -491,7 +491,7 @@ class TestStopDrainsTheQueue:
         rec._join_processor(timeout=0.1)
         assert len(rec._actions) == 6
 
-    def test_a_wedged_processor_is_abandoned_with_a_warning(self, caplog):
+    def test_a_wedged_processor_raises_incomplete_recording(self, caplog):
         rec = Recorder()
         blocked = threading.Event()
         thread = threading.Thread(target=blocked.wait, daemon=True)
@@ -500,13 +500,17 @@ class TestStopDrainsTheQueue:
         rec._evt_queue.put(("mouse", "click", 0, 0, 0.0))
         rec._stopped.set()
 
-        with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
-            rec._join_processor(timeout=0.05)
-        blocked.set()
+        try:
+            with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
+                with pytest.raises(TimeoutError, match="recording is incomplete"):
+                    rec._join_processor(timeout=0.05)
+        finally:
+            blocked.set()
+            thread.join(2)
         assert "recording is incomplete" in caplog.text
 
-    def test_an_idle_processor_is_not_reported_as_stalled(self, caplog):
-        """wait() can return before the hook thread posts its sentinel."""
+    def test_an_idle_live_processor_is_not_treated_as_completed(self):
+        """An empty queue is insufficient: the worker must consume its sentinel."""
         rec = Recorder()
         blocked = threading.Event()
         thread = threading.Thread(target=blocked.wait, daemon=True)
@@ -515,10 +519,12 @@ class TestStopDrainsTheQueue:
         rec._proc_idle.set()  # parked in get(), holding no event
         rec._stopped.set()
 
-        with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
-            rec._join_processor(timeout=0.05)
-        blocked.set()
-        assert caplog.text == ""
+        try:
+            with pytest.raises(TimeoutError, match="recording is incomplete"):
+                rec._join_processor(timeout=0.05)
+        finally:
+            blocked.set()
+            thread.join(2)
 
     def test_a_processor_wedged_mid_event_is_reported(self, caplog):
         """An event leaves the queue before it is interpreted, so emptiness proves nothing.
@@ -542,9 +548,13 @@ class TestStopDrainsTheQueue:
         assert dequeued.wait(2.0)
         rec._stopped.set()
 
-        with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
-            rec._join_processor(timeout=0.05)
-        blocked.set()
+        try:
+            with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
+                with pytest.raises(TimeoutError, match="recording is incomplete"):
+                    rec._join_processor(timeout=0.05)
+        finally:
+            blocked.set()
+            thread.join(2)
         assert rec._evt_queue.empty()
         assert "recording is incomplete" in caplog.text
 
@@ -1020,7 +1030,8 @@ def test_join_grants_one_extra_pass_when_an_event_arrives_during_idle_wait(caplo
     rec._stopped.set()
 
     with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
-        rec._join_processor(timeout=0)
+        with pytest.raises(TimeoutError, match="recording is incomplete"):
+            rec._join_processor(timeout=0)
 
     assert "recording is incomplete" in caplog.text
 
@@ -1401,6 +1412,7 @@ def test_start_reports_hook_installation_failure(monkeypatch):
 def test_start_timeout_stops_capture_without_starting_processor(monkeypatch):
     rec = Recorder(pid=100)
     hook_thread = Mock(spec=threading.Thread)
+    hook_thread.is_alive.return_value = False
     make_thread = Mock(return_value=hook_thread)
     ready_wait = Mock(return_value=False)
     monkeypatch.setattr(threading, "Thread", make_thread)
@@ -1414,7 +1426,7 @@ def test_start_timeout_stops_capture_without_starting_processor(monkeypatch):
     assert make_thread.call_count == 1
     assert rec._proc_thread is None
     assert rec._stopped.is_set()
-    assert rec._evt_queue.get_nowait() is None
+    hook_thread.join.assert_called_once_with(_recorder._PROC_JOIN_TIMEOUT)
     assert rec._evt_queue.empty()
 
 
@@ -1425,16 +1437,151 @@ def test_unhook_failure_still_removes_remaining_hook_and_signals_completion(monk
     error = Mock()
     monkeypatch.setattr(_recorder, "_user32", api)
     monkeypatch.setattr(_recorder._log, "error", error)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
     rec = Recorder(pid=100)
 
     rec._hook_loop()
 
     assert [call.args for call in unhook.call_args_list] == [(101,), (202,)]
-    error.assert_called_once_with("Could not remove recorder hook")
+    error.assert_called_once_with("Could not remove recorder hook: %s", rec._hook_error)
+    assert rec._hook_error.winerror == 5
     assert rec._stopped.is_set()
     assert rec._hook_ready.is_set()
     assert rec._evt_queue.get_nowait() is None
     assert rec._evt_queue.empty()
+    with pytest.raises(OSError, match="failed during recording") as caught:
+        rec.wait(0)
+    assert caught.value.__cause__ is rec._hook_error
+
+
+def test_cleanup_failures_preserve_original_hook_error(monkeypatch):
+    api = _HookAPI({}, message_returns=(-1,))
+    api.UnhookWindowsHookEx = Mock(return_value=0)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(ctypes, "get_last_error", Mock(side_effect=[6, 5, 87]))
+    rec = Recorder(pid=100)
+    rec._hook_loop()
+    assert rec._hook_error.winerror == 6
+    assert len(rec._hook_error.__notes__) == 2
+    assert api.UnhookWindowsHookEx.call_count == 2
+    with pytest.raises(OSError) as caught:
+        rec.wait(0)
+    assert caught.value.__cause__ is rec._hook_error
+
+
+@pytest.mark.parametrize("reader", ["stop", "wait", "actions", "generate_code"])
+@pytest.mark.parametrize("state", ["queued", "mid_event", "idle"])
+def test_stalled_drain_cannot_report_success_or_generate_partial_code(
+    monkeypatch, tmp_path, reader, state
+):
+    rec = Recorder(pid=100)
+    entered = threading.Event()
+    release = threading.Event()
+    rec._evt_queue.put(("key",))
+    rec._pending_text.append("unfinished")
+
+    def blocked_processor():
+        if state != "queued":
+            rec._evt_queue.get_nowait()
+        if state == "idle":
+            rec._proc_idle.set()
+        entered.set()
+        release.wait(2)
+
+    processor = threading.Thread(target=blocked_processor, daemon=True)
+    rec._proc_thread = processor
+    processor.start()
+    assert entered.wait(2)
+    rec._stopped.set()
+    monkeypatch.setattr(rec, "_join_processor", lambda: Recorder._join_processor(rec, timeout=0.01))
+    output = tmp_path / "incomplete.py"
+    try:
+        with pytest.raises(TimeoutError, match="recording is incomplete"):
+            if reader == "generate_code":
+                rec.generate_code(output)
+            else:
+                getattr(rec, reader)()
+        assert not output.exists()
+        assert rec._pending_text == ["unfinished"]
+        assert rec._actions == []
+    finally:
+        release.set()
+        processor.join(2)
+
+
+def test_wait_does_not_drain_until_hook_producer_has_finished():
+    rec = Recorder(pid=100)
+    rec._stopped.set()
+    rec._hook_thread = Mock(spec=threading.Thread)
+    rec._hook_thread.is_alive.return_value = True
+    rec._proc_thread = Mock(spec=threading.Thread)
+    with pytest.raises(TimeoutError, match="hook thread did not stop"):
+        rec.wait(0)
+    rec._proc_thread.join.assert_not_called()
+    assert rec._evt_queue.empty()
+
+
+def test_drain_cannot_wait_for_its_own_hook_thread():
+    rec = Recorder(pid=100)
+    rec._stopped.set()
+    rec._hook_thread = threading.current_thread()
+    with pytest.raises(RuntimeError, match="from the hook thread"):
+        rec._join_processor()
+
+
+def test_stop_drains_callback_already_in_progress_before_final_sentinel(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    errors = []
+    rec = Recorder(pid=100)
+    api = _HookAPI({})
+    api.GetAsyncKeyState = Mock(return_value=0)
+
+    def capture_context():
+        entered.set()
+        assert release.wait(2)
+        return _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False)
+
+    def dispatch():
+        key = _recorder._KBDLLHOOKSTRUCT()
+        key.vkCode = ord("A")
+        rec._kbd_cb(_recorder._HC_ACTION, _recorder._WM_KEYDOWN, ctypes.addressof(key))
+
+    def stop_recording():
+        try:
+            rec.stop()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    api.dispatch = dispatch
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(_recorder, "_HOOKPROC", lambda function: function)
+    monkeypatch.setattr(_recorder, "_capture_context", capture_context)
+    monkeypatch.setattr(_recorder, "_vk_to_sendkeys", lambda *args, **kwargs: "a")
+    stopper = threading.Thread(target=stop_recording, daemon=True)
+    try:
+        rec.start()
+        assert entered.wait(2)
+        stopper.start()
+        assert rec._stopped.wait(2)
+        assert not finished.is_set()
+        release.set()
+        assert finished.wait(2)
+        stopper.join(2)
+        assert errors == []
+        assert rec.wait(0)
+        assert rec._processed == 1
+        assert [action.data for action in rec.actions()] == ["a"]
+        assert rec._evt_queue.empty()
+        assert api.unhooked == [101, 202]
+    finally:
+        release.set()
+        if stopper.ident is not None:
+            stopper.join(2)
+        rec.stop()
 
 
 def test_hook_callback_forwards_pointer_sized_lparam_to_real_winapi():

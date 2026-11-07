@@ -91,6 +91,7 @@ def record_native_transitions():
     pid = win32process.GetWindowThreadProcessId(root)[1]
     rec = _recorder.Recorder(pid=pid)
     hook = threading.Thread(target=rec._hook_loop, daemon=True)
+    rec._hook_thread = hook
     failures = []
     previous = sys.unraisablehook
 

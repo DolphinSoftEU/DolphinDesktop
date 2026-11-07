@@ -22,6 +22,13 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder shutdown now waits for the hook producer before draining its final
+  event marker, preserving callbacks already in progress. Failed hook removal
+  is retained as a WinAPI exception and reported by `wait()` after cleanup;
+  secondary cleanup errors preserve the original failure. Stalled hook shutdown
+  or event draining raises `TimeoutError` instead of reporting completion or
+  generating a partial script (KAN-576 shutdown review).
+
 * Recorder `wait()` now propagates hook failures that occur after startup,
   preserving the original exception after draining queued events. Recorder
   acceptance includes execution of the generated script against an owned native
