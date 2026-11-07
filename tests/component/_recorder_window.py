@@ -165,7 +165,7 @@ def record_generate_replay(output):
     """Record real input and execute the unmodified generated script on an owned AUT."""
     from dolphin_desktop import Desktop
 
-    from ._real_window import ID_EDIT, ID_STATUS, STATUS_IDLE
+    from ._real_window import ID_EDIT, ID_STATUS, STATUS_IDLE, WINDOW_CLASS
 
     ready = Path(output).with_suffix(".ready.json")
     process = subprocess.Popen(
@@ -205,8 +205,10 @@ def record_generate_replay(output):
         status = win32gui.GetDlgItem(root, ID_STATUS)
         _activate_owned_window(root)
         app = Desktop().connect(process=pid)
-        field = app.window(handle=root).get_by_automation_id(str(ID_EDIT))
-        status_field = app.window(handle=root).get_by_automation_id(str(ID_STATUS))
+        window = app.window(class_name=WINDOW_CLASS)
+        assert window._get_spec().wrapper_object().handle == root
+        field = window.get_by_automation_id(str(ID_EDIT))
+        status_field = window.get_by_automation_id(str(ID_STATUS))
         win32gui.SendMessage(edit, win32con.WM_SETTEXT, 0, "")
         left, top, right, bottom = win32gui.GetWindowRect(edit)
         point = ((left + right) // 2, (top + bottom) // 2)
@@ -242,7 +244,7 @@ def record_generate_replay(output):
         typed = actions[-1]
         assert typed.data == "tttt"
         assert typed.selector, "Recording must produce a usable field selector"
-        locator = app.window(handle=root).locator(**typed.selector)
+        locator = window.locator(**typed.selector)
         assert locator._resolve().handle == edit
         code = rec.generate_code(output)
         assert "TODO" not in code
