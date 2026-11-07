@@ -41,10 +41,6 @@ class _FakeApp:
         return SimpleNamespace(subject=subject, body=body)
 
 
-class _SkipLike(BaseException):
-    """Stands in for pytest.skip's Skipped: a BaseException, not an Exception."""
-
-
 @pytest.fixture
 def spies(monkeypatch):
     state = {"quits": 0, "best_effort": 0}
@@ -82,14 +78,16 @@ def test_a_nonzero_pid_after_quit_still_triggers_a_sweep(spies, monkeypatch):
     assert spies["best_effort"] == 1  # the persisted draft is still swept
 
 
-def test_a_skip_while_reopening_still_triggers_a_sweep_and_propagates(spies, monkeypatch):
+def test_a_skip_while_reopening_sweeps_and_is_reported_as_a_failure(spies, monkeypatch):
     def skip_reopen():
-        raise _SkipLike("another Outlook already running")
+        pytest.skip("another Outlook already running")
 
     monkeypatch.setattr(more, "_start_exclusive_ready", skip_reopen)
-    with pytest.raises(_SkipLike):
+    # The draft was already written to the PST, so a skip here would report a
+    # destructive test as "not run": it must surface as a failure instead.
+    with pytest.raises(pytest.fail.Exception, match="could not reopen the profile"):
         more._verify_and_purge_persisted("subj")
-    assert spies["best_effort"] == 1
+    assert spies["best_effort"] == 1  # and the persisted draft is still swept
 
 
 def test_a_failure_before_the_purge_still_triggers_a_sweep(spies, monkeypatch):
@@ -129,22 +127,31 @@ def test_a_failing_first_quit_still_sweeps_the_persisted_draft(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _best_effort_purge: never raises, never masks
+# _best_effort_purge: reports, never raises
 # ---------------------------------------------------------------------------
 
 
-def test_best_effort_warns_instead_of_raising_when_reopen_fails(monkeypatch):
+def test_best_effort_reports_instead_of_raising_when_reopen_fails(monkeypatch):
     monkeypatch.setattr(
         more, "_start_exclusive_ready", lambda: (_ for _ in ()).throw(RuntimeError("no profile"))
     )
     quits = []
     monkeypatch.setattr(more, "_quit_and_confirm_gone", lambda app, **k: quits.append(1))
-    with pytest.warns(UserWarning, match="did not complete"):
-        more._best_effort_purge("subj")
+    problem = more._best_effort_purge("subj")
+    assert problem is not None and "no profile" in problem
     assert quits == []  # nothing opened, so nothing to quit
 
 
-def test_best_effort_warns_when_its_own_quit_fails_and_still_returns(monkeypatch):
+def test_best_effort_reports_a_skip_while_reopening(monkeypatch):
+    def skip_reopen():
+        pytest.skip("another Outlook already running")
+
+    monkeypatch.setattr(more, "_start_exclusive_ready", skip_reopen)
+    problem = more._best_effort_purge("subj")  # the skip is captured, not raised
+    assert problem is not None and "already running" in problem
+
+
+def test_best_effort_confirms_removal_even_when_its_own_quit_fails(monkeypatch):
     monkeypatch.setattr(more, "_start_exclusive_ready", lambda: _FakeApp(["subj"]))
     monkeypatch.setattr(more, "purge_by_subject", lambda app, folder, subject: 1)
     monkeypatch.setattr(
@@ -152,7 +159,55 @@ def test_best_effort_warns_when_its_own_quit_fails_and_still_returns(monkeypatch
         "_quit_and_confirm_gone",
         lambda app, **k: (_ for _ in ()).throw(RuntimeError("quit hung")),
     )
-    # A quit failure during the sweep must not replace the caller's original
-    # error: it is downgraded to a warning and the function returns normally.
+    # The purge was confirmed; a quit failure is only warned about, and it never
+    # replaces the caller's original error.
     with pytest.warns(UserWarning, match="could not quit"):
-        more._best_effort_purge("subj")
+        assert more._best_effort_purge("subj") is None
+
+
+# ---------------------------------------------------------------------------
+# _sweep_or_report: an unconfirmed sweep after a mutation is never PASS/SKIP
+# ---------------------------------------------------------------------------
+
+
+def test_unconfirmed_sweep_with_nothing_in_flight_fails_the_test(monkeypatch):
+    monkeypatch.setattr(more, "_best_effort_purge", lambda subject: "RuntimeError('x')")
+    with pytest.raises(pytest.fail.Exception, match="may remain in the PST"):
+        more._sweep_or_report("subj")
+
+
+def test_unconfirmed_sweep_during_a_skip_turns_the_skip_into_a_failure(monkeypatch):
+    monkeypatch.setattr(more, "_best_effort_purge", lambda subject: "RuntimeError('x')")
+    try:
+        pytest.skip("simulated skip in flight")
+    except pytest.skip.Exception:
+        with pytest.raises(pytest.fail.Exception, match="may remain in the PST"):
+            more._sweep_or_report("subj")
+
+
+def test_unconfirmed_sweep_during_a_real_failure_keeps_it_and_adds_a_note(monkeypatch):
+    monkeypatch.setattr(more, "_best_effort_purge", lambda subject: "RuntimeError('x')")
+    original = AssertionError("the real failure")
+    try:
+        raise original
+    except AssertionError:
+        more._sweep_or_report("subj")  # must not raise or replace the original
+    assert any("may remain in the PST" in note for note in original.__notes__)
+
+
+def test_confirmed_sweep_reports_nothing(monkeypatch):
+    monkeypatch.setattr(more, "_best_effort_purge", lambda subject: None)
+    more._sweep_or_report("subj")  # no exception, nothing to report
+
+
+def test_two_failed_profile_opens_fail_the_test_with_the_cleanup_diagnostic(monkeypatch):
+    # Both the verification reopen and the best-effort reopen are refused (an
+    # Outlook keeps running): the test must FAIL, carrying the cleanup note.
+    def skip_reopen():
+        pytest.skip("another Outlook already running")
+
+    monkeypatch.setattr(more, "_pids", lambda: [])
+    monkeypatch.setattr(more, "_start_exclusive_ready", skip_reopen)
+    with pytest.raises(pytest.fail.Exception, match="could not reopen the profile") as info:
+        more._verify_and_purge_persisted("subj")
+    assert any("may remain in the PST" in note for note in info.value.__notes__)

@@ -17,7 +17,7 @@ import time
 import winreg
 
 import pytest
-from tests.office._cleanup import purge_calendar_appt, purge_draft
+from tests.office._cleanup import close_and_purge_calendar_appt, purge_draft
 from tests.office._uat_guard import assert_dedicated_store, uat_store_name
 
 from dolphin_desktop import OutlookApp, OutlookAppointment, OutlookMail
@@ -219,20 +219,29 @@ def test_draft_delete_moves_to_deleted_items_then_permanent_delete_removes_it(ou
     drafts_before = _count(outlook, "drafts")
     deleted_before = _count(outlook, "deleted")
     mail = outlook.create_mail(subject="dolphin uat delete me")
-    mail.save()
-    entry = mail.entry_id
+    # Every step after create_mail() is covered: if any assertion or delete
+    # fails, the finally removes the draft from wherever it is (Drafts or
+    # Deleted Items). Only a confirmed permanent delete skips the cleanup.
+    permanently_deleted = False
+    try:
+        mail.save()
+        entry = mail.entry_id
 
-    mail.delete()
-    assert mail.parent_folder.name == outlook.default_folder("deleted").name
-    assert _count(outlook, "drafts") == drafts_before
-    assert _count(outlook, "deleted") == deleted_before + 1
-    assert outlook.default_folder("drafts").find_item(entry) is None
+        mail.delete()
+        assert mail.parent_folder.name == outlook.default_folder("deleted").name
+        assert _count(outlook, "drafts") == drafts_before
+        assert _count(outlook, "deleted") == deleted_before + 1
+        assert outlook.default_folder("drafts").find_item(entry) is None
 
-    with pytest.raises(ValueError, match="already in Deleted Items"):
-        mail.delete()  # a second soft delete never silently turns permanent
+        with pytest.raises(ValueError, match="already in Deleted Items"):
+            mail.delete()  # a second soft delete never silently turns permanent
 
-    mail.delete(permanent=True)
-    assert _count(outlook, "deleted") == deleted_before
+        mail.delete(permanent=True)  # verifies MAPI_E_NOT_FOUND or raises
+        permanently_deleted = True
+        assert _count(outlook, "deleted") == deleted_before
+    finally:
+        if not permanently_deleted:
+            purge_draft(mail)
 
 
 def test_draft_can_be_moved_between_default_folders(outlook):
@@ -322,10 +331,10 @@ def test_appointment_round_trip(outlook):
         found.close()
     finally:
         # The facade deletes only owned mail drafts, so the calendar entry is
-        # removed here -- permanently, and verified gone. purge_calendar_appt
-        # closes the loop: a leftover fails the test unless the body already did.
-        appt.close()
-        purge_calendar_appt(outlook, entry, subject)
+        # removed here -- permanently, and verified gone. The purge runs even if
+        # closing the wrapper raises; a leftover fails the test unless the body
+        # (or the close) already did, whose error is then the one reported.
+        close_and_purge_calendar_appt(outlook, appt, entry, subject)
 
 
 # ---------------------------------------------------------------------------

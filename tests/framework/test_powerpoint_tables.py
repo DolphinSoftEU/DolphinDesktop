@@ -242,6 +242,43 @@ def test_add_chart_replaces_template_series_with_literal_arrays():
     assert shape._com is shape_com
 
 
+def test_add_chart_rejects_a_non_numeric_value_before_creating_a_shape():
+    slide_com = MagicMock()
+    slide_com.Parent.Windows.Count = 1
+    slide = ppt.PowerPointSlide(slide_com)
+    # The first series is valid; the second holds a non-number. Every value is
+    # converted up front, so no shape (not even a partial chart) is created.
+    with pytest.raises(ValueError, match=r"series 'B' value 'abc' is not a number"):
+        slide.add_chart(["Q1"], {"A": [1], "B": ["abc"]})
+    slide_com.Shapes.AddChart2.assert_not_called()
+
+
+def test_add_chart_rolls_back_the_shape_when_building_fails():
+    slide_com = MagicMock()
+    slide_com.Parent.Windows.Count = 1
+    shape_com = slide_com.Shapes.AddChart2.return_value
+    collection = shape_com.Chart.SeriesCollection.return_value
+    collection.Count = 0
+    collection.NewSeries.side_effect = RuntimeError("COM refused NewSeries")
+    slide = ppt.PowerPointSlide(slide_com)
+    with pytest.raises(RuntimeError, match="COM refused NewSeries"):
+        slide.add_chart(["Q1"], {"A": [1]})
+    shape_com.Delete.assert_called_once_with()  # no half-built chart left behind
+    assert slide._children == []  # and nothing tracked for it
+
+
+def test_add_chart_keeps_the_original_error_when_rollback_also_fails():
+    slide_com = MagicMock()
+    slide_com.Parent.Windows.Count = 1
+    shape_com = slide_com.Shapes.AddChart2.return_value
+    shape_com.Chart.SeriesCollection.return_value.Count = 0
+    shape_com.Chart.SeriesCollection.return_value.NewSeries.side_effect = RuntimeError("build")
+    shape_com.Delete.side_effect = RuntimeError("delete")
+    with pytest.raises(RuntimeError, match="build") as info:
+        ppt.PowerPointSlide(slide_com).add_chart(["Q1"], {"A": [1]})
+    assert any("partial chart also failed" in note for note in info.value.__notes__)
+
+
 def test_add_chart_without_title_disables_the_default_title():
     # AddChart2 leaves a single-series chart with a default title; title=None
     # must turn it off explicitly, not leave whatever AddChart2 produced.

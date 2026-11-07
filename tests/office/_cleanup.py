@@ -109,6 +109,30 @@ def purge_calendar_appt(app: Any, entry_id: str, subject: str) -> None:
         raise
 
 
+def close_and_purge_calendar_appt(app: Any, appt: Any, entry_id: str, subject: str) -> None:
+    """Close the appointment wrapper, then always remove the saved appointment.
+
+    ``close()`` can raise a COM error; the purge must still run, because the
+    appointment is already saved. When the test body is already failing, a
+    close error is downgraded to a warning so the body's original exception is
+    the one reported; otherwise the close error propagates (after the purge).
+    ``purge_calendar_appt`` itself only warns when an exception is in flight, so
+    a failing purge never replaces the original error either.
+    """
+    body_already_failing = sys.exc_info()[0] is not None
+    try:
+        appt.close()
+    except Exception as close_error:
+        if not body_already_failing:
+            raise
+        warnings.warn(
+            f"closing the appointment also failed during an already-failing test: {close_error!r}",
+            stacklevel=2,
+        )
+    finally:
+        purge_calendar_appt(app, entry_id, subject)
+
+
 def purge_by_subject(app: Any, folder: str, subject: str) -> int:
     """Permanently remove every item with *subject* from *folder*; verify none remain.
 

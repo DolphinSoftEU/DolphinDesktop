@@ -17,7 +17,11 @@ import winreg
 from datetime import datetime, timedelta
 
 import pytest
-from tests.office._cleanup import purge_by_subject, purge_calendar_appt, purge_draft
+from tests.office._cleanup import (
+    close_and_purge_calendar_appt,
+    purge_by_subject,
+    purge_draft,
+)
 from tests.office._uat_guard import assert_dedicated_store, uat_store_name
 
 from dolphin_desktop import OutlookApp, OutlookAppointment, OutlookMail
@@ -169,44 +173,82 @@ def _count(app: OutlookApp, folder: str) -> int:
     return app.default_folder(folder).item_count
 
 
-def _best_effort_purge(subject: str) -> None:
-    """Try once to remove drafts with *subject*, never raising.
+# Cleanup errors that must be reported rather than escape: ordinary errors plus
+# pytest's own outcomes (a skip or fail raised while reopening the profile is a
+# BaseException, not an Exception). KeyboardInterrupt/SystemExit still escape.
+_CLEANUP_ERRORS = (Exception, pytest.skip.Exception, pytest.fail.Exception)
 
-    Used only on an error path where the normal cleanup handle is unavailable,
-    and usually while another exception is already propagating, so it must not
-    raise anything of its own: every failure -- reopening the profile, the purge
-    itself, or the final quit -- is downgraded to a warning, even a quit error
-    that would otherwise replace the original reopen failure.
+
+def _best_effort_purge(subject: str) -> str | None:
+    """Try once to remove drafts with *subject*; return why it failed, never raise.
+
+    Returns ``None`` only when the removal is confirmed (``purge_by_subject``
+    re-scans and raises on any leftover). Any failure -- reopening the profile
+    (including a skip because another Outlook runs), the purge itself -- is
+    returned as a description instead of raised, so the caller decides how to
+    report it without the cleanup masking the original exception. A failing
+    final quit does not un-confirm the removal; it is only warned about.
     """
     app = None
+    problem: str | None = None
     try:
         app = _start_exclusive_ready()
         purge_by_subject(app, "drafts", subject)
-    except BaseException as exc:
-        warnings.warn(f"best-effort Outlook cleanup did not complete: {exc!r}", stacklevel=2)
+    except _CLEANUP_ERRORS as exc:
+        problem = repr(exc)
     finally:
         if app is not None:
             try:
                 _quit_and_confirm_gone(app)
-            except BaseException as exc:
+            except _CLEANUP_ERRORS as exc:
                 warnings.warn(
                     f"best-effort Outlook cleanup could not quit the process: {exc!r}",
                     stacklevel=2,
                 )
+    return problem
+
+
+def _sweep_or_report(subject: str) -> None:
+    """Sweep a persisted draft; make an unconfirmed removal a visible failure.
+
+    Called only after a destructive mutation, from a cleanup path. If the sweep
+    cannot be confirmed, the test must not end as PASS or SKIP:
+
+    * no exception in flight, or a skip in flight -> ``pytest.fail`` (a skip
+      would report a test that already wrote to the PST as "not run");
+    * a real failure in flight -> that original error stays the reported one,
+      with the unconfirmed cleanup attached as a note.
+    """
+    problem = _best_effort_purge(subject)
+    if problem is None:
+        return
+    message = (
+        f"persisted draft {subject!r} may remain in the PST: its removal could not be "
+        f"confirmed ({problem})"
+    )
+    in_flight = sys.exc_info()[1]
+    if in_flight is None or isinstance(in_flight, pytest.skip.Exception):
+        pytest.fail(message)
+    in_flight.add_note(message)
 
 
 def _verify_and_purge_persisted(subject: str) -> None:
     """Reopen the profile, confirm the persisted draft is there, and remove it.
 
     Everything after the draft was persisted runs here under one cleanup
-    umbrella: a failed "process gone" assertion, a ``pytest.skip`` or error while
-    reopening (both BaseException), or a failure before the purge all still lead
-    to a best-effort sweep, so the persisted draft never leaks into the PST.
+    umbrella: a failed "process gone" assertion, an error while reopening, or a
+    failure before the purge all still lead to a sweep, and an unconfirmed
+    sweep is reported as a failure. Preconditions were checked before the
+    destructive mutation, so a skip while reopening is turned into a failure:
+    the test already wrote to the PST and must not be reported as "not run".
     """
     purged = False
     try:
         assert not _pids()
-        again = _start_exclusive_ready()
+        try:
+            again = _start_exclusive_ready()
+        except pytest.skip.Exception as exc:
+            pytest.fail(f"could not reopen the profile to verify the persisted draft: {exc}")
         try:
             drafts = again.default_folder("drafts")
             subjects = [drafts.item(i).subject for i in range(1, drafts.item_count + 1)]
@@ -217,7 +259,7 @@ def _verify_and_purge_persisted(subject: str) -> None:
             _quit_and_confirm_gone(again)
     finally:
         if not purged:
-            _best_effort_purge(subject)
+            _sweep_or_report(subject)
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +378,7 @@ def test_quit_with_save_changes_persists_unsaved_drafts():
         # so if we never reached _verify_and_purge_persisted, sweep here. The
         # best-effort purge never raises, so it cannot mask the original error.
         if not reached_verify:
-            _best_effort_purge(subject)
+            _sweep_or_report(subject)
 
 
 def test_opened_msg_item_cannot_be_moved(outlook, tmp_path):
@@ -476,5 +518,4 @@ def test_calendar_item_by_index_is_an_appointment(outlook):
         assert matches[0].subject == subject
         matches[0].close()
     finally:
-        appt.close()
-        purge_calendar_appt(outlook, entry, subject)
+        close_and_purge_calendar_appt(outlook, appt, entry, subject)

@@ -635,38 +635,57 @@ class PowerPointSlide(_ComOwner):
         """
         if not categories or not series:
             raise ValueError("a chart needs at least one category and one series")
+        # Validate and convert every value before the first COM mutation, so bad
+        # input never leaves a half-built chart shape on the slide.
+        numeric: dict[str, tuple[float, ...]] = {}
         for name, values in series.items():
             if len(values) != len(categories):
                 raise ValueError(
                     f"series {name!r} has {len(values)} value(s) for {len(categories)} categories"
                 )
+            converted = []
+            for value in values:
+                try:
+                    converted.append(float(value))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"series {name!r} value {value!r} is not a number") from exc
+            numeric[name] = tuple(converted)
         if not self._presentation_has_window():
             raise RuntimeError(
                 "PowerPoint cannot insert a chart into a presentation without a "
                 "document window; create or open it with visible=True"
             )
         shape_com = self._com.Shapes.AddChart2(-1, chart_type, left, top, width, height, True)
-        chart = shape_com.Chart
-        # AddChart2 applies a style that may change the type (a line chart
-        # comes back as line-with-markers); pin the requested type.
-        chart.ChartType = chart_type
-        collection = chart.SeriesCollection()
-        for index in range(int(collection.Count), 0, -1):
-            collection(index).Delete()  # the template's sample series
-        labels = tuple(categories)
-        for name, values in series.items():
-            new_series = collection.NewSeries()
-            new_series.Name = name
-            new_series.XValues = labels
-            new_series.Values = tuple(float(value) for value in values)
-        shape = self._track(shape_com)
-        if title is None:
-            # AddChart2 gives a single-series chart a default title; make
-            # title=None mean "no title" explicitly rather than leaving it.
-            chart.HasTitle = _MSO_FALSE
-        else:
-            shape.chart.title = title
-        return shape
+        try:
+            chart = shape_com.Chart
+            # AddChart2 applies a style that may change the type (a line chart
+            # comes back as line-with-markers); pin the requested type.
+            chart.ChartType = chart_type
+            collection = chart.SeriesCollection()
+            for index in range(int(collection.Count), 0, -1):
+                collection(index).Delete()  # the template's sample series
+            labels = tuple(categories)
+            for name, values in numeric.items():
+                new_series = collection.NewSeries()
+                new_series.Name = name
+                new_series.XValues = labels
+                new_series.Values = values
+            if title is None:
+                # AddChart2 gives a single-series chart a default title; make
+                # title=None mean "no title" explicitly rather than leaving it.
+                chart.HasTitle = _MSO_FALSE
+            else:
+                chart.HasTitle = _MSO_TRUE
+                chart.ChartTitle.Text = title
+        except BaseException as exc:
+            # Roll back the partially built chart so a failure mid-build leaves
+            # no shape behind; keep the original error, noting a failed rollback.
+            try:
+                shape_com.Delete()
+            except Exception as rollback_error:
+                exc.add_note(f"Removing the partial chart also failed: {rollback_error}")
+            raise
+        return self._track(shape_com)
 
     def _presentation_has_window(self) -> bool:
         try:
