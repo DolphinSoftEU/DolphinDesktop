@@ -827,7 +827,17 @@ class Recorder:
                 self._evt_queue.put(None)
 
     def wait(self, timeout: float | None = None) -> bool:
-        """Wait for recording to stop; return False when the timeout expires.
+        """Wait for a stop signal, then finish shutdown and drain queued events.
+
+        ``timeout`` limits only the wait for the stop signal; ``None`` waits
+        indefinitely. Return False if that signal does not arrive within the
+        limit. Once signaled, synchronize with initialization, wait for the hook
+        thread to exit, and drain the event queue before returning True.
+
+        The total call duration can exceed ``timeout``, including when it is zero.
+        Hook shutdown and stalled event processing have separate internal limits.
+        A processor that continues making progress may drain for longer than
+        those limits so that queued actions are preserved.
 
         Raises:
             OSError: The hook thread failed during recording. The original
