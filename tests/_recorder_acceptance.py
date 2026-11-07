@@ -17,10 +17,10 @@ REQUIRED_TESTS = {
 
 
 def verify_report(path: Path) -> None:
-    """Require exactly the expected tests, each with a successful outcome."""
+    """Require all expected tests and a successful outcome for every executed test."""
     cases = list(ElementTree.parse(path).iter("testcase"))
     names = [case.get("name") for case in cases]
-    if len(cases) != len(REQUIRED_TESTS) or set(names) != REQUIRED_TESTS:
+    if not REQUIRED_TESTS.issubset(names):
         raise RuntimeError(f"Recorder acceptance is incomplete: executed {names!r}")
     if any(case.find(tag) is not None for case in cases for tag in ("skipped", "failure", "error")):
         raise RuntimeError("Recorder acceptance requires PASS for every test; SKIP is unverified")
