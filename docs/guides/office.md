@@ -316,8 +316,12 @@ The live Outlook tests are destructive (they create, move and permanently
 delete items) and are therefore opt-in: set `DOLPHIN_OUTLOOK_UAT` to the test
 store's display name (`Dolphin UAT Store` for the profile the script makes) to
 enable them; unset, they skip. Even with it set, each test verifies before any
-mutation that the default profile's drafts folder lives in a local `.pst` store
-with exactly that display name, and fails rather than touch anything else, so a
+mutation that the profile has no mail account and exactly one store, and that
+its Drafts, Deleted Items and Calendar folders all live in that store: a `.pst`
+file with exactly that display name on a local disk (no UNC, device or mapped
+network-drive path). Optionally set `DOLPHIN_OUTLOOK_UAT_PROFILE` to the
+profile name and `DOLPHIN_OUTLOOK_UAT_PST` to the PST file's path to pin those
+too. Any mismatch fails the test rather than touching anything else, so a
 personal or work mailbox is never modified. The tests clean up every item they
 create. Remove the profile in Control Panel, Mail, Show Profiles when it is no
 longer needed.
