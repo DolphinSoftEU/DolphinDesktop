@@ -1087,6 +1087,81 @@ def test_process_loop_retries_after_an_empty_queue(monkeypatch) -> None:
     assert event_queue.calls == 2
 
 
+@pytest.mark.parametrize("handler", ["_handle_key", "_handle_mouse", "_flush_text"])
+def test_processor_failure_blocks_wait_and_partial_script(monkeypatch, tmp_path, caplog, handler):
+    rec = Recorder(pid=100)
+    failure = ValueError("synthetic-sensitive-payload")
+    flush = Mock()
+    monkeypatch.setattr(rec, "_flush_text", flush)
+    monkeypatch.setattr(rec, handler, Mock(side_effect=failure))
+    rec._pending_text.append("partial")
+    context = _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False)
+    if handler == "_handle_key":
+        event = ("key", 65, 30, False, False, False, False, 1.0, context)
+    else:
+        event = ("mouse", "click", 1, 2, 1.0, context)
+    rec._evt_queue.put(event)
+    rec._evt_queue.put(event)  # This event must remain unprocessed after the failure.
+    processor = threading.Thread(target=rec._process_loop, daemon=True)
+    rec._proc_thread = processor
+    processor.start()
+    processor.join(2)
+    assert not processor.is_alive()
+    assert rec._processor_error is failure
+    assert rec._stopped.is_set()
+    assert rec._processed == 0
+    assert rec._evt_queue.get_nowait() == event
+
+    output = tmp_path / "recorded.py"
+    output.write_text("keep existing script", encoding="utf-8")
+    for operation in (lambda: rec.wait(0), rec.actions, lambda: rec.generate_code(output)):
+        with pytest.raises(RuntimeError, match="recording is incomplete") as caught:
+            operation()
+        assert caught.value.__cause__ is failure
+    assert rec._proc_thread is None
+    assert output.read_text(encoding="utf-8") == "keep existing script"
+    assert rec._pending_text == ["partial"]
+    assert "synthetic-sensitive-payload" not in caplog.text
+
+
+def test_processor_failure_requests_hook_shutdown_and_wakes_wait(monkeypatch):
+    quit_requested = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        assert quit_requested.wait(2)
+        return 0
+
+    def post_quit(*args):
+        quit_requested.set()
+        return 1
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = Mock(side_effect=post_quit)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec = Recorder(pid=100)
+    failure = ValueError("controlled key handler failure")
+    monkeypatch.setattr(rec, "_handle_key", Mock(side_effect=failure))
+    try:
+        rec.start()
+        rec._evt_queue.put(("key", 65, 30, False, False, False, False, 1.0, None))
+        with pytest.raises(RuntimeError, match="event processor failed") as caught:
+            rec.wait(2)
+        assert caught.value.__cause__ is failure
+        assert rec._proc_thread is None
+        assert not rec._hook_thread.is_alive()
+        assert api.unhooked == [101, 202]
+        api.PostThreadMessageW.assert_called_once_with(
+            rec._hook_thread_id, _recorder._WM_QUIT, 0, 0
+        )
+    finally:
+        quit_requested.set()
+        if rec._hook_thread is not None:
+            rec._hook_thread.join(2)
+        if rec._proc_thread is not None:
+            rec._proc_thread.join(2)
+
+
 def test_handle_mouse_covers_window_lookup_failure_and_app_filter(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "win32gui", None)
     monkeypatch.setattr(_recorder, "_element_at_point", Mock(return_value={}))

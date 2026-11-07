@@ -714,6 +714,7 @@ class Recorder:
         self._hook_thread_id: int = 0
         self._hook_ready = threading.Event()
         self._hook_error: Exception | None = None
+        self._processor_error: Exception | None = None
 
         # Strong references — prevent GC while hooks are active
         self._mouse_cb: Any = None
@@ -747,6 +748,7 @@ class Recorder:
         self._stopped.clear()
         self._hook_ready.clear()
         self._hook_error = None
+        self._processor_error = None
         self._hook_thread = threading.Thread(
             target=self._hook_loop, daemon=True, name="dolphin-rec-hook"
         )
@@ -766,7 +768,13 @@ class Recorder:
 
         Raises:
             TimeoutError: The hook thread or event drain did not finish.
+            RuntimeError: Event processing failed and the recording is incomplete.
         """
+        self._request_stop()
+        self._join_processor()
+
+    def _request_stop(self) -> None:
+        """Signal shutdown without joining either thread (safe for the worker)."""
         if not self._stopped.is_set():
             self._stopped.set()
             if self._hook_thread_id:
@@ -775,7 +783,6 @@ class Recorder:
             # in progress may still enqueue its event after this stop request.
             if self._hook_thread is None:
                 self._evt_queue.put(None)
-        self._join_processor()
 
     def wait(self, timeout: float | None = None) -> bool:
         """Wait for recording to stop; return False when the timeout expires.
@@ -785,6 +792,8 @@ class Recorder:
                 exception is retained as the cause, after queued events drain.
             TimeoutError: Hook shutdown or the event drain stalled; recording
                 completion could not be confirmed.
+            RuntimeError: Event processing failed. The original exception is
+                retained as the cause; the recording must not be used.
         """
         if not self._stopped.wait(timeout):
             return False
@@ -821,6 +830,7 @@ class Recorder:
                 raise TimeoutError("Recorder hook thread did not stop; recording is incomplete")
         thread = self._proc_thread
         if thread is None:
+            self._raise_processor_error()
             return
         if thread is threading.current_thread():
             return
@@ -830,6 +840,7 @@ class Recorder:
             thread.join(timeout)
             if not thread.is_alive():
                 self._proc_thread = None
+                self._raise_processor_error()
                 return
             if self._processed != processed:
                 processed = self._processed
@@ -850,8 +861,19 @@ class Recorder:
         )
         raise TimeoutError("Recorder event drain stalled; recording is incomplete")
 
+    def _raise_processor_error(self) -> None:
+        if self._processor_error is not None:
+            raise RuntimeError(
+                "Recorder event processor failed; recording is incomplete"
+            ) from self._processor_error
+
     def actions(self) -> list[RecordedAction]:
-        """Return a copy of recorded actions (flushes any pending text first)."""
+        """Return recorded actions, flushing pending text after a successful drain.
+
+        Raises:
+            RuntimeError: The event processor failed; partial actions are unavailable.
+            TimeoutError: Recording shutdown or the event drain stalled.
+        """
         self._join_processor()
         self._flush_text()
         return list(self._actions)
@@ -875,6 +897,13 @@ class Recorder:
         -------
         str
             The generated Python source (also written to *output* if provided).
+
+        Raises
+        ------
+        RuntimeError
+            The event processor failed; no output file is written.
+        TimeoutError
+            Recording shutdown or the event drain stalled.
         """
         self._join_processor()
         self._flush_text()
@@ -990,24 +1019,31 @@ class Recorder:
     # Processor thread
 
     def _process_loop(self) -> None:
-        while True:
-            self._proc_idle.set()
-            try:
-                evt = self._evt_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            finally:
-                self._proc_idle.clear()
-            if evt is None:
-                break
-            if evt[0] == "mouse":
-                _, kind, x, y, ts, context = evt
-                self._flush_text()
-                self._handle_mouse(kind, x, y, ts, context=context)
-            elif evt[0] == "key":
-                _, vk, scan, shift, ctrl, alt, ralt, ts, context = evt
-                self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt, context=context)
-            self._processed += 1
+        try:
+            while True:
+                self._proc_idle.set()
+                try:
+                    evt = self._evt_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                finally:
+                    self._proc_idle.clear()
+                if evt is None:
+                    break
+                if evt[0] == "mouse":
+                    _, kind, x, y, ts, context = evt
+                    self._flush_text()
+                    self._handle_mouse(kind, x, y, ts, context=context)
+                elif evt[0] == "key":
+                    _, vk, scan, shift, ctrl, alt, ralt, ts, context = evt
+                    self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt, context=context)
+                self._processed += 1
+        except Exception as exc:
+            self._processor_error = exc
+            self._request_stop()
+            # Handler exceptions may contain captured text. Keep the cause for
+            # callers, but never copy its payload to the recorder's log.
+            _log.error("Recorder event processor failed; recording is incomplete")
 
     def _in_scope(self, context: _InputContext) -> bool:
         if not context.hwnd or not context.pid:

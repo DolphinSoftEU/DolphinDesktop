@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder event processor failures now request hook shutdown, preserve the
+  original exception and raise through `wait()`, `stop()` and readers. A dead
+  worker can no longer be mistaken for a completed drain or generate an
+  incomplete script; handler exception payloads are kept out of recorder logs
+  (KAN-576 processor failure review).
+
 * Recorder shutdown now waits for the hook producer before draining its final
   event marker, preserving callbacks already in progress. Failed hook removal
   is retained as a WinAPI exception and reported by `wait()` after cleanup;
