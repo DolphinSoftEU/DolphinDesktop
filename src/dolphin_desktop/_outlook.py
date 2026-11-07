@@ -166,8 +166,15 @@ class OutlookMail(OutlookItem):
             raise RuntimeError("Outlook Move returned no item; verify the destination folder")
         # The proxy Move() returns is only half alive on PST stores: Delete() on
         # it silently does nothing. Re-fetch the item by its new EntryID so every
-        # later operation acts on a proxy Outlook fully honours.
-        self._com = owner._fresh_item(moved)
+        # later operation acts on a proxy Outlook fully honours. If that re-fetch
+        # is uncertain (_fresh_item raises), the item has physically moved but we
+        # hold no trustworthy handle: invalidate this wrapper so no later
+        # move()/delete() touches the stale pre-move proxy, and surface the error.
+        try:
+            self._com = owner._fresh_item(moved)
+        except Exception:
+            self._closed = True
+            raise
         return self
 
     def delete(self, *, permanent: bool = False) -> None:

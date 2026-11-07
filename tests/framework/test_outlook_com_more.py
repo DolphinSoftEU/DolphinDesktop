@@ -117,6 +117,13 @@ def test_move_raises_when_the_refetch_fails_with_an_uncertain_error(client):
         draft = app.create_mail(subject="UAT")
         with pytest.raises(RuntimeError, match="uncertain"):
             draft.move(app.default_folder("inbox"))
+        # The item physically moved but the wrapper holds no trustworthy proxy,
+        # so it is invalidated: later move()/delete() must refuse rather than act
+        # on the stale pre-move handle.
+        with pytest.raises(PermissionError):
+            draft.move(app.default_folder("drafts"))
+        with pytest.raises(PermissionError):
+            draft.delete()
 
 
 # ---------------------------------------------------------------------------

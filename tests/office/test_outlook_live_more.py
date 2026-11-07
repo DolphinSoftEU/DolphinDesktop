@@ -170,25 +170,54 @@ def _count(app: OutlookApp, folder: str) -> int:
 
 
 def _best_effort_purge(subject: str) -> None:
-    """Try once to remove drafts with *subject*, warning (never raising) on failure.
+    """Try once to remove drafts with *subject*, never raising.
 
-    Used only on an error path where the normal cleanup handle is unavailable
-    (e.g. reopening the profile failed). It must not mask the original failure,
-    so it swallows every error of its own and only warns.
+    Used only on an error path where the normal cleanup handle is unavailable,
+    and usually while another exception is already propagating, so it must not
+    raise anything of its own: every failure -- reopening the profile, the purge
+    itself, or the final quit -- is downgraded to a warning, even a quit error
+    that would otherwise replace the original reopen failure.
     """
+    app = None
     try:
         app = _start_exclusive_ready()
-    except BaseException as exc:
-        warnings.warn(
-            f"best-effort Outlook cleanup could not reopen the profile: {exc!r}", stacklevel=2
-        )
-        return
-    try:
         purge_by_subject(app, "drafts", subject)
     except BaseException as exc:
-        warnings.warn(f"best-effort Outlook cleanup failed: {exc!r}", stacklevel=2)
+        warnings.warn(f"best-effort Outlook cleanup did not complete: {exc!r}", stacklevel=2)
     finally:
-        _quit_and_confirm_gone(app)
+        if app is not None:
+            try:
+                _quit_and_confirm_gone(app)
+            except BaseException as exc:
+                warnings.warn(
+                    f"best-effort Outlook cleanup could not quit the process: {exc!r}",
+                    stacklevel=2,
+                )
+
+
+def _verify_and_purge_persisted(subject: str) -> None:
+    """Reopen the profile, confirm the persisted draft is there, and remove it.
+
+    Everything after the draft was persisted runs here under one cleanup
+    umbrella: a failed "process gone" assertion, a ``pytest.skip`` or error while
+    reopening (both BaseException), or a failure before the purge all still lead
+    to a best-effort sweep, so the persisted draft never leaks into the PST.
+    """
+    purged = False
+    try:
+        assert not _pids()
+        again = _start_exclusive_ready()
+        try:
+            drafts = again.default_folder("drafts")
+            subjects = [drafts.item(i).subject for i in range(1, drafts.item_count + 1)]
+            assert subject in subjects
+            assert purge_by_subject(again, "drafts", subject) == 1
+            purged = True
+        finally:
+            _quit_and_confirm_gone(again)
+    finally:
+        if not purged:
+            _best_effort_purge(subject)
 
 
 # ---------------------------------------------------------------------------
@@ -295,31 +324,10 @@ def test_quit_with_save_changes_persists_unsaved_drafts():
         app.create_mail(subject=subject, body="kept")
     finally:
         _quit_and_confirm_gone(app, save_changes=True)
-    assert not _pids()
-
-    try:
-        again = _start_exclusive_ready()
-    except Exception:
-        # Reopening the profile failed, so the draft persisted in phase 1 cannot
-        # be cleaned through this handle; make a best-effort sweep so a failed
-        # rerun does not leak state into the PST, then surface the real error.
-        _best_effort_purge(subject)
-        raise
-
-    removed: int | None = None
-    try:
-        drafts = again.default_folder("drafts")
-        subjects = [drafts.item(i).subject for i in range(1, drafts.item_count + 1)]
-        assert subject in subjects
-    finally:
-        # Remove the persisted draft on every path -- even if the assertion above
-        # failed or the folder read raised -- so a leftover never skews reruns;
-        # quit still happens even if the purge itself raises.
-        try:
-            removed = purge_by_subject(again, "drafts", subject)
-        finally:
-            _quit_and_confirm_gone(again)
-    assert removed == 1
+    # The draft is now persisted in the PST; _verify_and_purge_persisted does the
+    # reopen/assert/remove under one cleanup umbrella so it never leaks, whatever
+    # fails after this point.
+    _verify_and_purge_persisted(subject)
 
 
 def test_opened_msg_item_cannot_be_moved(outlook, tmp_path):
