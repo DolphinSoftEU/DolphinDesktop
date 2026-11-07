@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Calling Recorder `stop()` before the first start attempt is now a no-op and
+  cannot leave a sentinel for the future worker. `actions()` and `generate_code()`
+  reject active recordings before flushing text. Lifecycle locking serializes
+  initialization, stop requests and final reads to avoid concurrent buffer
+  mutation and startup cancellation races (KAN-576 lifecycle edge cases).
+
 * Recorder instances now permit only one `start()` attempt, including failed
   attempts. A retry requires a new Recorder, preventing stale queue sentinels,
   buffered text or failures from affecting another session. Double start and

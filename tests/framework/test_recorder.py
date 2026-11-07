@@ -427,6 +427,8 @@ class TestGeneratedCodeIsValidPython:
 
 class TestStopDrainsTheQueue:
     def _slow_processor(self, rec: Recorder) -> threading.Thread:
+        rec._started = True  # This helper models an already started recording.
+
         def _loop() -> None:
             rec._evt_queue.get()
             time.sleep(0.05)
@@ -453,10 +455,11 @@ class TestStopDrainsTheQueue:
         assert rec.wait(1.0) is True
         assert len(rec.actions()) == 1
 
-    def test_join_is_a_noop_while_still_recording(self):
+    def test_join_rejects_reads_while_still_recording(self):
         rec = Recorder()
         thread = self._slow_processor(rec)
-        rec._join_processor()  # not stopped yet — must not block on the running thread
+        with pytest.raises(RuntimeError, match="Stop recording before"):
+            rec._join_processor()
         assert thread.is_alive()
         rec.stop()
 
@@ -987,13 +990,14 @@ def test_start_logs_scope_and_starts_both_daemon_threads(monkeypatch, app, expec
     assert made[1][0] == rec._process_loop
     assert not rec._stopped.is_set()
     if app:
-        code = rec.generate_code()
+        code = Recorder(app=app).generate_code()
         assert f"desktop.connect(title_re={_recorder._title_re_literal(app)})" in code
         assert "process=100" not in code
 
 
 def test_stop_posts_quit_only_for_a_hook_thread_and_is_idempotent(monkeypatch) -> None:
     rec = Recorder()
+    rec._started = True
     rec._hook_thread_id = 42
     post = Mock()
     monkeypatch.setattr(_recorder._user32, "PostThreadMessageW", post)
@@ -1546,6 +1550,79 @@ def test_failed_start_cannot_restart_but_fresh_recorder_can_record_and_stop(monk
         rec.stop()
 
 
+@pytest.mark.parametrize("reader", ["actions", "generate_code"])
+def test_stop_before_start_is_noop_and_active_read_preserves_pending_text(
+    monkeypatch, tmp_path, reader
+):
+    quit_requested = threading.Event()
+    entered = threading.Event()
+    release = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        assert quit_requested.wait(2)
+        return 0
+
+    def post_quit(*args):
+        quit_requested.set()
+        return 1
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = post_quit
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(_recorder, "_vk_to_sendkeys", Mock(side_effect=["a", "b"]))
+    rec = Recorder(pid=100)
+    event_queue = rec._evt_queue
+    rec.stop()
+    rec.stop()
+    assert rec._evt_queue is event_queue
+    assert event_queue.empty()
+    assert not rec._stopped.is_set()
+    assert not rec._started
+    original_key = rec._handle_key
+    calls = 0
+
+    def blocked_key(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            entered.set()
+            assert release.wait(2)
+        original_key(*args, **kwargs)
+
+    monkeypatch.setattr(rec, "_handle_key", blocked_key)
+    output = tmp_path / "recorded.py"
+    output.write_text("keep existing script", encoding="utf-8")
+    try:
+        rec.start()
+        context = _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False)
+        event = ("key", 65, 30, False, False, False, False, 1.0, context)
+        rec._evt_queue.put(event)
+        rec._evt_queue.put(event)
+        assert entered.wait(2)
+        assert rec._processed == 1
+        assert rec._pending_text == ["a"]
+        with pytest.raises(RuntimeError, match="Stop recording before"):
+            if reader == "actions":
+                rec.actions()
+            else:
+                rec.generate_code(output)
+        assert rec._pending_text == ["a"]
+        assert rec._actions == []
+        assert output.read_text(encoding="utf-8") == "keep existing script"
+        release.set()
+        rec.stop()
+        assert rec.wait(0)
+        assert rec._processed == 2
+        assert [action.data for action in rec.actions()] == ["ab"]
+        assert "'ab'" in rec.generate_code(output)
+        assert rec._evt_queue.empty()
+    finally:
+        release.set()
+        quit_requested.set()
+        rec.stop()
+
+
 def test_start_timeout_stops_capture_without_starting_processor(monkeypatch):
     rec = Recorder(pid=100)
     hook_thread = Mock(spec=threading.Thread)
@@ -1612,6 +1689,7 @@ def test_stalled_drain_cannot_report_success_or_generate_partial_code(
     monkeypatch, tmp_path, reader, state
 ):
     rec = Recorder(pid=100)
+    rec._started = True  # Model a live session whose worker later stalls.
     entered = threading.Event()
     release = threading.Event()
     rec._evt_queue.put(("key",))

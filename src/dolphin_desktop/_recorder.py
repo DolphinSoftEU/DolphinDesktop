@@ -744,6 +744,10 @@ class Recorder:
             if self._started:
                 raise RuntimeError("Recorder instances are single-use; create a new Recorder")
             self._started = True
+            self._start_session()
+
+    def _start_session(self) -> None:
+        """Initialize the session while lifecycle operations hold the start lock."""
         if not self.app and self.pid is None and not self.global_recording:
             raise ValueError("Recording requires app, pid, or explicit global_recording=True")
         if self.global_recording and (self.app or self.pid is not None):
@@ -767,7 +771,8 @@ class Recorder:
         )
         self._hook_thread.start()
         if not self._hook_ready.wait(5.0):
-            self.stop()
+            self._request_stop()
+            self._join_processor()
             raise TimeoutError("Recorder hooks did not initialize")
         if self._hook_error is not None:
             raise OSError("Could not install recorder hooks") from self._hook_error
@@ -779,12 +784,17 @@ class Recorder:
     def stop(self) -> None:
         """Stop the hook producer, then drain all events queued before it exited.
 
+        Before the first start attempt, this is a no-op.
+
         Raises:
             OSError: Hook recording or cleanup failed.
             TimeoutError: The hook thread or event drain did not finish.
             RuntimeError: Event processing failed and the recording is incomplete.
         """
-        self._request_stop()
+        with self._start_lock:
+            if not self._started:
+                return
+            self._request_stop()
         self._join_processor()
 
     def _request_stop(self) -> None:
@@ -832,6 +842,8 @@ class Recorder:
         is parked in ``get()`` holding nothing.
         """
         if not self._stopped.is_set():
+            if self._started:
+                raise RuntimeError("Stop recording before reading actions or generating code")
             return
         producer = self._hook_thread
         if producer is not None:
@@ -886,12 +898,13 @@ class Recorder:
 
         Raises:
             OSError: Hook recording or cleanup failed; partial actions are unavailable.
-            RuntimeError: The event processor failed; partial actions are unavailable.
+            RuntimeError: Recording is active or the event processor failed.
             TimeoutError: Recording shutdown or the event drain stalled.
         """
-        self._join_processor()
-        self._flush_text()
-        return list(self._actions)
+        with self._start_lock:
+            self._join_processor()
+            self._flush_text()
+            return list(self._actions)
 
     def generate_code(
         self,
@@ -918,16 +931,17 @@ class Recorder:
         OSError
             Hook recording or cleanup failed; no output file is written.
         RuntimeError
-            The event processor failed; no output file is written.
+            Recording is active or the event processor failed; no output is written.
         TimeoutError
             Recording shutdown or the event drain stalled.
         """
-        self._join_processor()
-        self._flush_text()
-        code = "\n".join(self._build_code(self._actions, func_name)) + "\n"
-        if output is not None:
-            Path(output).write_text(code, encoding="utf-8")
-        return code
+        with self._start_lock:
+            self._join_processor()
+            self._flush_text()
+            code = "\n".join(self._build_code(self._actions, func_name)) + "\n"
+            if output is not None:
+                Path(output).write_text(code, encoding="utf-8")
+            return code
 
     # Hook thread
 

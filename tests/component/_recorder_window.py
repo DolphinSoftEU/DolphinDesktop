@@ -90,6 +90,7 @@ def record_native_transitions():
     ]
     pid = win32process.GetWindowThreadProcessId(root)[1]
     rec = _recorder.Recorder(pid=pid)
+    rec._started = True  # This probe starts only the producer to delay the worker.
     hook = threading.Thread(target=rec._hook_loop, daemon=True)
     rec._hook_thread = hook
     failures = []
