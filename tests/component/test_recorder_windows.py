@@ -9,6 +9,7 @@ from tests.component._recorder_window import (
     check_real_hook_lifecycle,
     record_generate_replay,
     record_native_transitions,
+    record_process_isolation,
 )
 
 from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
@@ -35,6 +36,17 @@ def test_real_hook_delayed_password_text_transitions():
 
 def test_real_record_generate_replay_targets_native_edit(tmp_path):
     record_generate_replay(tmp_path / "recorded.py")
+
+
+def test_real_hook_delayed_events_stay_in_target_process(tmp_path):
+    actions, code = record_process_isolation(tmp_path)
+    assert [action.data for action in actions if action.kind == "type_text"] == ["tttt", "ssss"]
+    assert actions
+    assert all(action.window_title == "KAN-576 owned" for action in actions)
+    assert "tttt" in code
+    assert "ssss" in code
+    for foreign_text in ("qqqq", "zzzz", "KAN-576 foreign"):
+        assert foreign_text not in code
 
 
 def test_replay_cleanup_closes_aut_when_recorder_stop_fails(monkeypatch, tmp_path):

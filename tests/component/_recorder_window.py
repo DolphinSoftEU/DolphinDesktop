@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import pytest
@@ -161,6 +162,127 @@ def record_native_transitions():
                 rec._evt_queue.get_nowait()
             except queue.Empty:
                 break
+
+
+@contextmanager
+def _owned_recorder_window(ready):
+    """Keep a process identity handle and close the owned AUT even on test failure."""
+    from dolphin_desktop._application import _enumerate_descendant_pids
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("_real_window.py")),
+            "--ready-file",
+            str(ready),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    handle = None
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists():
+            assert process.poll() is None, "Owned AUT exited before becoming ready"
+            assert time.monotonic() < deadline, "Owned AUT did not become ready"
+            time.sleep(0.01)
+        identity = json.loads(ready.read_text(encoding="utf-8"))
+        root, pid = identity["hwnd"], identity["pid"]
+        assert pid in {process.pid} | _enumerate_descendant_pids(process.pid)
+        assert win32process.GetWindowThreadProcessId(root)[1] == pid
+        handle = win32api.OpenProcess(0x101001, False, pid)
+        yield root, pid
+    finally:
+        try:
+            if handle is not None:
+                try:
+                    if win32process.GetExitCodeProcess(handle) == win32con.STILL_ACTIVE:
+                        win32api.TerminateProcess(handle, 0)
+                finally:
+                    handle.Close()
+        finally:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+            finally:
+                process.communicate(timeout=5)
+
+
+def record_process_isolation(directory):
+    """Queue real input from two processes and drain with the foreign window active."""
+    from ._real_window import ID_EDIT
+
+    with ExitStack() as resources:
+        owned = resources.enter_context(_owned_recorder_window(directory / "owned.ready.json"))
+        foreign = resources.enter_context(_owned_recorder_window(directory / "foreign.ready.json"))
+        assert owned[0] != foreign[0]
+        assert owned[1] != foreign[1]
+        for (root, _pid), title in ((owned, "KAN-576 owned"), (foreign, "KAN-576 foreign")):
+            win32gui.SetWindowText(root, title)
+            win32gui.SendMessage(win32gui.GetDlgItem(root, ID_EDIT), win32con.WM_SETTEXT, 0, "")
+
+        rec = _recorder.Recorder(pid=owned[1])
+        rec._started = True  # Start only the hook so every event stays queued.
+        hook = threading.Thread(target=rec._hook_loop, daemon=True)
+        rec._hook_thread = hook
+        failures = []
+        previous = sys.unraisablehook
+        sys.unraisablehook = failures.append
+        resources.callback(setattr, sys, "unraisablehook", previous)
+        resources.callback(rec.stop)
+        hook.start()
+        assert rec._hook_ready.wait(3), "Hooks did not initialize"
+        assert rec._hook_error is None
+
+        def wait_until(predicate):
+            deadline = time.monotonic() + 2
+            while not predicate():
+                assert time.monotonic() < deadline, "Timed out waiting for focus or queued events"
+                time.sleep(0.005)
+
+        def key_events():
+            with rec._evt_queue.mutex:
+                return [event for event in rec._evt_queue.queue if event and event[0] == "key"]
+
+        expected = []
+        for (root, pid), letter in ((owned, "t"), (foreign, "q"), (owned, "s"), (foreign, "z")):
+            edit = win32gui.GetDlgItem(root, ID_EDIT)
+            _activate_owned_window(root)
+            left, top, right, bottom = win32gui.GetWindowRect(edit)
+            point = ((left + right) // 2, (top + bottom) // 2)
+            win32api.SetCursorPos(point)
+            assert win32gui.GetForegroundWindow() == root
+            assert win32process.GetWindowThreadProcessId(root)[1] == pid
+            assert win32gui.WindowFromPoint(point) == edit, "Owned Edit is obscured"
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            wait_until(lambda edit=edit: _recorder._capture_context().focus == edit)
+            for _ in range(4):
+                context = _recorder._capture_context()
+                assert win32gui.GetForegroundWindow() == root, "Owned AUT lost foreground"
+                assert (context.hwnd, context.pid, context.focus) == (root, pid, edit)
+                assert context.password is False
+                vk = ord(letter.upper())
+                win32api.keybd_event(vk, 0, 0, 0)
+                win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+                expected.append((vk, root, pid, edit))
+            wait_until(lambda: len(key_events()) >= len(expected))
+
+        # Prove that both processes were captured, in order, before any interpretation.
+        assert rec._processed == 0
+        assert [
+            (event[1], event[-1].hwnd, event[-1].pid, event[-1].focus) for event in key_events()
+        ] == expected
+        assert _recorder._capture_context().pid == foreign[1]
+        rec.stop()
+        assert not hook.is_alive()
+        rec._process_loop()
+        actions, code = rec.actions(), rec.generate_code()
+        ast.parse(code)
+        assert rec._evt_queue.empty()
+        assert not failures, "ctypes callback raised an unraisable exception"
+        assert rec._hook_error is None
+        return actions, code
 
 
 def record_generate_replay(output):
