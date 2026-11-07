@@ -17,7 +17,12 @@ import time
 import winreg
 
 import pytest
-from tests.office._cleanup import close_and_purge_calendar_appt, purge_draft
+from tests.office._cleanup import (
+    close_and_purge_calendar_appt,
+    create_tracked_draft,
+    purge_draft,
+)
+from tests.office._outlook_process import outlook_exe as _outlook_exe
 from tests.office._outlook_process import quit_and_confirm_gone as _quit_and_confirm_gone
 from tests.office._uat_guard import assert_dedicated_store, uat_store_name
 
@@ -153,7 +158,9 @@ def test_default_folders_are_readable(outlook):
 
 def test_draft_create_read_modify_find(outlook):
     before = _count(outlook, "drafts")
-    mail = outlook.create_mail(to="uat@example.invalid", subject="dolphin uat", body="hello")
+    mail = create_tracked_draft(
+        outlook, to="uat@example.invalid", subject="dolphin uat", body="hello"
+    )
     try:
         mail.save()
         assert _count(outlook, "drafts") == before + 1
@@ -178,7 +185,7 @@ def test_draft_create_read_modify_find(outlook):
 def test_draft_delete_moves_to_deleted_items_then_permanent_delete_removes_it(outlook):
     drafts_before = _count(outlook, "drafts")
     deleted_before = _count(outlook, "deleted")
-    mail = outlook.create_mail(subject="dolphin uat delete me")
+    mail = create_tracked_draft(outlook, subject="dolphin uat delete me")
     # Every step after create_mail() is covered: if any assertion or delete
     # fails, the finally removes the draft from wherever it is (Drafts or
     # Deleted Items). Only a confirmed permanent delete skips the cleanup.
@@ -205,7 +212,7 @@ def test_draft_delete_moves_to_deleted_items_then_permanent_delete_removes_it(ou
 
 
 def test_draft_can_be_moved_between_default_folders(outlook):
-    mail = outlook.create_mail(subject="dolphin uat move me")
+    mail = create_tracked_draft(outlook, subject="dolphin uat move me")
     mail.save()
     try:
         inbox = outlook.default_folder("inbox")
@@ -221,7 +228,7 @@ def test_draft_can_be_moved_between_default_folders(outlook):
 
 
 def test_permanent_delete_outside_deleted_items_is_refused(outlook):
-    mail = outlook.create_mail(subject="dolphin uat guard")
+    mail = create_tracked_draft(outlook, subject="dolphin uat guard")
     mail.save()
     try:
         with pytest.raises(ValueError, match="requires the draft to be in Deleted Items"):
@@ -240,7 +247,7 @@ def test_save_as_msg_and_reopen_without_gaining_ownership(outlook, tmp_path):
     msg = tmp_path / "draft.msg"
     attachment = tmp_path / "note.txt"
     attachment.write_text("attached", encoding="utf-8")
-    mail = outlook.create_mail(subject="dolphin uat msg", body="persisted")
+    mail = create_tracked_draft(outlook, subject="dolphin uat msg", body="persisted")
     try:
         mail.add_attachment(attachment)
         assert mail.attachment_count == 1
@@ -323,7 +330,7 @@ def test_connect_attaches_to_a_running_outlook_and_never_quits_it():
         assert_dedicated_store(app)
         drafts = app.default_folder("drafts")
         count = drafts.item_count
-        mail = app.create_mail(subject="dolphin uat via connect")
+        mail = create_tracked_draft(app, subject="dolphin uat via connect")
         mail.save()
         try:
             assert _count(app, "drafts") == count + 1
@@ -346,14 +353,6 @@ def test_connect_attaches_to_a_running_outlook_and_never_quits_it():
             time.sleep(1)
         if proc.poll() is None:
             proc.kill()
-
-
-def _outlook_exe() -> str:
-    clsid_key = r"Outlook.Application\CLSID"
-    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, clsid_key) as key:
-        clsid = winreg.QueryValue(key, None)
-    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"CLSID\{clsid}\LocalServer32") as key:
-        return winreg.QueryValue(key, None).strip('"').split(" /")[0]
 
 
 # ---------------------------------------------------------------------------

@@ -156,3 +156,49 @@ def test_taskkill_result_is_captured_not_ignored(monkeypatch):
     proc._taskkill(PID)
     assert seen["args"] == ["taskkill", "/F", "/PID", str(PID)]
     assert seen["capture_output"] is True
+
+
+# ---------------------------------------------------------------------------
+# LocalServer32 parsing
+# ---------------------------------------------------------------------------
+
+_OFFICE = r"C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        # quoted path with spaces, with and without arguments
+        (rf'"{_OFFICE}" /automation', _OFFICE),
+        (rf'"{_OFFICE}" /automation /embedding', _OFFICE),
+        (rf'"{_OFFICE}"', _OFFICE),
+        (rf'  "{_OFFICE}"   /automation  ', _OFFICE),
+        # bare path with spaces, with and without arguments
+        (rf"{_OFFICE} /automation", _OFFICE),
+        (_OFFICE, _OFFICE),
+        # bare path without spaces
+        (r"C:\Office\outlook.exe /automation", r"C:\Office\outlook.exe"),
+        (
+            r"C:\PROGRA~1\MICROS~1\Office16\OUTLOOK.EXE",
+            r"C:\PROGRA~1\MICROS~1\Office16\OUTLOOK.EXE",
+        ),
+    ],
+)
+def test_local_server32_yields_the_bare_executable_path(value, expected):
+    result = proc.parse_local_server32(value)
+    assert result == expected
+    assert '"' not in result
+
+
+@pytest.mark.parametrize("value", ["", "   ", r'"C:\Office\OUTLOOK.EXE /automation', '"" /x'])
+def test_malformed_local_server32_is_rejected(value):
+    with pytest.raises(ValueError, match="LocalServer32"):
+        proc.parse_local_server32(value)
+
+
+def test_both_live_suites_share_the_local_server32_reader():
+    from tests.office import test_outlook_live as live
+    from tests.office import test_outlook_live_more as more
+
+    assert live._outlook_exe is proc.outlook_exe
+    assert more._outlook_exe is proc.outlook_exe

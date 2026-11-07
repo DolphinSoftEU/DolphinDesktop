@@ -1,6 +1,9 @@
-"""Quit an exclusive Outlook and *prove* its process is gone.
+"""Process helpers shared by the destructive live-Outlook suites.
 
-Shared by the destructive live-Outlook suites. The helper returns only once the
+``outlook_exe`` reads the registered OUTLOOK.EXE from its ``LocalServer32``
+command line (``parse_local_server32`` handles quoted paths with spaces and
+trailing arguments). ``quit_and_confirm_gone`` quits an exclusive Outlook and
+*proves* its process is gone. The helper returns only once the
 pid has disappeared from a strict process snapshot; a process that survives
 both Quit and ``taskkill /F`` is a hard, diagnostic error -- never a silent
 success -- because the next exclusive start (or the persisted-draft check) would
@@ -20,6 +23,40 @@ _IMAGE = "OUTLOOK.EXE"
 GRACE_SECONDS = 15.0
 REAP_SECONDS = 15.0
 _POLL_SECONDS = 0.5
+
+
+def parse_local_server32(command: str) -> str:
+    """Extract the executable path from a ``LocalServer32`` command line.
+
+    The value is a command line, not a path: the executable may be quoted
+    (``"C:\\Program Files\\...\\OUTLOOK.EXE" /automation``) or bare, and may or
+    may not carry arguments. A quoted executable ends at its closing quote; a
+    bare one ends right after ``.exe`` (it may itself contain spaces), falling
+    back to the first `` /`` switch when no ``.exe`` is present.
+    """
+    command = command.strip()
+    if not command:
+        raise ValueError("LocalServer32 is empty")
+    if command.startswith('"'):
+        end = command.find('"', 1)
+        if end <= 1:
+            raise ValueError(f"LocalServer32 has an unterminated or empty quoted path: {command!r}")
+        return command[1:end]
+    lowered = command.lower()
+    exe_end = lowered.find(".exe")
+    if exe_end != -1:
+        return command[: exe_end + len(".exe")]
+    return command.split(" /", 1)[0].strip()
+
+
+def outlook_exe() -> str:
+    """The OUTLOOK.EXE path registered as the Outlook.Application COM server."""
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"Outlook.Application\CLSID") as key:
+        clsid = winreg.QueryValue(key, None)
+    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"CLSID\{clsid}\LocalServer32") as key:
+        return parse_local_server32(winreg.QueryValue(key, None))
 
 
 def outlook_pids() -> list[int]:

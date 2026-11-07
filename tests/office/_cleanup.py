@@ -12,11 +12,19 @@ from __future__ import annotations
 
 import sys
 import time
+import uuid
 import warnings
 from typing import Any
 
 # Let a move/delete settle before re-reading a folder's contents (MAPI lags).
 _SETTLE = 0.3
+
+# A hidden named property (PS_PUBLIC_STRINGS) carrying a per-draft unique token,
+# so a draft can be found in the UAT store without its facade wrapper.
+MARKER_PROPERTY = (
+    "http://schemas.microsoft.com/mapi/string/"
+    "{00020329-0000-0000-C000-000000000046}/DolphinUatDraftMarker"
+)
 
 
 def _entry_ids(folder: Any) -> list[str]:
@@ -45,19 +53,135 @@ def _permanently_delete_from_deleted_items(app: Any, subject: str) -> None:
             item.Delete()  # already in Deleted Items -> permanent
 
 
-def purge_draft(mail: Any) -> None:
-    """Remove a draft for good, wherever it is now; verify it is gone.
+def create_tracked_draft(app: Any, **fields: str) -> Any:
+    """Create a draft stamped with a unique UAT marker and save it.
 
-    ``delete(permanent=True)`` confirms the item is gone (MAPI_E_NOT_FOUND) and
-    raises otherwise, so a failure here is a real leftover. When the test body
-    already failed, do not mask it (warn and move on); when the body passed,
-    re-raise so a destructive test never reports success with a draft behind.
+    The marker is a hidden named MAPI property; it travels with the item through
+    every move, so ``purge_draft`` can still find and remove the draft after the
+    facade wrapper was invalidated (a failed permanent delete or an uncertain
+    re-fetch after Move closes it, and its old EntryID may no longer apply).
     """
-    body_already_failing = sys.exc_info()[0] is not None
+    mail = app.create_mail(**fields)
+    marker = f"dolphin-uat-{uuid.uuid4().hex}"
+    mail._com.PropertyAccessor.SetProperty(MARKER_PROPERTY, marker)
+    mail.save()
+    mail._uat_marker = marker
+    return mail
+
+
+def _marker_filter(marker: str) -> str:
+    return f"@SQL=\"{MARKER_PROPERTY}\" = '{marker}'"
+
+
+def _store_folders(root: Any) -> list[Any]:
+    """Every folder of the store under *root*, depth first."""
+    found: list[Any] = []
+    stack = [root]
+    while stack:
+        folder = stack.pop()
+        found.append(folder)
+        subfolders = folder.Folders
+        stack.extend(subfolders.Item(i) for i in range(1, subfolders.Count + 1))
+    return found
+
+
+def _marked_entry_ids(folder: Any, marker: str) -> list[str]:
+    matches = folder.Items.Restrict(_marker_filter(marker))
+    return [str(matches.Item(i).EntryID) for i in range(1, matches.Count + 1)]
+
+
+def purge_by_marker(app: Any, marker: str) -> int:
+    """Remove every item carrying *marker* from the dedicated UAT store; verify.
+
+    Independent of any facade wrapper. Runs only after re-proving the profile is
+    the dedicated, disposable UAT PST (``assert_dedicated_store``), and searches
+    only that one store -- every folder of it, so a draft that was moved before
+    its wrapper was invalidated is found too. Items outside Deleted Items are
+    moved there first, then removed permanently; finally the whole store is
+    re-scanned and any remaining marked item raises ``AssertionError``. Returns
+    how many marked items were found.
+    """
+    from tests.office._uat_guard import assert_dedicated_store
+
+    assert_dedicated_store(app)
+    namespace = app._namespace
+    deleted = app.default_folder("deleted")._com
+    store = deleted.Store
+    store_id = str(store.StoreID)
+    folders = _store_folders(store.GetRootFolder())
+
+    # Snapshot every match first: moving items while scanning would let one
+    # item be seen twice (once in its folder, once in Deleted Items).
+    deleted_entry = str(deleted.EntryID)
+    matches = [
+        (str(folder.EntryID) == deleted_entry, entry_id)
+        for folder in folders
+        for entry_id in _marked_entry_ids(folder, marker)
+    ]
+    for in_deleted, entry_id in matches:
+        if not in_deleted:
+            namespace.GetItemFromID(entry_id, store_id).Delete()  # -> Deleted Items
+    time.sleep(_SETTLE)
+    for entry_id in _marked_entry_ids(deleted, marker):
+        namespace.GetItemFromID(entry_id, store_id).Delete()  # permanent
+    time.sleep(_SETTLE)
+    leftover = sum(len(_marked_entry_ids(folder, marker)) for folder in folders)
+    if leftover:
+        raise AssertionError(
+            f"purge_by_marker left {leftover} item(s) with UAT marker {marker!r} in the UAT store"
+        )
+    return len(matches)
+
+
+def _remove_draft(mail: Any) -> None:
+    """Remove *mail* for good, through the facade or, failing that, by its marker."""
+    marker = getattr(mail, "_uat_marker", None)
+    if getattr(mail, "_closed", False):
+        # A failed permanent delete or an uncertain re-fetch after Move closes
+        # the wrapper while the item may still sit in the PST: go by marker.
+        if marker is None:
+            raise PermissionError(
+                "the draft wrapper is closed and the draft carries no UAT marker, so it "
+                "cannot be located; create it with create_tracked_draft()"
+            )
+        purge_by_marker(mail._owner, marker)
+        return
     try:
         if mail.parent_folder.name != mail._owner.default_folder("deleted").name:
             mail.delete()
         mail.delete(permanent=True)
+        return
+    except Exception as facade_error:
+        if marker is None:
+            raise
+        # The facade path failed (and may have closed the wrapper): remove the
+        # item by its marker, then still report the facade failure.
+        try:
+            purge_by_marker(mail._owner, marker)
+        except Exception as marker_error:
+            marker_error.add_note(f"the facade cleanup failed first: {facade_error!r}")
+            raise
+        raise AssertionError(
+            f"the facade could not remove the draft ({facade_error!r}); it was removed "
+            "by its UAT marker instead"
+        ) from facade_error
+
+
+def purge_draft(mail: Any) -> None:
+    """Remove a draft for good, wherever it is now; verify it is gone.
+
+    The facade path (soft delete, then ``delete(permanent=True)``, which confirms
+    MAPI_E_NOT_FOUND) is tried first. When the wrapper is already closed, or the
+    facade path fails, a draft created by ``create_tracked_draft`` is located by
+    its unique marker in the dedicated UAT store and removed independently of
+    the wrapper (``purge_by_marker``). When the test body already failed, a
+    cleanup problem is only warned about so the real failure is not masked; when
+    the body passed, it raises, so a destructive test never reports success with
+    a draft left behind -- or with a facade cleanup that silently did not work.
+    """
+    body_already_failing = sys.exc_info()[0] is not None
+    try:
+        _remove_draft(mail)
     except Exception as exc:
         if body_already_failing:
             warnings.warn(
@@ -65,7 +189,7 @@ def purge_draft(mail: Any) -> None:
                 stacklevel=2,
             )
             return
-        raise AssertionError(f"Outlook test cleanup left a draft behind: {exc!r}") from exc
+        raise AssertionError(f"Outlook test cleanup failed for a draft: {exc!r}") from exc
 
 
 def purge_calendar_appt(app: Any, entry_id: str, subject: str) -> None:

@@ -19,9 +19,11 @@ from datetime import datetime, timedelta
 import pytest
 from tests.office._cleanup import (
     close_and_purge_calendar_appt,
+    create_tracked_draft,
     purge_by_subject,
     purge_draft,
 )
+from tests.office._outlook_process import outlook_exe as _outlook_exe
 from tests.office._outlook_process import quit_and_confirm_gone as _quit_and_confirm_gone
 from tests.office._uat_guard import assert_dedicated_store, uat_store_name
 
@@ -65,13 +67,6 @@ def _wait_until_no_process(timeout: float = 30.0) -> bool:
             return False
         _time.sleep(1)
     return True
-
-
-def _outlook_exe() -> str:
-    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"Outlook.Application\CLSID") as key:
-        clsid = winreg.QueryValue(key, None)
-    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"CLSID\{clsid}\LocalServer32") as key:
-        return winreg.QueryValue(key, None).strip('"').split(" /")[0]
 
 
 def _start_exclusive_ready(attempts: int = 5):
@@ -228,7 +223,7 @@ def _verify_and_purge_persisted(subject: str) -> None:
 
 
 def test_all_recipient_fields_and_html_body_persist(outlook):
-    mail = outlook.create_mail(subject=f"{_UAT_PREFIX} recipients")
+    mail = create_tracked_draft(outlook, subject=f"{_UAT_PREFIX} recipients")
     try:
         mail.to = "to@example.invalid"
         mail.cc = "cc@example.invalid"
@@ -254,7 +249,7 @@ def test_several_attachments_keep_their_order_and_bytes(outlook, tmp_path):
         path = tmp_path / f"part{index}.txt"
         path.write_text(f"payload {index}", encoding="utf-8")
         files.append(path)
-    mail = outlook.create_mail(subject=f"{_UAT_PREFIX} attachments")
+    mail = create_tracked_draft(outlook, subject=f"{_UAT_PREFIX} attachments")
     try:
         for path in files:
             mail.add_attachment(path)
@@ -292,7 +287,7 @@ def test_folder_items_iterate_in_order_and_reject_index_zero(outlook):
     created = []
     try:
         for label in ("a", "b", "c"):
-            mail = outlook.create_mail(subject=f"{_UAT_PREFIX} iter {label}")
+            mail = create_tracked_draft(outlook, subject=f"{_UAT_PREFIX} iter {label}")
             mail.save()
             created.append(mail)
         drafts = outlook.default_folder("drafts")
@@ -343,7 +338,7 @@ def test_quit_with_save_changes_persists_unsaved_drafts():
 
 def test_opened_msg_item_cannot_be_moved(outlook, tmp_path):
     msg = tmp_path / "foreign.msg"
-    mail = outlook.create_mail(subject=f"{_UAT_PREFIX} foreign")
+    mail = create_tracked_draft(outlook, subject=f"{_UAT_PREFIX} foreign")
     try:
         mail.save()
         mail.save_as(msg)

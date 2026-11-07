@@ -40,6 +40,9 @@ class _Mail:
         self._owner = owner
         self.entry_id = "entry-1"
         self._where: str | None = None
+        self._closed = False
+        # create_tracked_draft() stamps its marker through the raw COM item.
+        self._com = SimpleNamespace(PropertyAccessor=SimpleNamespace(SetProperty=lambda *a: None))
 
     @property
     def parent_folder(self) -> SimpleNamespace:
