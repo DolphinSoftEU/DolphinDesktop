@@ -25,6 +25,12 @@ MARKER_PROPERTY = (
     "http://schemas.microsoft.com/mapi/string/"
     "{00020329-0000-0000-C000-000000000046}/DolphinUatDraftMarker"
 )
+# The marker is set through PropertyAccessor, not registered in the folder's
+# UserDefinedProperties, so a DASL filter must name its type explicitly: a
+# mapi/string property needs the PT_UNICODE type specifier "/0000001f" appended
+# (https://learn.microsoft.com/office/vba/outlook/how-to/search-and-filter/
+# filtering-a-custom-field#filtering-custom-properties-referenced-by-the-mapi-string-namespace).
+PT_UNICODE_SUFFIX = "/0000001f"
 
 
 def _entry_ids(folder: Any) -> list[str]:
@@ -69,8 +75,9 @@ def create_tracked_draft(app: Any, **fields: str) -> Any:
     return mail
 
 
-def _marker_filter(marker: str) -> str:
-    return f"@SQL=\"{MARKER_PROPERTY}\" = '{marker}'"
+def marker_filter(marker: str) -> str:
+    """The DASL ``Items.Restrict`` filter matching items that carry *marker*."""
+    return f"@SQL=\"{MARKER_PROPERTY}{PT_UNICODE_SUFFIX}\" = '{marker}'"
 
 
 def _store_folders(root: Any) -> list[Any]:
@@ -85,8 +92,8 @@ def _store_folders(root: Any) -> list[Any]:
     return found
 
 
-def _marked_entry_ids(folder: Any, marker: str) -> list[str]:
-    matches = folder.Items.Restrict(_marker_filter(marker))
+def marked_entry_ids(folder: Any, marker: str) -> list[str]:
+    matches = folder.Items.Restrict(marker_filter(marker))
     return [str(matches.Item(i).EntryID) for i in range(1, matches.Count + 1)]
 
 
@@ -116,16 +123,16 @@ def purge_by_marker(app: Any, marker: str) -> int:
     matches = [
         (str(folder.EntryID) == deleted_entry, entry_id)
         for folder in folders
-        for entry_id in _marked_entry_ids(folder, marker)
+        for entry_id in marked_entry_ids(folder, marker)
     ]
     for in_deleted, entry_id in matches:
         if not in_deleted:
             namespace.GetItemFromID(entry_id, store_id).Delete()  # -> Deleted Items
     time.sleep(_SETTLE)
-    for entry_id in _marked_entry_ids(deleted, marker):
+    for entry_id in marked_entry_ids(deleted, marker):
         namespace.GetItemFromID(entry_id, store_id).Delete()  # permanent
     time.sleep(_SETTLE)
-    leftover = sum(len(_marked_entry_ids(folder, marker)) for folder in folders)
+    leftover = sum(len(marked_entry_ids(folder, marker)) for folder in folders)
     if leftover:
         raise AssertionError(
             f"purge_by_marker left {leftover} item(s) with UAT marker {marker!r} in the UAT store"

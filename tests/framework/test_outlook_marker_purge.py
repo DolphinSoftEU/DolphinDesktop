@@ -11,6 +11,7 @@ the draft by its UAT marker, removes it and confirms nothing is left.
 from __future__ import annotations
 
 import itertools
+import re
 
 import pytest
 import pywintypes
@@ -23,6 +24,11 @@ pytestmark = pytest.mark.unit
 
 MAPI_E_NOT_FOUND = -2147221233
 E_ACCESSDENIED = -2147024891
+E_INVALIDARG = -2147024809
+
+_TYPED_MARKER_FILTER = re.compile(
+    '@SQL="' + re.escape(_cleanup.MARKER_PROPERTY + "/0000001f") + "\" = '([0-9a-z-]+)'"
+)
 
 
 def _com_error(scode: int, text: str) -> pywintypes.com_error:
@@ -48,10 +54,14 @@ class _Items(_Collection):
         super().__init__(folder.items)
 
     def Restrict(self, dasl: str) -> _Collection:  # noqa: N802
-        assert _cleanup.MARKER_PROPERTY in dasl
-        return _Collection(
-            [item for item in self._items if item.marker and f"'{item.marker}'" in dasl]
-        )
+        # Like Outlook for a property not in UserDefinedProperties: only the
+        # exact, typed mapi/string reference is understood; anything else (e.g.
+        # the identifier without "/0000001f") is a COM error, not "no match".
+        match = _TYPED_MARKER_FILTER.fullmatch(dasl)
+        if match is None:
+            raise _com_error(E_INVALIDARG, f"Cannot parse condition. Error at {dasl!r}")
+        wanted = match.group(1)
+        return _Collection([item for item in self._items if item.marker == wanted])
 
 
 class _Folder:
@@ -328,6 +338,22 @@ def test_marker_purge_only_matches_its_own_marker(app):
     drop = _cleanup.create_tracked_draft(app, subject="drop")
     assert _cleanup.purge_by_marker(app, drop._uat_marker) == 1
     assert [item.marker for item in app.store.all_items()] == [keep._uat_marker]
+
+
+def test_marker_filter_names_the_unicode_type_of_the_undeclared_property():
+    # The marker is set via PropertyAccessor and never registered in the
+    # folder's UserDefinedProperties, so DASL needs the PT_UNICODE specifier.
+    assert _cleanup.marker_filter("dolphin-uat-abc") == (
+        '@SQL="http://schemas.microsoft.com/mapi/string/'
+        '{00020329-0000-0000-C000-000000000046}/DolphinUatDraftMarker/0000001f"'
+        " = 'dolphin-uat-abc'"
+    )
+
+
+def test_the_fake_rejects_an_untyped_marker_filter_like_outlook(app):
+    untyped = f"@SQL=\"{_cleanup.MARKER_PROPERTY}\" = 'dolphin-uat-abc'"
+    with pytest.raises(pywintypes.com_error):
+        app.store.drafts.Items.Restrict(untyped)
 
 
 def test_facade_status_code_helper_sees_the_fake_not_found():

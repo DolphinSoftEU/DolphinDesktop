@@ -20,6 +20,8 @@ import pytest
 from tests.office._cleanup import (
     close_and_purge_calendar_appt,
     create_tracked_draft,
+    marked_entry_ids,
+    purge_by_marker,
     purge_draft,
 )
 from tests.office._outlook_process import outlook_exe as _outlook_exe
@@ -225,6 +227,44 @@ def test_draft_can_be_moved_between_default_folders(outlook):
         assert _count(outlook, "inbox") == inbox_before
     finally:
         purge_draft(mail)
+
+
+def test_marker_dasl_finds_the_draft_in_drafts_inbox_and_deleted_items(outlook):
+    """The wrapper-independent cleanup works on the real PST, wherever the draft is.
+
+    The marker is set with PropertyAccessor and never declared in a folder's
+    UserDefinedProperties, so Items.Restrict only understands it with the
+    PT_UNICODE type specifier; this proves the real Outlook finds it -- and only
+    it -- in Drafts, after a move to Inbox, and in Deleted Items, and that
+    purge_by_marker removes it with the wrapper out of the picture.
+    """
+    mail = create_tracked_draft(outlook, subject="dolphin uat marker")
+    marker = mail._uat_marker
+    try:
+        drafts = outlook.default_folder("drafts")._com
+        inbox = outlook.default_folder("inbox")._com
+        deleted = outlook.default_folder("deleted")._com
+
+        assert len(marked_entry_ids(drafts, marker)) == 1
+        assert marked_entry_ids(drafts, "dolphin-uat-no-such-marker") == []
+
+        mail.move(outlook.default_folder("inbox"))
+        time.sleep(0.3)
+        assert marked_entry_ids(drafts, marker) == []
+        assert len(marked_entry_ids(inbox, marker)) == 1
+
+        mail.delete()  # to Deleted Items
+        time.sleep(0.3)
+        assert marked_entry_ids(inbox, marker) == []
+        assert len(marked_entry_ids(deleted, marker)) == 1
+
+        # As if the facade had invalidated the wrapper: only the marker is left.
+        mail._closed = True
+        assert purge_by_marker(outlook, marker) == 1
+        for folder in (drafts, inbox, deleted):
+            assert marked_entry_ids(folder, marker) == []
+    finally:
+        purge_draft(mail)  # closed wrapper -> marker purge; a no-op once removed
 
 
 def test_permanent_delete_outside_deleted_items_is_refused(outlook):
