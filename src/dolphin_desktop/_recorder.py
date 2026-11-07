@@ -718,6 +718,7 @@ class Recorder:
         self._hook_ready = threading.Event()
         self._hook_error: Exception | None = None
         self._processor_error: Exception | None = None
+        self._start_error: Exception | None = None
         self._start_lock = threading.Lock()
         self._started = False
 
@@ -735,6 +736,8 @@ class Recorder:
 
         Emits the privacy warning first — the hooks are system-wide, so this is the
         one point at which the user is told what is about to be captured.
+        Initialization failures trigger shutdown and make the session unavailable
+        to completion and read operations.
 
         Raises:
             RuntimeError: start() was already attempted on this instance. Create
@@ -744,7 +747,16 @@ class Recorder:
             if self._started:
                 raise RuntimeError("Recorder instances are single-use; create a new Recorder")
             self._started = True
-            self._start_session()
+            try:
+                self._start_session()
+            except Exception as exc:
+                try:
+                    self._request_stop()
+                    self._join_processor()
+                except Exception as cleanup_error:
+                    exc.add_note(f"Recorder startup cleanup failed: {cleanup_error}")
+                self._start_error = exc
+                raise
 
     def _start_session(self) -> None:
         """Initialize the session while lifecycle operations hold the start lock."""
@@ -769,17 +781,23 @@ class Recorder:
         self._hook_thread = threading.Thread(
             target=self._hook_loop, daemon=True, name="dolphin-rec-hook"
         )
-        self._hook_thread.start()
+        try:
+            self._hook_thread.start()
+        except Exception:
+            self._hook_thread = None  # An unstarted thread cannot be joined.
+            raise
         if not self._hook_ready.wait(5.0):
-            self._request_stop()
-            self._join_processor()
             raise TimeoutError("Recorder hooks did not initialize")
         if self._hook_error is not None:
             raise OSError("Could not install recorder hooks") from self._hook_error
         self._proc_thread = threading.Thread(
             target=self._process_loop, daemon=True, name="dolphin-rec-proc"
         )
-        self._proc_thread.start()
+        try:
+            self._proc_thread.start()
+        except Exception:
+            self._proc_thread = None
+            raise
 
     def stop(self) -> None:
         """Stop the hook producer, then drain all events queued before it exited.
@@ -789,7 +807,7 @@ class Recorder:
         Raises:
             OSError: Hook recording or cleanup failed.
             TimeoutError: The hook thread or event drain did not finish.
-            RuntimeError: Event processing failed and the recording is incomplete.
+            RuntimeError: Initialization or event processing failed.
         """
         with self._start_lock:
             if not self._started:
@@ -816,12 +834,13 @@ class Recorder:
                 exception is retained as the cause, after queued events drain.
             TimeoutError: Hook shutdown or the event drain stalled; recording
                 completion could not be confirmed.
-            RuntimeError: Event processing failed. The original exception is
-                retained as the cause; the recording must not be used.
+            RuntimeError: Initialization or event processing failed. The original
+                exception is retained as the cause; the recording must not be used.
         """
         if not self._stopped.wait(timeout):
             return False
-        self._join_processor()
+        with self._start_lock:
+            self._join_processor()
         return True
 
     def _join_processor(self, timeout: float = _PROC_JOIN_TIMEOUT) -> None:
@@ -886,6 +905,10 @@ class Recorder:
         raise TimeoutError("Recorder event drain stalled; recording is incomplete")
 
     def _raise_recording_error(self) -> None:
+        if self._start_error is not None:
+            raise RuntimeError(
+                "Recorder initialization failed; recording is unavailable"
+            ) from self._start_error
         if self._processor_error is not None:
             raise RuntimeError(
                 "Recorder event processor failed; recording is incomplete"
@@ -898,7 +921,7 @@ class Recorder:
 
         Raises:
             OSError: Hook recording or cleanup failed; partial actions are unavailable.
-            RuntimeError: Recording is active or the event processor failed.
+            RuntimeError: Recording is active, or initialization or event processing failed.
             TimeoutError: Recording shutdown or the event drain stalled.
         """
         with self._start_lock:
@@ -931,7 +954,8 @@ class Recorder:
         OSError
             Hook recording or cleanup failed; no output file is written.
         RuntimeError
-            Recording is active or the event processor failed; no output is written.
+            Recording is active, or initialization or event processing failed;
+            no output is written.
         TimeoutError
             Recording shutdown or the event drain stalled.
         """

@@ -1623,6 +1623,156 @@ def test_stop_before_start_is_noop_and_active_read_preserves_pending_text(
         rec.stop()
 
 
+@pytest.mark.parametrize("thread_name", ["dolphin-rec-hook", "dolphin-rec-proc"])
+def test_thread_start_failure_stops_hooks_and_rejects_recording(monkeypatch, tmp_path, thread_name):
+    rec = Recorder(pid=100)
+    quit_requested = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        assert quit_requested.wait(2)
+        return 0
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = lambda *args: quit_requested.set() or 1
+    monkeypatch.setattr(_recorder, "_user32", api)
+    original_start = threading.Thread.start
+    failure = RuntimeError("cannot create thread")
+
+    def start(thread):
+        if thread.name == thread_name:
+            raise failure
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            rec.start()
+        assert caught.value is failure
+        assert rec._stopped.is_set()
+        assert rec._proc_thread is None
+        if thread_name == "dolphin-rec-proc":
+            assert quit_requested.is_set()
+            assert not rec._hook_thread.is_alive()
+            assert api.unhooked == [101, 202]
+        else:
+            assert rec._hook_thread is None
+            assert api.unhooked == []
+        output = tmp_path / "recorded.py"
+        for operation in (
+            rec.stop,
+            lambda: rec.wait(0),
+            rec.actions,
+            lambda: rec.generate_code(output),
+        ):
+            with pytest.raises(RuntimeError, match="initialization failed") as caught:
+                operation()
+            assert caught.value.__cause__ is failure
+        assert not output.exists()
+    finally:
+        quit_requested.set()
+        if rec._hook_thread is not None:
+            rec._hook_thread.join(2)
+
+
+@pytest.mark.parametrize(
+    "options", [{}, {"pid": 100, "global_recording": True}, {"app": "missing"}]
+)
+def test_initialization_failure_rejects_completion_and_preserves_output(
+    monkeypatch, tmp_path, options
+):
+    failure = ValueError("app not found")
+    monkeypatch.setattr(_recorder, "_resolve_app_pid", Mock(side_effect=failure))
+    rec = Recorder(**options)
+    output = tmp_path / "recorded.py"
+    output.write_text("existing script", encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        rec.start()
+    original_error = caught.value
+    for operation in (
+        rec.stop,
+        lambda: rec.wait(0),
+        rec.actions,
+        lambda: rec.generate_code(output),
+    ):
+        with pytest.raises(RuntimeError, match="initialization failed") as caught:
+            operation()
+        assert caught.value.__cause__ is original_error
+    assert output.read_text(encoding="utf-8") == "existing script"
+    with pytest.raises(RuntimeError, match="single-use"):
+        rec.start()
+
+
+def test_wait_synchronizes_with_processor_start_after_hook_exits(monkeypatch):
+    rec = Recorder(pid=100)
+    processor_starting = threading.Event()
+    release_start = threading.Event()
+    waiter_locking = threading.Event()
+    wait_finished = threading.Event()
+    lock = threading.Lock()
+    errors = []
+    results = []
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name == "recorder-waiter":
+                waiter_locking.set()
+            lock.acquire()
+
+        def __exit__(self, *args):
+            lock.release()
+
+    rec._start_lock = ObservedLock()
+    monkeypatch.setattr(_recorder, "_user32", _HookAPI({}, message_returns=(0,)))
+    original_start = threading.Thread.start
+
+    def start(thread):
+        if thread.name == "dolphin-rec-proc":
+            processor_starting.set()
+            assert release_start.wait(2)
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+
+    def start_recording():
+        try:
+            rec.start()
+        except Exception as exc:
+            errors.append(exc)
+
+    def wait_recording():
+        try:
+            results.append(rec.wait(2))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            wait_finished.set()
+
+    starter = threading.Thread(target=start_recording)
+    waiter = threading.Thread(target=wait_recording, name="recorder-waiter")
+    try:
+        starter.start()
+        assert processor_starting.wait(2)
+        assert rec._stopped.wait(2)
+        waiter.start()
+        assert waiter_locking.wait(2)
+        assert not wait_finished.is_set()
+        release_start.set()
+        starter.join(2)
+        waiter.join(2)
+        assert not starter.is_alive()
+        assert not waiter.is_alive()
+        assert errors == []
+        assert results == [True]
+        assert rec.actions() == []
+    finally:
+        release_start.set()
+        starter.join(2)
+        if waiter.ident is not None:
+            waiter.join(2)
+        rec.stop()
+
+
 def test_start_timeout_stops_capture_without_starting_processor(monkeypatch):
     rec = Recorder(pid=100)
     hook_thread = Mock(spec=threading.Thread)
