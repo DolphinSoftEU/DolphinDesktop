@@ -767,6 +767,7 @@ class Recorder:
         """Stop the hook producer, then drain all events queued before it exited.
 
         Raises:
+            OSError: Hook recording or cleanup failed.
             TimeoutError: The hook thread or event drain did not finish.
             RuntimeError: Event processing failed and the recording is incomplete.
         """
@@ -798,8 +799,6 @@ class Recorder:
         if not self._stopped.wait(timeout):
             return False
         self._join_processor()
-        if self._hook_error is not None:
-            raise OSError("Recorder hook loop failed during recording") from self._hook_error
         return True
 
     def _join_processor(self, timeout: float = _PROC_JOIN_TIMEOUT) -> None:
@@ -830,7 +829,7 @@ class Recorder:
                 raise TimeoutError("Recorder hook thread did not stop; recording is incomplete")
         thread = self._proc_thread
         if thread is None:
-            self._raise_processor_error()
+            self._raise_recording_error()
             return
         if thread is threading.current_thread():
             return
@@ -840,7 +839,7 @@ class Recorder:
             thread.join(timeout)
             if not thread.is_alive():
                 self._proc_thread = None
-                self._raise_processor_error()
+                self._raise_recording_error()
                 return
             if self._processed != processed:
                 processed = self._processed
@@ -861,16 +860,19 @@ class Recorder:
         )
         raise TimeoutError("Recorder event drain stalled; recording is incomplete")
 
-    def _raise_processor_error(self) -> None:
+    def _raise_recording_error(self) -> None:
         if self._processor_error is not None:
             raise RuntimeError(
                 "Recorder event processor failed; recording is incomplete"
             ) from self._processor_error
+        if self._hook_error is not None:
+            raise OSError("Recorder hook loop failed during recording") from self._hook_error
 
     def actions(self) -> list[RecordedAction]:
         """Return recorded actions, flushing pending text after a successful drain.
 
         Raises:
+            OSError: Hook recording or cleanup failed; partial actions are unavailable.
             RuntimeError: The event processor failed; partial actions are unavailable.
             TimeoutError: Recording shutdown or the event drain stalled.
         """
@@ -900,6 +902,8 @@ class Recorder:
 
         Raises
         ------
+        OSError
+            Hook recording or cleanup failed; no output file is written.
         RuntimeError
             The event processor failed; no output file is written.
         TimeoutError

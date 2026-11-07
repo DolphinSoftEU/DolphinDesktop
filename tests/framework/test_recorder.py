@@ -1676,30 +1676,59 @@ def test_hook_callback_forwards_pointer_sized_lparam_to_real_winapi():
     assert ctypes.sizeof(_recorder._HOOKPROC._restype_) == ctypes.sizeof(ctypes.c_void_p)
 
 
-def test_wait_reports_message_loop_failure_after_successful_start(monkeypatch):
+@pytest.mark.parametrize("reader", ["stop", "wait", "actions", "generate_code"])
+def test_all_completion_methods_report_message_loop_failure_after_start(
+    monkeypatch, tmp_path, reader
+):
     release = threading.Event()
+    entered = threading.Event()
     api = _HookAPI({})
 
     def fail_after_start(*args):
+        entered.set()
         assert release.wait(2)
         return -1
 
     api.GetMessageW = fail_after_start
     monkeypatch.setattr(_recorder, "_user32", api)
     rec = Recorder(pid=100)
+    processor = None
+    output = tmp_path / "recorded.py"
+    output.write_text("keep existing script", encoding="utf-8")
     try:
         rec.start()
+        processor = rec._proc_thread
+        assert entered.wait(2)
         assert rec.wait(0) is False
+        rec._pending_text.append("partial")
         release.set()
+        assert rec._stopped.wait(2)
+        operations = {
+            "stop": rec.stop,
+            "wait": lambda: rec.wait(2),
+            "actions": rec.actions,
+            "generate_code": lambda: rec.generate_code(output),
+        }
         with pytest.raises(OSError, match="failed during recording") as caught:
-            rec.wait(2)
+            operations[reader]()
         assert caught.value.__cause__ is rec._hook_error
+        assert not rec._hook_thread.is_alive()
+        assert not processor.is_alive()
         assert rec._proc_thread is None
         assert rec._evt_queue.empty()
+        # Once the worker reference is cleared, subsequent readers must still
+        # reject the failed recording, including stop() -> generate_code().
+        for operation in operations.values():
+            with pytest.raises(OSError, match="failed during recording") as repeated:
+                operation()
+            assert repeated.value.__cause__ is rec._hook_error
+        assert rec._pending_text == ["partial"]
+        assert output.read_text(encoding="utf-8") == "keep existing script"
     finally:
         release.set()
-        rec.stop()
         rec._hook_thread.join(2)
+        if processor is not None:
+            processor.join(2)
     assert api.unhooked == [101, 202]
 
 

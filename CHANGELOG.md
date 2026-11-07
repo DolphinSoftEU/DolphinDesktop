@@ -22,6 +22,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder completion now checks hook failures in the shared drain path.
+  `stop()`, `wait()`, `actions()` and `generate_code()` consistently reject
+  recordings affected by hook errors, after both threads finish, and preserve
+  existing output files on failure (KAN-576 completion review).
+
 * Recorder event processor failures now request hook shutdown, preserve the
   original exception and raise through `wait()`, `stop()` and readers. A dead
   worker can no longer be mistaken for a completed drain or generate an
