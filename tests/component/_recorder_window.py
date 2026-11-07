@@ -260,19 +260,32 @@ def record_generate_replay(output):
         assert status_field._resolve().handle == status
         assert status_field.text() == STATUS_IDLE
     finally:
-        if rec is not None:
-            rec.stop()
-            if rec._hook_thread is not None:
-                rec._hook_thread.join(3)
-                assert not rec._hook_thread.is_alive()
-        if app is not None:
-            app.detach()
-        if process_handle is not None:
+        try:
+            if rec is not None:
+                try:
+                    rec.stop()
+                finally:
+                    if rec._hook_thread is not None:
+                        rec._hook_thread.join(3)
+                        assert not rec._hook_thread.is_alive()
+        finally:
             try:
-                if win32process.GetExitCodeProcess(process_handle) == win32con.STILL_ACTIVE:
-                    win32api.TerminateProcess(process_handle, 0)
+                if app is not None:
+                    app.detach()
             finally:
-                process_handle.Close()
-        if process.poll() is None:
-            process.terminate()
-        process.communicate(timeout=5)
+                try:
+                    if process_handle is not None:
+                        try:
+                            if (
+                                win32process.GetExitCodeProcess(process_handle)
+                                == win32con.STILL_ACTIVE
+                            ):
+                                win32api.TerminateProcess(process_handle, 0)
+                        finally:
+                            process_handle.Close()
+                finally:
+                    try:
+                        if process.poll() is None:
+                            process.terminate()
+                    finally:
+                        process.communicate(timeout=5)

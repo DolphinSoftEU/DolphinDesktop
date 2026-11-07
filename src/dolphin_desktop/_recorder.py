@@ -719,6 +719,9 @@ class Recorder:
         self._hook_error: Exception | None = None
         self._processor_error: Exception | None = None
         self._start_error: Exception | None = None
+        self._stop_request_error: OSError | None = None
+        self._stop_lock = threading.Lock()
+        self._quit_posted = False
         self._start_lock = threading.Lock()
         self._started = False
 
@@ -803,6 +806,8 @@ class Recorder:
         """Stop the hook producer, then drain all events queued before it exited.
 
         Before the first start attempt, this is a no-op.
+        If posting the hook shutdown message fails, a later call retries it.
+        A hook shutdown timeout retains the WinAPI failure as its cause.
 
         Raises:
             OSError: Hook recording or cleanup failed.
@@ -817,13 +822,28 @@ class Recorder:
 
     def _request_stop(self) -> None:
         """Signal shutdown without joining either thread (safe for the worker)."""
-        if not self._stopped.is_set():
+        with self._stop_lock:
+            first_request = not self._stopped.is_set()
             self._stopped.set()
-            if self._hook_thread_id:
-                _user32.PostThreadMessageW(self._hook_thread_id, _WM_QUIT, 0, 0)
+            producer = self._hook_thread
+            # The stop signal wakes callers even if posting fails. Track message
+            # delivery separately so another stop can retry a still-live producer.
+            if (
+                not self._quit_posted
+                and self._hook_thread_id
+                and producer is not None
+                and producer.is_alive()
+            ):
+                if _user32.PostThreadMessageW(self._hook_thread_id, _WM_QUIT, 0, 0):
+                    self._quit_posted = True
+                else:
+                    self._stop_request_error = ctypes.WinError(ctypes.get_last_error())
+                    _log.error(
+                        "Could not request recorder hook shutdown: %s", self._stop_request_error
+                    )
             # A running producer owns the final sentinel. A callback already
             # in progress may still enqueue its event after this stop request.
-            if self._hook_thread is None:
+            if producer is None and first_request:
                 self._evt_queue.put(None)
 
     def wait(self, timeout: float | None = None) -> bool:
@@ -880,7 +900,9 @@ class Recorder:
                 raise RuntimeError("Cannot drain recorder events from the hook thread")
             producer.join(timeout)
             if producer.is_alive():
-                raise TimeoutError("Recorder hook thread did not stop; recording is incomplete")
+                raise TimeoutError(
+                    "Recorder hook thread did not stop; recording is incomplete"
+                ) from self._stop_request_error
         thread = self._proc_thread
         if thread is None:
             self._raise_recording_error()

@@ -995,7 +995,7 @@ def test_start_logs_scope_and_starts_both_daemon_threads(monkeypatch, app, expec
         assert "process=100" not in code
 
 
-def test_stop_posts_quit_only_for_a_hook_thread_and_is_idempotent(monkeypatch) -> None:
+def test_stop_without_hook_thread_is_idempotent_and_ignores_stale_thread_id(monkeypatch) -> None:
     rec = Recorder()
     rec._started = True
     rec._hook_thread_id = 42
@@ -1005,8 +1005,63 @@ def test_stop_posts_quit_only_for_a_hook_thread_and_is_idempotent(monkeypatch) -
     rec.stop()
     rec.stop()
 
-    post.assert_called_once_with(42, _recorder._WM_QUIT, 0, 0)
+    post.assert_not_called()
     assert rec._evt_queue.get_nowait() is None
+    assert rec._evt_queue.empty()
+
+
+def test_stop_retries_failed_quit_message_and_preserves_diagnostic(monkeypatch):
+    rec = Recorder(pid=100)
+    entered = threading.Event()
+    quit_requested = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        entered.set()
+        assert quit_requested.wait(2)
+        return 0
+
+    def post_quit(*args):
+        if api.PostThreadMessageW.call_count == 1:
+            return 0
+        quit_requested.set()
+        return 1
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = Mock(side_effect=post_quit)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
+    join_processor = rec._join_processor
+    monkeypatch.setattr(rec, "_join_processor", lambda: join_processor(timeout=0.01))
+    try:
+        rec.start()
+        assert entered.wait(2)
+        with pytest.raises(TimeoutError, match="hook thread did not stop") as caught:
+            rec.stop()
+        diagnostic = rec._stop_request_error
+        assert diagnostic.winerror == 5
+        assert caught.value.__cause__ is diagnostic
+        assert rec._stopped.is_set()
+        assert rec._hook_thread.is_alive()
+        assert not rec._quit_posted
+
+        # Even though _stopped is already set, a second stop must wake GetMessageW.
+        rec.stop()
+        assert rec._stop_request_error is diagnostic
+        assert rec._quit_posted
+        assert not rec._hook_thread.is_alive()
+        assert api.unhooked == [101, 202]
+        rec.stop()
+        assert rec.wait(0)
+        assert rec.actions() == []
+        assert api.PostThreadMessageW.call_count == 2
+        api.PostThreadMessageW.assert_called_with(rec._hook_thread_id, _recorder._WM_QUIT, 0, 0)
+    finally:
+        quit_requested.set()
+        if rec._hook_thread is not None:
+            rec._hook_thread.join(2)
+        if rec._proc_thread is not None:
+            rec._proc_thread.join(2)
 
 
 def test_wait_timeout_and_join_from_processor_thread_are_noops() -> None:
