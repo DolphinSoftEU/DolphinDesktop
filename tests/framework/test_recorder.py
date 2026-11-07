@@ -958,7 +958,7 @@ def test_start_logs_scope_and_starts_both_daemon_threads(monkeypatch, app, expec
             made.append((target, daemon, name))
 
         def start(self):
-            return None
+            rec._hook_ready.set()
 
     monkeypatch.setattr(threading, "Thread", FakeThread)
     warning = Mock()
@@ -1236,6 +1236,10 @@ class _HookAPI:
 
     def UnhookWindowsHookEx(self, handle):  # noqa: N802
         self.unhooked.append(handle)
+        return 1
+
+    def PeekMessageW(self, *args):  # noqa: N802
+        return 0
 
     def CallNextHookEx(self, hook, n_code, w_param, l_param):  # noqa: N802
         return 123
@@ -1333,7 +1337,7 @@ def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None
             self.events.append(event)
 
     callbacks: dict[int, object] = {}
-    api = _HookAPI(callbacks, handles=(0, None), message_returns=(1, 0))
+    api = _HookAPI(callbacks, message_returns=(1, 0))
     rec = Recorder()
     full_queue = FullQueue()
     rec._evt_queue = full_queue  # type: ignore[assignment]
@@ -1366,8 +1370,76 @@ def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None
     assert api.message_calls == 2
     assert api.translated == 1
     assert api.dispatched == 1
-    assert api.unhooked == []
+    assert api.unhooked == [101, 202]
     assert full_queue.events == [None]
+
+
+@pytest.mark.parametrize("handles,unhooked", [((0,), []), ((101, 0), [101])])
+def test_hook_installation_failure_cleans_up_and_signals_waiters(monkeypatch, handles, unhooked):
+    api = _HookAPI({}, handles=handles)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec = Recorder(pid=100)
+    rec._hook_loop()
+    assert isinstance(rec._hook_error, OSError)
+    assert rec._hook_ready.is_set()
+    assert rec._stopped.is_set()
+    assert api.unhooked == unhooked
+    assert api.message_calls == 0
+    assert rec._evt_queue.get_nowait() is None
+
+
+def test_start_reports_hook_installation_failure(monkeypatch):
+    rec = Recorder(pid=100)
+    monkeypatch.setattr(_recorder, "_user32", _HookAPI({}, handles=(101, 0)))
+    with pytest.raises(OSError, match="Could not install recorder hooks") as caught:
+        rec.start()
+    rec._hook_thread.join(2)
+    assert isinstance(caught.value.__cause__, OSError)
+    assert rec._proc_thread is None
+
+
+def test_hook_callback_forwards_pointer_sized_lparam_to_real_winapi():
+    # Negative nCode forwards without dereferencing lParam; no installed hook or
+    # injected input is needed to exercise the actual ctypes boundary.
+    callback = _recorder._HOOKPROC(
+        lambda code, wp, lp: _recorder._user32.CallNextHookEx(None, code, wp, lp)
+    )
+    failures = []
+    previous = sys.unraisablehook
+    try:
+        sys.unraisablehook = failures.append
+        callback(-1, 0, (1 << (ctypes.sizeof(ctypes.c_void_p) * 8 - 2)) + 123)
+    finally:
+        sys.unraisablehook = previous
+    assert not failures
+    assert ctypes.sizeof(_recorder._HOOKPROC._restype_) == ctypes.sizeof(ctypes.c_void_p)
+
+
+def test_wait_reports_message_loop_failure_after_successful_start(monkeypatch):
+    release = threading.Event()
+    api = _HookAPI({})
+
+    def fail_after_start(*args):
+        assert release.wait(2)
+        return -1
+
+    api.GetMessageW = fail_after_start
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec = Recorder(pid=100)
+    try:
+        rec.start()
+        assert rec.wait(0) is False
+        release.set()
+        with pytest.raises(OSError, match="failed during recording") as caught:
+            rec.wait(2)
+        assert caught.value.__cause__ is rec._hook_error
+        assert rec._proc_thread is None
+        assert rec._evt_queue.empty()
+    finally:
+        release.set()
+        rec.stop()
+        rec._hook_thread.join(2)
+    assert api.unhooked == [101, 202]
 
 
 def test_recorder_detects_double_clicks_and_escapes_window_titles() -> None:
@@ -1504,8 +1576,10 @@ def test_app_resolution_accepts_multiple_windows_of_one_process(monkeypatch):
         (0, "Edit", 3, None),
     ],
 )
+@pytest.mark.parametrize("api_result", [tuple, list])
+@pytest.mark.parametrize("second_identity", [(10, 100), (11, 100), (10, 101)])
 def test_native_event_classification_is_stable_or_unknown(
-    monkeypatch, style, cls, second_focus, expected
+    monkeypatch, style, cls, second_focus, expected, api_result, second_identity
 ):
     gui = SimpleNamespace(
         GetForegroundWindow=lambda: 1,
@@ -1513,10 +1587,20 @@ def test_native_event_classification_is_stable_or_unknown(
         GetWindowLong=lambda hwnd, index: style,
     )
     monkeypatch.setitem(sys.modules, "win32gui", gui)
+    root_reads = 0
+
+    def identity(hwnd):
+        nonlocal root_reads
+        if hwnd == 1:
+            root_reads += 1
+            if root_reads > 1:
+                return api_result(second_identity)
+        return api_result((10, 100))
+
     monkeypatch.setitem(
         sys.modules,
         "win32process",
-        SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: (10, 100)),
+        SimpleNamespace(GetWindowThreadProcessId=identity),
     )
     monkeypatch.setattr(_recorder, "_get_root_hwnd", lambda hwnd: 1)
     monkeypatch.setattr(_recorder, "_get_window_info", lambda hwnd: ("Login", "Dialog"))
@@ -1524,7 +1608,7 @@ def test_native_event_classification_is_stable_or_unknown(
     monkeypatch.setattr(_recorder, "_native_focus", lambda thread: next(focuses))
     context = _recorder._capture_context()
     assert (context.hwnd, context.pid, context.focus) == (1, 100, 2)
-    assert context.password is expected
+    assert context.password is (expected if second_identity == (10, 100) else None)
 
 
 def test_native_query_failure_discards_unverifiable_event(monkeypatch):

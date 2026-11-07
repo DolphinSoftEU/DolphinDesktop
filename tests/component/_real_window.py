@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
+import json
+from pathlib import Path
+
 import win32api
 import win32con
 import win32gui
@@ -61,7 +65,7 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
     return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
 
-def main() -> None:
+def main(ready_file: Path | None = None) -> None:
     wc = win32gui.WNDCLASS()
     wc.lpfnWndProc = _wnd_proc
     wc.lpszClassName = WINDOW_CLASS
@@ -97,8 +101,14 @@ def main() -> None:
     _create_control(hwnd, "STATIC", STATUS_IDLE, 0, (20, 115, 300, 24), ID_STATUS)
     win32gui.ShowWindow(hwnd, win32con.SW_SHOWNORMAL)
     win32gui.UpdateWindow(hwnd)
+    if ready_file is not None:
+        ready_file.write_text(
+            json.dumps({"hwnd": hwnd, "pid": win32api.GetCurrentProcessId()}), encoding="utf-8"
+        )
     win32gui.PumpMessages()
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ready-file", type=Path)
+    main(parser.parse_args().ready_file)
