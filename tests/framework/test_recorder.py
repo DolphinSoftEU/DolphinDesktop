@@ -1010,7 +1010,10 @@ def test_stop_without_hook_thread_is_idempotent_and_ignores_stale_thread_id(monk
     assert rec._evt_queue.empty()
 
 
-def test_stop_retries_failed_quit_message_and_preserves_diagnostic(monkeypatch):
+@pytest.mark.parametrize("failures_before_success", [1, 3])
+def test_stop_retries_failed_quit_message_and_preserves_diagnostic(
+    monkeypatch, failures_before_success
+):
     rec = Recorder(pid=100)
     entered = threading.Event()
     quit_requested = threading.Event()
@@ -1022,7 +1025,7 @@ def test_stop_retries_failed_quit_message_and_preserves_diagnostic(monkeypatch):
         return 0
 
     def post_quit(*args):
-        if api.PostThreadMessageW.call_count == 1:
+        if api.PostThreadMessageW.call_count <= failures_before_success:
             return 0
         quit_requested.set()
         return 1
@@ -1032,29 +1035,32 @@ def test_stop_retries_failed_quit_message_and_preserves_diagnostic(monkeypatch):
     monkeypatch.setattr(_recorder, "_user32", api)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
     join_processor = rec._join_processor
-    monkeypatch.setattr(rec, "_join_processor", lambda: join_processor(timeout=0.01))
+    monkeypatch.setattr(rec, "_join_processor", lambda: join_processor(timeout=0.1))
     try:
         rec.start()
         assert entered.wait(2)
-        with pytest.raises(TimeoutError, match="hook thread did not stop") as caught:
+        if failures_before_success == _recorder._STOP_POST_ATTEMPTS:
+            with pytest.raises(TimeoutError, match="hook thread did not stop") as caught:
+                rec.stop()
+            assert caught.value.__cause__ is rec._stop_request_error
+            assert rec._stopped.is_set()
+            assert rec._hook_thread.is_alive()
+            assert not rec._quit_posted
+            assert api.PostThreadMessageW.call_count == _recorder._STOP_POST_ATTEMPTS
+            # Exhausted automatic retries still allow another explicit stop.
             rec.stop()
+        else:
+            rec.stop()  # A transient failure is recovered within this call.
         diagnostic = rec._stop_request_error
         assert diagnostic.winerror == 5
-        assert caught.value.__cause__ is diagnostic
         assert rec._stopped.is_set()
-        assert rec._hook_thread.is_alive()
-        assert not rec._quit_posted
-
-        # Even though _stopped is already set, a second stop must wake GetMessageW.
-        rec.stop()
-        assert rec._stop_request_error is diagnostic
         assert rec._quit_posted
         assert not rec._hook_thread.is_alive()
         assert api.unhooked == [101, 202]
         rec.stop()
         assert rec.wait(0)
         assert rec.actions() == []
-        assert api.PostThreadMessageW.call_count == 2
+        assert api.PostThreadMessageW.call_count == failures_before_success + 1
         api.PostThreadMessageW.assert_called_with(rec._hook_thread_id, _recorder._WM_QUIT, 0, 0)
     finally:
         quit_requested.set()
@@ -1468,6 +1474,56 @@ def test_hook_loop_queues_mouse_and_keyboard_events_and_stops_on_ctrl_stop_key(m
     assert events[1][:2] == ("key", 0x41)
     assert events[1][-1] is captured
     assert events[0][-1] is captured
+
+
+@pytest.mark.parametrize("stop_source", ["request", "hotkey"])
+def test_stopped_callbacks_forward_without_capturing_even_when_quit_post_fails(
+    monkeypatch, stop_source
+):
+    rec = Recorder(pid=100)
+    rec._hook_thread = threading.current_thread()
+    api = _HookAPI({})
+    api.GetAsyncKeyState = Mock(return_value=0x8000)
+    api.PostThreadMessageW = Mock(return_value=0)
+    captured = _recorder._InputContext(11, 100, 12, "Owned", "Dialog", False)
+    keyboard_probe = Mock(return_value=captured)
+    mouse_probe = Mock(return_value=captured)
+    monkeypatch.setattr(_recorder, "_capture_context", keyboard_probe)
+    monkeypatch.setattr(_recorder, "_capture_mouse_context", mouse_probe)
+    monkeypatch.setattr(_recorder, "_HOOKPROC", lambda function: function)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
+
+    def dispatch():
+        before_stop = _recorder._KBDLLHOOKSTRUCT()
+        before_stop.vkCode = ord("A")
+        rec._kbd_cb(_recorder._HC_ACTION, _recorder._WM_KEYDOWN, ctypes.addressof(before_stop))
+        if stop_source == "request":
+            rec._request_stop()
+            assert api.PostThreadMessageW.call_count == _recorder._STOP_POST_ATTEMPTS
+            assert rec._stop_request_error.winerror == 5
+        else:
+            stop = _recorder._KBDLLHOOKSTRUCT()
+            stop.vkCode = rec._stop_vk
+            rec._kbd_cb(_recorder._HC_ACTION, _recorder._WM_KEYDOWN, ctypes.addressof(stop))
+        assert rec._stopped.is_set()
+        # Invalid pointers prove stopped callbacks do not even read input data.
+        for message in (_recorder._WM_KEYDOWN, _recorder._WM_SYSKEYDOWN):
+            assert rec._kbd_cb(_recorder._HC_ACTION, message, 0) == 123
+        for message in (_recorder._WM_LBUTTONDOWN, _recorder._WM_RBUTTONDOWN):
+            assert rec._mouse_cb(_recorder._HC_ACTION, message, 0) == 123
+
+    api.dispatch = dispatch
+    rec._hook_loop()
+    keyboard_probe.assert_called_once_with()
+    mouse_probe.assert_not_called()
+    assert len(api.quit_calls) >= 4  # Callbacks request exit on their own thread.
+    assert api.unhooked == [101, 202]
+    event = rec._evt_queue.get_nowait()
+    assert event[:2] == ("key", ord("A"))
+    assert event[-1] is captured
+    assert rec._evt_queue.get_nowait() is None
+    assert rec._evt_queue.empty()
 
 
 def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None:
@@ -1949,7 +2005,8 @@ def test_drain_cannot_wait_for_its_own_hook_thread():
         rec._join_processor()
 
 
-def test_stop_drains_callback_already_in_progress_before_final_sentinel(monkeypatch):
+@pytest.mark.parametrize("event_kind", ["key", "mouse"])
+def test_stop_discards_in_flight_callback_and_drains_already_queued_events(monkeypatch, event_kind):
     entered = threading.Event()
     release = threading.Event()
     finished = threading.Event()
@@ -1958,12 +2015,30 @@ def test_stop_drains_callback_already_in_progress_before_final_sentinel(monkeypa
     api = _HookAPI({})
     api.GetAsyncKeyState = Mock(return_value=0)
 
-    def capture_context():
+    def capture_context(*args):
         entered.set()
         assert release.wait(2)
         return _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False)
 
     def dispatch():
+        # An event queued before stop must survive; the blocked callback must not.
+        rec._evt_queue.put(
+            (
+                "key",
+                ord("A"),
+                0,
+                False,
+                False,
+                False,
+                False,
+                1.0,
+                _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False),
+            )
+        )
+        if event_kind == "mouse":
+            mouse = _recorder._MSLLHOOKSTRUCT()
+            rec._mouse_cb(_recorder._HC_ACTION, _recorder._WM_LBUTTONDOWN, ctypes.addressof(mouse))
+            return
         key = _recorder._KBDLLHOOKSTRUCT()
         key.vkCode = ord("A")
         rec._kbd_cb(_recorder._HC_ACTION, _recorder._WM_KEYDOWN, ctypes.addressof(key))
@@ -1980,6 +2055,7 @@ def test_stop_drains_callback_already_in_progress_before_final_sentinel(monkeypa
     monkeypatch.setattr(_recorder, "_user32", api)
     monkeypatch.setattr(_recorder, "_HOOKPROC", lambda function: function)
     monkeypatch.setattr(_recorder, "_capture_context", capture_context)
+    monkeypatch.setattr(_recorder, "_capture_mouse_context", capture_context)
     monkeypatch.setattr(_recorder, "_vk_to_sendkeys", lambda *args, **kwargs: "a")
     stopper = threading.Thread(target=stop_recording, daemon=True)
     try:

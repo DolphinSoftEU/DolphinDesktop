@@ -208,6 +208,8 @@ _PASSWORD_PLACEHOLDER = "<REDACTED-PASSWORD>"
 
 # Seconds stop()/wait() give the processor thread to drain the event queue
 _PROC_JOIN_TIMEOUT = 2.0
+_STOP_POST_ATTEMPTS = 3
+_STOP_POST_RETRY_DELAY = 0.01
 
 # Data model
 
@@ -806,7 +808,10 @@ class Recorder:
         """Stop the hook producer, then drain all events queued before it exited.
 
         Before the first start attempt, this is a no-op.
-        If posting the hook shutdown message fails, a later call retries it.
+        Callbacks stop queueing input when shutdown is requested; events already
+        queued are drained before this method returns.
+        Failed hook shutdown messages are retried up to three times per call.
+        A later call can retry again if all attempts fail.
         A hook shutdown timeout retains the WinAPI failure as its cause.
 
         Raises:
@@ -828,21 +833,26 @@ class Recorder:
             producer = self._hook_thread
             # The stop signal wakes callers even if posting fails. Track message
             # delivery separately so another stop can retry a still-live producer.
-            if (
-                not self._quit_posted
-                and self._hook_thread_id
-                and producer is not None
-                and producer.is_alive()
-            ):
+            for attempt in range(_STOP_POST_ATTEMPTS):
+                if (
+                    self._quit_posted
+                    or not self._hook_thread_id
+                    or producer is None
+                    or not producer.is_alive()
+                ):
+                    break
                 if _user32.PostThreadMessageW(self._hook_thread_id, _WM_QUIT, 0, 0):
                     self._quit_posted = True
+                    break
                 else:
                     self._stop_request_error = ctypes.WinError(ctypes.get_last_error())
                     _log.error(
                         "Could not request recorder hook shutdown: %s", self._stop_request_error
                     )
-            # A running producer owns the final sentinel. A callback already
-            # in progress may still enqueue its event after this stop request.
+                if attempt + 1 < _STOP_POST_ATTEMPTS:
+                    time.sleep(_STOP_POST_RETRY_DELAY)
+            # A running producer owns the final sentinel. In-flight callbacks
+            # recheck the stop signal before enqueueing.
             if producer is None and first_request:
                 self._evt_queue.put(None)
 
@@ -1007,29 +1017,44 @@ class Recorder:
         stop_vk = self._stop_vk
         stopped = self._stopped
 
+        def queue_input(event: tuple[Any, ...]) -> None:
+            # Serialize the final enqueue with the stop signal. Context capture
+            # stays outside this lock so stop never waits for a native probe.
+            with self._stop_lock:
+                if not stopped.is_set():
+                    try:
+                        evt_queue.put_nowait(event)
+                    except queue.Full:
+                        pass
+
         def _mouse_proc(n_code: int, w_param: int, l_param: int) -> int:
+            if stopped.is_set():
+                # This runs on the installing thread and can wake its message
+                # loop even when another thread could not post WM_QUIT.
+                _user32.PostQuitMessage(0)
+                return _user32.CallNextHookEx(None, n_code, w_param, l_param)
             if n_code == _HC_ACTION and w_param in (_WM_LBUTTONDOWN, _WM_RBUTTONDOWN):
                 ms = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
                 kind = {
                     _WM_LBUTTONDOWN: "click",
                     _WM_RBUTTONDOWN: "right_click",
                 }[w_param]
-                try:
-                    evt_queue.put_nowait(
-                        (
-                            "mouse",
-                            kind,
-                            ms.pt.x,
-                            ms.pt.y,
-                            time.time(),
-                            _capture_mouse_context(ms.pt.x, ms.pt.y),
-                        )
+                queue_input(
+                    (
+                        "mouse",
+                        kind,
+                        ms.pt.x,
+                        ms.pt.y,
+                        time.time(),
+                        _capture_mouse_context(ms.pt.x, ms.pt.y),
                     )
-                except queue.Full:
-                    pass
+                )
             return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
         def _kbd_proc(n_code: int, w_param: int, l_param: int) -> int:
+            if stopped.is_set():
+                _user32.PostQuitMessage(0)
+                return _user32.CallNextHookEx(None, n_code, w_param, l_param)
             if n_code == _HC_ACTION and w_param in (_WM_KEYDOWN, _WM_SYSKEYDOWN):
                 kb = ctypes.cast(l_param, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
                 vk = int(kb.vkCode)
@@ -1048,12 +1073,9 @@ class Recorder:
                 # Capture native process/focus/classification before queueing.
                 # No UIA or COM work runs in the low-level hook.
                 context = _capture_context()
-                try:
-                    evt_queue.put_nowait(
-                        ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time(), context)
-                    )
-                except queue.Full:
-                    pass
+                queue_input(
+                    ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time(), context)
+                )
             return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
         # Keep strong references on self so GC won't collect while hook is alive
