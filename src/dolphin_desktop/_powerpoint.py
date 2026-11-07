@@ -181,6 +181,35 @@ class PowerPointTextRange(_ComOwner):
         return [str(self._com.Paragraphs(i).Text).rstrip("\r\n") for i in range(1, count + 1)]
 
 
+def _validate_table_fit(
+    rows_values: Sequence[Sequence[Any]],
+    *,
+    total_rows: int,
+    total_columns: int,
+    start_row: int,
+) -> list[Sequence[Any]]:
+    """Check *rows_values* fit a *total_rows* x *total_columns* grid from *start_row*.
+
+    Validates ``start_row``, every row's width and the overall span up front,
+    before any cell is written or any table is created, so invalid input can
+    never leave a table half-written or an unwanted shape on the slide. Returns
+    the rows as a concrete list.
+    """
+    if start_row < 1:
+        raise ValueError("start_row must be >= 1 (table rows are 1-based)")
+    values = list(rows_values)
+    if not values:
+        return values
+    widest = max(len(row) for row in values)
+    last_row = start_row + len(values) - 1
+    if last_row > total_rows or widest > total_columns:
+        raise ValueError(
+            f"{len(values)} row(s) of up to {widest} value(s) do not fit a "
+            f"{total_rows}x{total_columns} table from row {start_row}"
+        )
+    return values
+
+
 class PowerPointTable(_ComOwner):
     """A table shape's grid; rows and columns are 1-based like PowerPoint."""
 
@@ -207,15 +236,17 @@ class PowerPointTable(_ComOwner):
         return [self.row_values(row) for row in range(1, self.rows + 1)]
 
     def set_values(self, rows: Sequence[Sequence[Any]], *, start_row: int = 1) -> None:
-        """Write *rows* into the table from *start_row*; the grid must be large enough."""
-        for offset, values in enumerate(rows):
+        """Write *rows* into the table from *start_row*; the grid must be large enough.
+
+        Every row is validated before the first cell is written, so data that
+        does not fit leaves the table unchanged rather than partially updated.
+        """
+        values = _validate_table_fit(
+            rows, total_rows=self.rows, total_columns=self.columns, start_row=start_row
+        )
+        for offset, row_values in enumerate(values):
             row = start_row + offset
-            if row > self.rows or len(values) > self.columns:
-                raise ValueError(
-                    f"{len(rows)} row(s) of up to {max(len(v) for v in rows)} value(s) do "
-                    f"not fit a {self.rows}x{self.columns} table from row {start_row}"
-                )
-            for column, value in enumerate(values, start=1):
+            for column, value in enumerate(row_values, start=1):
                 self.cell(row, column).text = str(value)
 
     def add_row(self, before: int | None = None) -> None:
@@ -573,6 +604,10 @@ class PowerPointSlide(_ComOwner):
         """Add a *rows* x *columns* table, optionally filled from *values* row by row."""
         if rows < 1 or columns < 1:
             raise ValueError("a table needs at least one row and one column")
+        # Validate the data before creating the shape so bad input never leaves
+        # an unwanted empty table behind on the slide.
+        if values is not None:
+            _validate_table_fit(values, total_rows=rows, total_columns=columns, start_row=1)
         shape = self._track(self._com.Shapes.AddTable(rows, columns, left, top, width, height))
         if values is not None:
             shape.table.set_values(values)

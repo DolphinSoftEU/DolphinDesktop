@@ -12,6 +12,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+import warnings
 import winreg
 from datetime import datetime, timedelta
 
@@ -168,6 +169,28 @@ def _count(app: OutlookApp, folder: str) -> int:
     return app.default_folder(folder).item_count
 
 
+def _best_effort_purge(subject: str) -> None:
+    """Try once to remove drafts with *subject*, warning (never raising) on failure.
+
+    Used only on an error path where the normal cleanup handle is unavailable
+    (e.g. reopening the profile failed). It must not mask the original failure,
+    so it swallows every error of its own and only warns.
+    """
+    try:
+        app = _start_exclusive_ready()
+    except BaseException as exc:
+        warnings.warn(
+            f"best-effort Outlook cleanup could not reopen the profile: {exc!r}", stacklevel=2
+        )
+        return
+    try:
+        purge_by_subject(app, "drafts", subject)
+    except BaseException as exc:
+        warnings.warn(f"best-effort Outlook cleanup failed: {exc!r}", stacklevel=2)
+    finally:
+        _quit_and_confirm_gone(app)
+
+
 # ---------------------------------------------------------------------------
 # Recipients, bodies, attachments
 # ---------------------------------------------------------------------------
@@ -274,14 +297,29 @@ def test_quit_with_save_changes_persists_unsaved_drafts():
         _quit_and_confirm_gone(app, save_changes=True)
     assert not _pids()
 
-    again = _start_exclusive_ready()
+    try:
+        again = _start_exclusive_ready()
+    except Exception:
+        # Reopening the profile failed, so the draft persisted in phase 1 cannot
+        # be cleaned through this handle; make a best-effort sweep so a failed
+        # rerun does not leak state into the PST, then surface the real error.
+        _best_effort_purge(subject)
+        raise
+
+    removed: int | None = None
     try:
         drafts = again.default_folder("drafts")
         subjects = [drafts.item(i).subject for i in range(1, drafts.item_count + 1)]
         assert subject in subjects
-        assert purge_by_subject(again, "drafts", subject) == 1
     finally:
-        _quit_and_confirm_gone(again)
+        # Remove the persisted draft on every path -- even if the assertion above
+        # failed or the folder read raised -- so a leftover never skews reruns;
+        # quit still happens even if the purge itself raises.
+        try:
+            removed = purge_by_subject(again, "drafts", subject)
+        finally:
+            _quit_and_confirm_gone(again)
+    assert removed == 1
 
 
 def test_opened_msg_item_cannot_be_moved(outlook, tmp_path):

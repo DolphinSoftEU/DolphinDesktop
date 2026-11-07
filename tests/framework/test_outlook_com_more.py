@@ -15,6 +15,7 @@ from dolphin_desktop import OutlookApp
 from dolphin_desktop import _outlook as outlook
 
 MAPI_E_NOT_FOUND = -2147221233
+MAPI_E_NO_SUPPORT = -2147221246
 E_ACCESSDENIED = -2147024891
 
 
@@ -90,12 +91,32 @@ def test_move_keeps_the_returned_proxy_when_the_store_cannot_refetch(client):
     com.CreateItem.return_value = draft_com
     moved = _draft_com(entry_id="id-2")
     draft_com.Move.return_value = moved
-    namespace.GetItemFromID.side_effect = Exception("store does not support GetItemFromID")
+    # MAPI_E_NO_SUPPORT: the store genuinely cannot round-trip GetItemFromID -- a
+    # known, acceptable reason to keep the proxy Move() returned.
+    namespace.GetItemFromID.side_effect = _com_error(MAPI_E_NO_SUPPORT, "not supported")
 
     with OutlookApp.start() as app:
         draft = app.create_mail(subject="UAT")
         draft.move(app.default_folder("inbox"))
         assert draft._com is moved
+
+
+def test_move_raises_when_the_refetch_fails_with_an_uncertain_error(client):
+    com = client.Dispatch.return_value
+    namespace = com.GetNamespace.return_value
+    draft_com = _draft_com()
+    com.CreateItem.return_value = draft_com
+    moved = _draft_com(entry_id="id-2")
+    draft_com.Move.return_value = moved
+    # E_ACCESSDENIED is not a "store cannot re-fetch" signal: the outcome is
+    # uncertain, so move() must surface it rather than hand back a half-alive
+    # proxy whose later Delete() might silently no-op.
+    namespace.GetItemFromID.side_effect = _com_error(E_ACCESSDENIED, "access is denied")
+
+    with OutlookApp.start() as app:
+        draft = app.create_mail(subject="UAT")
+        with pytest.raises(RuntimeError, match="uncertain"):
+            draft.move(app.default_folder("inbox"))
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,14 @@ _FOLDERS = {"inbox": 6, "drafts": 16, "sent": 5, "deleted": 3, "calendar": 9}
 # failure to resolve an item leaves its fate unknown.
 _MAPI_E_NOT_FOUND = -2147221233
 
+# Codes that mean a store/provider simply cannot round-trip GetItemFromID, which
+# is a known, acceptable reason to keep the handle we already have rather than a
+# sign that an operation went wrong: MAPI_E_NO_SUPPORT (0x80040102) and
+# E_NOTIMPL (0x80004001). Any other re-fetch failure is treated as uncertain.
+_MAPI_E_NO_SUPPORT = -2147221246
+_E_NOTIMPL = -2147467263
+_REFETCH_UNSUPPORTED = frozenset({_MAPI_E_NO_SUPPORT, _E_NOTIMPL})
+
 
 def _com_status_code(exc: BaseException) -> int | None:
     """The MAPI/COM status code behind a pywintypes.com_error, or None.
@@ -179,7 +187,7 @@ class OutlookMail(OutlookItem):
             if not in_deleted:
                 raise ValueError("Permanent deletion requires the draft to be in Deleted Items")
             entry_id, store_id = str(self._com.EntryID), str(parent.StoreID)
-            owner._fresh_item(self._com).Delete()
+            owner._refetch_or_same(self._com).Delete()
             self._closed = True
             if owner._item_still_present(entry_id, store_id):
                 raise RuntimeError(
@@ -388,7 +396,43 @@ class OutlookApp:
             raise RuntimeError("Outlook MAPI profile unavailable or no accessible store") from exc
 
     def _fresh_item(self, com: Any) -> Any:
-        """Re-fetch *com* by EntryID; fall back to *com* when the store cannot."""
+        """Re-fetch *com* by its (EntryID, StoreID) after a Move().
+
+        The proxy Move() returns on a PST store is only half alive: Delete() on
+        it silently does nothing, so later operations must act on a handle
+        Outlook fully honours. Re-fetching can be genuinely unsupported by a
+        store/provider (MAPI_E_NO_SUPPORT / E_NOTIMPL); only then is the original
+        handle the best available and kept as a deliberate fallback. Any other
+        failure -- access, session, store, a different COM code, or a non-COM
+        error -- leaves the outcome uncertain and must not be masked by handing
+        back a proxy that may silently drop a later Delete(): it raises
+        RuntimeError instead.
+        """
+        try:
+            entry_id, store_id = str(com.EntryID), str(com.Parent.StoreID)
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not read the moved Outlook item's identity to re-fetch it; "
+                f"its state is uncertain ({exc})"
+            ) from exc
+        try:
+            return self._namespace.GetItemFromID(entry_id, store_id)
+        except Exception as exc:
+            if _com_status_code(exc) in _REFETCH_UNSUPPORTED:
+                return com
+            raise RuntimeError(
+                f"Could not re-fetch the moved Outlook item; its state is uncertain ({exc})"
+            ) from exc
+
+    def _refetch_or_same(self, com: Any) -> Any:
+        """Best-effort re-fetch by (EntryID, StoreID); return *com* on any failure.
+
+        Used only where a later explicit check -- not this re-fetch -- is the
+        authority on the outcome: permanent delete re-fetches merely to act on a
+        fully-honoured proxy and then proves removal with _item_still_present, so
+        a re-fetch failure here is not itself a reason to fail (unlike move(),
+        whose result is kept and used later; see _fresh_item).
+        """
         try:
             return self._namespace.GetItemFromID(str(com.EntryID), str(com.Parent.StoreID))
         except Exception:

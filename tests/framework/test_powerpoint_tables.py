@@ -64,6 +64,23 @@ def test_table_set_values_rejects_data_that_does_not_fit():
         PowerPointTable(com).set_values([["a", "b", "c"]])
 
 
+def test_table_set_values_makes_no_change_when_a_later_row_does_not_fit():
+    # The valid first row must not be written before the invalid second row is
+    # rejected: validation happens before any cell is touched.
+    com, cells = _table_com([["", ""], ["", ""]])
+    with pytest.raises(ValueError, match="do not fit"):
+        PowerPointTable(com).set_values([["A", "B"], ["C", "D", "E"]])
+    com.Cell.assert_not_called()
+    assert cells == {}
+
+
+def test_table_set_values_rejects_start_row_below_one():
+    com, _ = _table_com([["", ""]])
+    with pytest.raises(ValueError, match="start_row must be >= 1"):
+        PowerPointTable(com).set_values([["a", "b"]], start_row=0)
+    com.Cell.assert_not_called()
+
+
 def test_table_row_and_column_mutations_call_powerpoint_one_based():
     com, _ = _table_com([["x"]])
     table = PowerPointTable(com)
@@ -105,6 +122,15 @@ def test_add_table_validates_size_and_fills_values(monkeypatch):
     slide.add_table(2, 2, left=1, top=2, width=3, height=4, values=[["a", "b"]])
     slide_com.Shapes.AddTable.assert_called_once_with(2, 2, 1, 2, 3, 4)
     assert filled == [[["a", "b"]]]
+
+
+def test_add_table_rejects_bad_values_before_creating_a_shape():
+    slide_com = MagicMock()
+    slide = ppt.PowerPointSlide(slide_com)
+    with pytest.raises(ValueError, match="do not fit"):
+        slide.add_table(2, 2, values=[["a", "b", "c"]])
+    # The data is validated up front, so no empty table is left on the slide.
+    slide_com.Shapes.AddTable.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
