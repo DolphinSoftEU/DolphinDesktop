@@ -22,6 +22,7 @@ from tests.office._cleanup import (
     purge_by_subject,
     purge_draft,
 )
+from tests.office._outlook_process import quit_and_confirm_gone as _quit_and_confirm_gone
 from tests.office._uat_guard import assert_dedicated_store, uat_store_name
 
 from dolphin_desktop import OutlookApp, OutlookAppointment, OutlookMail
@@ -101,47 +102,6 @@ def _start_exclusive_ready(attempts: int = 5):
             last_exc = exc
             _time.sleep(2)
     raise AssertionError(f"Outlook MAPI never became ready after {attempts} starts: {last_exc}")
-
-
-def _confirm_process_gone(pid: int | None, timeout: float = 60.0) -> None:
-    """Wait for the exclusive process to exit; force-kill as a last resort."""
-    if pid is None:
-        return
-    deadline = time.monotonic() + timeout
-    while pid in _pids():
-        if time.monotonic() >= deadline:
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
-            return
-        time.sleep(1)
-
-
-def _quit_and_confirm_gone(app: OutlookApp, *, save_changes: bool = False) -> None:
-    """Quit an exclusive Outlook and make sure its process is gone.
-
-    OutlookApp.quit() requests the quit but raises "did not exit after Quit;
-    retry cleanup" when the process has not died within the session's short
-    wait. An exclusive Outlook driven through many create/delete cycles can
-    ignore that single Quit for a long time, so after a short grace period the
-    process is force-killed: it is our own disposable UAT process on a throwaway
-    PST, so nothing is lost. The call returns only once the pid is really gone.
-    """
-    pid = app.process_id
-    try:
-        app.quit(save_changes=save_changes)
-    except RuntimeError as exc:
-        if "retry cleanup" not in str(exc):
-            raise
-    if pid is None:
-        return
-    grace = time.monotonic() + 15
-    while pid in _pids():
-        if time.monotonic() >= grace:
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
-            break
-        time.sleep(1)
-    reap = time.monotonic() + 15
-    while pid in _pids() and time.monotonic() < reap:
-        time.sleep(0.5)
 
 
 @pytest.fixture(autouse=True)
