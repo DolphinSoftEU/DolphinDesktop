@@ -15,7 +15,7 @@ Run this script only on a machine where that setting is enabled on purpose::
 
     uv run python tests/fixtures/office/make_macro_fixtures.py
 
-It overwrites the two files next to it and prints their SHA-256 digests.
+It overwrites the three files next to it and prints their SHA-256 digests.
 """
 
 from __future__ import annotations

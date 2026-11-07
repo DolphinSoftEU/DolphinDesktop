@@ -65,24 +65,59 @@ default blocking, explicit opt-in, link arguments, restoration after errors,
 rejected security settings, a simulated policy block and an XLM prompt.
 These checks verify the wrapper contract, not the Office macro engine.
 
-The real Office suite generates harmless marker-only macro documents and links
-to controlled local Excel/Word documents in pytest's temporary directory:
+#### Running the real Office suite
+
+The macro documents are **shipped, pre-built fixtures**:
+`tests/fixtures/office/benign.xlsm`, `benign.docm` and `benign.pptm`. Each
+carries one macro that only rewrites a marker inside the document itself. The
+suite copies them into pytest's temporary directory; it never creates or edits
+a VBA project. The external-link cases build harmless local Excel/Word
+documents in the same temporary directory.
 
 ```powershell
-uv run pytest tests/office -q -rs --junitxml artifacts/KAN-574-office-retest.xml
+uv run pytest tests/office/test_macro_security.py -q -rs --junitxml artifacts/KAN-574-office-retest.xml
 ```
 
-It requires registered Excel/Word COM servers. Creating macro fixtures also
-requires **existing** trusted access to the VBA project object model; when that
-is blocked, the macro cases report skips without changing security settings.
-Each macro case first opens a separate copy with `allow_macros=True` and requires
-the marker to change. Only then does it open a fresh copy with
-`allow_macros=False` and assert that the marker stays unchanged. If policy blocks
-the positive control, the entire case is skipped; the default open cannot be
-reported as a security pass. The local external-link cases do not require VBA
-project access. The Word case also explicitly updates the field afterwards to
-prove that the source is reachable and changed. A skip is not evidence that the
-corresponding security criterion passed.
+A normal run needs classic Office with registered Excel, Word and PowerPoint COM
+servers and Office's **default** security settings. It does **not** need "Trust
+access to the VBA project object model"; leave that setting off. The suite
+never changes Trust Center settings or organization policies.
+
+Each Excel/Word macro case first opens a separate copy with `allow_macros=True`
+and requires the marker to change (the positive control). Only then does it open
+a fresh copy with `allow_macros=False` and assert that the marker stays
+unchanged. The PowerPoint case opens the `.pptm` with defaults and asks for the
+macro by name; PowerPoint must refuse and the slide text must stay unchanged.
+The Word link case also updates the field explicitly afterwards to prove that
+the source is reachable and changed.
+
+A case is skipped, never passed, when:
+
+- `pywin32` is not installed, or Excel/Word cannot be started through COM;
+- a shipped fixture file is missing from `tests/fixtures/office/`;
+- Office policy blocks the positive control, so the macro does not run even
+  with `allow_macros=True` (the whole case is skipped: the default open cannot
+  be reported as a security pass);
+- a PowerPoint is already running (the PowerPoint case owns its process so the
+  macro-enabled file never outlives the test).
+
+A skip is not evidence that the corresponding security criterion passed.
+
+#### Regenerating the macro fixtures (optional, maintainers only)
+
+Only when the fixtures themselves must change, run the separate generator on a
+dedicated machine where VBA project access was enabled on purpose:
+
+```powershell
+uv run python tests/fixtures/office/make_macro_fixtures.py
+```
+
+Office refuses programmatic access to a VBA project unless "Trust access to the
+VBA project object model" is enabled; that is the only step that needs it, and
+the reason the files are shipped instead of built at test time. Turn the
+setting off again afterwards, review the regenerated macros and commit the
+files with the digests the script prints. Never enable it on a machine just to
+run the tests.
 
 The mandatory CI unit job runs the COM stand-in tests with `pytest -m unit`.
 It does not run this `system` / `integration` suite or verify the real Office
