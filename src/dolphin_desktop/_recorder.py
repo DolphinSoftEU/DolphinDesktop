@@ -654,6 +654,9 @@ def _resolve_app_pid(app: str) -> int:
 class Recorder:
     """Records mouse/keyboard interactions and generates dolphin Python test code.
 
+    Instances are single-use: create a new Recorder for each recording attempt,
+    including retries after a failed start. Completed actions remain readable.
+
     Captures input globally — read the privacy warning at the top of this module
     before using it.  :meth:`start` restates it on the recorder's own output.
 
@@ -715,6 +718,8 @@ class Recorder:
         self._hook_ready = threading.Event()
         self._hook_error: Exception | None = None
         self._processor_error: Exception | None = None
+        self._start_lock = threading.Lock()
+        self._started = False
 
         # Strong references — prevent GC while hooks are active
         self._mouse_cb: Any = None
@@ -730,7 +735,15 @@ class Recorder:
 
         Emits the privacy warning first — the hooks are system-wide, so this is the
         one point at which the user is told what is about to be captured.
+
+        Raises:
+            RuntimeError: start() was already attempted on this instance. Create
+                a new Recorder to retry, even if the first attempt failed.
         """
+        with self._start_lock:
+            if self._started:
+                raise RuntimeError("Recorder instances are single-use; create a new Recorder")
+            self._started = True
         if not self.app and self.pid is None and not self.global_recording:
             raise ValueError("Recording requires app, pid, or explicit global_recording=True")
         if self.global_recording and (self.app or self.pid is not None):

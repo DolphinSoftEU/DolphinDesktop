@@ -1484,6 +1484,68 @@ def test_start_reports_hook_installation_failure(monkeypatch):
     assert rec._proc_thread is None
 
 
+def test_failed_start_cannot_restart_but_fresh_recorder_can_record_and_stop(monkeypatch):
+    failed = Recorder(pid=100)
+    monkeypatch.setattr(_recorder, "_user32", _HookAPI({}, handles=(0,)))
+    with pytest.raises(OSError, match="Could not install recorder hooks"):
+        failed.start()
+    failed._hook_thread.join(2)
+    original_error = failed._hook_error
+    original_thread = failed._hook_thread
+    assert failed._evt_queue.qsize() == 1  # Sentinel left by failed hook installation.
+
+    quit_requested = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        assert quit_requested.wait(2)
+        return 0
+
+    def post_quit(*args):
+        quit_requested.set()
+        return 1
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = post_quit
+    install = Mock(wraps=api.SetWindowsHookExW)
+    api.SetWindowsHookExW = install
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(_recorder, "_vk_to_sendkeys", lambda *args, **kwargs: "a")
+    with pytest.raises(RuntimeError, match="single-use"):
+        failed.start()
+    install.assert_not_called()
+    assert failed._hook_error is original_error
+    assert failed._hook_thread is original_thread
+    assert failed._proc_thread is None
+    assert failed._evt_queue.qsize() == 1
+    assert failed._stopped.is_set()
+
+    rec = Recorder(pid=100)
+    try:
+        rec.start()
+        hook = rec._hook_thread
+        processor = rec._proc_thread
+        with pytest.raises(RuntimeError, match="single-use"):
+            rec.start()  # Reject double start without disturbing an active recording.
+        assert rec._hook_thread is hook
+        assert rec._proc_thread is processor
+        assert not rec._stopped.is_set()
+        context = _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False)
+        rec._evt_queue.put(("key", 65, 30, False, False, False, False, 1.0, context))
+        rec.stop()
+        assert rec.wait(0)
+        assert rec._processed == 1
+        assert rec._evt_queue.empty()
+        assert [action.data for action in rec.actions()] == ["a"]
+        with pytest.raises(RuntimeError, match="single-use"):
+            rec.start()  # A completed recording remains available, but cannot restart.
+        assert [action.data for action in rec.actions()] == ["a"]
+        assert install.call_count == 2
+    finally:
+        quit_requested.set()
+        rec.stop()
+
+
 def test_start_timeout_stops_capture_without_starting_processor(monkeypatch):
     rec = Recorder(pid=100)
     hook_thread = Mock(spec=threading.Thread)

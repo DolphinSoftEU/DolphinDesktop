@@ -22,6 +22,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder instances now permit only one `start()` attempt, including failed
+  attempts. A retry requires a new Recorder, preventing stale queue sentinels,
+  buffered text or failures from affecting another session. Double start and
+  restart after completion are rejected without changing the original recording
+  (KAN-576 restart review).
+
 * Recorder completion now checks hook failures in the shared drain path.
   `stop()`, `wait()`, `actions()` and `generate_code()` consistently reject
   recordings affected by hook errors, after both threads finish, and preserve
