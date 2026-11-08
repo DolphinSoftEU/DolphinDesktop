@@ -43,6 +43,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* UIA wrapper searches verify uniqueness against the full TreeWalker tree,
+  including when FindAll returns a single partial match (KAN-745).
+
+* TreeWalker-only locator matches now report ambiguity unless `found_index` is
+  explicit, and reject incomplete uniqueness scans (KAN-745).
+
+* Locators under resolved wrappers now try ordered selector and image fallbacks
+  within the shared deadline, record self-healing on success, and report
+  ambiguous matches for both visible and presence searches (KAN-745).
+
 * JUnit XML now retains screenshot, trace and video paths through test teardown,
   including retained videos for passing tests. Retried attempts still suppress
   artifacts, and capture failures preserve the original test failure (KAN-748).
