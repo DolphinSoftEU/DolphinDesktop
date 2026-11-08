@@ -2357,7 +2357,11 @@ def test_select_popup_helper_string_index_and_timeout():
         (["target"], -2, False),
     ],
 )
-@pytest.mark.parametrize("timeout", [0, 0.01])
+# The positive timeout exercises the polling path. It must comfortably exceed one
+# scan: the locator refuses a match found after its deadline, and 0.01 s was
+# shorter than a single pass on a loaded CI runner with coverage (index -1, which
+# collects every match before resolving, then flaked as "not found").
+@pytest.mark.parametrize("timeout", [0, 0.5])
 def test_qt_object_name_presence_uses_the_same_matches_as_actions(
     automation_ids, index, expected, timeout
 ):

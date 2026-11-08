@@ -11,6 +11,34 @@ from ._office_session import _OfficeSession, _OfficeStartupError, _start_office
 
 _FOLDERS = {"inbox": 6, "drafts": 16, "sent": 5, "deleted": 3, "calendar": 9}
 
+# MAPI_E_NOT_FOUND (0x8004010F): Outlook's unambiguous "no such item". Any other
+# failure to resolve an item leaves its fate unknown.
+_MAPI_E_NOT_FOUND = -2147221233
+
+# Codes that mean a store/provider simply cannot round-trip GetItemFromID, which
+# is a known, acceptable reason to keep the handle we already have rather than a
+# sign that an operation went wrong: MAPI_E_NO_SUPPORT (0x80040102) and
+# E_NOTIMPL (0x80004001). Any other re-fetch failure is treated as uncertain.
+_MAPI_E_NO_SUPPORT = -2147221246
+_E_NOTIMPL = -2147467263
+_REFETCH_UNSUPPORTED = frozenset({_MAPI_E_NO_SUPPORT, _E_NOTIMPL})
+
+
+def _com_status_code(exc: BaseException) -> int | None:
+    """The MAPI/COM status code behind a pywintypes.com_error, or None.
+
+    IDispatch reports a provider error as DISP_E_EXCEPTION and puts the real
+    code in excepinfo[5]; use that when present, else the top-level HRESULT.
+    """
+    args = getattr(exc, "args", None)
+    if not args:
+        return None
+    if len(args) > 2 and isinstance(args[2], (tuple, list)) and len(args[2]) > 5:
+        scode = args[2][5]
+        if isinstance(scode, int):
+            return scode
+    return args[0] if isinstance(args[0], int) else None
+
 
 def _configured_profiles() -> list[str]:
     """Read profile names before COM activation can display first-run setup."""
@@ -136,7 +164,17 @@ class OutlookMail(OutlookItem):
         if moved is None:
             self._closed = True  # outcome unknown; never reuse a potentially stale proxy
             raise RuntimeError("Outlook Move returned no item; verify the destination folder")
-        self._com = moved
+        # The proxy Move() returns is only half alive on PST stores: Delete() on
+        # it silently does nothing. Re-fetch the item by its new EntryID so every
+        # later operation acts on a proxy Outlook fully honours. If that re-fetch
+        # is uncertain (_fresh_item raises), the item has physically moved but we
+        # hold no trustworthy handle: invalidate this wrapper so no later
+        # move()/delete() touches the stale pre-move proxy, and surface the error.
+        try:
+            self._com = owner._fresh_item(moved)
+        except Exception:
+            self._closed = True
+            raise
         return self
 
     def delete(self, *, permanent: bool = False) -> None:
@@ -155,8 +193,14 @@ class OutlookMail(OutlookItem):
         if permanent:
             if not in_deleted:
                 raise ValueError("Permanent deletion requires the draft to be in Deleted Items")
-            self._com.Delete()
+            entry_id, store_id = str(self._com.EntryID), str(parent.StoreID)
+            owner._refetch_or_same(self._com).Delete()
             self._closed = True
+            if owner._item_still_present(entry_id, store_id):
+                raise RuntimeError(
+                    "Outlook kept the draft in Deleted Items after Delete(); "
+                    "permanent deletion did not take effect"
+                )
         else:
             if in_deleted:
                 raise ValueError("Draft is already in Deleted Items; use explicit permanent=True")
@@ -208,9 +252,16 @@ class OutlookMail(OutlookItem):
         return OutlookAttachment(self._com.Attachments.Item(index), _owner=self._owner)
 
     def add_attachment(self, path: str | Path) -> OutlookAttachment:
-        """Attach a local file by value."""
+        """Attach a local file by value; FileNotFoundError when it does not exist.
+
+        Outlook itself ignores a missing path without raising, which would
+        leave the message silently without the attachment.
+        """
+        resolved = Path(path).resolve()
+        if not resolved.is_file():
+            raise FileNotFoundError(str(resolved))
         return OutlookAttachment(
-            self._com.Attachments.Add(str(Path(path).resolve()), 1),
+            self._com.Attachments.Add(str(resolved), 1),
             _owner=self._owner,
         )
 
@@ -350,6 +401,69 @@ class OutlookApp:
             self._namespace = namespace
         except Exception as exc:
             raise RuntimeError("Outlook MAPI profile unavailable or no accessible store") from exc
+
+    def _fresh_item(self, com: Any) -> Any:
+        """Re-fetch *com* by its (EntryID, StoreID) after a Move().
+
+        The proxy Move() returns on a PST store is only half alive: Delete() on
+        it silently does nothing, so later operations must act on a handle
+        Outlook fully honours. Re-fetching can be genuinely unsupported by a
+        store/provider (MAPI_E_NO_SUPPORT / E_NOTIMPL); only then is the original
+        handle the best available and kept as a deliberate fallback. Any other
+        failure -- access, session, store, a different COM code, or a non-COM
+        error -- leaves the outcome uncertain and must not be masked by handing
+        back a proxy that may silently drop a later Delete(): it raises
+        RuntimeError instead.
+        """
+        try:
+            entry_id, store_id = str(com.EntryID), str(com.Parent.StoreID)
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not read the moved Outlook item's identity to re-fetch it; "
+                f"its state is uncertain ({exc})"
+            ) from exc
+        try:
+            return self._namespace.GetItemFromID(entry_id, store_id)
+        except Exception as exc:
+            if _com_status_code(exc) in _REFETCH_UNSUPPORTED:
+                return com
+            raise RuntimeError(
+                f"Could not re-fetch the moved Outlook item; its state is uncertain ({exc})"
+            ) from exc
+
+    def _refetch_or_same(self, com: Any) -> Any:
+        """Best-effort re-fetch by (EntryID, StoreID); return *com* on any failure.
+
+        Used only where a later explicit check -- not this re-fetch -- is the
+        authority on the outcome: permanent delete re-fetches merely to act on a
+        fully-honoured proxy and then proves removal with _item_still_present, so
+        a re-fetch failure here is not itself a reason to fail (unlike move(),
+        whose result is kept and used later; see _fresh_item).
+        """
+        try:
+            return self._namespace.GetItemFromID(str(com.EntryID), str(com.Parent.StoreID))
+        except Exception:
+            return com
+
+    def _item_still_present(self, entry_id: str, store_id: str) -> bool:
+        """Whether the item is still retrievable; raise when the result is uncertain.
+
+        A permanent delete is confirmed gone only by an unambiguous
+        MAPI_E_NOT_FOUND from Outlook. Any other failure to resolve the item
+        (a store, session or permission error, a different COM code, or a
+        non-COM exception) leaves the outcome unknown and raises, so a
+        permanent delete is never reported as done on a guess.
+        """
+        try:
+            self._namespace.GetItemFromID(entry_id, store_id)
+            return True
+        except Exception as lookup_error:
+            if _com_status_code(lookup_error) == _MAPI_E_NOT_FOUND:
+                return False
+            raise RuntimeError(
+                "Could not verify permanent deletion: Outlook did not report the item "
+                f"as not-found, so the outcome is unknown ({lookup_error})"
+            ) from lookup_error
 
     def _lookup_item(self, com: Any) -> OutlookItem:
         # Only drafts created here may regain ownership after a folder lookup.

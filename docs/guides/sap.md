@@ -107,6 +107,24 @@ suite signs in through Scripting and does not validate this method.
 5. If required UIA IDs or Value patterns are unavailable, verify safe rejection
    and document that this client requires the Scripting login path.
 
+`tests/sap/test_keyboard_login_live.py` runs this procedure against the
+connection named in `DOLPHIN_SAP_CONNECTION`: it records the UIA inventory of
+the logon screen (ids only, no values), checks the safe rejection of step 5,
+and runs steps 2-4 only where the client exposes the fields. The checks read
+the screen through SAP GUI Scripting, so they do not depend on the UIA path
+they validate.
+
+Recorded result, SAP GUI for Windows 800 (8000.1.15, default options, no
+accessibility mode): UI Automation exposes a single Edit control on the logon
+screen, the command field with automation id `1001`. The User, Password,
+Client and Language fields are not UIA controls at all, so `keyboard_login()`
+raises `ApplicationError` before touching anything, leaves every field and the
+status bar unchanged and submits nothing. Enabling SAP GUI's accessibility
+mode (Options, Accessibility & Scripting, Accessibility) and restarting SAP
+Logon does not change what UI Automation exposes. On this client the Scripting
+login (`find_by_id("wnd[0]/usr/pwdRSYST-BCODE").set_text(...)`, as the bundled
+`tests/sap/conftest.py` does) is the supported path.
+
 ## Locators
 
 SAP component IDs are the preferred selector. They are the same IDs visible in

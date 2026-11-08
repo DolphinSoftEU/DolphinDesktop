@@ -6,6 +6,27 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ## [Unreleased]
 
+### Added
+
+* PowerPoint facade: text formatting (`bold`, `italic`, `underline`,
+  `font_name`, `font_size`, `font_color`) on shapes and on 1-based character
+  ranges via `PowerPointTextRange` / `characters()`, with `None` reported for
+  mixed formatting; `paragraphs`, `has_text` and shape geometry
+  (`left`/`top`/`width`/`height`); `PowerPointSlide.shapes`, `shape_names` and
+  `add_picture()` (embedded, never linked); `PowerPointPresentation.slides`,
+  `slide_size` and `move_slide()`. `PowerPointApp.open()` raises
+  `FileNotFoundError` before starting PowerPoint, and `slide()` / `shape()`
+  raise `LookupError` naming what exists. Tables (`add_table()`, `PowerPointTable`
+  with cell ranges, `values`, row/column add and delete), charts
+  (`add_chart()` writing literal series arrays, no Excel needed; `PowerPointChart`
+  with type, title, categories and series values), speaker `notes`, layout
+  `title`, text `hyperlink` (sets the click action to `ppActionHyperlink` so the
+  link works in a slide show; `""` removes it) and
+  `PowerPointPresentation.has_window`.
+  Live PowerPoint tests under
+  `tests/office/test_powerpoint_live.py` (marker `integration`) exercise the
+  whole facade against an installed PowerPoint and skip when it is absent.
+
 ### Breaking changes
 
 * Java Access Bridge now requires an explicitly configured absolute `JAVA_HOME`
@@ -21,6 +42,66 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   `allow_plaintext=True`. Port 992 does not select TLS automatically.
 
 ### Fixed
+
+* PR #57 re-review follow-ups on Outlook:
+  - `delete(permanent=True)` now confirms removal by COM status code: only an
+    unambiguous `MAPI_E_NOT_FOUND` from the re-fetch counts as deleted; any
+    other failure (store, session or permission error, or a different code)
+    raises `RuntimeError` as an unknown outcome instead of a false success.
+  - the live-test cleanup helper fails the test when it cannot purge a draft it
+    created (a passing test can no longer leave items behind), while preserving
+    an already-failing test's original error.
+
+* PR #57 review follow-ups on the Office facades:
+  - Outlook `delete(permanent=True)` no longer reads a failed verification
+    lookup as success. A `GetItemFromID` failure is treated as "gone" only when
+    a liveness probe on the same MAPI namespace still answers; otherwise it
+    raises, so a store/session/permission failure is reported as an unknown
+    outcome rather than a completed delete.
+  - `PowerPointTextRange.characters()` validates the range against the text
+    length before calling COM: `start` must be within the text, the run must
+    not reach past the end, and a length below 1 is rejected, each with a
+    `ValueError` instead of a bare COM error.
+  - `PowerPointSlide.add_chart(..., title=None)` now explicitly turns the chart
+    title off instead of leaving the layout's default, so an untitled chart has
+    no title after creation and after reopen.
+  - The live Outlook tests are opt-in via `DOLPHIN_OUTLOOK_UAT` and verify the
+    target store is a dedicated local PST before any create/move/delete, so a
+    personal or work mailbox is never touched; their cleanup now reports
+    failures instead of swallowing them.
+
+* Outlook `OutlookMail.delete(permanent=True)` now really removes the draft.
+  On PST stores Outlook silently ignores `Delete()` on the item proxy that
+  `Move()` returns, so after each move the facade re-fetches the item by EntryID
+  and after a permanent delete it verifies the item is gone, raising
+  `RuntimeError` when Outlook kept it. Found by the new live suite
+  `tests/office/test_outlook_live.py` (DESKTOP-241: drafts, folders, move and
+  delete effects, MSG round trip with attachments, appointments, `connect()` to
+  a running Outlook, exclusive process exit, controlled errors), which runs
+  against a disposable PST-only MAPI profile created by
+  `tests/fixtures/office/make_outlook_profile.py` and skips without one.
+
+* `tests/sap/test_keyboard_login_live.py` runs the documented SAP GUI 800
+  validation of `SapGui.keyboard_login()` (KAN-577) against a real logon
+  screen: UIA inventory of the login fields, safe rejection when the client
+  exposes none, and, where it does, literal typing of SendKeys metacharacters
+  plus abort on focus starting on Client/Language or moving mid-login.
+  Recorded on SAP GUI 800 (8000.1.15, with and without accessibility mode):
+  the logon fields are not UIA controls, `keyboard_login()` refuses without changing any field or
+  submitting, and the Scripting login remains the supported path (see
+  `docs/guides/sap.md`).
+
+* Office macro security tests (KAN-574) now ship pre-built benign macro
+  documents (`tests/fixtures/office/benign.xlsm`, `benign.docm`, each with one
+  macro that only rewrites a marker inside the document) instead of generating
+  them through the VBA project object model, which Office refuses unless the
+  operator trusts VBA project access. The negative test (default `open()` does
+  not run the macro) and its positive control therefore run with Office's
+  default security settings. `tests/fixtures/office/make_macro_fixtures.py`
+  documents how the files were produced. The Word OLE-link fixture inserts the
+  LINK field as an empty field with its full code, because asking Word for a
+  LINK field directly builds the OLE object inside `Fields.Add`, which can take
+  a minute or never return; the two link tests allow 300 s for OLE activation.
 
 * Calling Recorder `stop()` before the first start attempt is now a no-op and
   cannot leave a sentinel for the future worker. `actions()` and `generate_code()`

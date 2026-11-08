@@ -141,17 +141,24 @@ the headline **capabilities** it exposes (against the
 | Primary       | Office COM automation through public `ExcelApp`, `WordApp`, `PowerPointApp`, `OutlookApp` facades (not `Backend` registry entries) |
 | Alt           | `uia` for the ribbon / task-pane UI when COM cannot reach a dialog |
 | Modes         | Launch, Attach                                                     |
-| Capabilities  | Excel: workbook / worksheet / cell / range access, values and formulas, save. Word: document text, find and replace, save. PowerPoint: create/open presentations, slides, shape text, save, PDF. Outlook: create/read mail and appointments, recipients, attachments, folders, save MSG, explicit mail send. SCREENSHOT via UIA. |
+| Capabilities  | Excel: workbook / worksheet / cell / range access, values and formulas, save. Word: document text, find and replace, save. PowerPoint: create/open/connect, slides (add, reorder, delete, layout title, speaker notes), shapes with text formatting (bold/italic/underline, font, size, colour, character ranges, hyperlinks), geometry, embedded pictures, tables, charts, save, PDF export. Outlook: create/read mail and appointments, recipients, attachments, folders, save MSG, explicit mail send. SCREENSHOT via UIA. |
 | Limitations   | Domain API, separate from generic `Backend` capabilities. Shared PowerPoint/Outlook sessions are preserved. Opt-in `exclusive=True` requires no existing application process, owns the verified new process and quits/waits for it during cleanup. Outlook requires classic Outlook and an accessible MAPI profile/store; new Outlook has no supported COM facade. Draft move/delete requires item ownership. Dialogs and ribbon UI use UIA/Win32. |
 
 See the [Office guide](guides/office.md) and [COM API reference](reference/office.md).
 DESKTOP-232 / DESKTOP-233 can check these four exports against the public API.
-Real COM acceptance for DESKTOP-240 (PowerPoint) and DESKTOP-241 (Outlook)
-belongs in the separate `dolphin-desktop.ta` automation repository, using the
-public API on Windows with the corresponding applications installed.
-Its `tests/zt_16_office_com` suite verifies PDF page count/content, draft folder
-effects, shared-session preservation and exclusive process exit. Repeat UAT
-independently for Office 2019/Microsoft 365 and x86/x64.
+Real COM acceptance for DESKTOP-240 (PowerPoint) ships in this repository as
+`tests/office/test_powerpoint_live.py` (marker `integration`; skips when
+PowerPoint is not registered): create/open/connect, slide-shape-text round
+trips, formatting, tables, charts, save/reopen persistence, PDF page count and
+text via `pypdf`, shared-session preservation, exclusive process exit and
+controlled errors for missing files, slides and shapes. DESKTOP-241 (Outlook)
+ships as `tests/office/test_outlook_live.py`: draft create/read/modify/find,
+move between folders, soft and permanent delete with folder effects, MSG
+save/reopen with attachments, appointments, `connect()` to a running Outlook
+without quitting it, exclusive process exit and controlled errors. It needs
+classic Outlook plus a dedicated MAPI profile with one local PST store and no
+account (`tests/fixtures/office/make_outlook_profile.py`), and skips otherwise.
+Repeat UAT independently for Office 2019/Microsoft 365 and x86/x64.
 A missing COM server or Outlook profile is a skip, not a real COM PASS.
 Unit stand-ins in this library do not establish real-stack PASS.
 

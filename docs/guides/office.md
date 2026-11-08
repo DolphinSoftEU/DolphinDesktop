@@ -65,24 +65,59 @@ default blocking, explicit opt-in, link arguments, restoration after errors,
 rejected security settings, a simulated policy block and an XLM prompt.
 These checks verify the wrapper contract, not the Office macro engine.
 
-The real Office suite generates harmless marker-only macro documents and links
-to controlled local Excel/Word documents in pytest's temporary directory:
+#### Running the real Office suite
+
+The macro documents are **shipped, pre-built fixtures**:
+`tests/fixtures/office/benign.xlsm`, `benign.docm` and `benign.pptm`. Each
+carries one macro that only rewrites a marker inside the document itself. The
+suite copies them into pytest's temporary directory; it never creates or edits
+a VBA project. The external-link cases build harmless local Excel/Word
+documents in the same temporary directory.
 
 ```powershell
-uv run pytest tests/office -q -rs --junitxml artifacts/KAN-574-office-retest.xml
+uv run pytest tests/office/test_macro_security.py -q -rs --junitxml artifacts/KAN-574-office-retest.xml
 ```
 
-It requires registered Excel/Word COM servers. Creating macro fixtures also
-requires **existing** trusted access to the VBA project object model; when that
-is blocked, the macro cases report skips without changing security settings.
-Each macro case first opens a separate copy with `allow_macros=True` and requires
-the marker to change. Only then does it open a fresh copy with
-`allow_macros=False` and assert that the marker stays unchanged. If policy blocks
-the positive control, the entire case is skipped; the default open cannot be
-reported as a security pass. The local external-link cases do not require VBA
-project access. The Word case also explicitly updates the field afterwards to
-prove that the source is reachable and changed. A skip is not evidence that the
-corresponding security criterion passed.
+A normal run needs classic Office with registered Excel, Word and PowerPoint COM
+servers and Office's **default** security settings. It does **not** need "Trust
+access to the VBA project object model"; leave that setting off. The suite
+never changes Trust Center settings or organization policies.
+
+Each Excel/Word macro case first opens a separate copy with `allow_macros=True`
+and requires the marker to change (the positive control). Only then does it open
+a fresh copy with `allow_macros=False` and assert that the marker stays
+unchanged. The PowerPoint case opens the `.pptm` with defaults and asks for the
+macro by name; PowerPoint must refuse and the slide text must stay unchanged.
+The Word link case also updates the field explicitly afterwards to prove that
+the source is reachable and changed.
+
+A case is skipped, never passed, when:
+
+- `pywin32` is not installed, or Excel/Word cannot be started through COM;
+- a shipped fixture file is missing from `tests/fixtures/office/`;
+- Office policy blocks the positive control, so the macro does not run even
+  with `allow_macros=True` (the whole case is skipped: the default open cannot
+  be reported as a security pass);
+- a PowerPoint is already running (the PowerPoint case owns its process so the
+  macro-enabled file never outlives the test).
+
+A skip is not evidence that the corresponding security criterion passed.
+
+#### Regenerating the macro fixtures (optional, maintainers only)
+
+Only when the fixtures themselves must change, run the separate generator on a
+dedicated machine where VBA project access was enabled on purpose:
+
+```powershell
+uv run python tests/fixtures/office/make_macro_fixtures.py
+```
+
+Office refuses programmatic access to a VBA project unless "Trust access to the
+VBA project object model" is enabled; that is the only step that needs it, and
+the reason the files are shipped instead of built at test time. Turn the
+setting off again afterwards, review the regenerated macros and commit the
+files with the digests the script prints. Never enable it on a machine just to
+run the tests.
 
 The mandatory CI unit job runs the COM stand-in tests with `pytest -m unit`.
 It does not run this `system` / `integration` suite or verify the real Office
@@ -177,6 +212,63 @@ with PowerPointApp.open("report.pptx", visible=False) as ppt:
 ```
 
 Slide and shape indexes are 1-based; shapes can also be selected by name.
+
+Text formatting is exposed on shapes and on character ranges, so a test can
+assert how a slide looks, not only what it says:
+
+```python
+title = slide.add_textbox("Revenue up 12%", left=50, top=40, width=500, height=60)
+title.bold = True
+title.font_size = 32
+title.font_color = (200, 0, 0)
+title.characters(12, 3).italic = True  # "12%" only, 1-based positions
+
+assert title.bold is True
+assert title.italic is None            # mixed: part of the box is italic
+assert title.characters(12, 3).italic is True
+assert slide.shape_names == [title.name]
+
+logo = slide.add_picture("logo.png", left=600, top=40)
+assert not logo.has_text and logo.width > 0
+presentation.move_slide(presentation.slide_count, 1)  # bring the last slide first
+```
+
+Formatting reads return `None` when a range mixes values. Pictures are embedded,
+never linked, so the saved file does not depend on the source path.
+
+Tables, charts, speaker notes, layout titles and hyperlinks are covered too:
+
+```python
+slide = presentation.add_slide(layout=11)          # title-only layout
+slide.title = "Q3 by region"
+slide.notes = "Mention the EMEA restatement."
+
+table = slide.add_table(3, 2, values=[["Region", "Revenue"], ["EMEA", 120], ["APAC", 95]])
+assert table.table.values[1] == ["EMEA", "120"]
+table.table.cell(1, 1).bold = True
+
+chart = slide.add_chart(["Q1", "Q2", "Q3"], {"EMEA": [100, 110, 120]}, title="EMEA trend")
+assert chart.chart.series_values("EMEA") == [100.0, 110.0, 120.0]
+
+link = slide.add_textbox("Full report")
+link.hyperlink = "https://example.test/report"   # clickable in a slide show
+link.hyperlink = ""                              # removes the link again
+```
+
+Setting `hyperlink` writes the address and sets the mouse-click action to
+`ppActionHyperlink`, so the link works in a slide show, not only in the editor.
+An empty string turns the action off and deletes the hyperlink; a blank
+address such as `" "` raises `ValueError`.
+
+`add_chart()` writes each series as literal arrays on the chart, so the embedded
+Excel workbook is never opened and Excel does not need to be installed. PowerPoint
+only inserts charts into a presentation that has a document window, so build
+chart decks with `create(visible=True)` / `open(visible=True)`; on a hidden
+presentation `add_chart()` raises `RuntimeError` instead of a bare COM error.
+Reading an existing chart works on hidden presentations too. A visible shared
+PowerPoint stays open after `quit()`; pass `exclusive=True` when the test should
+also end the process. To check the exported PDF itself (page count, text), parse it with a
+PDF library in your test. The repository's own live tests do that with `pypdf`.
 `open()` disables VBA macros by default and restores the previous
 `AutomationSecurity` setting after opening, including on failure. As with the
 other Office wrappers, `allow_macros=True` is an explicit opt-in for trusted
@@ -245,6 +337,43 @@ Context exit and `quit()` discard unsaved changes to only the items created or
 opened here; saved drafts/appointments remain saved. Items retrieved from
 existing folders are not automatically closed. Shared Outlook sessions are
 preserved. Failed saves/closes raise and retain the affected items for retry.
+
+### A disposable profile for live tests
+
+`OutlookApp.start()` refuses to run without a configured MAPI profile, and a
+real mailbox is the wrong place for automated drafts. Create a profile that has
+one local Personal Folders file and no account; everything the facade does
+(drafts, folders, move/delete, MSG files, appointments) works offline and
+nothing can be sent:
+
+```text
+uv run python tests/fixtures/office/make_outlook_profile.py
+```
+
+Then start classic Outlook once by hand and finish its welcome wizard with
+"do not connect to an e-mail account" / "use Outlook without an email account".
+
+The live Outlook tests are destructive (they create, move and permanently
+delete items) and are therefore opt-in: set `DOLPHIN_OUTLOOK_UAT` to the test
+store's display name (`Dolphin UAT Store` for the profile the script makes) to
+enable them; unset, they skip. Even with it set, each test verifies before any
+mutation that the profile has no mail account and exactly one store, and that
+its Drafts, Deleted Items and Calendar folders all live in that store: a `.pst`
+file with exactly that display name on a local disk (no UNC, device or mapped
+network-drive path). Optionally set `DOLPHIN_OUTLOOK_UAT_PROFILE` to the
+profile name and `DOLPHIN_OUTLOOK_UAT_PST` to the PST file's path to pin those
+too. Any mismatch fails the test rather than touching anything else, so a
+personal or work mailbox is never modified. The tests clean up every item they
+create. Remove the profile in Control Panel, Mail, Show Profiles when it is no
+longer needed.
+
+Permanent deletion goes through a proxy re-fetched by EntryID: on PST stores
+Outlook silently ignores `Delete()` on the proxy that `Move()` returned, so the
+facade re-fetches after every move and verifies the outcome. The verification
+re-fetches the item: an unambiguous `MAPI_E_NOT_FOUND` confirms it is gone, and
+any other failure (a store, session or permission error) is treated as an
+unknown outcome and raised as `RuntimeError`, never reported as a successful
+delete.
 
 ## Exclusive Office sessions for UAT
 
