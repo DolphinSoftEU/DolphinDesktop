@@ -2641,7 +2641,7 @@ def test_wrapper_tree_filters_hidden_matches_before_indexing(virtualized_tree, i
     case.realized.extend([hidden, first, last])
     loc = locator_module.Locator(resolved(case.wrap(case.tree)), title="Save").timeout(0)
     assert loc.nth(index)._resolve().element_info is [first, last][index]
-    assert loc._resolve_presence().element_info is hidden
+    assert loc.nth(0)._resolve_presence().element_info is hidden
 
 
 @pytest.mark.parametrize("index", [0, 1])
@@ -2838,7 +2838,7 @@ def test_tree_walk_find_filters_walks_children_and_builds_wrapper():
     )
     with application:
         assert locator_module._tree_walk_find(
-            root, {"title": "Wanted", "control_type": "Button"}
+            root, {"title": "Wanted", "control_type": "Button", "found_index": 0}
         ) == (
             "wrapped",
             match,
@@ -2882,7 +2882,7 @@ def test_tree_walk_find_filters_walks_children_and_builds_wrapper():
         ),
     ):
         assert locator_module._tree_walk_find(
-            complex_root, {"title": "Wanted", "control_type": "Button"}
+            complex_root, {"title": "Wanted", "control_type": "Button", "found_index": 0}
         ) == ("nested", nested_match)
 
     deep = SimpleNamespace(name="", control_type="", children=lambda: [])
@@ -3093,3 +3093,84 @@ def test_raw_wrapper_missing_and_retry_until_fallback_appears(presence):
         loc = loc.timeout(1)
         assert (loc._resolve_presence() if presence else loc._resolve()) is element
         record.assert_called_once_with({"auto_id": "old"}, {"auto_id": "new"})
+
+
+@pytest.mark.parametrize("presence", [False, True])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_tree_only_raw_wrapper_ambiguity_stops_healing(virtualized_tree, presence, fallback):
+    case = virtualized_tree
+    case.realized.extend([case.item, case.item])
+    image = Mock()
+    loc = locator_module.Locator(
+        resolved(case.wrap(case.tree)),
+        auto_id="missing" if fallback else "item_450",
+        fallback=[{"auto_id": "item_450"}, {"auto_id": "unused"}],
+        image_fallback=image,
+    ).timeout(0)
+    with (
+        patch("dolphin_desktop._selfheal.record_fallback") as record,
+        pytest.raises(AmbiguousMatchError, match="found_index"),
+    ):
+        loc._resolve_presence() if presence else loc._resolve()
+    record.assert_not_called()
+    image.find_with_size.assert_not_called()
+
+
+@pytest.mark.parametrize("presence", [False, True])
+def test_tree_only_spec_ambiguity_is_a_dolphin_error(virtualized_tree, presence):
+    case = virtualized_tree
+    case.realized.extend([case.item, case.item])
+    spec = FakeSpec(wrapper=case.wrap(case.tree))
+    spec.child_window = Mock(side_effect=RuntimeError("FindAll omitted element"))
+    loc = locator_module.Locator(
+        SimpleNamespace(_get_spec=lambda: spec),
+        auto_id="item_450",
+    ).timeout(0)
+    with pytest.raises(AmbiguousMatchError, match="found_index"):
+        loc._resolve_presence() if presence else loc._resolve()
+
+
+@pytest.mark.parametrize("index", [0, 1, -1, -2])
+def test_tree_only_explicit_index_still_selects_a_match(virtualized_tree, index):
+    case = virtualized_tree
+    case.realized.extend([case.item, case.item])
+    loc = locator_module.Locator(resolved(case.wrap(case.tree)), auto_id="item_450").timeout(0)
+    assert loc.nth(index)._resolve().element_info is case.item
+
+
+@pytest.mark.parametrize("presence", [False, True])
+def test_tree_only_uniqueness_filters_visibility(virtualized_tree, presence):
+    case = virtualized_tree
+    hidden = FakeInfo(name="Item 450", automation_id="item_450", children=lambda: [])
+    hidden.visible = False
+    case.realized.extend([case.item, hidden])
+    loc = locator_module.Locator(resolved(case.wrap(case.tree)), auto_id="item_450").timeout(0)
+    if presence:
+        with pytest.raises(AmbiguousMatchError):
+            loc._resolve_presence()
+    else:
+        assert loc._resolve().element_info is case.item
+
+
+@pytest.mark.parametrize("interruption", ["deadline", "provider"])
+def test_tree_uniqueness_rejects_partial_scan(virtualized_tree, interruption):
+    case = virtualized_tree
+    clock = [0.0]
+
+    def interrupted_children():
+        if interruption == "provider":
+            raise RuntimeError("provider failed")
+        clock[0] = 2.0
+        return []
+
+    case.item.children = interrupted_children
+    case.realized.append(case.item)
+    with patch.object(locator_module.time, "monotonic", side_effect=lambda: clock[0]):
+        assert (
+            locator_module._tree_walk_find(
+                case.wrap(case.tree),
+                {"auto_id": "item_450"},
+                deadline=1,
+            )
+            is None
+        )

@@ -21,6 +21,7 @@ else:
 from ._config import get_poll_interval as _get_poll_interval
 from ._config import get_timeout as _get_timeout
 from ._exceptions import (
+    AmbiguousMatchError,
     DolphinError,
     ElementNotFoundError,
     UnsupportedPatternError,
@@ -753,11 +754,12 @@ class Locator:
                     enforce=enforce_deadline,
                 ):
                     return spec
+            except AmbiguousMatchError:
+                raise
             except _PwAmbiguousError as exc:
                 # More than one element matched. Falling through to fallbacks
                 # would misreport this as "not found" — the elements are there,
                 # the criteria are under-specified.
-                from ._exceptions import AmbiguousMatchError
 
                 raise AmbiguousMatchError(
                     f"{self._criteria!r} matched more than one element — "
@@ -794,9 +796,9 @@ class Locator:
                         enforce=enforce_deadline,
                     ):
                         return fb_spec
+                except AmbiguousMatchError:
+                    raise
                 except _PwAmbiguousError as exc:
-                    from ._exceptions import AmbiguousMatchError
-
                     raise AmbiguousMatchError(
                         f"{fb!r} matched more than one element — "
                         f"narrow the criteria or pick one with found_index=N"
@@ -1638,9 +1640,9 @@ class Locator:
                     enforce=enforce_deadline,
                 ):
                     return spec
+            except AmbiguousMatchError:
+                raise
             except _PwAmbiguousError as exc:
-                from ._exceptions import AmbiguousMatchError
-
                 raise AmbiguousMatchError(
                     f"{self._criteria!r} matched more than one element — "
                     "narrow the criteria or pick one with found_index=N"
@@ -1676,9 +1678,9 @@ class Locator:
                         enforce=enforce_deadline,
                     ):
                         return fb_spec
+                except AmbiguousMatchError:
+                    raise
                 except _PwAmbiguousError as exc:
-                    from ._exceptions import AmbiguousMatchError
-
                     raise AmbiguousMatchError(
                         f"{fb!r} matched more than one element — "
                         "narrow the criteria or pick one with found_index=N"
@@ -1753,7 +1755,6 @@ class Locator:
         raise :class:`AmbiguousMatchError` so the ambiguity cannot go
         unnoticed where it matters.
         """
-        from ._exceptions import AmbiguousMatchError
 
         try:
             self.timeout(timeout)._resolve_presence()
@@ -2760,6 +2761,8 @@ def _tree_walk_find(
     checked between nodes and provider calls; a single COM call can still block.
     ``max_depth=None`` enumerates the full realized tree for negative indices.
     An interrupted enumeration never yields a partial negative-index result.
+    Without found_index, scan for a unique match and raise AmbiguousMatchError
+    on a second match. Interrupted scans never yield an unverified unique match.
     Returns a pywinauto wrapper on success, or None.
     """
     # Only ``title``, ``control_type`` and ``auto_id`` can be evaluated against
@@ -2776,6 +2779,8 @@ def _tree_walk_find(
     # ``nth()`` merges found_index into the criteria; skipping that many
     # matches here keeps .nth(N) with the same fallbacks as the bare locator.
     found_index = int(criteria.get("found_index", 0) or 0)
+    require_unique = "found_index" not in criteria
+    unique_match: Any = None
     remaining = found_index
     negative_matches: list[Any] = []
 
@@ -2837,13 +2842,20 @@ def _tree_walk_find(
                             else bool(probe)
                         )
             except Exception:
-                if found_index < 0:
+                if found_index < 0 or require_unique:
                     return None
                 matches = False
             if expired():
                 return None
             if matches:
-                if found_index < 0:
+                if require_unique:
+                    if unique_match is not None:
+                        raise AmbiguousMatchError(
+                            f"{criteria!r} matched more than one element — "
+                            "narrow the criteria or pick one with found_index=N"
+                        )
+                    unique_match = wrapper
+                elif found_index < 0:
                     negative_matches.append(wrapper)
                 elif remaining > 0:
                     remaining -= 1
@@ -2853,14 +2865,16 @@ def _tree_walk_find(
                 try:
                     stack.append((children_of(child), depth + 1))
                 except Exception:
-                    if found_index < 0:
+                    if found_index < 0 or require_unique:
                         return None
         if found_index < 0 and not expired():
             return negative_matches[found_index]
+    except AmbiguousMatchError:
+        raise
     except Exception:
         return None
 
-    return None
+    return unique_match if not expired() else None
 
 
 class _ResolvedLocator(Locator):
