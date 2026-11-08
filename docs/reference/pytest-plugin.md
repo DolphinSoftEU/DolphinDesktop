@@ -37,10 +37,18 @@ def test_with_args(launch):
 
 ```python
 def test_backend_name(dolphin_backend):
-    assert dolphin_backend in {"uia", "win32"}
+    assert isinstance(dolphin_backend, str)
 ```
 
-Session-scoped value of `--dolphin-backend`.
+Session-scoped value of `--dolphin-backend`. Accepts registered backend IDs,
+including installed `dolphin_desktop.backends` entry points and backends registered
+with `register_backend()` while loading `conftest.py`, plus `auto`.
+Unknown IDs produce a pytest usage error listing registered backends; there is no
+fallback. Validation does not construct backends or check optional dependencies.
+The `desktop` fixture passes the selected ID to `Desktop`; backend capabilities
+and stack-specific launch requirements still apply. Native `Desktop.launch()`
+and `connect()` use pywinauto; external providers can be called through the public
+`resolve_backend(dolphin_backend)` API.
 
 ### `dolphin_timeout`
 
@@ -64,7 +72,7 @@ Session-scoped flag set by `--dolphin-headless` or `DOLPHIN_HEADLESS=1`.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--dolphin-backend {uia,win32}` | `uia` | pywinauto backend |
+| `--dolphin-backend ID` | `uia` | Registered backend ID (including installed plugins), or `auto` |
 | `--dolphin-timeout FLOAT` | `10.0` | Default element wait timeout in seconds |
 | `--dolphin-screenshot-on-fail` | off | Capture a full-screen PNG on test failure |
 | `--dolphin-headless` | off | Create `Desktop(hidden=True)` through the fixture |

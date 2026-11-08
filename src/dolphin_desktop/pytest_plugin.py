@@ -241,8 +241,18 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    from ._backend import _validate_backend_id
     from ._junit import _JUnitRedactor
     from ._terminal import _TerminalRedactor
+
+    # Initial CLI parsing happens before conftest.py can register backends.
+    # Validate here, after registration but before collecting or running tests.
+    backend_id = config.getoption("--dolphin-backend", default=None)
+    if backend_id is not None:
+        try:
+            _validate_backend_id(backend_id)
+        except ValueError as exc:
+            raise pytest.UsageError(f"--dolphin-backend: {exc}") from exc
 
     config.pluginmanager.register(
         _TerminalRedactor(_item_parameter_values), "dolphin_desktop.terminal"
@@ -277,8 +287,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--dolphin-backend",
         default="uia",
-        choices=["uia", "win32"],
-        help="pywinauto backend to use (default: uia)",
+        metavar="ID",
+        help="Registered backend ID (including installed plugins), or auto (default: uia)",
     )
     group.addoption(
         "--dolphin-timeout",
