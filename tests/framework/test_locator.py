@@ -3174,3 +3174,84 @@ def test_tree_uniqueness_rejects_partial_scan(virtualized_tree, interruption):
             )
             is None
         )
+
+
+@pytest.mark.parametrize("presence", [False, True])
+@pytest.mark.parametrize("findall_match", [False, True])
+def test_tree_uniqueness_checks_deep_duplicates(
+    virtualized_tree, monkeypatch, presence, findall_match
+):
+    case = virtualized_tree
+    # One match at depth 2, another at depth 10 relative to the wrapper.
+    shallow = FakeInfo(name="Pane", children=lambda: [case.item], visible=True)
+    deep = case.item
+    for _ in range(9):
+        deep = FakeInfo(name="Pane", children=lambda child=deep: [child], visible=True)
+    case.realized.extend([shallow, deep])
+    monkeypatch.setattr(
+        "pywinauto.findwindows.find_elements",
+        Mock(return_value=[case.item] if findall_match else []),
+    )
+    image = Mock()
+    loc = locator_module.Locator(
+        resolved(case.wrap(case.tree)),
+        auto_id="item_450",
+        image_fallback=image,
+    ).timeout(0)
+    with (
+        patch("dolphin_desktop._selfheal.record_fallback") as record,
+        pytest.raises(AmbiguousMatchError, match="found_index"),
+    ):
+        loc._resolve_presence() if presence else loc._resolve()
+    record.assert_not_called()
+    image.find_with_size.assert_not_called()
+
+
+@pytest.mark.parametrize("interruption", ["deadline", "provider"])
+def test_partial_findall_does_not_bypass_incomplete_tree_scan(
+    virtualized_tree, monkeypatch, interruption
+):
+    case = virtualized_tree
+    clock = [0.0]
+
+    def interrupted_children():
+        if interruption == "provider":
+            raise RuntimeError("provider failed")
+        clock[0] = 2.0
+        return []
+
+    case.item.children = interrupted_children
+    case.realized.append(case.item)
+    monkeypatch.setattr("pywinauto.findwindows.find_elements", Mock(return_value=[case.item]))
+    with (
+        patch.object(locator_module.time, "monotonic", side_effect=lambda: clock[0]),
+        pytest.raises(ElementNotFoundError),
+    ):
+        locator_module._find_under_wrapper(
+            case.wrap(case.tree),
+            {"auto_id": "item_450"},
+            0,
+            deadline=1,
+            enforce_deadline=True,
+        )
+
+
+def test_unique_tree_scan_ignores_depth_cap(virtualized_tree):
+    case = virtualized_tree
+    deep = case.item
+    for _ in range(10):
+        deep = FakeInfo(name="Pane", children=lambda child=deep: [child], visible=True)
+    case.realized.extend([case.item, deep])
+    with pytest.raises(AmbiguousMatchError):
+        locator_module._tree_walk_find(
+            case.wrap(case.tree),
+            {"auto_id": "item_450"},
+            max_depth=8,
+        )
+
+
+def test_partial_findall_unique_match_is_confirmed_by_tree(virtualized_tree, monkeypatch):
+    case = virtualized_tree
+    case.realized.append(case.item)
+    monkeypatch.setattr("pywinauto.findwindows.find_elements", Mock(return_value=[case.item]))
+    assert case.target._resolve().element_info is case.item

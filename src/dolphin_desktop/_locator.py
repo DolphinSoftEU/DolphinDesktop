@@ -2676,11 +2676,11 @@ def _find_under_wrapper(
         enforce_deadline = timeout > 0
     last_exc: Exception | None = None
     negative_index = int(criteria["found_index"]) if _is_negative_found_index(criteria) else None
-    # For supported UIA selectors, index the complete realized TreeWalker tree,
-    # not a potentially nonempty but incomplete FindAll result. Other backends
-    # and selectors retain pywinauto's enumeration semantics.
-    tree_index = (
-        negative_index is not None
+    # For supported UIA selectors, verify uniqueness and negative indices in
+    # the complete realized TreeWalker tree, even when FindAll finds a match.
+    # Other backends and selectors retain pywinauto's enumeration semantics.
+    tree_authoritative = (
+        (negative_index is not None or "found_index" not in criteria)
         and backend_name == "uia"
         and set(criteria) <= _TREE_WALK_KEYS
         and any(criteria.get(key) for key in ("title", "control_type", "auto_id"))
@@ -2705,7 +2705,7 @@ def _find_under_wrapper(
             )
             if len(found) > 1 and "found_index" not in criteria:
                 raise ElementAmbiguousError(f"{criteria!r} matched more than one element")
-            if negative_index is not None and not tree_index:
+            if negative_index is not None and not tree_authoritative:
                 resolved_index = len(found) + negative_index
                 if 0 <= resolved_index < len(found) and (
                     not enforce_deadline or time.monotonic() < deadline
@@ -2713,6 +2713,7 @@ def _find_under_wrapper(
                     return wrapper_cls(found[resolved_index])
             elif (
                 negative_index is None
+                and not tree_authoritative
                 and found
                 and (not enforce_deadline or time.monotonic() < deadline)
             ):
@@ -2729,7 +2730,7 @@ def _find_under_wrapper(
                 criteria,
                 visible_only=visible_only,
                 deadline=deadline if enforce_deadline else None,
-                max_depth=None if tree_index else 8,
+                max_depth=None if tree_authoritative else 8,
             )
             if tree_result is not None and not _deadline_expired(
                 deadline, timeout, enforce=enforce_deadline
@@ -2761,8 +2762,9 @@ def _tree_walk_find(
     checked between nodes and provider calls; a single COM call can still block.
     ``max_depth=None`` enumerates the full realized tree for negative indices.
     An interrupted enumeration never yields a partial negative-index result.
-    Without found_index, scan for a unique match and raise AmbiguousMatchError
-    on a second match. Interrupted scans never yield an unverified unique match.
+    Without found_index, scan the full tree regardless of max_depth and raise
+    AmbiguousMatchError on a second match. Interrupted scans never yield an
+    unverified unique match.
     Returns a pywinauto wrapper on success, or None.
     """
     # Only ``title``, ``control_type`` and ``auto_id`` can be evaluated against
@@ -2780,6 +2782,8 @@ def _tree_walk_find(
     # matches here keeps .nth(N) with the same fallbacks as the bare locator.
     found_index = int(criteria.get("found_index", 0) or 0)
     require_unique = "found_index" not in criteria
+    if require_unique:
+        max_depth = None  # A depth-limited scan cannot establish uniqueness.
     unique_match: Any = None
     remaining = found_index
     negative_matches: list[Any] = []

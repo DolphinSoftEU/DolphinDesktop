@@ -43,6 +43,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* UIA wrapper searches verify uniqueness against the full TreeWalker tree,
+  including when FindAll returns a single partial match (KAN-745).
+
 * TreeWalker-only locator matches now report ambiguity unless `found_index` is
   explicit, and reject incomplete uniqueness scans (KAN-745).
 
