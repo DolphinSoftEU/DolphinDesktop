@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import ctypes
 import os
-import subprocess
 import threading
-from types import SimpleNamespace
+from contextlib import nullcontext
 from unittest.mock import Mock
 
 import pytest
@@ -359,12 +358,91 @@ def test_launch_cmd_on_desktop_rejects_negative_timeout_before_spawning(monkeypa
 
 
 def test_run_hidden_executes_directly_when_already_on_hidden_desktop(monkeypatch) -> None:
-    run = Mock(return_value=SimpleNamespace(returncode=13))
+    launch = Mock(return_value=(123, 456))
+    create = Mock()
     monkeypatch.setattr(_runner, "get_current_desktop_name", lambda: _runner.DESKTOP_NAME)
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(_runner, "create_hidden_desktop", create)
+    monkeypatch.setattr(_runner, "launch_on_desktop", launch)
+    monkeypatch.setattr(_runner, "_console_interrupts", lambda: nullcontext(threading.Event()))
+    monkeypatch.setattr(_runner, "_owned_job", lambda: nullcontext(99))
+    monkeypatch.setattr(_runner, "_wait_for_command", lambda *args: 13)
+    monkeypatch.setattr(_runner, "close_process_handle", Mock())
 
     assert _runner.run_hidden(["pytest", "-q"]) == 13
-    run.assert_called_once_with(["pytest", "-q"])
+    launch.assert_called_once_with(
+        ["pytest", "-q"], _runner.DESKTOP_NAME, inherit_stdio=True, job_handle=99
+    )
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize("assign_ok,resume_result", [(True, 1), (False, 1), (True, 0xFFFFFFFF)])
+def test_runner_assigns_suspended_child_before_resuming_and_cleans_up_failures(
+    monkeypatch, assign_ok, resume_result
+) -> None:
+    kernel32 = _FakeLauncher()
+    assign = Mock(return_value=assign_ok)
+    resume = Mock(return_value=resume_result)
+    terminate = Mock(return_value=True)
+    wait = Mock(return_value=0)
+    kernel32.AssignProcessToJobObject = assign
+    kernel32.ResumeThread = resume
+    kernel32.TerminateProcess = terminate
+    kernel32.WaitForSingleObject = wait
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    if assign_ok and resume_result != 0xFFFFFFFF:
+        assert _runner.launch_on_desktop(["python"], job_handle=99) == (1234, 5678)
+        assert kernel32.closed_handles == [9012]
+        terminate.assert_not_called()
+    else:
+        with pytest.raises(OSError):
+            _runner.launch_on_desktop(["python"], job_handle=99)
+        terminate.assert_called_once_with(5678, 1)
+        wait.assert_called_once_with(5678, _runner._INFINITE)
+        assert kernel32.closed_handles == [5678, 9012]
+    assert kernel32.create_process_args[5] == _runner._CREATE_SUSPENDED
+    assign.assert_called_once_with(99, 5678)
+    if assign_ok:
+        resume.assert_called_once_with(9012)
+    else:
+        resume.assert_not_called()
+
+
+@pytest.mark.parametrize("configure_ok", [True, False])
+def test_owned_job_closes_its_handle_on_configuration_or_command_failure(
+    monkeypatch, configure_ok
+) -> None:
+    create = Mock(return_value=99)
+    configure = Mock(return_value=configure_ok)
+    close = Mock()
+    monkeypatch.setattr(_runner._kernel32, "CreateJobObjectW", create)
+    monkeypatch.setattr(_runner._kernel32, "SetInformationJobObject", configure)
+    monkeypatch.setattr(_runner._kernel32, "CloseHandle", close)
+    with pytest.raises((OSError, RuntimeError)):
+        with _runner._owned_job() as job:
+            assert job == 99
+            raise RuntimeError("command failed")
+    close.assert_called_once_with(99)
+
+
+def test_console_handler_consumes_only_interrupts_and_is_unregistered(monkeypatch) -> None:
+    handlers = []
+
+    def register(callback, enabled):
+        handlers.append((callback, enabled))
+        return True
+
+    monkeypatch.setattr(_runner._kernel32, "SetConsoleCtrlHandler", register)
+    with pytest.raises(RuntimeError), _runner._console_interrupts() as interrupted:
+        callback = handlers[0][0]
+        assert not callback(2)  # CTRL_CLOSE_EVENT retains its existing semantics
+        assert not interrupted.is_set()
+        assert callback(1)
+        assert interrupted.is_set()
+        interrupted.clear()
+        assert callback(0)
+        assert interrupted.is_set()
+        raise RuntimeError("command failed")
+    assert handlers == [(callback, True), (callback, False)]
 
 
 def test_run_hidden_restores_environment_and_closes_desktop_on_launch_failure(monkeypatch) -> None:
@@ -380,7 +458,8 @@ def test_run_hidden_restores_environment_and_closes_desktop_on_launch_failure(mo
     with pytest.raises(RuntimeError, match="child could not start"):
         _runner.run_hidden(["pytest"])
 
-    launch.assert_called_once_with(["pytest"], _runner.DESKTOP_NAME, inherit_stdio=True)
+    assert launch.call_args.args == (["pytest"], _runner.DESKTOP_NAME)
+    assert launch.call_args.kwargs["inherit_stdio"] is True
     assert os.environ["DOLPHIN_HEADLESS"] == "caller-value"
     close.assert_called_once_with(7070)
 

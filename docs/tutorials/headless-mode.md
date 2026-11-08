@@ -2,6 +2,14 @@
 
 Dolphin can run a command on a hidden Windows desktop with `dolphin-run`.
 
+The command inherits the launcher's console and process group, so Windows
+delivers Ctrl+C/Ctrl+Break to the command and its descendants. The launcher waits
+for application cleanup and returns the command's exit code. After an interrupt,
+an unresponsive command tree is terminated after ten seconds with exit code 130.
+Processes that detach from the console cannot receive its console events, but
+remain in the runner's Windows Job Object for cleanup. Remaining descendants are
+terminated when the command finishes, including processes behind venv redirectors.
+
 ```bash
 dolphin-run pytest tests/ -v
 ```

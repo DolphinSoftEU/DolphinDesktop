@@ -24,7 +24,10 @@ import ctypes.wintypes
 import math
 import os
 import sys
-from collections.abc import Mapping
+import threading
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import Any
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -105,6 +108,21 @@ _kernel32.WaitForSingleObject.restype = _wt.DWORD
 _kernel32.GetExitCodeProcess.argtypes = [_wt.HANDLE, ctypes.POINTER(_wt.DWORD)]
 _kernel32.GetExitCodeProcess.restype = _wt.BOOL
 
+_ConsoleHandler = ctypes.WINFUNCTYPE(_wt.BOOL, _wt.DWORD)
+_kernel32.SetConsoleCtrlHandler.argtypes = [_ConsoleHandler, _wt.BOOL]
+_kernel32.SetConsoleCtrlHandler.restype = _wt.BOOL
+
+_kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, _wt.LPCWSTR]
+_kernel32.CreateJobObjectW.restype = _wt.HANDLE
+_kernel32.SetInformationJobObject.argtypes = [_wt.HANDLE, ctypes.c_int, ctypes.c_void_p, _wt.DWORD]
+_kernel32.SetInformationJobObject.restype = _wt.BOOL
+_kernel32.AssignProcessToJobObject.argtypes = [_wt.HANDLE, _wt.HANDLE]
+_kernel32.AssignProcessToJobObject.restype = _wt.BOOL
+_kernel32.TerminateJobObject.argtypes = [_wt.HANDLE, _wt.UINT]
+_kernel32.TerminateJobObject.restype = _wt.BOOL
+_kernel32.ResumeThread.argtypes = [_wt.HANDLE]
+_kernel32.ResumeThread.restype = _wt.DWORD
+
 DESKTOP_NAME = "DolphinHidden"
 _DESKTOP_ACCESS = 0x10000000  # GENERIC_ALL
 
@@ -116,6 +134,78 @@ _STARTF_USESTDHANDLES = 0x00000100
 _CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _UOI_FLAGS = 1
 _WSF_VISIBLE = 0x0001
+_CREATE_SUSPENDED = 0x00000004
+_INTERRUPT_GRACE_SECONDS = 10.0
+
+
+class _JobBasicLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_longlong),
+        ("PerJobUserTimeLimit", ctypes.c_longlong),
+        ("LimitFlags", _wt.DWORD),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", _wt.DWORD),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", _wt.DWORD),
+        ("SchedulingClass", _wt.DWORD),
+    ]
+
+
+class _JobExtendedLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _JobBasicLimitInformation),
+        ("IoInfo", ctypes.c_ulonglong * 6),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+@contextmanager
+def _owned_job() -> Iterator[int]:
+    """Own the entire command tree, including venv redirectors and their children."""
+    job = _kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        limits = _JobExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not _kernel32.SetInformationJobObject(
+            job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        yield job
+    finally:
+        _kernel32.CloseHandle(job)
+
+
+@contextmanager
+def _console_interrupts() -> Iterator[threading.Event]:
+    """Let the command handle console interrupts while its launcher waits.
+
+    CreateProcess inherits our console and process group. Windows delivers each
+    event to the command tree itself; generating another event here would deliver
+    it twice. Use a native handler because SIGBREAK has a terminating default,
+    and Python signal handlers cannot run during an infinite native wait.
+    """
+    interrupted = threading.Event()
+
+    @_ConsoleHandler
+    def handler(event: int) -> bool:
+        if event in (0, 1):  # CTRL_C_EVENT, CTRL_BREAK_EVENT
+            interrupted.set()
+            return True
+        return False
+
+    if not _kernel32.SetConsoleCtrlHandler(handler, True):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        yield interrupted
+    finally:
+        # Keep the callback alive until Windows has removed it.
+        _kernel32.SetConsoleCtrlHandler(handler, False)
 
 
 class _StartupInfoW(ctypes.Structure):
@@ -266,6 +356,7 @@ def launch_on_desktop(
     desktop_name: str = DESKTOP_NAME,
     *,
     inherit_stdio: bool = True,
+    job_handle: int | None = None,
 ) -> tuple[int, int]:
     """Launch *args* as a new process on *desktop_name*, forwarding stdio.
 
@@ -274,6 +365,9 @@ def launch_on_desktop(
     Used by :func:`run_hidden` (the ``dolphin-run`` entry point) to re-launch
     pytest or any other command on the hidden desktop while keeping stdout and
     stderr connected to the calling terminal.
+
+    When *job_handle* is provided, assign the suspended child to that job before
+    resuming it, so even immediately spawned descendants belong to the job.
     """
     si = _StartupInfoW()
     si.cb = ctypes.sizeof(_StartupInfoW)
@@ -294,7 +388,7 @@ def launch_on_desktop(
         None,  # process security attrs
         None,  # thread security attrs
         True,  # bInheritHandles — stdio handles must be inheritable
-        0,
+        _CREATE_SUSPENDED if job_handle is not None else 0,
         None,  # lpEnvironment=NULL → inherit parent env (including DOLPHIN_HEADLESS)
         None,  # lpCurrentDirectory=NULL → inherit parent cwd
         ctypes.byref(si),
@@ -302,7 +396,23 @@ def launch_on_desktop(
     )
     if not ok:
         raise OSError(f"CreateProcessW({cmd_str!r}) failed: error {ctypes.get_last_error()}")
-    _kernel32.CloseHandle(pi.hThread)
+    try:
+        if job_handle is not None:
+            # Assign before any code runs: a venv redirector may immediately
+            # create another Python process, which must inherit job membership.
+            if not _kernel32.AssignProcessToJobObject(job_handle, pi.hProcess):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if _kernel32.ResumeThread(pi.hThread) == 0xFFFFFFFF:
+                raise ctypes.WinError(ctypes.get_last_error())
+    except BaseException:
+        try:
+            terminate_process_handle(pi.hProcess)
+            _kernel32.WaitForSingleObject(pi.hProcess, _INFINITE)
+        finally:
+            close_process_handle(pi.hProcess)
+        raise
+    finally:
+        _kernel32.CloseHandle(pi.hThread)
     return pi.dwProcessId, pi.hProcess
 
 
@@ -389,43 +499,58 @@ def run_hidden(args: list[str]) -> int:
     """Create a hidden desktop and run *args* on it.  Returns the exit code.
 
     If the calling process is already on ``DolphinHidden`` (a nested
-    ``dolphin-run`` call), *args* is executed directly without creating another
-    desktop.  ``DOLPHIN_HEADLESS=1`` is injected into the environment before
+    ``dolphin-run`` call), no additional desktop handle is opened.
+    ``DOLPHIN_HEADLESS=1`` is injected into the environment before
     launch so the dolphin library and pytest plugin activate headless behaviour
     without extra flags.
     """
-    if get_current_desktop_name() == DESKTOP_NAME:
-        import subprocess
-
-        return subprocess.run(args).returncode
-
-    h_desk = create_hidden_desktop()
+    h_desk = None
     previous_headless = os.environ.get("DOLPHIN_HEADLESS")
     os.environ["DOLPHIN_HEADLESS"] = "1"
     try:
-        _pid, h_process = launch_on_desktop(args, DESKTOP_NAME, inherit_stdio=True)
-        try:
-            # An unchecked wait is worse than no wait: on WAIT_FAILED the process is
-            # still running, GetExitCodeProcess reports STILL_ACTIVE (259), and
-            # dolphin-run exits 259 — a fabricated result for CI to act on.
-            waited = _kernel32.WaitForSingleObject(h_process, _INFINITE)
-            if waited != _WAIT_OBJECT_0:
-                raise OSError(
-                    f"WaitForSingleObject on the child process returned 0x{waited:08X}: "
-                    f"error {ctypes.get_last_error()}"
-                )
-            exit_code = ctypes.wintypes.DWORD()
-            if not _kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code)):
-                raise OSError(f"GetExitCodeProcess failed: error {ctypes.get_last_error()}")
-            return exit_code.value
-        finally:
-            _kernel32.CloseHandle(h_process)
+        with _console_interrupts() as interrupted, _owned_job() as job:
+            if get_current_desktop_name() != DESKTOP_NAME:
+                h_desk = create_hidden_desktop()
+            _pid, h_process = launch_on_desktop(
+                args, DESKTOP_NAME, inherit_stdio=True, job_handle=job
+            )
+            try:
+                return _wait_for_command(h_process, job, interrupted)
+            finally:
+                close_process_handle(h_process)
     finally:
         if previous_headless is None:
             os.environ.pop("DOLPHIN_HEADLESS", None)
         else:
             os.environ["DOLPHIN_HEADLESS"] = previous_headless
-        close_desktop(h_desk)
+        if h_desk is not None:
+            close_desktop(h_desk)
+
+
+def _wait_for_command(h_process: int, job: int, interrupted: threading.Event) -> int:
+    deadline = None
+    while True:
+        # An unchecked wait is worse than no wait: on WAIT_FAILED the process is
+        # still running, GetExitCodeProcess reports STILL_ACTIVE (259), and
+        # dolphin-run exits 259 — a fabricated result for CI to act on.
+        waited = _kernel32.WaitForSingleObject(h_process, 100)
+        if waited == _WAIT_TIMEOUT:
+            if interrupted.is_set():
+                if deadline is None:
+                    deadline = time.monotonic() + _INTERRUPT_GRACE_SECONDS
+                elif time.monotonic() >= deadline:
+                    if not _kernel32.TerminateJobObject(job, 130):
+                        raise ctypes.WinError(ctypes.get_last_error())
+            continue
+        if waited != _WAIT_OBJECT_0:
+            raise OSError(
+                f"WaitForSingleObject on the child process returned 0x{waited:08X}: "
+                f"error {ctypes.get_last_error()}"
+            )
+        exit_code = ctypes.wintypes.DWORD()
+        if not _kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code)):
+            raise OSError(f"GetExitCodeProcess failed: error {ctypes.get_last_error()}")
+        return exit_code.value
 
 
 def main() -> None:
