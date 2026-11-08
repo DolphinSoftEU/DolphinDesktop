@@ -1664,6 +1664,74 @@ class TestSessionConstructionAndLifecycle:
             session.switch_to_page(3)
         assert browser.contexts == [context]
 
+    def test_pages_dispatches_pending_events_before_reading(self):
+        """KAN-762: a window delivered by the event pump is listed at once."""
+        session, page, context, _browser, _playwright = _completeness_session()
+        popup = MagicMock(name="popup")
+        popup.is_closed.return_value = False
+        page.wait_for_timeout.side_effect = lambda _ms: context.pages.append(popup)
+
+        with patch("time.sleep", side_effect=AssertionError("blocks Playwright events")):
+            assert session.pages() == [page, popup]
+        page.wait_for_timeout.assert_called_once_with(0)
+        popup.wait_for_timeout.assert_not_called()
+        # Reading the list never retargets the session.
+        assert session._page is page
+        assert session._explicit_page is False
+
+    def test_pages_sees_a_window_that_needs_several_round_trips_to_attach(self):
+        """Polling with plain sleeps between calls, as DESKTOP-152 does."""
+        session, page, context, _browser, _playwright = _completeness_session()
+        popup = MagicMock(name="popup")
+        popup.is_closed.return_value = False
+        pumps = []
+
+        def attach_after_three(_ms):
+            pumps.append(_ms)
+            if len(pumps) == 3:
+                context.pages.append(popup)
+
+        page.wait_for_timeout.side_effect = attach_after_three
+        seen = [len(session.pages()) for _ in range(4)]
+        assert seen == [1, 1, 2, 2]
+
+    def test_pages_pumps_through_the_first_live_page_only(self):
+        session, page, context, _browser, _playwright = _completeness_session()
+        closed = MagicMock(name="closed")
+        closed.is_closed.return_value = True
+        broken = MagicMock(name="broken")
+        broken.is_closed.return_value = False
+        broken.wait_for_timeout.side_effect = RuntimeError("target closed")
+        other = MagicMock(name="other")
+        other.is_closed.return_value = False
+        context.pages = [closed, broken, page, other]
+
+        assert session.pages() == [broken, page, other]
+        closed.wait_for_timeout.assert_not_called()
+        broken.wait_for_timeout.assert_called_once_with(0)
+        page.wait_for_timeout.assert_called_once_with(0)
+        other.wait_for_timeout.assert_not_called()
+        context.wait_for_event.assert_not_called()
+
+    def test_pages_without_a_live_page_waits_briefly_for_a_page_event(self):
+        session, page, context, _browser, _playwright = _completeness_session()
+        page.is_closed.return_value = True
+        context.wait_for_event.side_effect = RuntimeError("Timeout 1ms exceeded")
+        assert session.pages() == []
+        context.wait_for_event.assert_called_once_with("page", timeout=1)
+        page.wait_for_timeout.assert_not_called()
+
+    def test_pages_ignores_pump_failures_and_returns_known_pages(self):
+        session, page, context, _browser, _playwright = _completeness_session()
+        page.wait_for_timeout.side_effect = RuntimeError("driver gone")
+        assert session.pages() == [page]
+        context.wait_for_event.assert_not_called()
+
+    def test_pages_with_no_contexts_returns_an_empty_list(self):
+        session, _page, _context, browser, _playwright = _completeness_session()
+        browser.contexts = []
+        assert session.pages() == []
+
     def test_session_shortcut_selectors_have_expected_handles_and_selectors(self):
         session, page, _context, _browser, _playwright = _completeness_session()
         methods = [

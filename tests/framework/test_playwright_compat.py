@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -477,3 +477,36 @@ def test_closing_the_launched_session_first_keeps_the_facade_connected(shared_dr
         assert browser.contexts[0].pages[0].url == "app://main.html"
         browser.close()
     shared_driver.drivers[0].stop.assert_called_once_with()
+
+
+# KAN-762: polling context.pages between plain sleeps must see a new window.
+
+
+def test_context_pages_sees_a_window_opened_between_polls() -> None:
+    page = MagicMock(name="page")
+    page.is_closed.return_value = False
+    page.url = "file:///page.html"
+    popup = MagicMock(name="popup")
+    popup.is_closed.return_value = False
+    popup.url = "file:///page_b.html"
+    context = MagicMock(name="context")
+    context.pages = [page]
+    browser = MagicMock(name="browser")
+    browser.contexts = [context]
+    session = CDPSession(MagicMock(), browser, context, page, endpoint="http://127.0.0.1:9222")
+    # The driver delivers the popup during the second round trip.
+    calls = []
+
+    def deliver(_ms):
+        calls.append(_ms)
+        if len(calls) == 2:
+            context.pages.append(popup)
+
+    page.wait_for_timeout.side_effect = deliver
+    compat_context = pwc._PlaywrightBrowser(session).contexts[0]
+
+    with patch("time.sleep"):
+        first = [p.url for p in compat_context.pages]
+        second = [p.url for p in compat_context.pages]
+    assert first == ["file:///page.html"]
+    assert "file:///page_b.html" in second

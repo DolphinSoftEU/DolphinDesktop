@@ -54,6 +54,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   thread other than the one that opened the session now raises `DolphinError`
   and leaves the session open. Before, it swallowed Playwright's
   `greenlet.error` and reported success while the driver kept running.
+* `CDPSession.pages()`, and with it `playwright_compat`'s `context.pages`,
+  now lists windows the application opened since the last call, even when
+  the caller polls it between plain `time.sleep` calls (KAN-762). Playwright's
+  sync API delivers protocol events only while one of its own calls runs, so
+  a popup from `window.open` (with or without `noopener`) never showed up in
+  such a loop. Each `pages()` call now first makes one zero-length round trip
+  to the Playwright driver, the same technique `_pick_stable_page` already
+  used. The current page is not changed.
 * PR #57 re-review follow-ups on Outlook:
   - `delete(permanent=True)` now confirms removal by COM status code: only an
     unambiguous `MAPI_E_NOT_FOUND` from the re-fetch counts as deleted; any
