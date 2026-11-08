@@ -185,9 +185,12 @@ def _owned_job() -> Iterator[int]:
 def _console_interrupts() -> Iterator[threading.Event]:
     """Let the command handle console interrupts while its launcher waits.
 
-    CreateProcess inherits our console and process group. Windows delivers each
-    event to the command tree itself; generating another event here would deliver
-    it twice. Use a native handler because SIGBREAK has a terminating default,
+    CreateProcess inherits our console, process group and Ctrl+C ignore setting.
+    Windows delivers enabled events to the command tree itself; generating another
+    event here would deliver it twice. CREATE_NEW_PROCESS_GROUP disables Ctrl+C;
+    callers must use Ctrl+Break for that case. Installing this handler does not
+    change the inherited ignore setting.
+    Use a native handler because SIGBREAK has a terminating default,
     and Python signal handlers cannot run during an infinite native wait.
     """
     interrupted = threading.Event()

@@ -22,8 +22,9 @@ def child(folder: Path, mode: str) -> None:
 
     signal.signal(signal.SIGBREAK, interrupt)
     signal.signal(signal.SIGINT, interrupt)
-    if mode == "ignore":
-        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+    if mode in ("ignore", "exit-with-grandchild"):
+        if mode == "ignore":
+            signal.signal(signal.SIGBREAK, signal.SIG_IGN)
         grandchild = subprocess.Popen(
             [
                 sys.executable,
@@ -40,6 +41,7 @@ def child(folder: Path, mode: str) -> None:
             if time.monotonic() >= deadline:
                 raise RuntimeError("grandchild did not become ready")
             time.sleep(0.05)
+        assert grandchild.poll() is None
 
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -70,13 +72,17 @@ def child(folder: Path, mode: str) -> None:
     if mode.startswith("exit"):
         os.write(1, b"O" * (128 * 1024))
         os.write(2, b"E" * (128 * 1024))
-        sys.exit(int(mode[4:]))
+        sys.exit(0 if mode == "exit-with-grandchild" else int(mode[4:]))
     while True:
         time.sleep(0.05)
 
 
 def harness(folder: Path, launcher: str, mode: str) -> None:
     """Run in a private console so group signals cannot affect the test runner."""
+    # Ctrl+C must be broadcast to this private console (group ID zero).
+    # A handler keeps the harness alive without setting the inheritable ignore
+    # flag that SIG_IGN would pass to the command under test.
+    signal.signal(signal.SIGINT, lambda signum, frame: None)
     entry = str(Path(sys.executable).with_name("dolphin-run.exe"))
     command = (
         [entry]
@@ -88,7 +94,9 @@ def harness(folder: Path, launcher: str, mode: str) -> None:
     command += [sys.executable, __file__, "--child", str(folder), mode]
     with subprocess.Popen(
         command,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        # CREATE_NEW_PROCESS_GROUP disables Ctrl+C for the new group. Test its
+        # enabled case using ordinary console inheritance instead.
+        creationflags=0 if mode == "interrupt-c" else subprocess.CREATE_NEW_PROCESS_GROUP,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as process:
@@ -99,7 +107,14 @@ def harness(folder: Path, launcher: str, mode: str) -> None:
                     if process.poll() is not None or time.monotonic() >= deadline:
                         raise RuntimeError("child did not become ready")
                     time.sleep(0.05)
-                process.send_signal(signal.CTRL_BREAK_EVENT)
+                if mode == "interrupt-c":
+                    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                    kernel32.GenerateConsoleCtrlEvent.argtypes = [wt.DWORD, wt.DWORD]
+                    kernel32.GenerateConsoleCtrlEvent.restype = wt.BOOL
+                    if not kernel32.GenerateConsoleCtrlEvent(signal.CTRL_C_EVENT, 0):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                else:
+                    process.send_signal(signal.CTRL_BREAK_EVENT)
             stdout, stderr = process.communicate(timeout=20)
             (folder / "stdout.bin").write_bytes(stdout)
             (folder / "stderr.bin").write_bytes(stderr)

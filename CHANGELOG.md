@@ -43,8 +43,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
-* `dolphin-run` survives Ctrl+Break/Ctrl+C while the command handles the console
-  event and preserves its exit code. Commands have ten seconds to finish after
+* `dolphin-run` survives Ctrl+Break (and Ctrl+C when console Ctrl+C processing is
+  enabled) while the command handles the console event and preserves its exit
+  code. The inherited Ctrl+C ignore setting is preserved; use Ctrl+Break for
+  `CREATE_NEW_PROCESS_GROUP` launchers. Commands have ten seconds to finish after
   interruption; a Windows Job Object then terminates an unresponsive command
   tree with code 130. Venv redirectors and nested runners are covered, and owned
   processes are cleaned up before the hidden desktop handle is closed (KAN-753).

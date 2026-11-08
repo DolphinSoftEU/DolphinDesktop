@@ -2,9 +2,15 @@
 
 Dolphin can run a command on a hidden Windows desktop with `dolphin-run`.
 
-The command inherits the launcher's console and process group, so Windows
-delivers Ctrl+C/Ctrl+Break to the command and its descendants. The launcher waits
-for application cleanup and returns the command's exit code. After an interrupt,
+The command inherits the launcher's console and process group. Windows delivers
+Ctrl+Break to the command and its descendants, and Ctrl+C when Ctrl+C processing
+is enabled. `dolphin-run` preserves the inherited Ctrl+C ignore setting;
+`CREATE_NEW_PROCESS_GROUP` disables Ctrl+C for the new group. Use Ctrl+Break for
+such groups. Programmatic Ctrl+C must target the whole shared console with
+`GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)`; it cannot target a process group.
+See Microsoft's [console event documentation](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent).
+The launcher waits for application cleanup and returns the command's exit code.
+After an interrupt,
 an unresponsive command tree is terminated after ten seconds with exit code 130.
 Processes that detach from the console cannot receive its console events, but
 remain in the runner's Windows Job Object for cleanup. Remaining descendants are

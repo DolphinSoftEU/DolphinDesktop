@@ -19,7 +19,9 @@ pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(55)]
 
 
 @pytest.mark.parametrize("launcher", ["exe", "python", "nested"])
-@pytest.mark.parametrize("mode", ["exit0", "exit7", "interrupt", "ignore"])
+@pytest.mark.parametrize(
+    "mode", ["exit0", "exit7", "exit-with-grandchild", "interrupt", "interrupt-c", "ignore"]
+)
 def test_runner_preserves_result_and_controls_its_tree(tmp_path, launcher, mode):
     probe = Path(__file__).parents[1] / "_runner_console_probe.py"
     startup = subprocess.STARTUPINFO()
@@ -38,15 +40,17 @@ def test_runner_preserves_result_and_controls_its_tree(tmp_path, launcher, mode)
     assert ready["desktop"] == "DolphinHidden"
     assert ready["headless"] == "1"
     if mode.startswith("exit"):
-        assert report["returncode"] == int(mode[4:])
+        assert report["returncode"] == (0 if mode == "exit-with-grandchild" else int(mode[4:]))
         assert (tmp_path / "stdout.bin").read_bytes() == b"O" * (128 * 1024)
         assert (tmp_path / "stderr.bin").read_bytes() == b"E" * (128 * 1024)
-    elif mode == "interrupt":
+    elif mode in ("interrupt", "interrupt-c"):
         assert report["returncode"] == 23
-        assert json.loads((tmp_path / "interrupt.json").read_text()) == {"signal": signal.SIGBREAK}
+        expected_signal = signal.SIGINT if mode == "interrupt-c" else signal.SIGBREAK
+        assert json.loads((tmp_path / "interrupt.json").read_text()) == {"signal": expected_signal}
     else:
         assert report["returncode"] == 130
         assert not (tmp_path / "interrupt.json").exists()
+    if mode in ("ignore", "exit-with-grandchild"):
         grandchild = json.loads((tmp_path / "grandchild.json").read_text())
         _assert_exited(grandchild["pid"])
     _assert_exited(ready["pid"])
