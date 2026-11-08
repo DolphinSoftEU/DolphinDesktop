@@ -16,18 +16,28 @@ from __future__ import annotations
 import time
 
 import pytest
+import win32con
+import win32gui
 from tests.component._win32_controls_window import (
     COMBO_ITEMS,
+    ID_BUTTON_TABS,
+    ID_EDIT,
+    ID_EMPTY_EDIT,
+    ID_EMPTY_LABEL,
     ID_STATUS,
+    ID_TABS,
     LIST_ITEMS,
     STATUS_READY,
     WINDOW_TITLE,
+    WM_OPEN_FILE_MENU,
 )
 
+import dolphin_desktop._locator as locator_module
 from dolphin_desktop import (
     Desktop,
     ElementNotFoundError,
     UnsupportedCapabilityError,
+    WaitTimeoutError,
     dirname,
     path_join,
     python_executable,
@@ -65,7 +75,7 @@ def _wait_status(window, expected: str, timeout: float = 5.0) -> None:
 def test_edit_combo_and_tree_are_found_and_driven_on_win32(window) -> None:
     assert _status(window) == STATUS_READY
 
-    edit = window.edit()
+    edit = window.edit(control_id=ID_EDIT)
     edit.wait_for(state="visible", timeout=5)
     assert edit.get_attribute("class_name") == "Edit"
     edit.set_text("Dolphin")
@@ -128,7 +138,7 @@ def test_list_box_items_and_selection_on_win32(window) -> None:
 
 
 def test_tab_is_selected_by_exact_text_on_win32(window) -> None:
-    tabs = window.tab()
+    tabs = window.tab(control_id=ID_TABS)
     tabs.wait_for(state="visible", timeout=5)
     # "&Advanced": the mnemonic does not have to be spelled out.
     tabs.select_tab("Advanced")
@@ -144,4 +154,54 @@ def test_text_reads_a_win32_label_without_a_pattern_timeout(window) -> None:
     status.wait_for(timeout=5)
     started = time.monotonic()
     assert status.text() == STATUS_READY
+    assert time.monotonic() - started < 2
+
+
+def test_tab_with_the_buttons_style_really_changes_selection(window) -> None:
+    # TCM_SETCURFOCUS alone only moves the focus on a TCS_BUTTONS control.
+    tabs = window.tab(control_id=ID_BUTTON_TABS)
+    tabs.select_tab("Two")
+    _wait_status(window, "button-tab=Two")
+    tabs.select_tab("One")
+    _wait_status(window, "button-tab=One")
+
+
+def test_native_menu_item_is_visible_only_while_its_popup_is_open(window) -> None:
+    file_menu = window.menu("File")
+    mark = file_menu.item("Mark")
+    assert file_menu.is_visible()
+    assert not mark.is_visible()
+    assert mark.exists()
+    assert mark.wait_until_hidden(timeout=0) is mark
+    with pytest.raises(WaitTimeoutError, match="not on screen"):
+        mark.wait_for(state="visible", timeout=0)
+
+    hwnd = window._get_spec().wrapper_object().handle
+    win32gui.PostMessage(hwnd, WM_OPEN_FILE_MENU, 0, 0)
+    mark.wait_for(state="visible", timeout=10)
+    assert mark.is_visible()
+    win32gui.PostMessage(hwnd, win32con.WM_CANCELMODE, 0, 0)
+    mark.wait_until_hidden(timeout=10)
+    assert not mark.is_visible()
+
+
+def test_menu_caption_with_a_literal_ampersand(window) -> None:
+    file_menu = window.menu("File")
+    assert not file_menu.item("RD report").exists(timeout=0)
+    file_menu.item("R&D report").invoke()
+    _wait_status(window, "menu=rnd")
+
+
+@pytest.mark.parametrize("control_id", [ID_EMPTY_LABEL, ID_EMPTY_EDIT], ids=["static", "edit"])
+def test_empty_plain_control_reads_empty_without_the_clipboard(
+    window, monkeypatch, control_id
+) -> None:
+    def must_not_run(_element):
+        raise AssertionError("text() took focus and wiped the clipboard for an empty control")
+
+    monkeypatch.setattr(locator_module, "_read_text_via_clipboard", must_not_run)
+    control = window.locator(control_id=control_id)
+    control.wait_for(state="exists", timeout=5)
+    started = time.monotonic()
+    assert control.text() == ""
     assert time.monotonic() - started < 2

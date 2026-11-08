@@ -89,7 +89,10 @@ their `BS_*` style. The win32 friendly names themselves (`Static`,
   text, ignoring `&` mnemonics and `\t` shortcuts. `click()` clicks the item
   with the mouse; `invoke()` sends its `WM_COMMAND` without any input. A
   WinForms `MenuStrip`/`ToolStrip` is a control, not an `HMENU`; locate it
-  with the `uia` backend instead.
+  with the `uia` backend instead. `&&` in a caption is a literal ampersand, so
+  `R&&D` is named `R&D`. `exists()` and `is_enabled()` read the menu whether
+  or not it is open. `is_visible()`, `wait_for()` and `wait_until_hidden()`
+  mean on screen, and unlike on `uia` they never open the parent menu.
 - A UIA type with no Win32 window class of its own (`MenuItem` outside a
   menu chain, `TreeItem`, `ListItem`, `Hyperlink`, `Pane`, `Window`, …)
   raises `UnsupportedCapabilityError` at once, from `wait_for()` and
@@ -99,7 +102,12 @@ their `BS_*` style. The win32 friendly names themselves (`Static`,
   `SysListView32` (first column of each row) through their own messages, and
   `select_item()` selects an entry.
 - `tab().select_tab(name)` selects a `SysTabControl32` tab by exact text,
-  ignoring an `&` mnemonic, and the application switches pages as on a click.
+  ignoring an `&` mnemonic, including with the `TCS_BUTTONS` style, and the
+  application switches pages as on a click. If the selection does not change,
+  for example because the application refuses it, it raises `WaitTimeoutError`.
+- `text()` on an empty plain edit box or label returns `""` straight away. Only
+  a RichEdit or other control whose text the window text does not carry falls
+  back to select-all and the clipboard.
 
 ## Inspect The UI Tree
 

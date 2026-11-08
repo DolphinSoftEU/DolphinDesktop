@@ -31,13 +31,21 @@ ID_REMEMBER = 2005
 ID_STATUS = 2006
 ID_LIST = 2007
 ID_TABS = 2008
+ID_BUTTON_TABS = 2009
+ID_EMPTY_LABEL = 2010
+ID_EMPTY_EDIT = 2011
 ID_MENU_MARK = 2101
 ID_MENU_DISABLED = 2102
+ID_MENU_LITERAL_AMPERSAND = 2103
+
+# Posted by a test: the AUT opens its File menu itself, so no mouse input is needed.
+WM_OPEN_FILE_MENU = win32con.WM_APP + 1
 
 STATUS_READY = "ready"
 COMBO_ITEMS = ("Standard", "Premium")
 LIST_ITEMS = ("Alpha", "Beta", "Gamma")
 TAB_TEXTS = ("General", "&Advanced")
+BUTTON_TAB_TEXTS = ("One", "Two")
 
 _TVM_INSERTITEMW = 0x1132
 _TVM_GETNEXTITEM = 0x110A
@@ -57,6 +65,7 @@ _TCM_GETCURSEL = 0x130B
 _TCM_GETITEMW = 0x133C
 _TCM_INSERTITEMW = 0x133E
 _TCIF_TEXT = 0x0001
+_TCS_BUTTONS = 0x0100
 _TCN_SELCHANGE = -551 & 0xFFFFFFFF
 
 
@@ -108,6 +117,7 @@ _send_message_w.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, ctype
 _send_message_w.restype = ctypes.c_ssize_t
 
 _controls: dict[int, int] = {}
+_file_menu = 0
 
 
 def _create_control(parent: int, class_name: str, text: str, style: int, rect, ctrl_id: int) -> int:
@@ -203,6 +213,8 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             _set_status(f"list={_selected_list_text(_controls[ID_LIST])}")
         elif ctrl_id == ID_MENU_MARK:
             _set_status("menu=mark")
+        elif ctrl_id == ID_MENU_LITERAL_AMPERSAND:
+            _set_status("menu=rnd")
         return 0
     if msg == win32con.WM_NOTIFY:
         header = _NMHDR.from_address(lparam)
@@ -210,6 +222,11 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             _set_status(f"tree={_selected_tree_text(_controls[ID_TREE])}")
         elif header.idFrom == ID_TABS and header.code == _TCN_SELCHANGE:
             _set_status(f"tab={_selected_tab_text(_controls[ID_TABS])}")
+        elif header.idFrom == ID_BUTTON_TABS and header.code == _TCN_SELCHANGE:
+            _set_status(f"button-tab={_selected_tab_text(_controls[ID_BUTTON_TABS])}")
+        return 0
+    if msg == WM_OPEN_FILE_MENU:
+        win32gui.TrackPopupMenu(_file_menu, win32con.TPM_LEFTALIGN, 200, 200, 0, hwnd, None)
         return 0
     if msg == win32con.WM_DESTROY:
         win32gui.PostQuitMessage(0)
@@ -218,8 +235,11 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
 
 
 def _build_menu(hwnd: int) -> None:
-    file_menu = win32gui.CreatePopupMenu()
+    global _file_menu
+    file_menu = _file_menu = win32gui.CreatePopupMenu()
     win32gui.AppendMenu(file_menu, win32con.MF_STRING, ID_MENU_MARK, "&Mark\tCtrl+M")
+    # "&&" is a literal ampersand in a menu caption, not a mnemonic marker.
+    win32gui.AppendMenu(file_menu, win32con.MF_STRING, ID_MENU_LITERAL_AMPERSAND, "R&&D report")
     win32gui.AppendMenu(file_menu, win32con.MF_SEPARATOR, 0, "")
     win32gui.AppendMenu(
         file_menu, win32con.MF_STRING | win32con.MF_GRAYED, ID_MENU_DISABLED, "Disabled item"
@@ -290,6 +310,13 @@ def main(ready_file: Path | None = None) -> None:
     tabs = _create_control(hwnd, "SysTabControl32", "", 0, (20, 240, 300, 60), ID_TABS)
     for index, text in enumerate(TAB_TEXTS):
         _insert_tab(tabs, index, text)
+    button_tabs = _create_control(
+        hwnd, "SysTabControl32", "", _TCS_BUTTONS, (340, 240, 190, 40), ID_BUTTON_TABS
+    )
+    for index, text in enumerate(BUTTON_TAB_TEXTS):
+        _insert_tab(button_tabs, index, text)
+    _create_control(hwnd, "STATIC", "", 0, (440, 100, 80, 24), ID_EMPTY_LABEL)
+    _create_control(hwnd, "EDIT", "", win32con.WS_BORDER, (440, 60, 90, 24), ID_EMPTY_EDIT)
     _create_control(hwnd, "STATIC", STATUS_READY, 0, (20, 320, 400, 24), ID_STATUS)
     win32gui.ShowWindow(hwnd, win32con.SW_SHOWNORMAL)
     win32gui.UpdateWindow(hwnd)

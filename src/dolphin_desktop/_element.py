@@ -21,10 +21,11 @@ instantiating these classes directly.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
-from ._exceptions import ElementNotFoundError, UnsupportedPatternError
+from ._exceptions import ElementNotFoundError, UnsupportedPatternError, WaitTimeoutError
 from ._locator import Locator, _require_check_state, _wrapper_of
 from ._win32_criteria import backend_name
 
@@ -138,8 +139,17 @@ class RadioButton(Element):
 
 
 def _menu_text_key(text: str) -> str:
-    """Menu text without its ``&`` mnemonic and ``\\t``-separated shortcut."""
-    return str(text).split("\t", 1)[0].replace("&", "").strip()
+    """Caption as displayed: no ``\\t``-separated shortcut, no mnemonic marker.
+
+    In a Win32 caption ``&x`` marks ``x`` as the mnemonic and ``&&`` is a
+    literal ampersand, so ``R&&D`` displays as ``R&D``.
+    """
+    return re.sub(r"&(.)", r"\1", str(text).split("\t", 1)[0]).strip()
+
+
+def _caption_matches(caption: str, wanted: str) -> bool:
+    """Whether *wanted* names a caption, as displayed or as raw caption text."""
+    return wanted in (_menu_text_key(caption), str(caption).split("\t", 1)[0].strip())
 
 
 class _Win32MenuEntry:
@@ -167,9 +177,15 @@ class _Win32MenuEntry:
         return bool(self._item.is_enabled())
 
     def is_visible(self) -> bool:
-        # A native menu item exists for as long as its menu does, whether or
-        # not the popup is open; that is what visibility means for it here.
-        return True
+        """Whether the item is on screen, as opposed to merely in the ``HMENU``.
+
+        ``GetMenuItemRect`` answers an empty rectangle for an item whose popup
+        is closed. A menu-bar item has a rectangle for as long as the owner has
+        its menu bar, so the owner window has to be visible as well.
+        """
+        rect = self._item.rectangle()
+        on_screen = rect.right > rect.left and rect.bottom > rect.top
+        return on_screen and bool(self._item.ctrl.is_visible())
 
     def window_text(self) -> str:
         return _menu_text_key(self._item.text())
@@ -222,12 +238,34 @@ def _find_native_menu_item(spec: Any, titles: list[str]) -> Any:
         if menu is None:
             raise LookupError(f"{titles[depth - 1]!r} has no submenu")
         items = menu.items()
-        item = next((i for i in items if _menu_text_key(i.text()) == title), None)
+        item = next((i for i in items if _caption_matches(i.text(), title)), None)
         if item is None:
             available = [_menu_text_key(i.text()) for i in items if i.text()]
             raise LookupError(f"no item {title!r} at this level (available: {available})")
         menu = item.sub_menu() if depth < len(titles) - 1 else None
     return item
+
+
+def _wait_native_menu_visible(
+    locator: Locator, root: tuple[Any, list[str]], timeout: float
+) -> None:
+    """Wait for a native menu item to be on screen, without opening its menu.
+
+    Resolving proves only that the item is in the ``HMENU``, and raises
+    :class:`ElementNotFoundError` when it is not. Unlike a UIA menu item, whose
+    resolution clicks the parent menu open, a native one stays closed: waiting
+    must not drive input into the application.
+    """
+    deadline = time.monotonic() + timeout
+    entry = _resolve_native_menu(locator, root, deadline=deadline, single_attempt=timeout <= 0)
+    while not entry.is_visible():
+        if time.monotonic() >= deadline:
+            raise WaitTimeoutError(
+                f"Win32 menu item {' -> '.join(root[1])!r} is in the menu but not on "
+                f"screen after {timeout}s",
+                hint="open its parent menu first, for example with menu.click()",
+            )
+        time.sleep(0.05)
 
 
 def _resolve_native_menu(
@@ -427,6 +465,13 @@ class MenuItem(Locator):
             )
         return super()._resolve_presence(deadline=deadline, single_attempt=single_attempt)
 
+    def wait_for(self, *, state: str = "visible", timeout: float | None = None) -> Locator:
+        native = _native_menu_root(self) if state == "visible" else None
+        if native is None:
+            return super().wait_for(state=state, timeout=timeout)
+        _wait_native_menu_visible(self, native, self._timeout if timeout is None else timeout)
+        return self
+
     def _find_open_item(self) -> Any | None:
         """One non-mutating pass for this item in an already-open menu.
 
@@ -558,6 +603,13 @@ class Menu(Element):
                 single_attempt=single_attempt or self._timeout <= 0,
             )
         return super()._resolve_presence(deadline=deadline, single_attempt=single_attempt)
+
+    def wait_for(self, *, state: str = "visible", timeout: float | None = None) -> Locator:
+        native = _native_menu_root(self) if state == "visible" else None
+        if native is None:
+            return super().wait_for(state=state, timeout=timeout)
+        _wait_native_menu_visible(self, native, self._timeout if timeout is None else timeout)
+        return self
 
 
 class Tree(Element):
@@ -770,17 +822,38 @@ class Tab(Element):
         Its tabs are not child windows, so the ``TabItem`` search cannot see
         them. pywinauto's ``select(text)`` best-matches the text and could pick
         a different tab, so the index is found here by exact text (ignoring an
-        ``&`` mnemonic) and selected by index. ``TCM_SETCURFOCUS`` raises
-        ``TCN_SELCHANGE``, so the application switches pages as on a click.
+        ``&`` mnemonic) and selected by index.
+
+        ``select(index)`` sends ``TCM_SETCURFOCUS``, which raises
+        ``TCN_SELCHANGE`` on a regular tab control. With ``TCS_BUTTONS`` that
+        message moves only the focus, so pywinauto posts a click on the tab
+        instead. The selection is read back either way: the click can miss and
+        the application can veto the change from ``TCN_SELCHANGING``, and
+        neither of those may pass for success.
         """
         texts = [str(wrapper.get_tab_text(index)) for index in range(wrapper.tab_count())]
         for index, text in enumerate(texts):
-            if text == name or _menu_text_key(text) == name:
+            if _caption_matches(text, name):
                 wrapper.select(index)
+                self._confirm_win32_tab(wrapper, name, index)
                 return
         raise ElementNotFoundError(
             f"Tab page {name!r} not found in {self._criteria!r} (tabs: {texts})"
         )
+
+    def _confirm_win32_tab(self, wrapper: Any, name: str, index: int) -> None:
+        deadline = time.monotonic() + min(self._timeout, 2.0)
+        while True:
+            selected = wrapper.get_selected_tab()
+            if selected == index:
+                return
+            if time.monotonic() >= deadline:
+                raise WaitTimeoutError(
+                    f"Tab page {name!r} was not selected in {self._criteria!r}: the "
+                    f"control stayed on tab index {selected}",
+                    hint="the application may refuse the change, or a modal dialog is open",
+                )
+            time.sleep(0.05)
 
 
 class Toolbar(Element):

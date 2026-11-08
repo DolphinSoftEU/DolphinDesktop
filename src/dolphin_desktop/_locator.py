@@ -30,7 +30,7 @@ from ._exceptions import (
 from ._helpers import _MISSING, _escape_keys
 from ._keyboard import _post_keys_to_hwnd, _send_keys_on_hidden_desktop
 from ._logging import Secret, unwrap_secret
-from ._win32_criteria import criteria_for_backend, enumeration_criteria
+from ._win32_criteria import backend_name, criteria_for_backend, enumeration_criteria
 
 
 def _backend_fallbacks(
@@ -267,6 +267,23 @@ def _read_text_via_pattern(element: Any) -> str | None:
     if not isinstance(text, str):
         return None
     return text
+
+
+def _reads_text_by_message(wrapper: Any) -> bool:
+    """Whether ``window_text()`` of *wrapper* is the whole text of a win32 control.
+
+    ``WM_GETTEXT`` is authoritative for a plain edit box or label, so an empty
+    answer means empty. A RichEdit class stays out: Windows 11 Notepad's
+    ``RichEditD2DPT`` keeps its text out of reach of the window text.
+    """
+    if backend_name(wrapper) != "win32":
+        return False
+    try:
+        kind = wrapper.friendly_class_name()
+        class_name = str(wrapper.class_name()).casefold()
+    except Exception:
+        return False
+    return kind in ("Edit", "Static") and "rich" not in class_name
 
 
 def _element_hwnd(element: Any) -> int | None:
@@ -1554,12 +1571,18 @@ class Locator:
         # win32 spec answers an unknown attribute such as ``iface_text`` with a
         # ``child_window(best_match=...)`` lookup that waits out its default
         # timeout (~5 s) before failing (KAN-747).
-        pattern_text = _read_text_via_pattern(_wrapper_of(element))
+        wrapper = _wrapper_of(element)
+        pattern_text = _read_text_via_pattern(wrapper)
         if pattern_text is not None:
             return pattern_text
         t = element.window_text()
         if t:
             return t
+        # An empty plain win32 Edit/Static really is empty. The clipboard path
+        # below would take focus, send Ctrl+A/Ctrl+C and wipe the user's
+        # clipboard just to confirm that (KAN-747).
+        if _reads_text_by_message(wrapper):
+            return ""
         # IValueProvider.Value works for most edit controls including Qt
         # QLineEdit / QPlainTextEdit. If get_value() succeeds (even returning
         # an empty string for a legitimately-empty field), trust it — falling

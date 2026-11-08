@@ -68,6 +68,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   - `Locator.text()` and `scroll_into_view()` no longer stall for about 5 s
     per call on `win32`. They probed a UIA pattern on the unresolved
     `WindowSpecification`, which pywinauto answered with a child-window wait.
+  - `Locator.text()` on an empty plain `Edit` or `Static` returns `""` at once.
+    It used to take focus, send Ctrl+A / Ctrl+C and clear the user's clipboard.
+    RichEdit controls keep that fallback.
 * `playwright_compat.sync_playwright().chromium.connect_over_cdp()` no longer
   fails with Playwright's "Sync API inside the asyncio loop" error when a
   `CDPSession` (for example from `Desktop.launch_electron_cdp`) is already open

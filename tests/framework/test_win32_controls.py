@@ -20,7 +20,11 @@ import dolphin_desktop._element as element_module
 import dolphin_desktop._locator as locator_module
 import dolphin_desktop._win32_criteria as w32
 from dolphin_desktop._element import ListBox, Menu, MenuItem, Tab, Tree
-from dolphin_desktop._exceptions import ElementNotFoundError, UnsupportedCapabilityError
+from dolphin_desktop._exceptions import (
+    ElementNotFoundError,
+    UnsupportedCapabilityError,
+    WaitTimeoutError,
+)
 from dolphin_desktop._locator import Locator
 
 WIN32 = SimpleNamespace(name="win32")
@@ -314,6 +318,10 @@ class TestTreeOnWin32:
 # Native Win32 menus
 
 
+CLOSED_RECT = SimpleNamespace(left=0, top=0, right=0, bottom=0)
+OPEN_RECT = SimpleNamespace(left=10, top=20, right=110, bottom=40)
+
+
 class _NativeItem:
     def __init__(self, text: str, sub_menu: object = None, *, enabled: bool = True) -> None:
         self._text = text
@@ -321,7 +329,9 @@ class _NativeItem:
         self._enabled = enabled
         self.select = Mock()
         self.click_input = Mock()
-        self.rectangle = Mock(return_value="rect")
+        # GetMenuItemRect answers an empty rectangle while the popup is closed.
+        self.rectangle = Mock(return_value=CLOSED_RECT)
+        self.ctrl = SimpleNamespace(is_visible=Mock(return_value=True))
 
     def text(self) -> str:
         return self._text
@@ -351,6 +361,7 @@ def native_menu():
     show = _NativeItem("Show &dialog\tCtrl+D")
     disabled = _NativeItem("Export", enabled=False)
     file_menu = _NativeItem("&File", _NativeMenu(show, _NativeItem(""), disabled))
+    file_menu.rectangle.return_value = OPEN_RECT  # the menu bar is always laid out
     window = _menu_window(_NativeMenu(file_menu, _NativeItem("&Help", _NativeMenu())))
     return SimpleNamespace(window=window, file=file_menu, show=show, disabled=disabled)
 
@@ -372,7 +383,6 @@ class TestNativeWin32Menu:
         menu = Menu(native_menu.window, title="File")
         assert menu.item("Show dialog").is_enabled() is True
         assert menu.item("Export").is_enabled() is False
-        assert menu.item("Show dialog").is_visible() is True
         assert menu.item("Show dialog").exists() is True
         native_menu.show.select.assert_not_called()
         native_menu.show.click_input.assert_not_called()
@@ -380,7 +390,7 @@ class TestNativeWin32Menu:
     def test_adapter_reports_text_without_mnemonic_or_shortcut(self, native_menu):
         entry = element_module._Win32MenuEntry(native_menu.show)
         assert entry.window_text() == "Show dialog"
-        assert entry.rectangle() == "rect"
+        assert entry.rectangle() is CLOSED_RECT
 
     def test_missing_item_lists_what_the_level_offers(self, native_menu):
         item = Menu(native_menu.window, title="File").item("Nope").timeout(0)
@@ -483,12 +493,45 @@ class TestListOnWin32:
 
 class TestTabOnWin32:
     def _tabs(self, *texts: str) -> SimpleNamespace:
+        state = {"selected": 0}
         return SimpleNamespace(
             backend=WIN32,
             tab_count=lambda: len(texts),
             get_tab_text=lambda index: texts[index],
-            select=Mock(),
+            select=Mock(side_effect=lambda index: state.update(selected=index)),
+            get_selected_tab=lambda: state["selected"],
         )
+
+    def test_refused_selection_is_reported_not_passed_off_as_success(self):
+        # A missed TCS_BUTTONS click or a TCN_SELCHANGING veto leaves the old tab.
+        wrapper = self._tabs("General", "Advanced")
+        wrapper.select = Mock()
+        tab = _element_resolving_to(Tab, wrapper)
+        with pytest.raises(WaitTimeoutError, match=r"'Advanced' was not selected.*index 0"):
+            tab.select_tab("Advanced")
+        wrapper.select.assert_called_once_with(1)
+
+    def test_selection_that_lands_late_is_accepted(self, monkeypatch):
+        monkeypatch.setattr(element_module.time, "sleep", Mock())
+        wrapper = self._tabs("General", "Advanced")
+        wrapper.select = Mock()
+        wrapper.get_selected_tab = Mock(side_effect=[0, 1])
+        tab = Tab(Mock()).timeout(5)
+        tab._resolve = Mock(return_value=wrapper)
+        assert tab.select_tab("Advanced") is tab
+
+    def test_refused_selection_does_not_wait_the_whole_locator_timeout(self):
+        wrapper = self._tabs("General", "Advanced")
+        wrapper.select = Mock()
+        tab = Tab(Mock()).timeout(60)
+        tab._resolve = Mock(return_value=wrapper)
+        with (
+            patch.object(element_module.time, "monotonic", side_effect=[0.0, 0.0, 2.5]),
+            patch.object(element_module.time, "sleep") as sleep,
+        ):
+            with pytest.raises(WaitTimeoutError):
+                tab.select_tab("Advanced")
+        sleep.assert_called_once()
 
     def test_tab_is_selected_by_index_of_its_exact_text(self):
         wrapper = self._tabs("General", "Advanced")
@@ -532,8 +575,9 @@ class _LazySpec:
     and only fails after its default ~5 s wait, so probing it is the bug.
     """
 
-    def __init__(self, wrapper: object) -> None:
+    def __init__(self, wrapper: object, *, text: str = "ready") -> None:
         self._wrapper = wrapper
+        self._text = text
         self.probed: list[str] = []
 
     def wrapper_object(self) -> object:
@@ -550,7 +594,7 @@ class _LazySpec:
         raise RuntimeError("waited for a child window named iface_scroll_item")
 
     def window_text(self) -> str:
-        return "ready"
+        return self._text
 
     def set_focus(self) -> None:
         self.focused = True
@@ -586,3 +630,153 @@ class TestPatternProbesUseTheWrapper:
         self._locator(spec).scroll_into_view()
         assert spec.focused is True
         assert spec.probed == []
+
+
+# PR #62 review: on-screen state of native menus
+
+
+class TestNativeMenuVisibility:
+    def test_item_is_visible_only_while_its_popup_is_open(self, native_menu):
+        item = Menu(native_menu.window, title="File").item("Show dialog")
+        assert item.is_visible() is False
+        assert item.exists() is True
+        native_menu.show.rectangle.return_value = OPEN_RECT
+        assert item.is_visible() is True
+        native_menu.show.rectangle.return_value = CLOSED_RECT
+        assert item.is_visible() is False
+
+    def test_menu_bar_item_follows_its_owner_window(self, native_menu):
+        menu = Menu(native_menu.window, title="File")
+        assert menu.is_visible() is True
+        native_menu.file.ctrl.is_visible.return_value = False
+        assert menu.is_visible() is False
+
+    def test_wait_until_hidden_returns_once_the_popup_closed(self, native_menu):
+        item = Menu(native_menu.window, title="File").item("Show dialog")
+        assert item.wait_until_hidden(timeout=0) is item
+        native_menu.show.rectangle.return_value = OPEN_RECT
+        with pytest.raises(WaitTimeoutError, match="still visible"):
+            item.wait_until_hidden(timeout=0)
+
+    def test_wait_for_visible_waits_for_the_popup_without_opening_it(self, native_menu):
+        item = Menu(native_menu.window, title="File").item("Show dialog")
+        with pytest.raises(WaitTimeoutError, match="not on screen") as caught:
+            item.wait_for(state="visible", timeout=0)
+        assert "menu.click()" in str(caught.value)
+        native_menu.file.click_input.assert_not_called()
+
+        native_menu.show.rectangle.side_effect = [CLOSED_RECT, OPEN_RECT]
+        with patch.object(element_module.time, "sleep"):
+            assert item.wait_for(state="visible", timeout=5) is item
+
+    def test_wait_for_visible_on_a_missing_item_is_not_found(self, native_menu):
+        with pytest.raises(ElementNotFoundError, match="File -> Nope"):
+            Menu(native_menu.window, title="File").item("Nope").wait_for(timeout=0)
+
+    def test_wait_for_visible_on_the_menu_bar_item(self, native_menu):
+        menu = Menu(native_menu.window, title="File")
+        assert menu.wait_for(state="visible", timeout=0) is menu
+
+    def test_wait_for_exists_keeps_the_presence_meaning(self, native_menu):
+        item = Menu(native_menu.window, title="File").item("Show dialog")
+        assert item.wait_for(state="exists", timeout=0) is item
+
+
+# PR #62 review: "&&" is a literal ampersand in a Win32 caption
+
+
+class TestCaptionText:
+    @pytest.mark.parametrize(
+        ("caption", "displayed"),
+        [
+            ("&File", "File"),
+            ("Save &as", "Save as"),
+            ("R&&D", "R&D"),
+            ("A&&&B", "A&B"),
+            ("Save\tCtrl+S", "Save"),
+            ("&Find && Replace\tCtrl+H", "Find & Replace"),
+            ("trailing&", "trailing&"),
+            ("", ""),
+        ],
+    )
+    def test_caption_is_normalized_as_win32_displays_it(self, caption, displayed):
+        assert element_module._menu_text_key(caption) == displayed
+
+    @pytest.mark.parametrize(
+        ("wanted", "matches"),
+        [("R&D report", True), ("R&&D report", True), ("RD report", False)],
+    )
+    def test_menu_item_with_a_literal_ampersand(self, wanted, matches):
+        item = _NativeItem("R&&D report")
+        window = _menu_window(_NativeMenu(_NativeItem("&File", _NativeMenu(item))))
+        assert Menu(window, title="File").item(wanted).timeout(0).exists() is matches
+
+    def test_adapter_reports_the_literal_ampersand(self):
+        entry = element_module._Win32MenuEntry(_NativeItem("R&&D report\tCtrl+R"))
+        assert entry.window_text() == "R&D report"
+
+    def test_tab_with_a_literal_ampersand(self):
+        wrapper = TestTabOnWin32()._tabs("General", "R&&D")
+        _element_resolving_to(Tab, wrapper).select_tab("R&D")
+        wrapper.select.assert_called_once_with(1)
+
+
+# PR #62 review: empty text of a plain win32 control
+
+
+class TestEmptyTextOnWin32:
+    def _text(self, wrapper: object, *, clipboard: str = "clipboard") -> tuple[str, Mock]:
+        locator = Locator(Mock())
+        locator._resolve_readonly = Mock(return_value=_LazySpec(wrapper, text=""))
+        with patch.object(
+            locator_module, "_read_text_via_clipboard", return_value=clipboard
+        ) as read_clipboard:
+            return locator.text(), read_clipboard
+
+    @pytest.mark.parametrize(
+        ("kind", "class_name"),
+        [
+            ("Edit", "Edit"),
+            ("Static", "Static"),
+            ("Edit", "WindowsForms10.EDIT.app.0.1"),
+            ("Static", "WindowsForms10.STATIC.app.0.1"),
+            ("Edit", "ThunderRT6TextBox"),
+            ("Edit", "TMemo"),
+        ],
+    )
+    def test_plain_control_never_touches_the_clipboard(self, kind, class_name):
+        wrapper = SimpleNamespace(
+            backend=WIN32, friendly_class_name=lambda: kind, class_name=lambda: class_name
+        )
+        text, read_clipboard = self._text(wrapper)
+        assert text == ""
+        read_clipboard.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            SimpleNamespace(
+                backend=WIN32,
+                friendly_class_name=lambda: "Edit",
+                class_name=lambda: "RichEditD2DPT",
+            ),
+            SimpleNamespace(
+                backend=WIN32,
+                friendly_class_name=lambda: "Edit",
+                class_name=lambda: "RichEdit20W",
+            ),
+            SimpleNamespace(
+                backend=WIN32, friendly_class_name=lambda: "Button", class_name=lambda: "Button"
+            ),
+            SimpleNamespace(
+                backend=UIA, friendly_class_name=lambda: "Edit", class_name=lambda: "Edit"
+            ),
+            SimpleNamespace(backend=WIN32),
+            SimpleNamespace(),
+        ],
+        ids=["win11-notepad", "richedit", "other-class", "uia", "no-class-info", "not-pywinauto"],
+    )
+    def test_everything_else_keeps_the_clipboard_fallback(self, wrapper):
+        text, read_clipboard = self._text(wrapper)
+        assert text == "clipboard"
+        read_clipboard.assert_called_once()
