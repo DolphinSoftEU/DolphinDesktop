@@ -982,9 +982,14 @@ def _isolated_playwright_leases():
     Several tests connect without closing; their fake drivers must not be
     handed to the next test's ``connect`` on the same thread.
     """
-    cdp._PLAYWRIGHT_LEASES.clear()
+    cdp._THREAD_PLAYWRIGHT.lease = None
     yield
-    cdp._PLAYWRIGHT_LEASES.clear()
+    cdp._THREAD_PLAYWRIGHT.lease = None
+
+
+def _thread_lease():
+    """The calling thread's current driver lease, or ``None``."""
+    return getattr(cdp._THREAD_PLAYWRIGHT, "lease", None)
 
 
 class TestSharedPlaywrightDriver:
@@ -1023,7 +1028,7 @@ class TestSharedPlaywrightDriver:
         second.close()
         api.browsers[1].close.assert_called_once_with()
         api.drivers[0].stop.assert_called_once_with()
-        assert cdp._PLAYWRIGHT_LEASES == {}
+        assert _thread_lease().users == 0
 
     def test_close_order_does_not_matter_and_repeated_close_releases_once(self):
         api = CountingSyncApi()
@@ -1070,7 +1075,7 @@ class TestSharedPlaywrightDriver:
         session = self._connect(api)
         api.drivers[0].stop.side_effect = RuntimeError("driver gone")
         session.close()
-        assert cdp._PLAYWRIGHT_LEASES == {}
+        assert _thread_lease().users == 0
         api.running.clear()
         assert self._connect(api)._playwright is api.drivers[1]
 
@@ -1096,20 +1101,75 @@ class TestSharedPlaywrightDriver:
         assert main_session._playwright is api.drivers[0]
         api.drivers[0].stop.assert_not_called()
 
-    def test_lease_of_a_finished_thread_with_a_reused_ident_is_not_reused(self):
+    def test_abandoned_session_of_a_finished_thread_is_not_inherited(self):
+        """PR #60 review: a worker that exits without closing its session.
+
+        Its driver must not be handed to, or overwritten by, a later thread
+        (which may get the same ident), and nothing outside that session may
+        try to stop it from a foreign thread.
+        """
         import threading
 
-        stale_driver = MagicMock(name="stale")
-        stale = cdp._PlaywrightLease(stale_driver, threading.Thread())
-        stale.users = 1
-        cdp._PLAYWRIGHT_LEASES[threading.get_ident()] = stale
+        api = CountingSyncApi()
+        seen: dict[str, object] = {}
+
+        def _abandoning_worker():
+            seen["abandoned"] = self._connect(api)  # never closed
+
+        def _later_worker():
+            seen["inherited"] = _thread_lease()
+            session = self._connect(api)
+            seen["driver"] = session._playwright
+            session.close()
+
+        for target in (_abandoning_worker, _later_worker):
+            worker = threading.Thread(target=target)
+            worker.start()
+            worker.join()
+
+        abandoned = seen["abandoned"]
+        assert seen["inherited"] is None
+        assert seen["driver"] is api.drivers[1]
+        api.drivers[1].stop.assert_called_once_with()
+        api.drivers[0].stop.assert_not_called()
+        assert abandoned._playwright_lease.users == 1
+        assert _thread_lease() is None
+
+        main_session = self._connect(api)
+        assert main_session._playwright is api.drivers[2]
+        main_session.close()
+        api.drivers[0].stop.assert_not_called()
+
+    def test_abandoned_session_still_releases_its_driver_when_closed_later(self):
+        import threading
 
         api = CountingSyncApi()
-        session = self._connect(api)
-        assert session._playwright is api.drivers[0]
-        session.close()
+        seen: dict[str, CDPSession] = {}
+        worker = threading.Thread(target=lambda: seen.setdefault("s", self._connect(api)))
+        worker.start()
+        worker.join()
+
+        seen["s"].close()
         api.drivers[0].stop.assert_called_once_with()
-        stale_driver.stop.assert_not_called()
+        assert seen["s"]._playwright_lease is None
+
+    def test_releasing_an_already_released_lease_is_a_no_op(self):
+        driver = MagicMock(name="driver")
+        lease = cdp._PlaywrightLease(driver)
+        cdp._release_playwright(lease)
+        cdp._release_playwright(lease)
+        driver.stop.assert_called_once_with()
+        assert lease.users == 0
+
+    def test_stopped_lease_left_in_the_thread_slot_is_replaced_not_revived(self):
+        api = CountingSyncApi()
+        self._connect(api).close()
+        stale = _thread_lease()
+        assert stale.users == 0
+        session = self._connect(api)
+        assert _thread_lease() is not stale
+        assert session._playwright is api.drivers[1]
+        assert stale.users == 0
 
     def test_session_built_around_its_own_driver_still_stops_it(self):
         session, _page, _context, _browser, playwright = _completeness_session()

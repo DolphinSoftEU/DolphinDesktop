@@ -350,56 +350,61 @@ class _PlaywrightLease:
     loop"). Every :class:`CDPSession` opened on a thread therefore borrows the
     same driver, each over its own ``connect_over_cdp`` connection, and the
     driver stops only when the last of them closes.
+
+    Only the owning thread's ``threading.local`` and the sessions themselves
+    refer to a lease. No module-level registry keeps it, or its driver,
+    alive: once its thread has ended and its sessions are gone, the lease is
+    garbage like any other object. A session left open still keeps its driver
+    running until it is closed or collected, exactly as before drivers were
+    shared.
     """
 
-    __slots__ = ("playwright", "thread", "users")
+    __slots__ = ("__weakref__", "playwright", "users")
 
-    def __init__(self, playwright: Any, thread: threading.Thread) -> None:
+    def __init__(self, playwright: Any) -> None:
         self.playwright = playwright
-        self.thread = thread
-        self.users = 0
+        self.users = 1
 
 
-_PLAYWRIGHT_LEASES: dict[int, _PlaywrightLease] = {}
-_PLAYWRIGHT_LEASES_LOCK = threading.Lock()
+# Per-thread slot for the lease of the thread's running driver. Thread-local
+# rather than a dict keyed by thread ident: a slot dies with its thread, so a
+# new thread can never inherit, or silently overwrite, a finished thread's
+# driver. Not a lock-free counter: close() may run on another thread.
+_THREAD_PLAYWRIGHT = threading.local()
+_LEASE_USERS_LOCK = threading.Lock()
 
 
 def _acquire_playwright(sync_api: Any) -> _PlaywrightLease:
     """Borrow the calling thread's Playwright driver, starting it on first use.
 
     Playwright sync objects are bound to the thread that started them, so the
-    lease is per thread. The ``thread`` check stops a new thread that reuses a
-    finished thread's ident from inheriting a driver it cannot drive.
+    lease is per thread. A lease whose last session has closed (``users``
+    is 0) has a stopped driver and is replaced, never revived.
     """
-    current = threading.current_thread()
-    key = threading.get_ident()
-    with _PLAYWRIGHT_LEASES_LOCK:
-        lease = _PLAYWRIGHT_LEASES.get(key)
-        if lease is not None and lease.thread is current:
-            lease.users += 1
-            return lease
-    lease = _PlaywrightLease(sync_api.sync_playwright().start(), current)
-    lease.users = 1
-    with _PLAYWRIGHT_LEASES_LOCK:
-        _PLAYWRIGHT_LEASES[key] = lease
+    lease: _PlaywrightLease | None = getattr(_THREAD_PLAYWRIGHT, "lease", None)
+    if lease is not None:
+        with _LEASE_USERS_LOCK:
+            if lease.users > 0:
+                lease.users += 1
+                return lease
+    lease = _PlaywrightLease(sync_api.sync_playwright().start())
+    _THREAD_PLAYWRIGHT.lease = lease
     return lease
 
 
 def _release_playwright(lease: _PlaywrightLease) -> None:
     """Return one borrow of *lease*; stop the driver after the last one.
 
-    The lease leaves the registry before ``stop()`` runs, so a failing stop
-    cannot leave a dead driver for the next session on the thread to pick up.
+    ``users`` drops to 0 before ``stop()`` runs, so even a failing stop marks
+    the lease dead and the thread's next session starts a fresh driver.
+    Releasing a lease that is already at 0 does nothing.
     """
-    with _PLAYWRIGHT_LEASES_LOCK:
+    with _LEASE_USERS_LOCK:
         if lease.users <= 0:
             return
         lease.users -= 1
         if lease.users:
             return
-        key = lease.thread.ident
-        if key is not None and _PLAYWRIGHT_LEASES.get(key) is lease:
-            del _PLAYWRIGHT_LEASES[key]
     lease.playwright.stop()
 
 
@@ -547,7 +552,10 @@ class CDPSession:
             session from :meth:`Desktop.launch_electron_cdp`) does not trip
             Playwright's one-sync-instance-per-thread rule. Closing one
             session leaves the others connected; the driver stops with the
-            last of them.
+            last of them. Close every session, on the thread that opened it,
+            before that thread ends: a session left open keeps the driver
+            (a ``node`` process) running until it is closed or garbage
+            collected.
         """
         sync_api = _require_playwright()
         lease = _acquire_playwright(sync_api)

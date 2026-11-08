@@ -15,21 +15,23 @@ class CountingSyncApi:
     ``start()`` raises Playwright's real message while an earlier driver
     started on the same thread is still running, and every
     ``connect_over_cdp`` returns a distinct browser, like separate CDP
-    connections do.
+    connections do. Like Playwright's thread-local event-loop state, the
+    rule is per thread object, not per ident: a new thread that reuses a
+    finished thread's ident starts clean.
     """
 
     def __init__(self) -> None:
         self.drivers: list[MagicMock] = []
         self.browsers: list[MagicMock] = []
-        self.running: set[int] = set()
+        self.running: set[threading.Thread] = set()
 
     def _start(self) -> MagicMock:
-        ident = threading.get_ident()
-        if ident in self.running:
+        thread = threading.current_thread()
+        if thread in self.running:
             raise RuntimeError(SECOND_START_ERROR)
-        self.running.add(ident)
+        self.running.add(thread)
         driver = MagicMock(name=f"driver{len(self.drivers)}")
-        driver.stop.side_effect = lambda: self.running.discard(ident)
+        driver.stop.side_effect = lambda: self.running.discard(thread)
         driver.chromium.connect_over_cdp.side_effect = self._connect
         self.drivers.append(driver)
         return driver

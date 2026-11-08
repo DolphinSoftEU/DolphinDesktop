@@ -440,10 +440,10 @@ def test_unsupported_browser_context_and_page_surfaces_raise_not_implemented() -
 @pytest.fixture
 def shared_driver(monkeypatch):
     api = CountingSyncApi()
-    cdp._PLAYWRIGHT_LEASES.clear()
+    cdp._THREAD_PLAYWRIGHT.lease = None
     monkeypatch.setattr(cdp, "_require_playwright", lambda: api)
     yield api
-    cdp._PLAYWRIGHT_LEASES.clear()
+    cdp._THREAD_PLAYWRIGHT.lease = None
 
 
 def test_connect_over_cdp_coexists_with_an_open_session_on_the_same_thread(shared_driver):
