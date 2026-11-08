@@ -20,6 +20,8 @@ _MSO_MIXED = -2
 
 _PP_PLACEHOLDER_BODY = 2  # PpPlaceholderType.ppPlaceholderBody: the notes text
 _PP_MOUSE_CLICK = 1  # PpMouseActivation.ppMouseClick
+_PP_ACTION_NONE = 0  # PpActionType.ppActionNone
+_PP_ACTION_HYPERLINK = 7  # PpActionType.ppActionHyperlink
 _XL_COLUMN_CLUSTERED = 51  # XlChartType default for add_chart()
 
 
@@ -148,7 +150,42 @@ class PowerPointTextRange(_ComOwner):
 
     @hyperlink.setter
     def hyperlink(self, address: str) -> None:
-        self._com.ActionSettings(_PP_MOUSE_CLICK).Hyperlink.Address = address
+        """Make the range a mouse-click hyperlink to *address*; ``""`` removes it.
+
+        Setting ``Hyperlink.Address`` alone does not guarantee the link is
+        active in a slide show: per the PowerPoint object model the click
+        action must also be ``ppActionHyperlink``. The order matters and
+        follows Microsoft's example -- action first, then address, on the
+        same ``ActionSetting``: writing the action *after* the address resets
+        an already-active link on real PowerPoint and drops the address. If
+        PowerPoint rejects the address on a range that had no link, the
+        action is turned off again so no half-made link is left behind. An
+        empty string turns the click action off (``ppActionNone``) and
+        deletes the hyperlink. A whitespace-only address is refused rather
+        than stored as a dead link.
+        """
+        if not isinstance(address, str):
+            raise TypeError("hyperlink address must be a str")
+        if address and not address.strip():
+            raise ValueError("hyperlink address is blank; use '' to remove the hyperlink")
+        action = self._com.ActionSettings(_PP_MOUSE_CLICK)
+        if address == "":
+            action.Action = _PP_ACTION_NONE
+            action.Hyperlink.Delete()
+            return
+        was_linked = int(action.Action) == _PP_ACTION_HYPERLINK
+        action.Action = _PP_ACTION_HYPERLINK
+        try:
+            action.Hyperlink.Address = address
+        except Exception as exc:
+            if not was_linked:
+                try:
+                    action.Action = _PP_ACTION_NONE
+                except Exception as rollback_error:
+                    exc.add_note(
+                        f"Turning the click action off again also failed: {rollback_error}"
+                    )
+            raise
 
     def characters(self, start: int, length: int | None = None) -> PowerPointTextRange:
         """A sub-range starting at 1-based *start*, for *length* characters.

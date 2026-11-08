@@ -564,6 +564,15 @@ def test_layout_title_placeholder_is_readable_and_writable():
         assert deck.slide(2).shape(1).bold in (True, False, None)  # the placeholder is a shape
 
 
+_PP_ACTION_NONE = 0
+_PP_ACTION_HYPERLINK = 7
+
+
+def _click_action(text_range) -> int:
+    """The raw ppMouseClick action: 7 means the link is clickable in a slide show."""
+    return int(text_range._com.ActionSettings(1).Action)
+
+
 def test_hyperlink_on_text_round_trips_and_persists(tmp_path):
     pptx = tmp_path / "links.pptx"
     with PowerPointApp.create(visible=False) as app:
@@ -571,19 +580,48 @@ def test_hyperlink_on_text_round_trips_and_persists(tmp_path):
         slide = deck.add_slide()
         box = slide.add_textbox("Full report")
         assert box.hyperlink == ""
+        assert _click_action(box.text_range) == _PP_ACTION_NONE
         box.hyperlink = "https://example.test/report"
         assert box.hyperlink == "https://example.test/report"
+        assert _click_action(box.text_range) == _PP_ACTION_HYPERLINK
 
         mixed = slide.add_textbox("See docs or source")
         mixed.characters(5, 4).hyperlink = "https://example.test/docs"
         assert mixed.characters(5, 4).hyperlink == "https://example.test/docs"
+        assert _click_action(mixed.characters(5, 4)) == _PP_ACTION_HYPERLINK
         assert mixed.characters(13, 6).hyperlink == ""
+        assert _click_action(mixed.characters(13, 6)) == _PP_ACTION_NONE
         deck.save_as(pptx)
 
     with PowerPointApp.open(pptx, visible=False) as app:
         slide = app.active_presentation.slide(1)
+        # The click action persists, so the links work in a slide show after reopen.
         assert slide.shape(1).hyperlink == "https://example.test/report"
+        assert _click_action(slide.shape(1).text_range) == _PP_ACTION_HYPERLINK
         assert slide.shape(2).characters(5, 4).hyperlink == "https://example.test/docs"
+        assert _click_action(slide.shape(2).characters(5, 4)) == _PP_ACTION_HYPERLINK
+        assert _click_action(slide.shape(2).characters(13, 6)) == _PP_ACTION_NONE
+
+
+def test_empty_hyperlink_removes_the_link_and_the_removal_persists(tmp_path):
+    pptx = tmp_path / "unlinked.pptx"
+    with PowerPointApp.create(visible=False) as app:
+        deck = app.active_presentation
+        box = deck.add_slide().add_textbox("Was a link")
+        box.hyperlink = "https://example.test/old"
+        assert _click_action(box.text_range) == _PP_ACTION_HYPERLINK
+        box.hyperlink = ""
+        assert box.hyperlink == ""
+        assert _click_action(box.text_range) == _PP_ACTION_NONE
+        box.hyperlink = ""  # removing again (nothing linked) is harmless
+        with pytest.raises(ValueError, match="use '' to remove"):
+            box.hyperlink = "   "
+        deck.save_as(pptx)
+
+    with PowerPointApp.open(pptx, visible=False) as app:
+        box = app.active_presentation.slide(1).shape(1)
+        assert box.hyperlink == ""
+        assert _click_action(box.text_range) == _PP_ACTION_NONE
 
 
 def test_visible_presentation_gets_a_window_and_hidden_one_does_not():

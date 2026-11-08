@@ -251,8 +251,14 @@ chart = slide.add_chart(["Q1", "Q2", "Q3"], {"EMEA": [100, 110, 120]}, title="EM
 assert chart.chart.series_values("EMEA") == [100.0, 110.0, 120.0]
 
 link = slide.add_textbox("Full report")
-link.hyperlink = "https://example.test/report"
+link.hyperlink = "https://example.test/report"   # clickable in a slide show
+link.hyperlink = ""                              # removes the link again
 ```
+
+Setting `hyperlink` writes the address and sets the mouse-click action to
+`ppActionHyperlink`, so the link works in a slide show, not only in the editor.
+An empty string turns the action off and deletes the hyperlink; a blank
+address such as `" "` raises `ValueError`.
 
 `add_chart()` writes each series as literal arrays on the chart, so the embedded
 Excel workbook is never opened and Excel does not need to be installed. PowerPoint

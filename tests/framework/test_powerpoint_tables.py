@@ -342,17 +342,158 @@ def test_title_requires_a_layout_with_a_title_placeholder():
     assert com.Shapes.Title.TextFrame.TextRange.Text == "Q4"
 
 
-def test_hyperlink_uses_the_mouse_click_action_and_reads_empty_when_absent():
+PP_ACTION_NONE = 0
+PP_ACTION_HYPERLINK = 7
+
+
+class _Hyperlink:
+    def __init__(self, log: list[tuple[str, object]], *, reject: bool = False) -> None:
+        self._log = log
+        self.reject = reject
+        self._address: str | None = None
+
+    @property
+    def Address(self) -> str | None:  # noqa: N802 - COM casing
+        return self._address
+
+    @Address.setter
+    def Address(self, value: str) -> None:  # noqa: N802
+        if self.reject:
+            raise RuntimeError("PowerPoint rejected the address")
+        self._log.append(("Address", value))
+        self._address = value
+
+    def Delete(self) -> None:  # noqa: N802
+        self._log.append(("Delete", None))
+        self._address = None
+
+
+class _ActionSetting:
+    """A ppMouseClick ActionSetting that records writes in order."""
+
+    def __init__(self, *, reject_address: bool = False, fail_action_off: bool = False) -> None:
+        self.log: list[tuple[str, object]] = []
+        self.Hyperlink = _Hyperlink(self.log, reject=reject_address)
+        self._action = PP_ACTION_NONE
+        self._fail_action_off = fail_action_off
+
+    @property
+    def Action(self) -> int:  # noqa: N802
+        return self._action
+
+    @Action.setter
+    def Action(self, value: int) -> None:  # noqa: N802
+        if value == PP_ACTION_NONE and self._fail_action_off:
+            raise RuntimeError("PowerPoint refused to change the action")
+        self.log.append(("Action", value))
+        self._action = value
+
+
+def _range_with(setting: _ActionSetting) -> tuple[MagicMock, ppt.PowerPointTextRange]:
     com = MagicMock()
-    com.ActionSettings.return_value.Hyperlink.Address = None
-    rng = ppt.PowerPointTextRange(com)
+    com.ActionSettings.return_value = setting
+    return com, ppt.PowerPointTextRange(com)
+
+
+def test_hyperlink_reads_empty_when_absent():
+    com, rng = _range_with(_ActionSetting())
     assert rng.hyperlink == ""
+    com.ActionSettings.assert_called_with(1)  # ppMouseClick
+
+
+def test_hyperlink_activates_the_click_action_then_sets_the_address():
+    setting = _ActionSetting()
+    com, rng = _range_with(setting)
     rng.hyperlink = "https://example.test"
     com.ActionSettings.assert_called_with(1)
-    assert com.ActionSettings.return_value.Hyperlink.Address == "https://example.test"
-    shape = ppt.PowerPointShape(MagicMock(HasTextFrame=MSO_TRUE))
+    # ppActionHyperlink first, then the address, as in Microsoft's example.
+    # The reverse order resets an already-active link on real PowerPoint and
+    # drops the address (verified live; see test_powerpoint_live.py).
+    assert setting.log == [("Action", PP_ACTION_HYPERLINK), ("Address", "https://example.test")]
+    assert rng.hyperlink == "https://example.test"
+    assert setting.Action == PP_ACTION_HYPERLINK
+
+
+def test_relinking_keeps_the_same_order_and_replaces_the_address():
+    setting = _ActionSetting()
+    _, rng = _range_with(setting)
+    rng.hyperlink = "https://example.test/one"
+    setting.log.clear()
+    rng.hyperlink = "https://example.test/two"
+    assert setting.log == [
+        ("Action", PP_ACTION_HYPERLINK),
+        ("Address", "https://example.test/two"),
+    ]
+    assert rng.hyperlink == "https://example.test/two"
+
+
+def test_empty_hyperlink_turns_the_action_off_and_deletes_the_link():
+    setting = _ActionSetting()
+    _, rng = _range_with(setting)
+    rng.hyperlink = "https://example.test"
+    setting.log.clear()
+    rng.hyperlink = ""
+    assert setting.log == [("Action", PP_ACTION_NONE), ("Delete", None)]
+    assert rng.hyperlink == ""
+    assert setting.Action == PP_ACTION_NONE
+
+
+def test_a_rejected_address_on_an_unlinked_range_turns_the_action_off_again():
+    setting = _ActionSetting(reject_address=True)
+    _, rng = _range_with(setting)
+    with pytest.raises(RuntimeError, match="rejected the address"):
+        rng.hyperlink = "not a link PowerPoint accepts"
+    assert setting.log == [("Action", PP_ACTION_HYPERLINK), ("Action", PP_ACTION_NONE)]
+    assert setting.Action == PP_ACTION_NONE  # never an active link without an address
+
+
+def test_a_rejected_address_on_a_linked_range_keeps_the_existing_link():
+    setting = _ActionSetting()
+    _, rng = _range_with(setting)
+    rng.hyperlink = "https://example.test/old"
+    setting.Hyperlink.reject = True
+    setting.log.clear()
+    with pytest.raises(RuntimeError, match="rejected the address"):
+        rng.hyperlink = "not a link PowerPoint accepts"
+    assert setting.Action == PP_ACTION_HYPERLINK
+    assert rng.hyperlink == "https://example.test/old"
+    assert ("Action", PP_ACTION_NONE) not in setting.log
+
+
+def test_a_failed_rollback_keeps_the_original_error_with_a_note():
+    setting = _ActionSetting(reject_address=True, fail_action_off=True)
+    _, rng = _range_with(setting)
+    with pytest.raises(RuntimeError, match="rejected the address") as info:
+        rng.hyperlink = "not a link PowerPoint accepts"
+    assert any("action off again also failed" in note for note in info.value.__notes__)
+
+
+@pytest.mark.parametrize("blank", [" ", "\t", "\r\n"])
+def test_a_blank_hyperlink_is_refused_without_touching_com(blank):
+    setting = _ActionSetting()
+    _, rng = _range_with(setting)
+    with pytest.raises(ValueError, match="use '' to remove"):
+        rng.hyperlink = blank
+    assert setting.log == []
+
+
+def test_a_non_string_hyperlink_is_refused():
+    setting = _ActionSetting()
+    _, rng = _range_with(setting)
+    with pytest.raises(TypeError, match="must be a str"):
+        rng.hyperlink = None  # type: ignore[assignment]
+    assert setting.log == []
+
+
+def test_shape_hyperlink_delegates_to_its_text_range():
+    setting = _ActionSetting()
+    shape_com = MagicMock(HasTextFrame=MSO_TRUE)
+    shape_com.TextFrame.TextRange.ActionSettings.return_value = setting
+    shape = ppt.PowerPointShape(shape_com)
     shape.hyperlink = "https://example.test/x"
-    shape._com.TextFrame.TextRange.ActionSettings.assert_called_with(1)
+    shape_com.TextFrame.TextRange.ActionSettings.assert_called_with(1)
+    assert setting.Action == PP_ACTION_HYPERLINK
+    assert shape.hyperlink == "https://example.test/x"
 
 
 def test_has_window_reflects_document_window_count():

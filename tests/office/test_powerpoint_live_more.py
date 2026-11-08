@@ -100,6 +100,8 @@ def test_table_cell_formatting_and_hyperlink_survive_reopen(tmp_path):
         assert table.cell(1, 1).font_size == 18.0
         assert table.cell(2, 1).bold is False
         assert table.cell(1, 2).hyperlink == "https://example.test/table"
+        # ppActionHyperlink (7): the cell link is clickable in a slide show.
+        assert int(table.cell(1, 2)._com.ActionSettings(1).Action) == 7
 
 
 def test_per_paragraph_formatting_survives_reopen(tmp_path):

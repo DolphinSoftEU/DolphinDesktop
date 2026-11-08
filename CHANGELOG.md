@@ -20,7 +20,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   with cell ranges, `values`, row/column add and delete), charts
   (`add_chart()` writing literal series arrays, no Excel needed; `PowerPointChart`
   with type, title, categories and series values), speaker `notes`, layout
-  `title`, text `hyperlink` and `PowerPointPresentation.has_window`.
+  `title`, text `hyperlink` (sets the click action to `ppActionHyperlink` so the
+  link works in a slide show; `""` removes it) and
+  `PowerPointPresentation.has_window`.
   Live PowerPoint tests under
   `tests/office/test_powerpoint_live.py` (marker `integration`) exercise the
   whole facade against an installed PowerPoint and skip when it is absent.
