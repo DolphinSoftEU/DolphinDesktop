@@ -88,6 +88,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   - `Locator.text()` on an empty plain `Edit` or `Static` returns `""` at once.
     It used to take focus, send Ctrl+A / Ctrl+C and clear the user's clipboard.
     RichEdit controls keep that fallback.
+* JUnit XML now retains screenshot, trace and video paths through test teardown,
+  including retained videos for passing tests. Retried attempts still suppress
+  artifacts, and capture failures preserve the original test failure (KAN-748).
 
 * `playwright_compat.sync_playwright().chromium.connect_over_cdp()` no longer
   fails with Playwright's "Sync API inside the asyncio loop" error when a
