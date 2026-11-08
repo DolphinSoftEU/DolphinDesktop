@@ -103,6 +103,47 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   LINK field directly builds the OLE object inside `Fields.Add`, which can take
   a minute or never return; the two link tests allow 300 s for OLE activation.
 
+* Calling Recorder `stop()` before the first start attempt is now a no-op and
+  cannot leave a sentinel for the future worker. `actions()` and `generate_code()`
+  reject active recordings before flushing text. Lifecycle locking serializes
+  initialization, stop requests and final reads to avoid concurrent buffer
+  mutation and startup cancellation races (KAN-576 lifecycle edge cases).
+
+* Recorder instances now permit only one `start()` attempt, including failed
+  attempts. A retry requires a new Recorder, preventing stale queue sentinels,
+  buffered text or failures from affecting another session. Double start and
+  restart after completion are rejected without changing the original recording
+  (KAN-576 restart review).
+
+* Recorder completion now checks hook failures in the shared drain path.
+  `stop()`, `wait()`, `actions()` and `generate_code()` consistently reject
+  recordings affected by hook errors, after both threads finish, and preserve
+  existing output files on failure (KAN-576 completion review).
+
+* Recorder event processor failures now request hook shutdown, preserve the
+  original exception and raise through `wait()`, `stop()` and readers. A dead
+  worker can no longer be mistaken for a completed drain or generate an
+  incomplete script; handler exception payloads are kept out of recorder logs
+  (KAN-576 processor failure review).
+
+* Recorder shutdown now waits for the hook producer before draining its final
+  event marker, preserving callbacks already in progress. Failed hook removal
+  is retained as a WinAPI exception and reported by `wait()` after cleanup;
+  secondary cleanup errors preserve the original failure. Stalled hook shutdown
+  or event draining raises `TimeoutError` instead of reporting completion or
+  generating a partial script (KAN-576 shutdown review).
+
+* Recorder `wait()` now propagates hook failures that occur after startup,
+  preserving the original exception after draining queued events. Recorder
+  acceptance includes execution of the generated script against an owned native
+  Edit and rejects missing or skipped real-desktop checks (KAN-576 / KAN-759).
+
+* Recorder now classifies stable native Edit fields correctly when pywin32
+  returns thread/process IDs as a list. Hook signatures preserve pointer-sized
+  arguments and results on x86/x64; installation failures are reported and
+  partially installed hooks are removed. Regressions cover real native focus
+  transitions with a delayed queue and a readable ordinary-text control (KAN-576).
+
 * Qt agents now watch the authenticated controller's process object and expire
   their pipe when the controller is forcibly terminated. Qt5/Qt6 regressions
   cover connected, disconnected and partial-frame states and recovery by a

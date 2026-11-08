@@ -84,6 +84,24 @@ After dependency/resolver changes, rerun this matrix and the full-lockfile
 security gate. The wheel and reports let a tester reproduce the installation
 without relying on metadata from an unrelated environment.
 
+## Recorder acceptance (KAN-576 / KAN-759)
+
+Run on a controlled interactive Windows desktop, without concurrent user input:
+
+```powershell
+.venv\Scripts\python.exe -m tests._recorder_acceptance
+```
+
+This gate requires a real PASS for hook installation, delayed password/text/unknown
+focus transitions, and record → generate → replay against an owned native AUT.
+The replay test verifies the generated selector's HWND, clears the Edit, executes
+the unmodified generated script and checks the resulting field text. The JUnit
+report is saved to `artifacts/recorder-acceptance.xml` (`--output` overrides it).
+Missing tests, skips, failures and errors cannot pass the gate. Ordinary developer
+runs may skip when Windows refuses foreground activation; this is incomplete
+verification, and does not satisfy acceptance. The tests never send activation
+shortcuts or input to a foreign foreground window.
+
 ## Code Style
 
 This project uses [ruff](https://docs.astral.sh/ruff/) for linting and formatting, and [mypy](https://mypy-lang.org/) for type checking.

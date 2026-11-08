@@ -427,6 +427,8 @@ class TestGeneratedCodeIsValidPython:
 
 class TestStopDrainsTheQueue:
     def _slow_processor(self, rec: Recorder) -> threading.Thread:
+        rec._started = True  # This helper models an already started recording.
+
         def _loop() -> None:
             rec._evt_queue.get()
             time.sleep(0.05)
@@ -453,10 +455,11 @@ class TestStopDrainsTheQueue:
         assert rec.wait(1.0) is True
         assert len(rec.actions()) == 1
 
-    def test_join_is_a_noop_while_still_recording(self):
+    def test_join_rejects_reads_while_still_recording(self):
         rec = Recorder()
         thread = self._slow_processor(rec)
-        rec._join_processor()  # not stopped yet — must not block on the running thread
+        with pytest.raises(RuntimeError, match="Stop recording before"):
+            rec._join_processor()
         assert thread.is_alive()
         rec.stop()
 
@@ -491,7 +494,7 @@ class TestStopDrainsTheQueue:
         rec._join_processor(timeout=0.1)
         assert len(rec._actions) == 6
 
-    def test_a_wedged_processor_is_abandoned_with_a_warning(self, caplog):
+    def test_a_wedged_processor_raises_incomplete_recording(self, caplog):
         rec = Recorder()
         blocked = threading.Event()
         thread = threading.Thread(target=blocked.wait, daemon=True)
@@ -500,13 +503,17 @@ class TestStopDrainsTheQueue:
         rec._evt_queue.put(("mouse", "click", 0, 0, 0.0))
         rec._stopped.set()
 
-        with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
-            rec._join_processor(timeout=0.05)
-        blocked.set()
+        try:
+            with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
+                with pytest.raises(TimeoutError, match="recording is incomplete"):
+                    rec._join_processor(timeout=0.05)
+        finally:
+            blocked.set()
+            thread.join(2)
         assert "recording is incomplete" in caplog.text
 
-    def test_an_idle_processor_is_not_reported_as_stalled(self, caplog):
-        """wait() can return before the hook thread posts its sentinel."""
+    def test_an_idle_live_processor_is_not_treated_as_completed(self):
+        """An empty queue is insufficient: the worker must consume its sentinel."""
         rec = Recorder()
         blocked = threading.Event()
         thread = threading.Thread(target=blocked.wait, daemon=True)
@@ -515,10 +522,12 @@ class TestStopDrainsTheQueue:
         rec._proc_idle.set()  # parked in get(), holding no event
         rec._stopped.set()
 
-        with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
-            rec._join_processor(timeout=0.05)
-        blocked.set()
-        assert caplog.text == ""
+        try:
+            with pytest.raises(TimeoutError, match="recording is incomplete"):
+                rec._join_processor(timeout=0.05)
+        finally:
+            blocked.set()
+            thread.join(2)
 
     def test_a_processor_wedged_mid_event_is_reported(self, caplog):
         """An event leaves the queue before it is interpreted, so emptiness proves nothing.
@@ -542,9 +551,13 @@ class TestStopDrainsTheQueue:
         assert dequeued.wait(2.0)
         rec._stopped.set()
 
-        with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
-            rec._join_processor(timeout=0.05)
-        blocked.set()
+        try:
+            with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
+                with pytest.raises(TimeoutError, match="recording is incomplete"):
+                    rec._join_processor(timeout=0.05)
+        finally:
+            blocked.set()
+            thread.join(2)
         assert rec._evt_queue.empty()
         assert "recording is incomplete" in caplog.text
 
@@ -958,7 +971,7 @@ def test_start_logs_scope_and_starts_both_daemon_threads(monkeypatch, app, expec
             made.append((target, daemon, name))
 
         def start(self):
-            return None
+            rec._hook_ready.set()
 
     monkeypatch.setattr(threading, "Thread", FakeThread)
     warning = Mock()
@@ -977,13 +990,14 @@ def test_start_logs_scope_and_starts_both_daemon_threads(monkeypatch, app, expec
     assert made[1][0] == rec._process_loop
     assert not rec._stopped.is_set()
     if app:
-        code = rec.generate_code()
+        code = Recorder(app=app).generate_code()
         assert f"desktop.connect(title_re={_recorder._title_re_literal(app)})" in code
         assert "process=100" not in code
 
 
-def test_stop_posts_quit_only_for_a_hook_thread_and_is_idempotent(monkeypatch) -> None:
+def test_stop_without_hook_thread_is_idempotent_and_ignores_stale_thread_id(monkeypatch) -> None:
     rec = Recorder()
+    rec._started = True
     rec._hook_thread_id = 42
     post = Mock()
     monkeypatch.setattr(_recorder._user32, "PostThreadMessageW", post)
@@ -991,8 +1005,69 @@ def test_stop_posts_quit_only_for_a_hook_thread_and_is_idempotent(monkeypatch) -
     rec.stop()
     rec.stop()
 
-    post.assert_called_once_with(42, _recorder._WM_QUIT, 0, 0)
+    post.assert_not_called()
     assert rec._evt_queue.get_nowait() is None
+    assert rec._evt_queue.empty()
+
+
+@pytest.mark.parametrize("failures_before_success", [1, 3])
+def test_stop_retries_failed_quit_message_and_preserves_diagnostic(
+    monkeypatch, failures_before_success
+):
+    rec = Recorder(pid=100)
+    entered = threading.Event()
+    quit_requested = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        entered.set()
+        assert quit_requested.wait(2)
+        return 0
+
+    def post_quit(*args):
+        if api.PostThreadMessageW.call_count <= failures_before_success:
+            return 0
+        quit_requested.set()
+        return 1
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = Mock(side_effect=post_quit)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
+    join_processor = rec._join_processor
+    monkeypatch.setattr(rec, "_join_processor", lambda: join_processor(timeout=0.1))
+    try:
+        rec.start()
+        assert entered.wait(2)
+        if failures_before_success == _recorder._STOP_POST_ATTEMPTS:
+            with pytest.raises(TimeoutError, match="hook thread did not stop") as caught:
+                rec.stop()
+            assert caught.value.__cause__ is rec._stop_request_error
+            assert rec._stopped.is_set()
+            assert rec._hook_thread.is_alive()
+            assert not rec._quit_posted
+            assert api.PostThreadMessageW.call_count == _recorder._STOP_POST_ATTEMPTS
+            # Exhausted automatic retries still allow another explicit stop.
+            rec.stop()
+        else:
+            rec.stop()  # A transient failure is recovered within this call.
+        diagnostic = rec._stop_request_error
+        assert diagnostic.winerror == 5
+        assert rec._stopped.is_set()
+        assert rec._quit_posted
+        assert not rec._hook_thread.is_alive()
+        assert api.unhooked == [101, 202]
+        rec.stop()
+        assert rec.wait(0)
+        assert rec.actions() == []
+        assert api.PostThreadMessageW.call_count == failures_before_success + 1
+        api.PostThreadMessageW.assert_called_with(rec._hook_thread_id, _recorder._WM_QUIT, 0, 0)
+    finally:
+        quit_requested.set()
+        if rec._hook_thread is not None:
+            rec._hook_thread.join(2)
+        if rec._proc_thread is not None:
+            rec._proc_thread.join(2)
 
 
 def test_wait_timeout_and_join_from_processor_thread_are_noops() -> None:
@@ -1020,7 +1095,8 @@ def test_join_grants_one_extra_pass_when_an_event_arrives_during_idle_wait(caplo
     rec._stopped.set()
 
     with caplog.at_level("WARNING", logger="dolphin_desktop.recorder"):
-        rec._join_processor(timeout=0)
+        with pytest.raises(TimeoutError, match="recording is incomplete"):
+            rec._join_processor(timeout=0)
 
     assert "recording is incomplete" in caplog.text
 
@@ -1074,6 +1150,81 @@ def test_process_loop_retries_after_an_empty_queue(monkeypatch) -> None:
     rec._evt_queue = event_queue  # type: ignore[assignment]
     rec._process_loop()
     assert event_queue.calls == 2
+
+
+@pytest.mark.parametrize("handler", ["_handle_key", "_handle_mouse", "_flush_text"])
+def test_processor_failure_blocks_wait_and_partial_script(monkeypatch, tmp_path, caplog, handler):
+    rec = Recorder(pid=100)
+    failure = ValueError("synthetic-sensitive-payload")
+    flush = Mock()
+    monkeypatch.setattr(rec, "_flush_text", flush)
+    monkeypatch.setattr(rec, handler, Mock(side_effect=failure))
+    rec._pending_text.append("partial")
+    context = _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False)
+    if handler == "_handle_key":
+        event = ("key", 65, 30, False, False, False, False, 1.0, context)
+    else:
+        event = ("mouse", "click", 1, 2, 1.0, context)
+    rec._evt_queue.put(event)
+    rec._evt_queue.put(event)  # This event must remain unprocessed after the failure.
+    processor = threading.Thread(target=rec._process_loop, daemon=True)
+    rec._proc_thread = processor
+    processor.start()
+    processor.join(2)
+    assert not processor.is_alive()
+    assert rec._processor_error is failure
+    assert rec._stopped.is_set()
+    assert rec._processed == 0
+    assert rec._evt_queue.get_nowait() == event
+
+    output = tmp_path / "recorded.py"
+    output.write_text("keep existing script", encoding="utf-8")
+    for operation in (lambda: rec.wait(0), rec.actions, lambda: rec.generate_code(output)):
+        with pytest.raises(RuntimeError, match="recording is incomplete") as caught:
+            operation()
+        assert caught.value.__cause__ is failure
+    assert rec._proc_thread is None
+    assert output.read_text(encoding="utf-8") == "keep existing script"
+    assert rec._pending_text == ["partial"]
+    assert "synthetic-sensitive-payload" not in caplog.text
+
+
+def test_processor_failure_requests_hook_shutdown_and_wakes_wait(monkeypatch):
+    quit_requested = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        assert quit_requested.wait(2)
+        return 0
+
+    def post_quit(*args):
+        quit_requested.set()
+        return 1
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = Mock(side_effect=post_quit)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec = Recorder(pid=100)
+    failure = ValueError("controlled key handler failure")
+    monkeypatch.setattr(rec, "_handle_key", Mock(side_effect=failure))
+    try:
+        rec.start()
+        rec._evt_queue.put(("key", 65, 30, False, False, False, False, 1.0, None))
+        with pytest.raises(RuntimeError, match="event processor failed") as caught:
+            rec.wait(2)
+        assert caught.value.__cause__ is failure
+        assert rec._proc_thread is None
+        assert not rec._hook_thread.is_alive()
+        assert api.unhooked == [101, 202]
+        api.PostThreadMessageW.assert_called_once_with(
+            rec._hook_thread_id, _recorder._WM_QUIT, 0, 0
+        )
+    finally:
+        quit_requested.set()
+        if rec._hook_thread is not None:
+            rec._hook_thread.join(2)
+        if rec._proc_thread is not None:
+            rec._proc_thread.join(2)
 
 
 def test_handle_mouse_covers_window_lookup_failure_and_app_filter(monkeypatch) -> None:
@@ -1236,6 +1387,10 @@ class _HookAPI:
 
     def UnhookWindowsHookEx(self, handle):  # noqa: N802
         self.unhooked.append(handle)
+        return 1
+
+    def PeekMessageW(self, *args):  # noqa: N802
+        return 0
 
     def CallNextHookEx(self, hook, n_code, w_param, l_param):  # noqa: N802
         return 123
@@ -1321,6 +1476,56 @@ def test_hook_loop_queues_mouse_and_keyboard_events_and_stops_on_ctrl_stop_key(m
     assert events[0][-1] is captured
 
 
+@pytest.mark.parametrize("stop_source", ["request", "hotkey"])
+def test_stopped_callbacks_forward_without_capturing_even_when_quit_post_fails(
+    monkeypatch, stop_source
+):
+    rec = Recorder(pid=100)
+    rec._hook_thread = threading.current_thread()
+    api = _HookAPI({})
+    api.GetAsyncKeyState = Mock(return_value=0x8000)
+    api.PostThreadMessageW = Mock(return_value=0)
+    captured = _recorder._InputContext(11, 100, 12, "Owned", "Dialog", False)
+    keyboard_probe = Mock(return_value=captured)
+    mouse_probe = Mock(return_value=captured)
+    monkeypatch.setattr(_recorder, "_capture_context", keyboard_probe)
+    monkeypatch.setattr(_recorder, "_capture_mouse_context", mouse_probe)
+    monkeypatch.setattr(_recorder, "_HOOKPROC", lambda function: function)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
+
+    def dispatch():
+        before_stop = _recorder._KBDLLHOOKSTRUCT()
+        before_stop.vkCode = ord("A")
+        rec._kbd_cb(_recorder._HC_ACTION, _recorder._WM_KEYDOWN, ctypes.addressof(before_stop))
+        if stop_source == "request":
+            rec._request_stop()
+            assert api.PostThreadMessageW.call_count == _recorder._STOP_POST_ATTEMPTS
+            assert rec._stop_request_error.winerror == 5
+        else:
+            stop = _recorder._KBDLLHOOKSTRUCT()
+            stop.vkCode = rec._stop_vk
+            rec._kbd_cb(_recorder._HC_ACTION, _recorder._WM_KEYDOWN, ctypes.addressof(stop))
+        assert rec._stopped.is_set()
+        # Invalid pointers prove stopped callbacks do not even read input data.
+        for message in (_recorder._WM_KEYDOWN, _recorder._WM_SYSKEYDOWN):
+            assert rec._kbd_cb(_recorder._HC_ACTION, message, 0) == 123
+        for message in (_recorder._WM_LBUTTONDOWN, _recorder._WM_RBUTTONDOWN):
+            assert rec._mouse_cb(_recorder._HC_ACTION, message, 0) == 123
+
+    api.dispatch = dispatch
+    rec._hook_loop()
+    keyboard_probe.assert_called_once_with()
+    mouse_probe.assert_not_called()
+    assert len(api.quit_calls) >= 4  # Callbacks request exit on their own thread.
+    assert api.unhooked == [101, 202]
+    event = rec._evt_queue.get_nowait()
+    assert event[:2] == ("key", ord("A"))
+    assert event[-1] is captured
+    assert rec._evt_queue.get_nowait() is None
+    assert rec._evt_queue.empty()
+
+
 def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None:
     class FullQueue:
         def __init__(self):
@@ -1333,7 +1538,7 @@ def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None
             self.events.append(event)
 
     callbacks: dict[int, object] = {}
-    api = _HookAPI(callbacks, handles=(0, None), message_returns=(1, 0))
+    api = _HookAPI(callbacks, message_returns=(1, 0))
     rec = Recorder()
     full_queue = FullQueue()
     rec._evt_queue = full_queue  # type: ignore[assignment]
@@ -1366,8 +1571,586 @@ def test_hook_loop_handles_full_queue_and_message_loop_exit(monkeypatch) -> None
     assert api.message_calls == 2
     assert api.translated == 1
     assert api.dispatched == 1
-    assert api.unhooked == []
+    assert api.unhooked == [101, 202]
     assert full_queue.events == [None]
+
+
+@pytest.mark.parametrize("handles,unhooked", [((0,), []), ((101, 0), [101])])
+def test_hook_installation_failure_cleans_up_and_signals_waiters(monkeypatch, handles, unhooked):
+    api = _HookAPI({}, handles=handles)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec = Recorder(pid=100)
+    rec._hook_loop()
+    assert isinstance(rec._hook_error, OSError)
+    assert rec._hook_ready.is_set()
+    assert rec._stopped.is_set()
+    assert api.unhooked == unhooked
+    assert api.message_calls == 0
+    assert rec._evt_queue.get_nowait() is None
+
+
+def test_start_reports_hook_installation_failure(monkeypatch):
+    rec = Recorder(pid=100)
+    monkeypatch.setattr(_recorder, "_user32", _HookAPI({}, handles=(101, 0)))
+    with pytest.raises(OSError, match="Could not install recorder hooks") as caught:
+        rec.start()
+    rec._hook_thread.join(2)
+    assert isinstance(caught.value.__cause__, OSError)
+    assert rec._proc_thread is None
+
+
+def test_failed_start_cannot_restart_but_fresh_recorder_can_record_and_stop(monkeypatch):
+    failed = Recorder(pid=100)
+    monkeypatch.setattr(_recorder, "_user32", _HookAPI({}, handles=(0,)))
+    with pytest.raises(OSError, match="Could not install recorder hooks"):
+        failed.start()
+    failed._hook_thread.join(2)
+    original_error = failed._hook_error
+    original_thread = failed._hook_thread
+    assert failed._evt_queue.qsize() == 1  # Sentinel left by failed hook installation.
+
+    quit_requested = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        assert quit_requested.wait(2)
+        return 0
+
+    def post_quit(*args):
+        quit_requested.set()
+        return 1
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = post_quit
+    install = Mock(wraps=api.SetWindowsHookExW)
+    api.SetWindowsHookExW = install
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(_recorder, "_vk_to_sendkeys", lambda *args, **kwargs: "a")
+    with pytest.raises(RuntimeError, match="single-use"):
+        failed.start()
+    install.assert_not_called()
+    assert failed._hook_error is original_error
+    assert failed._hook_thread is original_thread
+    assert failed._proc_thread is None
+    assert failed._evt_queue.qsize() == 1
+    assert failed._stopped.is_set()
+
+    rec = Recorder(pid=100)
+    try:
+        rec.start()
+        hook = rec._hook_thread
+        processor = rec._proc_thread
+        with pytest.raises(RuntimeError, match="single-use"):
+            rec.start()  # Reject double start without disturbing an active recording.
+        assert rec._hook_thread is hook
+        assert rec._proc_thread is processor
+        assert not rec._stopped.is_set()
+        context = _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False)
+        rec._evt_queue.put(("key", 65, 30, False, False, False, False, 1.0, context))
+        rec.stop()
+        assert rec.wait(0)
+        assert rec._processed == 1
+        assert rec._evt_queue.empty()
+        assert [action.data for action in rec.actions()] == ["a"]
+        with pytest.raises(RuntimeError, match="single-use"):
+            rec.start()  # A completed recording remains available, but cannot restart.
+        assert [action.data for action in rec.actions()] == ["a"]
+        assert install.call_count == 2
+    finally:
+        quit_requested.set()
+        rec.stop()
+
+
+@pytest.mark.parametrize("reader", ["actions", "generate_code"])
+def test_stop_before_start_is_noop_and_active_read_preserves_pending_text(
+    monkeypatch, tmp_path, reader
+):
+    quit_requested = threading.Event()
+    entered = threading.Event()
+    release = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        assert quit_requested.wait(2)
+        return 0
+
+    def post_quit(*args):
+        quit_requested.set()
+        return 1
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = post_quit
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(_recorder, "_vk_to_sendkeys", Mock(side_effect=["a", "b"]))
+    rec = Recorder(pid=100)
+    event_queue = rec._evt_queue
+    rec.stop()
+    rec.stop()
+    assert rec._evt_queue is event_queue
+    assert event_queue.empty()
+    assert not rec._stopped.is_set()
+    assert not rec._started
+    original_key = rec._handle_key
+    calls = 0
+
+    def blocked_key(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            entered.set()
+            assert release.wait(2)
+        original_key(*args, **kwargs)
+
+    monkeypatch.setattr(rec, "_handle_key", blocked_key)
+    output = tmp_path / "recorded.py"
+    output.write_text("keep existing script", encoding="utf-8")
+    try:
+        rec.start()
+        context = _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False)
+        event = ("key", 65, 30, False, False, False, False, 1.0, context)
+        rec._evt_queue.put(event)
+        rec._evt_queue.put(event)
+        assert entered.wait(2)
+        assert rec._processed == 1
+        assert rec._pending_text == ["a"]
+        with pytest.raises(RuntimeError, match="Stop recording before"):
+            if reader == "actions":
+                rec.actions()
+            else:
+                rec.generate_code(output)
+        assert rec._pending_text == ["a"]
+        assert rec._actions == []
+        assert output.read_text(encoding="utf-8") == "keep existing script"
+        release.set()
+        rec.stop()
+        assert rec.wait(0)
+        assert rec._processed == 2
+        assert [action.data for action in rec.actions()] == ["ab"]
+        assert "'ab'" in rec.generate_code(output)
+        assert rec._evt_queue.empty()
+    finally:
+        release.set()
+        quit_requested.set()
+        rec.stop()
+
+
+@pytest.mark.parametrize("thread_name", ["dolphin-rec-hook", "dolphin-rec-proc"])
+def test_thread_start_failure_stops_hooks_and_rejects_recording(monkeypatch, tmp_path, thread_name):
+    rec = Recorder(pid=100)
+    quit_requested = threading.Event()
+    api = _HookAPI({})
+
+    def get_message(*args):
+        assert quit_requested.wait(2)
+        return 0
+
+    api.GetMessageW = get_message
+    api.PostThreadMessageW = lambda *args: quit_requested.set() or 1
+    monkeypatch.setattr(_recorder, "_user32", api)
+    original_start = threading.Thread.start
+    failure = RuntimeError("cannot create thread")
+
+    def start(thread):
+        if thread.name == thread_name:
+            raise failure
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            rec.start()
+        assert caught.value is failure
+        assert rec._stopped.is_set()
+        assert rec._proc_thread is None
+        if thread_name == "dolphin-rec-proc":
+            assert quit_requested.is_set()
+            assert not rec._hook_thread.is_alive()
+            assert api.unhooked == [101, 202]
+        else:
+            assert rec._hook_thread is None
+            assert api.unhooked == []
+        output = tmp_path / "recorded.py"
+        for operation in (
+            rec.stop,
+            lambda: rec.wait(0),
+            rec.actions,
+            lambda: rec.generate_code(output),
+        ):
+            with pytest.raises(RuntimeError, match="initialization failed") as caught:
+                operation()
+            assert caught.value.__cause__ is failure
+        assert not output.exists()
+    finally:
+        quit_requested.set()
+        if rec._hook_thread is not None:
+            rec._hook_thread.join(2)
+
+
+@pytest.mark.parametrize(
+    "options", [{}, {"pid": 100, "global_recording": True}, {"app": "missing"}]
+)
+def test_initialization_failure_rejects_completion_and_preserves_output(
+    monkeypatch, tmp_path, options
+):
+    failure = ValueError("app not found")
+    monkeypatch.setattr(_recorder, "_resolve_app_pid", Mock(side_effect=failure))
+    rec = Recorder(**options)
+    output = tmp_path / "recorded.py"
+    output.write_text("existing script", encoding="utf-8")
+    with pytest.raises(ValueError) as caught:
+        rec.start()
+    original_error = caught.value
+    for operation in (
+        rec.stop,
+        lambda: rec.wait(0),
+        rec.actions,
+        lambda: rec.generate_code(output),
+    ):
+        with pytest.raises(RuntimeError, match="initialization failed") as caught:
+            operation()
+        assert caught.value.__cause__ is original_error
+    assert output.read_text(encoding="utf-8") == "existing script"
+    with pytest.raises(RuntimeError, match="single-use"):
+        rec.start()
+
+
+def test_wait_synchronizes_with_processor_start_after_hook_exits(monkeypatch):
+    rec = Recorder(pid=100)
+    processor_starting = threading.Event()
+    release_start = threading.Event()
+    waiter_locking = threading.Event()
+    wait_finished = threading.Event()
+    lock = threading.Lock()
+    errors = []
+    results = []
+
+    class ObservedLock:
+        def __enter__(self):
+            if threading.current_thread().name == "recorder-waiter":
+                waiter_locking.set()
+            lock.acquire()
+
+        def __exit__(self, *args):
+            lock.release()
+
+    rec._start_lock = ObservedLock()
+    monkeypatch.setattr(_recorder, "_user32", _HookAPI({}, message_returns=(0,)))
+    original_start = threading.Thread.start
+
+    def start(thread):
+        if thread.name == "dolphin-rec-proc":
+            processor_starting.set()
+            assert release_start.wait(2)
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+
+    def start_recording():
+        try:
+            rec.start()
+        except Exception as exc:
+            errors.append(exc)
+
+    def wait_recording():
+        try:
+            results.append(rec.wait(2))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            wait_finished.set()
+
+    starter = threading.Thread(target=start_recording)
+    waiter = threading.Thread(target=wait_recording, name="recorder-waiter")
+    try:
+        starter.start()
+        assert processor_starting.wait(2)
+        assert rec._stopped.wait(2)
+        waiter.start()
+        assert waiter_locking.wait(2)
+        assert not wait_finished.is_set()
+        release_start.set()
+        starter.join(2)
+        waiter.join(2)
+        assert not starter.is_alive()
+        assert not waiter.is_alive()
+        assert errors == []
+        assert results == [True]
+        assert rec.actions() == []
+    finally:
+        release_start.set()
+        starter.join(2)
+        if waiter.ident is not None:
+            waiter.join(2)
+        rec.stop()
+
+
+def test_start_timeout_stops_capture_without_starting_processor(monkeypatch):
+    rec = Recorder(pid=100)
+    hook_thread = Mock(spec=threading.Thread)
+    hook_thread.is_alive.return_value = False
+    make_thread = Mock(return_value=hook_thread)
+    ready_wait = Mock(return_value=False)
+    monkeypatch.setattr(threading, "Thread", make_thread)
+    monkeypatch.setattr(rec._hook_ready, "wait", ready_wait)
+
+    with pytest.raises(TimeoutError, match="Recorder hooks did not initialize"):
+        rec.start()
+
+    ready_wait.assert_called_once_with(5.0)
+    hook_thread.start.assert_called_once_with()
+    assert make_thread.call_count == 1
+    assert rec._proc_thread is None
+    assert rec._stopped.is_set()
+    hook_thread.join.assert_called_once_with(_recorder._PROC_JOIN_TIMEOUT)
+    assert rec._evt_queue.empty()
+
+
+def test_unhook_failure_still_removes_remaining_hook_and_signals_completion(monkeypatch):
+    api = _HookAPI({}, message_returns=(0,))
+    unhook = Mock(side_effect=[0, 1])
+    api.UnhookWindowsHookEx = unhook
+    error = Mock()
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(_recorder._log, "error", error)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
+    rec = Recorder(pid=100)
+
+    rec._hook_loop()
+
+    assert [call.args for call in unhook.call_args_list] == [(101,), (202,)]
+    error.assert_called_once_with("Could not remove recorder hook: %s", rec._hook_error)
+    assert rec._hook_error.winerror == 5
+    assert rec._stopped.is_set()
+    assert rec._hook_ready.is_set()
+    assert rec._evt_queue.get_nowait() is None
+    assert rec._evt_queue.empty()
+    with pytest.raises(OSError, match="failed during recording") as caught:
+        rec.wait(0)
+    assert caught.value.__cause__ is rec._hook_error
+
+
+def test_cleanup_failures_preserve_original_hook_error(monkeypatch):
+    api = _HookAPI({}, message_returns=(-1,))
+    api.UnhookWindowsHookEx = Mock(return_value=0)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(ctypes, "get_last_error", Mock(side_effect=[6, 5, 87]))
+    rec = Recorder(pid=100)
+    rec._hook_loop()
+    assert rec._hook_error.winerror == 6
+    assert len(rec._hook_error.__notes__) == 2
+    assert api.UnhookWindowsHookEx.call_count == 2
+    with pytest.raises(OSError) as caught:
+        rec.wait(0)
+    assert caught.value.__cause__ is rec._hook_error
+
+
+@pytest.mark.parametrize("reader", ["stop", "wait", "actions", "generate_code"])
+@pytest.mark.parametrize("state", ["queued", "mid_event", "idle"])
+def test_stalled_drain_cannot_report_success_or_generate_partial_code(
+    monkeypatch, tmp_path, reader, state
+):
+    rec = Recorder(pid=100)
+    rec._started = True  # Model a live session whose worker later stalls.
+    entered = threading.Event()
+    release = threading.Event()
+    rec._evt_queue.put(("key",))
+    rec._pending_text.append("unfinished")
+
+    def blocked_processor():
+        if state != "queued":
+            rec._evt_queue.get_nowait()
+        if state == "idle":
+            rec._proc_idle.set()
+        entered.set()
+        release.wait(2)
+
+    processor = threading.Thread(target=blocked_processor, daemon=True)
+    rec._proc_thread = processor
+    processor.start()
+    assert entered.wait(2)
+    rec._stopped.set()
+    monkeypatch.setattr(rec, "_join_processor", lambda: Recorder._join_processor(rec, timeout=0.01))
+    output = tmp_path / "incomplete.py"
+    try:
+        with pytest.raises(TimeoutError, match="recording is incomplete"):
+            if reader == "generate_code":
+                rec.generate_code(output)
+            else:
+                getattr(rec, reader)()
+        assert not output.exists()
+        assert rec._pending_text == ["unfinished"]
+        assert rec._actions == []
+    finally:
+        release.set()
+        processor.join(2)
+
+
+def test_wait_does_not_drain_until_hook_producer_has_finished():
+    rec = Recorder(pid=100)
+    rec._stopped.set()
+    rec._hook_thread = Mock(spec=threading.Thread)
+    rec._hook_thread.is_alive.return_value = True
+    rec._proc_thread = Mock(spec=threading.Thread)
+    with pytest.raises(TimeoutError, match="hook thread did not stop"):
+        rec.wait(0)
+    rec._proc_thread.join.assert_not_called()
+    assert rec._evt_queue.empty()
+
+
+def test_drain_cannot_wait_for_its_own_hook_thread():
+    rec = Recorder(pid=100)
+    rec._stopped.set()
+    rec._hook_thread = threading.current_thread()
+    with pytest.raises(RuntimeError, match="from the hook thread"):
+        rec._join_processor()
+
+
+@pytest.mark.parametrize("event_kind", ["key", "mouse"])
+def test_stop_discards_in_flight_callback_and_drains_already_queued_events(monkeypatch, event_kind):
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    errors = []
+    rec = Recorder(pid=100)
+    api = _HookAPI({})
+    api.GetAsyncKeyState = Mock(return_value=0)
+
+    def capture_context(*args):
+        entered.set()
+        assert release.wait(2)
+        return _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False)
+
+    def dispatch():
+        # An event queued before stop must survive; the blocked callback must not.
+        rec._evt_queue.put(
+            (
+                "key",
+                ord("A"),
+                0,
+                False,
+                False,
+                False,
+                False,
+                1.0,
+                _recorder._InputContext(1, 100, 2, "Owned", "Dialog", False),
+            )
+        )
+        if event_kind == "mouse":
+            mouse = _recorder._MSLLHOOKSTRUCT()
+            rec._mouse_cb(_recorder._HC_ACTION, _recorder._WM_LBUTTONDOWN, ctypes.addressof(mouse))
+            return
+        key = _recorder._KBDLLHOOKSTRUCT()
+        key.vkCode = ord("A")
+        rec._kbd_cb(_recorder._HC_ACTION, _recorder._WM_KEYDOWN, ctypes.addressof(key))
+
+    def stop_recording():
+        try:
+            rec.stop()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    api.dispatch = dispatch
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(_recorder, "_HOOKPROC", lambda function: function)
+    monkeypatch.setattr(_recorder, "_capture_context", capture_context)
+    monkeypatch.setattr(_recorder, "_capture_mouse_context", capture_context)
+    monkeypatch.setattr(_recorder, "_vk_to_sendkeys", lambda *args, **kwargs: "a")
+    stopper = threading.Thread(target=stop_recording, daemon=True)
+    try:
+        rec.start()
+        assert entered.wait(2)
+        stopper.start()
+        assert rec._stopped.wait(2)
+        assert not finished.is_set()
+        release.set()
+        assert finished.wait(2)
+        stopper.join(2)
+        assert errors == []
+        assert rec.wait(0)
+        assert rec._processed == 1
+        assert [action.data for action in rec.actions()] == ["a"]
+        assert rec._evt_queue.empty()
+        assert api.unhooked == [101, 202]
+    finally:
+        release.set()
+        if stopper.ident is not None:
+            stopper.join(2)
+        rec.stop()
+
+
+def test_hook_callback_forwards_pointer_sized_lparam_to_real_winapi():
+    # Negative nCode forwards without dereferencing lParam; no installed hook or
+    # injected input is needed to exercise the actual ctypes boundary.
+    callback = _recorder._HOOKPROC(
+        lambda code, wp, lp: _recorder._user32.CallNextHookEx(None, code, wp, lp)
+    )
+    failures = []
+    previous = sys.unraisablehook
+    try:
+        sys.unraisablehook = failures.append
+        callback(-1, 0, (1 << (ctypes.sizeof(ctypes.c_void_p) * 8 - 2)) + 123)
+    finally:
+        sys.unraisablehook = previous
+    assert not failures
+    assert ctypes.sizeof(_recorder._HOOKPROC._restype_) == ctypes.sizeof(ctypes.c_void_p)
+
+
+@pytest.mark.parametrize("reader", ["stop", "wait", "actions", "generate_code"])
+def test_all_completion_methods_report_message_loop_failure_after_start(
+    monkeypatch, tmp_path, reader
+):
+    release = threading.Event()
+    entered = threading.Event()
+    api = _HookAPI({})
+
+    def fail_after_start(*args):
+        entered.set()
+        assert release.wait(2)
+        return -1
+
+    api.GetMessageW = fail_after_start
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec = Recorder(pid=100)
+    processor = None
+    output = tmp_path / "recorded.py"
+    output.write_text("keep existing script", encoding="utf-8")
+    try:
+        rec.start()
+        processor = rec._proc_thread
+        assert entered.wait(2)
+        assert rec.wait(0) is False
+        rec._pending_text.append("partial")
+        release.set()
+        assert rec._stopped.wait(2)
+        operations = {
+            "stop": rec.stop,
+            "wait": lambda: rec.wait(2),
+            "actions": rec.actions,
+            "generate_code": lambda: rec.generate_code(output),
+        }
+        with pytest.raises(OSError, match="failed during recording") as caught:
+            operations[reader]()
+        assert caught.value.__cause__ is rec._hook_error
+        assert not rec._hook_thread.is_alive()
+        assert not processor.is_alive()
+        assert rec._proc_thread is None
+        assert rec._evt_queue.empty()
+        # Once the worker reference is cleared, subsequent readers must still
+        # reject the failed recording, including stop() -> generate_code().
+        for operation in operations.values():
+            with pytest.raises(OSError, match="failed during recording") as repeated:
+                operation()
+            assert repeated.value.__cause__ is rec._hook_error
+        assert rec._pending_text == ["partial"]
+        assert output.read_text(encoding="utf-8") == "keep existing script"
+    finally:
+        release.set()
+        rec._hook_thread.join(2)
+        if processor is not None:
+            processor.join(2)
+    assert api.unhooked == [101, 202]
 
 
 def test_recorder_detects_double_clicks_and_escapes_window_titles() -> None:
@@ -1504,8 +2287,10 @@ def test_app_resolution_accepts_multiple_windows_of_one_process(monkeypatch):
         (0, "Edit", 3, None),
     ],
 )
+@pytest.mark.parametrize("api_result", [tuple, list])
+@pytest.mark.parametrize("second_identity", [(10, 100), (11, 100), (10, 101)])
 def test_native_event_classification_is_stable_or_unknown(
-    monkeypatch, style, cls, second_focus, expected
+    monkeypatch, style, cls, second_focus, expected, api_result, second_identity
 ):
     gui = SimpleNamespace(
         GetForegroundWindow=lambda: 1,
@@ -1513,10 +2298,20 @@ def test_native_event_classification_is_stable_or_unknown(
         GetWindowLong=lambda hwnd, index: style,
     )
     monkeypatch.setitem(sys.modules, "win32gui", gui)
+    root_reads = 0
+
+    def identity(hwnd):
+        nonlocal root_reads
+        if hwnd == 1:
+            root_reads += 1
+            if root_reads > 1:
+                return api_result(second_identity)
+        return api_result((10, 100))
+
     monkeypatch.setitem(
         sys.modules,
         "win32process",
-        SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: (10, 100)),
+        SimpleNamespace(GetWindowThreadProcessId=identity),
     )
     monkeypatch.setattr(_recorder, "_get_root_hwnd", lambda hwnd: 1)
     monkeypatch.setattr(_recorder, "_get_window_info", lambda hwnd: ("Login", "Dialog"))
@@ -1524,7 +2319,7 @@ def test_native_event_classification_is_stable_or_unknown(
     monkeypatch.setattr(_recorder, "_native_focus", lambda thread: next(focuses))
     context = _recorder._capture_context()
     assert (context.hwnd, context.pid, context.focus) == (1, 100, 2)
-    assert context.password is expected
+    assert context.password is (expected if second_identity == (10, 100) else None)
 
 
 def test_native_query_failure_discards_unverifiable_event(monkeypatch):
