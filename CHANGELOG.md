@@ -57,13 +57,17 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
     accepted as given.
   - `Tree.select_item_by_path` / `expand_item` drive `SysTreeView32` nodes
     through tree-view messages.
+  - `ListBox.items()` / `selected_items()` read `LISTBOX` and `SysListView32`
+    entries, and `Tab.select_tab()` selects a `SysTabControl32` tab by exact
+    text.
   - `menu().item()` resolves native `HMENU` menu bars: `click()` clicks the
     item, `invoke()` sends its `WM_COMMAND`.
   - A UIA type with no Win32 window class (`TreeItem`, `ListItem`,
     `Hyperlink`, …) raises `UnsupportedCapabilityError` immediately, also
     from `exists()`, instead of waiting out the timeout.
-  - `list_box().items()` / `selected_items()` and `tab().select_tab()` still
-    need UIA child items and are not supported on `win32` yet.
+  - `Locator.text()` and `scroll_into_view()` no longer stall for about 5 s
+    per call on `win32`. They probed a UIA pattern on the unresolved
+    `WindowSpecification`, which pywinauto answered with a child-window wait.
 * `playwright_compat.sync_playwright().chromium.connect_over_cdp()` no longer
   fails with Playwright's "Sync API inside the asyncio loop" error when a
   `CDPSession` (for example from `Desktop.launch_electron_cdp`) is already open

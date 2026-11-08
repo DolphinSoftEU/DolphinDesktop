@@ -19,7 +19,7 @@ import pytest
 import dolphin_desktop._element as element_module
 import dolphin_desktop._locator as locator_module
 import dolphin_desktop._win32_criteria as w32
-from dolphin_desktop._element import Menu, MenuItem, Tree
+from dolphin_desktop._element import ListBox, Menu, MenuItem, Tab, Tree
 from dolphin_desktop._exceptions import ElementNotFoundError, UnsupportedCapabilityError
 from dolphin_desktop._locator import Locator
 
@@ -417,3 +417,172 @@ class TestNativeWin32Menu:
         item = Menu(native_menu.window, title="File").item("Show dialog")
         assert isinstance(item, MenuItem)
         assert item._criteria == {"title": "Show dialog", "control_type": "MenuItem"}
+
+
+# List boxes and list views on win32
+
+
+def _element_resolving_to(cls: type, wrapper: object):
+    element = cls(Mock()).timeout(0)
+    element._resolve = Mock(return_value=wrapper)
+    return element
+
+
+def _list_row(text: str, *, selected: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(text=lambda: text, is_selected=lambda: selected)
+
+
+class TestListOnWin32:
+    def _list_box(self, indices: tuple[int, ...] = ()) -> SimpleNamespace:
+        return SimpleNamespace(
+            backend=WIN32,
+            friendly_class_name=lambda: "ListBox",
+            item_texts=Mock(return_value=["Alpha", "Beta"]),
+            selected_indices=Mock(return_value=indices),
+        )
+
+    def _list_view(self, *rows: SimpleNamespace) -> SimpleNamespace:
+        return SimpleNamespace(
+            backend=WIN32,
+            friendly_class_name=lambda: "ListView",
+            item_count=lambda: len(rows),
+            get_item=lambda index: rows[index],
+        )
+
+    def test_list_box_reads_items_and_selection_from_messages(self):
+        element = _element_resolving_to(ListBox, self._list_box((1,)))
+        assert element.items() == ["Alpha", "Beta"]
+        assert element.selected_items() == ["Beta"]
+
+    def test_single_selection_list_box_without_a_selection_is_empty(self):
+        # LB_GETCURSEL answers LB_ERR (-1), which must not index the last item.
+        element = _element_resolving_to(ListBox, self._list_box((-1,)))
+        assert element.selected_items() == []
+
+    def test_list_view_reports_the_first_column_of_each_row(self):
+        wrapper = self._list_view(_list_row("One"), _list_row("Two", selected=True))
+        element = _element_resolving_to(ListBox, wrapper)
+        assert element.items() == ["One", "Two"]
+        assert element.selected_items() == ["Two"]
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            SimpleNamespace(backend=UIA, friendly_class_name=lambda: "ListBox"),
+            SimpleNamespace(backend=WIN32, friendly_class_name=lambda: "ComboBox"),
+            SimpleNamespace(backend=WIN32),
+        ],
+        ids=["uia", "other-win32-class", "no-friendly-name"],
+    )
+    def test_anything_else_keeps_the_ui_automation_path(self, wrapper):
+        assert ListBox._win32_list(wrapper) is None
+
+
+# Tab controls on win32
+
+
+class TestTabOnWin32:
+    def _tabs(self, *texts: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            backend=WIN32,
+            tab_count=lambda: len(texts),
+            get_tab_text=lambda index: texts[index],
+            select=Mock(),
+        )
+
+    def test_tab_is_selected_by_index_of_its_exact_text(self):
+        wrapper = self._tabs("General", "Advanced")
+        tab = _element_resolving_to(Tab, wrapper)
+        assert tab.select_tab("Advanced") is tab
+        wrapper.select.assert_called_once_with(1)
+
+    def test_mnemonic_does_not_have_to_be_spelled_out(self):
+        wrapper = self._tabs("General", "&Advanced")
+        _element_resolving_to(Tab, wrapper).select_tab("Advanced")
+        wrapper.select.assert_called_once_with(1)
+        wrapper.select.reset_mock()
+        _element_resolving_to(Tab, wrapper).select_tab("&Advanced")
+        wrapper.select.assert_called_once_with(1)
+
+    def test_near_match_is_refused_rather_than_best_matched(self):
+        wrapper = self._tabs("General", "Advanced")
+        tab = _element_resolving_to(Tab, wrapper)
+        with pytest.raises(ElementNotFoundError, match=r"'Gener'.*General.*Advanced"):
+            tab.select_tab("Gener")
+        wrapper.select.assert_not_called()
+
+    def test_uia_tab_keeps_the_tab_item_path(self):
+        item = Mock(name="tab-item")
+        wrapper = SimpleNamespace(
+            backend=UIA, get_tab_text=Mock(), child_window=Mock(return_value=item)
+        )
+        _element_resolving_to(Tab, wrapper).select_tab("General")
+        wrapper.child_window.assert_called_once_with(title="General", control_type="TabItem")
+        item.click_input.assert_called_once_with()
+        wrapper.get_tab_text.assert_not_called()
+
+
+# UIA pattern probes must not stall on a win32 WindowSpecification
+
+
+class _LazySpec:
+    """A WindowSpecification stand-in that records patterns probed on itself.
+
+    A real win32 spec answers ``iface_*`` with ``child_window(best_match=...)``
+    and only fails after its default ~5 s wait, so probing it is the bug.
+    """
+
+    def __init__(self, wrapper: object) -> None:
+        self._wrapper = wrapper
+        self.probed: list[str] = []
+
+    def wrapper_object(self) -> object:
+        return self._wrapper
+
+    @property
+    def iface_text(self) -> object:
+        self.probed.append("iface_text")
+        raise RuntimeError("waited for a child window named iface_text")
+
+    @property
+    def iface_scroll_item(self) -> object:
+        self.probed.append("iface_scroll_item")
+        raise RuntimeError("waited for a child window named iface_scroll_item")
+
+    def window_text(self) -> str:
+        return "ready"
+
+    def set_focus(self) -> None:
+        self.focused = True
+
+
+class TestPatternProbesUseTheWrapper:
+    def _locator(self, spec: _LazySpec) -> Locator:
+        locator = Locator(Mock())
+        locator._resolve = Mock(return_value=spec)
+        locator._resolve_readonly = Mock(return_value=spec)
+        return locator
+
+    def test_text_probes_the_wrapper_and_falls_back_to_the_window_text(self):
+        spec = _LazySpec(SimpleNamespace())
+        assert self._locator(spec).text() == "ready"
+        assert spec.probed == []
+
+    def test_text_still_reads_a_text_pattern_from_the_wrapper(self):
+        pattern = SimpleNamespace(DocumentRange=SimpleNamespace(GetText=lambda _n: "from pattern"))
+        spec = _LazySpec(SimpleNamespace(iface_text=pattern))
+        assert self._locator(spec).text() == "from pattern"
+        assert spec.probed == []
+
+    def test_scroll_into_view_probes_the_wrapper(self):
+        scroll = Mock()
+        spec = _LazySpec(SimpleNamespace(iface_scroll_item=SimpleNamespace(ScrollIntoView=scroll)))
+        self._locator(spec).scroll_into_view()
+        scroll.assert_called_once_with()
+        assert spec.probed == []
+
+    def test_scroll_into_view_without_the_pattern_falls_back_to_focus(self):
+        spec = _LazySpec(SimpleNamespace())
+        self._locator(spec).scroll_into_view()
+        assert spec.focused is True
+        assert spec.probed == []

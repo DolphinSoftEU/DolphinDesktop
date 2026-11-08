@@ -63,6 +63,8 @@ win = Desktop.for_legacy_apps().launch("LegacyApp.exe").window(title="Main Windo
 win.edit().set_text("Dolphin")
 win.combo_box().select_item("Premium")
 win.tree().select_item_by_path("Root", "Child")
+win.list_box().items()                    # ["Alpha", "Beta", ...]
+win.tab().select_tab("Advanced")
 win.check_box(name="Remember").exists()   # a BS_CHECKBOX, not the "Save" button
 win.menu("File").item("Show dialog").click()
 win.locator(title="ready", control_type="Static").wait_for()
@@ -93,10 +95,11 @@ their `BS_*` style. The win32 friendly names themselves (`Static`,
   raises `UnsupportedCapabilityError` at once, from `wait_for()` and
   `exists()` alike, instead of timing out. Select such elements by
   `class_name` / `title`, or use the `uia` backend.
-- `select_item()` works on win32 combo and list boxes. `list_box().items()` /
-  `selected_items()` and `tab().select_tab()` still read UIA `ListItem` /
-  `TabItem` children, which win32 list boxes and tab controls do not have;
-  use the `uia` backend for those.
+- `list_box()` reads `items()` and `selected_items()` from a `LISTBOX` or a
+  `SysListView32` (first column of each row) through their own messages, and
+  `select_item()` selects an entry.
+- `tab().select_tab(name)` selects a `SysTabControl32` tab by exact text,
+  ignoring an `&` mnemonic, and the application switches pages as on a click.
 
 ## Inspect The UI Tree
 

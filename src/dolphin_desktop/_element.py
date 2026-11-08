@@ -665,15 +665,54 @@ class ListBox(Element):
         selected = lb.selected_items()
     """
 
+    @staticmethod
+    def _win32_list(element: Any) -> tuple[Any, str] | None:
+        """``(wrapper, friendly class)`` for a win32 list box or list view.
+
+        Their entries are not child windows, so the UIA ``ListItem`` search
+        below finds nothing on win32 (KAN-747); pywinauto reads them with
+        ``LB_*`` / ``LVM_*`` messages instead.
+        """
+        wrapper = _wrapper_of(element)
+        if backend_name(wrapper) != "win32":
+            return None
+        try:
+            kind = str(wrapper.friendly_class_name())
+        except Exception:
+            return None
+        return (wrapper, kind) if kind in ("ListBox", "ListView") else None
+
+    @staticmethod
+    def _win32_list_texts(wrapper: Any, kind: str) -> list[str]:
+        if kind == "ListBox":
+            return [str(text) for text in wrapper.item_texts()]
+        return [str(wrapper.get_item(index).text()) for index in range(wrapper.item_count())]
+
     def items(self) -> list[str]:
-        """Return the text of all list items."""
+        """Return the text of all list items.
+
+        On win32 a list view reports the first column of each row.
+        """
         element = self._resolve()
+        win32_list = self._win32_list(element)
+        if win32_list is not None:
+            return self._win32_list_texts(*win32_list)
         children = element.children(control_type="ListItem")
         return [c.window_text() for c in children]
 
     def selected_items(self) -> list[str]:
         """Return the text of currently selected list items."""
         element = self._resolve()
+        win32_list = self._win32_list(element)
+        if win32_list is not None:
+            wrapper, kind = win32_list
+            texts = self._win32_list_texts(wrapper, kind)
+            if kind == "ListBox":
+                # A single-selection list box reports LB_ERR (-1) for "none".
+                return [texts[i] for i in wrapper.selected_indices() if 0 <= i < len(texts)]
+            return [
+                texts[index] for index in range(len(texts)) if wrapper.get_item(index).is_selected()
+            ]
         result = []
         for child in element.children(control_type="ListItem"):
             try:
@@ -704,6 +743,10 @@ class Tab(Element):
         Raises :class:`ElementNotFoundError` when no tab page matches *name*.
         """
         element = self._resolve()
+        wrapper = _wrapper_of(element)
+        if backend_name(wrapper) == "win32" and callable(getattr(wrapper, "get_tab_text", None)):
+            self._select_win32_tab(wrapper, name)
+            return self
         try:
             element.child_window(title=name, control_type="TabItem").click_input()
             return self
@@ -719,6 +762,24 @@ class Tab(Element):
         raise ElementNotFoundError(
             f"Tab page {name!r} not found in {self._criteria!r} "
             f"(searched TabItem children and every child's visible text)"
+        )
+
+    def _select_win32_tab(self, wrapper: Any, name: str) -> None:
+        """Select a ``SysTabControl32`` tab by exact text (KAN-747).
+
+        Its tabs are not child windows, so the ``TabItem`` search cannot see
+        them. pywinauto's ``select(text)`` best-matches the text and could pick
+        a different tab, so the index is found here by exact text (ignoring an
+        ``&`` mnemonic) and selected by index. ``TCM_SETCURFOCUS`` raises
+        ``TCN_SELCHANGE``, so the application switches pages as on a click.
+        """
+        texts = [str(wrapper.get_tab_text(index)) for index in range(wrapper.tab_count())]
+        for index, text in enumerate(texts):
+            if text == name or _menu_text_key(text) == name:
+                wrapper.select(index)
+                return
+        raise ElementNotFoundError(
+            f"Tab page {name!r} not found in {self._criteria!r} (tabs: {texts})"
         )
 
 

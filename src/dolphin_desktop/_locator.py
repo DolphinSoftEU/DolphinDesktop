@@ -1531,7 +1531,8 @@ class Locator:
         # (iface_scroll_item) when available, falling back to set_focus(), which
         # also brings the element into view for most scrollable containers.
         try:
-            element.iface_scroll_item.ScrollIntoView()
+            # On the wrapper, for the reason given in text().
+            _wrapper_of(element).iface_scroll_item.ScrollIntoView()
         except Exception:
             try:
                 element.set_focus()
@@ -1549,7 +1550,11 @@ class Locator:
         an empty string, so we fall back to select-all + clipboard.
         """
         element = self._resolve_readonly()
-        pattern_text = _read_text_via_pattern(element)
+        # Probe the pattern on the wrapper, never on a WindowSpecification: a
+        # win32 spec answers an unknown attribute such as ``iface_text`` with a
+        # ``child_window(best_match=...)`` lookup that waits out its default
+        # timeout (~5 s) before failing (KAN-747).
+        pattern_text = _read_text_via_pattern(_wrapper_of(element))
         if pattern_text is not None:
             return pattern_text
         t = element.window_text()

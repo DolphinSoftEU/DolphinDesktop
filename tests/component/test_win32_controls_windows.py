@@ -1,9 +1,10 @@
 """KAN-747: Window convenience controls against a real classic Win32 form.
 
 ``Desktop.for_legacy_apps()`` drives ``tests/component/_win32_controls_window.py``
-(plain EDIT / COMBOBOX / SysTreeView32 / BUTTON / STATIC windows and a native
-HMENU) through the same ``Window.edit()`` / ``combo_box()`` / ``tree()`` /
-``button()`` / ``check_box()`` / ``menu()`` calls a UIA test would use.
+(plain EDIT / COMBOBOX / SysTreeView32 / LISTBOX / SysTabControl32 / BUTTON /
+STATIC windows and a native HMENU) through the same ``Window.edit()`` /
+``combo_box()`` / ``tree()`` / ``list_box()`` / ``tab()`` / ``button()`` /
+``check_box()`` / ``menu()`` calls a UIA test would use.
 Every action is message-based (no mouse or keyboard input), and each one is
 verified through the status label the AUT updates from its own event
 handlers. The WinForms flavour of the same contract is DESKTOP-145 in the
@@ -18,12 +19,14 @@ import pytest
 from tests.component._win32_controls_window import (
     COMBO_ITEMS,
     ID_STATUS,
+    LIST_ITEMS,
     STATUS_READY,
     WINDOW_TITLE,
 )
 
 from dolphin_desktop import (
     Desktop,
+    ElementNotFoundError,
     UnsupportedCapabilityError,
     dirname,
     path_join,
@@ -49,10 +52,7 @@ def window():
 
 
 def _status(window) -> str:
-    # value() falls back to the window text at once on win32; text() first
-    # probes a UIA TextPattern, which a win32 spec answers only after its
-    # default 5 s child-window wait.
-    return window.locator(control_id=ID_STATUS).value()
+    return window.locator(control_id=ID_STATUS).text()
 
 
 def _wait_status(window, expected: str, timeout: float = 5.0) -> None:
@@ -114,3 +114,34 @@ def test_type_without_a_win32_class_fails_at_once(window) -> None:
     with pytest.raises(UnsupportedCapabilityError):
         window.locator(control_type="ListItem").exists(timeout=10)
     assert time.monotonic() - started < 5
+
+
+def test_list_box_items_and_selection_on_win32(window) -> None:
+    list_box = window.list_box()
+    list_box.wait_for(state="visible", timeout=5)
+    assert list_box.items() == list(LIST_ITEMS)
+    assert list_box.selected_items() == []
+
+    list_box.select_item(LIST_ITEMS[1])
+    assert list_box.selected_items() == [LIST_ITEMS[1]]
+    _wait_status(window, f"list={LIST_ITEMS[1]}")
+
+
+def test_tab_is_selected_by_exact_text_on_win32(window) -> None:
+    tabs = window.tab()
+    tabs.wait_for(state="visible", timeout=5)
+    # "&Advanced": the mnemonic does not have to be spelled out.
+    tabs.select_tab("Advanced")
+    _wait_status(window, "tab=Advanced")
+    tabs.select_tab("General")
+    _wait_status(window, "tab=General")
+    with pytest.raises(ElementNotFoundError, match="General"):
+        tabs.select_tab("Missing")
+
+
+def test_text_reads_a_win32_label_without_a_pattern_timeout(window) -> None:
+    status = window.locator(control_id=ID_STATUS)
+    status.wait_for(timeout=5)
+    started = time.monotonic()
+    assert status.text() == STATUS_READY
+    assert time.monotonic() - started < 2
