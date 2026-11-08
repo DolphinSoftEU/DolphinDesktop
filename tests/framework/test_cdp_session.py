@@ -32,6 +32,7 @@ from dolphin_desktop._cdp import (
     is_cdp_available,
 )
 from dolphin_desktop._exceptions import DolphinError, ElementNotFoundError, WaitTimeoutError
+from tests.framework._fake_playwright import SECOND_START_ERROR, CountingSyncApi
 
 
 class _FakeConsoleMessage:
@@ -972,6 +973,275 @@ class TestValueAndOptionalDependencyHelpers:
     )
     def test_substring_selector_escapes_parser_and_normalizer_characters(self, text, expected):
         assert _substring_text_selector(text) == expected
+
+
+@pytest.fixture(autouse=True)
+def _isolated_playwright_leases():
+    """Keep the per-thread shared driver from leaking between tests.
+
+    Several tests connect without closing; their fake drivers must not be
+    handed to the next test's ``connect`` on the same thread.
+    """
+    cdp._THREAD_PLAYWRIGHT.lease = None
+    yield
+    cdp._THREAD_PLAYWRIGHT.lease = None
+
+
+def _thread_lease():
+    """The calling thread's current driver lease, or ``None``."""
+    return getattr(cdp._THREAD_PLAYWRIGHT, "lease", None)
+
+
+class TestSharedPlaywrightDriver:
+    """KAN-746: several sessions on one thread share one Playwright driver."""
+
+    def _connect(self, api):
+        with patch.object(cdp, "_require_playwright", return_value=api):
+            return CDPSession.connect("http://127.0.0.1:9222", timeout=1)
+
+    def test_fake_reproduces_playwrights_second_start_error(self):
+        api = CountingSyncApi()
+        api.sync_playwright().start()
+        with pytest.raises(RuntimeError, match=re.escape(SECOND_START_ERROR)):
+            api.sync_playwright().start()
+
+    def test_second_session_on_the_same_thread_reuses_the_running_driver(self):
+        api = CountingSyncApi()
+        first = self._connect(api)
+        second = self._connect(api)
+        assert len(api.drivers) == 1
+        assert first._playwright is second._playwright is api.drivers[0]
+        assert first._browser is not second._browser
+        assert second._page is not first._page
+
+    def test_closing_one_session_leaves_the_other_connected(self):
+        api = CountingSyncApi()
+        first = self._connect(api)
+        second = self._connect(api)
+
+        first.close()
+        api.browsers[0].close.assert_called_once_with()
+        api.browsers[1].close.assert_not_called()
+        api.drivers[0].stop.assert_not_called()
+        assert second._closed is False
+
+        second.close()
+        api.browsers[1].close.assert_called_once_with()
+        api.drivers[0].stop.assert_called_once_with()
+        assert _thread_lease().users == 0
+
+    def test_close_order_does_not_matter_and_repeated_close_releases_once(self):
+        api = CountingSyncApi()
+        first = self._connect(api)
+        second = self._connect(api)
+        second.close()
+        second.close()
+        api.drivers[0].stop.assert_not_called()
+        first.close()
+        first.close()
+        api.drivers[0].stop.assert_called_once_with()
+
+    def test_driver_restarts_after_the_last_session_closed(self):
+        api = CountingSyncApi()
+        self._connect(api).close()
+        again = self._connect(api)
+        assert len(api.drivers) == 2
+        assert again._playwright is api.drivers[1]
+        api.drivers[1].stop.assert_not_called()
+
+    def test_failed_connect_does_not_stop_a_driver_other_sessions_use(self):
+        api = CountingSyncApi()
+        open_session = self._connect(api)
+        api.drivers[0].chromium.connect_over_cdp.side_effect = RuntimeError("refused")
+        with pytest.raises(RuntimeError, match="connect_over_cdp"):
+            self._connect(api)
+        api.drivers[0].stop.assert_not_called()
+        open_session.close()
+        api.drivers[0].stop.assert_called_once_with()
+
+    def test_failed_page_selection_does_not_stop_a_driver_other_sessions_use(self):
+        api = CountingSyncApi()
+        open_session = self._connect(api)
+        with patch.object(CDPSession, "_pick_stable_page", side_effect=RuntimeError("targets")):
+            with pytest.raises(RuntimeError, match="targets"):
+                self._connect(api)
+        api.browsers[1].close.assert_called_once_with()
+        api.drivers[0].stop.assert_not_called()
+        open_session.close()
+        api.drivers[0].stop.assert_called_once_with()
+
+    def test_failing_driver_stop_still_frees_the_thread_for_a_new_driver(self):
+        api = CountingSyncApi()
+        session = self._connect(api)
+        api.drivers[0].stop.side_effect = RuntimeError("driver gone")
+        session.close()
+        assert _thread_lease().users == 0
+        api.running.clear()
+        assert self._connect(api)._playwright is api.drivers[1]
+
+    def test_each_thread_gets_its_own_driver(self):
+        import threading
+
+        api = CountingSyncApi()
+        main_session = self._connect(api)
+        seen: dict[str, object] = {}
+
+        def _other_thread():
+            session = self._connect(api)
+            seen["driver"] = session._playwright
+            session.close()
+            seen["stopped"] = session._playwright.stop.call_count
+
+        worker = threading.Thread(target=_other_thread)
+        worker.start()
+        worker.join()
+
+        assert seen["driver"] is api.drivers[1]
+        assert seen["stopped"] == 1
+        assert main_session._playwright is api.drivers[0]
+        api.drivers[0].stop.assert_not_called()
+
+    def test_abandoned_session_of_a_finished_thread_is_not_inherited(self):
+        """PR #60 review: a worker that exits without closing its session.
+
+        Its driver must not be handed to, or overwritten by, a later thread
+        (which may get the same ident), and nothing outside that session may
+        try to stop it from a foreign thread.
+        """
+        import threading
+
+        api = CountingSyncApi()
+        seen: dict[str, object] = {}
+
+        def _abandoning_worker():
+            seen["abandoned"] = self._connect(api)  # never closed
+
+        def _later_worker():
+            seen["inherited"] = _thread_lease()
+            session = self._connect(api)
+            seen["driver"] = session._playwright
+            session.close()
+
+        for target in (_abandoning_worker, _later_worker):
+            worker = threading.Thread(target=target)
+            worker.start()
+            worker.join()
+
+        abandoned = seen["abandoned"]
+        assert seen["inherited"] is None
+        assert seen["driver"] is api.drivers[1]
+        api.drivers[1].stop.assert_called_once_with()
+        api.drivers[0].stop.assert_not_called()
+        assert abandoned._playwright_lease.users == 1
+        assert _thread_lease() is None
+
+        main_session = self._connect(api)
+        assert main_session._playwright is api.drivers[2]
+        main_session.close()
+        api.drivers[0].stop.assert_not_called()
+
+    def test_close_from_a_foreign_thread_is_refused_and_the_owner_can_still_close(self):
+        """PR #60 review: real Playwright cannot be closed from another thread.
+
+        Real sync objects raise ``greenlet.error`` there and the driver keeps
+        running, so a cross-thread close() that swallowed it would mark the
+        lease dead while its driver lives — and the owner's next connect would
+        hit the very KAN-746 error. close() must refuse before changing state.
+        """
+        import threading
+
+        api = CountingSyncApi()
+        opened, close_now, closed = threading.Event(), threading.Event(), threading.Event()
+        box: dict[str, CDPSession] = {}
+
+        def _owner():
+            box["s"] = self._connect(api)
+            opened.set()
+            close_now.wait(timeout=10)
+            box["s"].close()
+            closed.set()
+
+        owner = threading.Thread(target=_owner, name="cdp-owner")
+        owner.start()
+        try:
+            assert opened.wait(timeout=10)
+            session = box["s"]
+            with pytest.raises(DolphinError, match=r"'cdp-owner', which is still running"):
+                session.close()
+            assert session._closed is False
+            assert session._playwright_lease.users == 1
+            api.browsers[0].close.assert_not_called()
+            api.drivers[0].stop.assert_not_called()
+        finally:
+            close_now.set()
+            owner.join(timeout=10)
+
+        assert closed.is_set()
+        assert session._closed is True
+        api.browsers[0].close.assert_called_once_with()
+        api.drivers[0].stop.assert_called_once_with()
+
+    def test_close_after_the_owner_thread_exited_is_refused_without_side_effects(self):
+        import threading
+
+        api = CountingSyncApi()
+        box: dict[str, CDPSession] = {}
+        worker = threading.Thread(
+            target=lambda: box.setdefault("s", self._connect(api)), name="cdp-gone"
+        )
+        worker.start()
+        worker.join()
+
+        session = box["s"]
+        with pytest.raises(DolphinError, match=r"'cdp-gone', which has already exited"):
+            session.close()
+        assert session._closed is False
+        assert session._playwright_lease.users == 1
+        api.drivers[0].stop.assert_not_called()
+
+    def test_closed_session_close_is_a_no_op_on_any_thread(self):
+        import threading
+
+        api = CountingSyncApi()
+        session = self._connect(api)
+        session.close()
+        errors: list[BaseException] = []
+
+        def _close_again():
+            try:
+                session.close()
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        worker = threading.Thread(target=_close_again)
+        worker.start()
+        worker.join()
+        assert errors == []
+        api.drivers[0].stop.assert_called_once_with()
+
+    def test_releasing_an_already_released_lease_is_a_no_op(self):
+        driver = MagicMock(name="driver")
+        lease = cdp._PlaywrightLease(driver)
+        cdp._release_playwright(lease)
+        cdp._release_playwright(lease)
+        driver.stop.assert_called_once_with()
+        assert lease.users == 0
+
+    def test_stopped_lease_left_in_the_thread_slot_is_replaced_not_revived(self):
+        api = CountingSyncApi()
+        self._connect(api).close()
+        stale = _thread_lease()
+        assert stale.users == 0
+        session = self._connect(api)
+        assert _thread_lease() is not stale
+        assert session._playwright is api.drivers[1]
+        assert stale.users == 0
+
+    def test_session_built_around_its_own_driver_still_stops_it(self):
+        session, _page, _context, _browser, playwright = _completeness_session()
+        assert session._playwright_lease is None
+        session.close()
+        playwright.stop.assert_called_once_with()
 
 
 class TestSessionConstructionAndLifecycle:

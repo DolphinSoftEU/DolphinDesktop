@@ -11,8 +11,10 @@ from unittest.mock import Mock
 
 import pytest
 
+from dolphin_desktop import _cdp as cdp
 from dolphin_desktop import playwright_compat as pwc
-from dolphin_desktop._cdp import CDPStalePageError
+from dolphin_desktop._cdp import CDPSession, CDPStalePageError
+from tests.framework._fake_playwright import CountingSyncApi
 
 
 class _FakePage:
@@ -430,3 +432,48 @@ def test_unsupported_browser_context_and_page_surfaces_raise_not_implemented() -
         context.storage_state()
     with pytest.raises(NotImplementedError, match="tracing"):
         _ = context.tracing
+
+
+# KAN-746: the facade next to a session the library already holds on this thread.
+
+
+@pytest.fixture
+def shared_driver(monkeypatch):
+    api = CountingSyncApi()
+    cdp._THREAD_PLAYWRIGHT.lease = None
+    monkeypatch.setattr(cdp, "_require_playwright", lambda: api)
+    yield api
+    cdp._THREAD_PLAYWRIGHT.lease = None
+
+
+def test_connect_over_cdp_coexists_with_an_open_session_on_the_same_thread(shared_driver):
+    endpoint = "http://127.0.0.1:9222"
+    launched = CDPSession.connect(endpoint, timeout=1)
+
+    with pwc.sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(endpoint, timeout=5_000)
+        page = browser.contexts[0].pages[0]
+        assert page.title() is shared_driver.browsers[1].contexts[0].pages[0].title.return_value
+        browser.close()
+
+    assert len(shared_driver.drivers) == 1
+    shared_driver.browsers[1].close.assert_called_once_with()
+    shared_driver.browsers[0].close.assert_not_called()
+    shared_driver.drivers[0].stop.assert_not_called()
+    assert launched._closed is False
+    assert launched.page is shared_driver.browsers[0].contexts[0].pages[0]
+
+    launched.close()
+    shared_driver.drivers[0].stop.assert_called_once_with()
+
+
+def test_closing_the_launched_session_first_keeps_the_facade_connected(shared_driver):
+    endpoint = "http://127.0.0.1:9222"
+    launched = CDPSession.connect(endpoint, timeout=1)
+    with pwc.sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(endpoint)
+        launched.close()
+        shared_driver.drivers[0].stop.assert_not_called()
+        assert browser.contexts[0].pages[0].url == "app://main.html"
+        browser.close()
+    shared_driver.drivers[0].stop.assert_called_once_with()
