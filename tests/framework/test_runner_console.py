@@ -56,7 +56,7 @@ def test_runner_preserves_result_and_controls_its_tree(tmp_path, launcher, mode)
     _assert_exited(ready["pid"])
 
 
-def _assert_exited(pid: int) -> None:
+def _assert_exited(pid: int, timeout_ms: int = 5000) -> None:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
     kernel32.OpenProcess.restype = wt.HANDLE
@@ -68,12 +68,13 @@ def _assert_exited(pid: int) -> None:
         assert ctypes.get_last_error() == 87  # PID no longer exists
         return
     try:
-        assert kernel32.WaitForSingleObject(handle, 5000) == 0
+        assert kernel32.WaitForSingleObject(handle, timeout_ms) == 0
     finally:
         kernel32.CloseHandle(handle)
 
 
-def test_runner_releases_process_job_and_desktop_handles(monkeypatch):
+@pytest.mark.parametrize("leave_grandchild", [False, True])
+def test_runner_releases_process_job_and_desktop_handles(monkeypatch, tmp_path, leave_grandchild):
     name = f"DolphinRunnerTest_{uuid.uuid4().hex}"
     create_desktop = _runner.create_hidden_desktop
     monkeypatch.setattr(_runner, "DESKTOP_NAME", name)
@@ -93,8 +94,18 @@ def test_runner_releases_process_job_and_desktop_handles(monkeypatch):
         return count.value
 
     before = handle_count()
-    for _ in range(3):
-        assert _runner.run_hidden([sys.executable, "-c", "pass"]) == 0
+    for iteration in range(3):
+        report = tmp_path / f"grandchild-{iteration}.json"
+        code = (
+            "import json, subprocess, sys; from pathlib import Path; "
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+            "Path(sys.argv[1]).write_text(json.dumps({'pid': p.pid}))"
+            if leave_grandchild
+            else "pass"
+        )
+        assert _runner.run_hidden([sys.executable, "-c", code, str(report)]) == 0
+        if leave_grandchild:
+            _assert_exited(json.loads(report.read_text())["pid"], timeout_ms=0)
         desktop = user32.OpenDesktopW(name, 0, False, 1)  # DESKTOP_READOBJECTS
         if desktop:
             user32.CloseDesktop(desktop)

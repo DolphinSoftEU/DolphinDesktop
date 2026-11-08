@@ -417,11 +417,14 @@ def test_owned_job_closes_its_handle_on_configuration_or_command_failure(
     monkeypatch.setattr(_runner._kernel32, "CreateJobObjectW", create)
     monkeypatch.setattr(_runner._kernel32, "SetInformationJobObject", configure)
     monkeypatch.setattr(_runner._kernel32, "CloseHandle", close)
+    cleanup = Mock()
+    monkeypatch.setattr(_runner, "_terminate_and_wait_for_job", cleanup)
     with pytest.raises((OSError, RuntimeError)):
         with _runner._owned_job() as job:
             assert job == 99
             raise RuntimeError("command failed")
     close.assert_called_once_with(99)
+    assert cleanup.call_count == int(configure_ok)
 
 
 def test_console_handler_consumes_only_interrupts_and_is_unregistered(monkeypatch) -> None:

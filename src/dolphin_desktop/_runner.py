@@ -120,6 +120,14 @@ _kernel32.AssignProcessToJobObject.argtypes = [_wt.HANDLE, _wt.HANDLE]
 _kernel32.AssignProcessToJobObject.restype = _wt.BOOL
 _kernel32.TerminateJobObject.argtypes = [_wt.HANDLE, _wt.UINT]
 _kernel32.TerminateJobObject.restype = _wt.BOOL
+_kernel32.QueryInformationJobObject.argtypes = [
+    _wt.HANDLE,
+    ctypes.c_int,
+    ctypes.c_void_p,
+    _wt.DWORD,
+    ctypes.POINTER(_wt.DWORD),
+]
+_kernel32.QueryInformationJobObject.restype = _wt.BOOL
 _kernel32.ResumeThread.argtypes = [_wt.HANDLE]
 _kernel32.ResumeThread.restype = _wt.DWORD
 
@@ -136,6 +144,7 @@ _UOI_FLAGS = 1
 _WSF_VISIBLE = 0x0001
 _CREATE_SUSPENDED = 0x00000004
 _INTERRUPT_GRACE_SECONDS = 10.0
+_JOB_CLEANUP_TIMEOUT_SECONDS = 10.0
 
 
 class _JobBasicLimitInformation(ctypes.Structure):
@@ -163,6 +172,42 @@ class _JobExtendedLimitInformation(ctypes.Structure):
     ]
 
 
+class _JobBasicAccountingInformation(ctypes.Structure):
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_longlong),
+        ("TotalKernelTime", ctypes.c_longlong),
+        ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+        ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+        ("TotalPageFaultCount", _wt.DWORD),
+        ("TotalProcesses", _wt.DWORD),
+        ("ActiveProcesses", _wt.DWORD),
+        ("TotalTerminatedProcesses", _wt.DWORD),
+    ]
+
+
+def _terminate_and_wait_for_job(job: int) -> None:
+    """Drain the job before releasing its handle and the command's desktop.
+
+    TerminateJobObject, like TerminateProcess, can return before processes exit.
+    Keep the job queryable until its active process count reaches zero. A stuck
+    driver must produce a cleanup error rather than an indefinite launcher hang.
+    """
+    if not _kernel32.TerminateJobObject(job, 130):
+        raise ctypes.WinError(ctypes.get_last_error())
+    deadline = time.monotonic() + _JOB_CLEANUP_TIMEOUT_SECONDS
+    accounting = _JobBasicAccountingInformation()
+    while True:
+        if not _kernel32.QueryInformationJobObject(
+            job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if accounting.ActiveProcesses == 0:
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError("command job still has active processes after cleanup timeout")
+        time.sleep(0.01)
+
+
 @contextmanager
 def _owned_job() -> Iterator[int]:
     """Own the entire command tree, including venv redirectors and their children."""
@@ -176,7 +221,10 @@ def _owned_job() -> Iterator[int]:
             job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
         ):
             raise ctypes.WinError(ctypes.get_last_error())
-        yield job
+        try:
+            yield job
+        finally:
+            _terminate_and_wait_for_job(job)
     finally:
         _kernel32.CloseHandle(job)
 

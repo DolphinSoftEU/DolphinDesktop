@@ -50,6 +50,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   interruption; a Windows Job Object then terminates an unresponsive command
   tree with code 130. Venv redirectors and nested runners are covered, and owned
   processes are cleaned up before the hidden desktop handle is closed (KAN-753).
+  Job cleanup now waits for zero active processes before releasing handles;
+  a failed query, termination failure or cleanup timeout is reported as an error.
 
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).

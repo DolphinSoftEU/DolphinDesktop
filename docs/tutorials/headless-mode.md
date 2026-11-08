@@ -15,6 +15,10 @@ an unresponsive command tree is terminated after ten seconds with exit code 130.
 Processes that detach from the console cannot receive its console events, but
 remain in the runner's Windows Job Object for cleanup. Remaining descendants are
 terminated when the command finishes, including processes behind venv redirectors.
+The runner explicitly terminates the job and waits until it reports zero active
+processes before closing the job and hidden desktop handles. Failure to confirm
+termination within ten seconds raises a cleanup error instead of returning a
+successful command result.
 
 ```bash
 dolphin-run pytest tests/ -v
