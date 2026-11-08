@@ -733,8 +733,20 @@ class CDPSession:
             return False
 
     def pages(self) -> list[Page]:
-        """Return every non-closed page across every browser context."""
+        """Return every non-closed page across every browser context.
+
+        Playwright's sync API delivers protocol events (a window the app just
+        opened, a page that closed) only while one of its own calls runs. A
+        caller polling this method between plain ``time.sleep`` calls would
+        therefore get the same list forever. Each call first makes one
+        zero-length round trip to the Playwright driver, which delivers every
+        event the driver has already sent. A new window is listed once
+        Playwright has finished attaching to it, which can take a few round
+        trips after it appears: poll this method, or use :meth:`expect_popup`
+        to wait for a popup. The current page is never changed here.
+        """
         self._require_open()
+        self._dispatch_pending_events()
         result: list[Page] = []
         for ctx in self._browser.contexts:
             for p in ctx.pages:
@@ -744,6 +756,33 @@ class CDPSession:
                 except Exception:
                     continue
         return result
+
+    def _dispatch_pending_events(self) -> None:
+        """Let Playwright deliver the protocol events its driver already sent.
+
+        Same technique as :meth:`_pick_stable_page`: a sync API call (here a
+        zero-length ``wait_for_timeout``, a driver-side timer that never
+        reaches the renderer) pumps Playwright's event loop, while
+        ``time.sleep`` blocks it. The round trip rides on the first live page.
+        Without one, a 1 ms wait for a ``page`` event on the first context
+        pumps the loop instead. Failures are ignored: the caller then reads
+        the state Playwright already has, as before.
+        """
+        contexts = list(self._browser.contexts)
+        for ctx in contexts:
+            for p in ctx.pages:
+                try:
+                    if p.is_closed():
+                        continue
+                    p.wait_for_timeout(0)
+                    return
+                except Exception:
+                    continue
+        if contexts:
+            try:
+                contexts[0].wait_for_event("page", timeout=1)
+            except Exception:
+                pass
 
     def switch_to_page(self, index: int) -> CDPSession:
         """Switch the "current" page to the *index*-th across all contexts.
