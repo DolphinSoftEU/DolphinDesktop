@@ -6,10 +6,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from dolphin_desktop import _backend
+from dolphin_desktop import _backend, pytest_plugin
 
 _PROVIDER = """
 from dolphin_desktop import Backend, Capability
@@ -126,12 +127,51 @@ def test_unknown_backend_is_usage_error_before_test_execution(tmp_path):
     assert "test must not be collected" not in output
 
 
-@pytest.mark.parametrize("backend_id", ["uia", "win32", "qt", "image", "cdp", "auto"])
-def test_cli_accepts_registry_ids_without_constructing_backends(monkeypatch, backend_id):
+@pytest.fixture
+def backend_config():
+    cleanups = []
+    config = SimpleNamespace(
+        backend_id="uia",
+        markers=[],
+        pluginmanager=pytest.PytestPluginManager(),
+        add_cleanup=cleanups.append,
+    )
+    config.getoption = lambda name, default=None: (
+        config.backend_id if name == "--dolphin-backend" else default
+    )
+    config.addinivalue_line = lambda key, value: config.markers.append((key, value))
+    try:
+        yield config
+    finally:
+        for cleanup in reversed(cleanups):
+            cleanup()
+
+
+@pytest.mark.parametrize("backend_id", ["uia", "win32", "qt", "image", "cdp", "auto", "test_ext"])
+def test_configure_accepts_registry_ids_without_constructing_backends(
+    monkeypatch, backend_config, backend_id
+):
     class CannotConstruct:
         def __init__(self):
             raise AssertionError("CLI validation must not construct backends")
 
     monkeypatch.setattr(_backend, "_REGISTRY", {backend_id: CannotConstruct})
     monkeypatch.setattr(_backend, "_load_plugins", lambda: None)
-    _backend._validate_backend_id(backend_id)
+    backend_config.backend_id = backend_id
+    pytest_plugin.pytest_configure(backend_config)
+    assert backend_config.pluginmanager.get_plugin("dolphin_desktop.terminal") is not None
+    assert len(backend_config.markers) == 2
+
+
+def test_configure_rejects_unknown_backend_before_registering_hooks(backend_config):
+    backend_config.backend_id = "nonexistent_backend"
+    with pytest.raises(pytest.UsageError) as error:
+        pytest_plugin.pytest_configure(backend_config)
+
+    message = str(error.value)
+    assert "--dolphin-backend: Unknown backend 'nonexistent_backend'" in message
+    assert "Available backends:" in message
+    assert "uia" in message and "win32" in message
+    assert isinstance(error.value.__cause__, ValueError)
+    assert backend_config.pluginmanager.get_plugin("dolphin_desktop.terminal") is None
+    assert backend_config.markers == []
