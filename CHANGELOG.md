@@ -43,6 +43,16 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* UIA wrapper searches verify uniqueness against the full TreeWalker tree,
+  including when FindAll returns a single partial match (KAN-745).
+
+* TreeWalker-only locator matches now report ambiguity unless `found_index` is
+  explicit, and reject incomplete uniqueness scans (KAN-745).
+
+* Locators under resolved wrappers now try ordered selector and image fallbacks
+  within the shared deadline, record self-healing on success, and report
+  ambiguous matches for both visible and presence searches (KAN-745).
+
 * `playwright_compat.sync_playwright().chromium.connect_over_cdp()` no longer
   fails with Playwright's "Sync API inside the asyncio loop" error when a
   `CDPSession` (for example from `Desktop.launch_electron_cdp`) is already open
