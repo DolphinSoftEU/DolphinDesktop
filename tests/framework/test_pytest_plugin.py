@@ -506,6 +506,7 @@ class _Item:
         self.config = _Options(tmp_path, **options)
         self.location = ("test_x.py", 1, "test_y")
         self.sections: list[tuple[str, str, str]] = []
+        self.user_properties: list[tuple[str, object]] = []
 
     def add_report_section(self, when: str, key: str, content: str) -> None:
         self.sections.append((when, key, content))
@@ -1847,6 +1848,7 @@ def test_regular_failure_report():
             "dolphin_trace",
             "dolphin_video",
         ]
+        assert item.user_properties == report.user_properties
         assert plugin._session_reports[0]["screenshot"] == str(screenshot)
         plugin._session_reports.clear()
 
