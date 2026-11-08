@@ -1004,8 +1004,9 @@ def test_child_resolution_passes_its_deadline_to_a_locator_parent():
 @pytest.mark.parametrize("elapsed", [0, 0.016, 0.25])
 def test_locator_resolve_direct_wrapper_and_window_spec_paths(elapsed):
     raw = FakeElement()
+    raw.backend = SimpleNamespace(name="uia", generic_wrapper_class=Mock())
     with (
-        monotonic_values(100, 100 + elapsed, 100 + elapsed),
+        patch.object(locator_module.time, "monotonic", return_value=100 + elapsed),
         patch.object(locator_module, "_find_under_wrapper", return_value="found") as finder,
     ):
         loc = locator_module.Locator(SimpleNamespace(_get_spec=Mock(return_value=raw)), title="x")
@@ -1013,10 +1014,10 @@ def test_locator_resolve_direct_wrapper_and_window_spec_paths(elapsed):
         finder.assert_called_once()
         args, kwargs = finder.call_args
         assert args[:2] == (raw, {"title": "x"})
-        assert 0 < args[2] <= loc._timeout
-        assert args[2] == pytest.approx(loc._timeout - elapsed)
-        assert kwargs.keys() == {"deadline", "enforce_deadline"}
-        assert kwargs["deadline"] == pytest.approx(100 + loc._timeout)
+        assert args[2] == 0  # Each selector gets one probe per polling iteration.
+        assert kwargs.keys() == {"deadline", "enforce_deadline", "visible_only"}
+        assert kwargs["visible_only"] is True
+        assert kwargs["deadline"] == pytest.approx(100 + elapsed + loc._timeout)
         assert kwargs["enforce_deadline"] is True
 
     spec = FakeSpec()
@@ -2961,3 +2962,134 @@ def test_locator_normalizes_friendly_selector_names() -> None:
         "title": "Save",
         "class_name": "Button",
     }
+
+
+@pytest.mark.parametrize("presence", [False, True])
+@pytest.mark.parametrize("timeout", [0, 1])
+def test_raw_wrapper_uses_ordered_fallbacks_and_records_once(presence, timeout):
+    element = FakeElement(visible=not presence)
+    backend = SimpleNamespace(name="uia", generic_wrapper_class=lambda info: element)
+    parent = SimpleNamespace(backend=backend)
+    loc = locator_module.Locator(
+        resolved(parent),
+        auto_id="old",
+        fallback=[{"auto_id": "missing"}, {"auto_id": "new"}, {"auto_id": "unused"}],
+    ).timeout(timeout)
+    with (
+        patch("pywinauto.findwindows.find_elements", side_effect=[[], [], [object()]]) as find,
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        patch("dolphin_desktop._selfheal.record_fallback") as record,
+    ):
+        result = loc._resolve_presence() if presence else loc._resolve()
+    assert result is element
+    assert [c.kwargs["auto_id"] for c in find.call_args_list] == ["old", "missing", "new"]
+    assert all(c.kwargs["visible_only"] is not presence for c in find.call_args_list)
+    record.assert_called_once_with({"auto_id": "old"}, {"auto_id": "new"})
+
+
+@pytest.mark.parametrize("presence", [False, True])
+@pytest.mark.parametrize("ambiguous_selector", ["old", "new"])
+def test_raw_wrapper_ambiguity_stops_fallbacks(presence, ambiguous_selector):
+    parent = SimpleNamespace(backend=SimpleNamespace(name="uia", generic_wrapper_class=Mock()))
+    loc = locator_module.Locator(
+        resolved(parent),
+        auto_id="old",
+        fallback=[{"auto_id": "new"}, {"auto_id": "unused"}],
+    ).timeout(0)
+
+    def search(**criteria):
+        return [object(), object()] if criteria["auto_id"] == ambiguous_selector else []
+
+    with (
+        patch("pywinauto.findwindows.find_elements", side_effect=search) as find,
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        patch("dolphin_desktop._selfheal.record_fallback") as record,
+        pytest.raises(AmbiguousMatchError, match="found_index"),
+    ):
+        loc._resolve_presence() if presence else loc._resolve()
+    assert find.call_count == (1 if ambiguous_selector == "old" else 2)
+    record.assert_not_called()
+
+
+@pytest.mark.parametrize("presence", [False, True])
+def test_raw_wrapper_image_fallback_and_template_error(presence):
+    parent = SimpleNamespace(backend=SimpleNamespace(name="uia", generic_wrapper_class=Mock()))
+    image = SimpleNamespace(
+        _template_path="save.png", find_with_size=Mock(return_value=(1, 2, 3, 4))
+    )
+    loc = locator_module.Locator(
+        resolved(parent),
+        auto_id="old",
+        fallback=[{"auto_id": "new"}],
+        image_fallback=image,
+    ).timeout(0)
+    resolve = loc._resolve_presence if presence else loc._resolve
+    with (
+        patch("pywinauto.findwindows.find_elements", return_value=[]) as find,
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        patch("dolphin_desktop._selfheal.record_fallback") as record,
+    ):
+        result = resolve()
+        from dolphin_desktop._image import _ImageElement
+
+        assert isinstance(result, _ImageElement)
+        assert find.call_count == 2
+        record.assert_called_once_with({"auto_id": "old"}, {"image": "save.png"})
+        image.find_with_size.side_effect = FileNotFoundError("missing")
+        with pytest.raises(FileNotFoundError, match=r"save\.png"):
+            resolve()
+
+
+@pytest.mark.parametrize("presence", [False, True])
+@pytest.mark.parametrize("late_selector", ["old", "new"])
+def test_raw_wrapper_deadline_rejects_late_matches(presence, late_selector):
+    clock = [0.0]
+    parent = SimpleNamespace(backend=SimpleNamespace(name="uia", generic_wrapper_class=Mock()))
+    loc = locator_module.Locator(
+        resolved(parent),
+        auto_id="old",
+        fallback=[{"auto_id": "new"}],
+    ).timeout(1)
+
+    def search(**criteria):
+        if criteria["auto_id"] == late_selector:
+            clock[0] = 2.0
+            return [object()]
+        return []
+
+    with (
+        patch.object(locator_module.time, "monotonic", side_effect=lambda: clock[0]),
+        patch("pywinauto.findwindows.find_elements", side_effect=search) as find,
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        patch("dolphin_desktop._selfheal.record_fallback") as record,
+        pytest.raises(ElementNotFoundError),
+    ):
+        loc._resolve_presence() if presence else loc._resolve()
+    assert find.call_count == (1 if late_selector == "old" else 2)
+    record.assert_not_called()
+
+
+@pytest.mark.parametrize("presence", [False, True])
+def test_raw_wrapper_missing_and_retry_until_fallback_appears(presence):
+    element = FakeElement()
+    parent = SimpleNamespace(
+        backend=SimpleNamespace(name="uia", generic_wrapper_class=lambda _: element)
+    )
+    loc = locator_module.Locator(
+        resolved(parent),
+        auto_id="old",
+        fallback=[{"auto_id": "new"}],
+    ).timeout(0)
+    with (
+        patch("pywinauto.findwindows.find_elements", return_value=[]) as find,
+        patch.object(locator_module, "_tree_walk_find", return_value=None),
+        patch("dolphin_desktop._selfheal.record_fallback") as record,
+    ):
+        with pytest.raises(ElementNotFoundError):
+            loc._resolve_presence() if presence else loc._resolve()
+        assert find.call_count == 2
+        record.assert_not_called()
+        find.side_effect = [[], [], [], [object()]]
+        loc = loc.timeout(1)
+        assert (loc._resolve_presence() if presence else loc._resolve()) is element
+        record.assert_called_once_with({"auto_id": "old"}, {"auto_id": "new"})

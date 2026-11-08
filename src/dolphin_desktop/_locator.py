@@ -726,26 +726,8 @@ class Locator:
         if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
             raise ElementNotFoundError(_NotFoundMessage(self._criteria, self._timeout, parent_spec))
 
-        # A parent that already resolved to a raw wrapper (a chained
-        # _ResolvedLocator / _QtObjectNameLocator, a fallback or tree-walk
-        # match) has no child_window — that lives on WindowSpecification only.
         if not hasattr(parent_spec, "child_window"):
-            remaining = _remaining_timeout(
-                deadline,
-                self._timeout,
-                enforce=enforce_deadline,
-            )
-            if enforce_deadline and remaining <= 0:
-                raise ElementNotFoundError(
-                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
-                )
-            return _find_under_wrapper(
-                parent_spec,
-                self._criteria,
-                remaining if not single_attempt else 0,
-                deadline=deadline,
-                enforce_deadline=enforce_deadline,
-            )
+            _wrapper_backend(parent_spec, self._criteria)
 
         from pywinauto.findwindows import (  # type: ignore[import-untyped]
             ElementAmbiguousError as _PwAmbiguousError,
@@ -758,25 +740,13 @@ class Locator:
             if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
                 break
             try:
-                criteria = self._criteria
-                if _is_negative_found_index(criteria):
-                    resolved = _resolve_negative_found_index(
-                        parent_spec,
-                        criteria,
-                        timeout=0,
-                        deadline=deadline,
-                        enforce_deadline=enforce_deadline,
-                    )
-                    if isinstance(resolved, dict):
-                        criteria = resolved
-                    elif not _deadline_expired(
-                        deadline,
-                        self._timeout,
-                        enforce=enforce_deadline,
-                    ):
-                        return resolved
-                spec = parent_spec.child_window(**criteria)
-                _wait_until_visible(spec, 0)
+                spec = self._find_candidate(
+                    parent_spec,
+                    self._criteria,
+                    deadline,
+                    enforce_deadline,
+                    visible_only=True,
+                )
                 if not _deadline_expired(
                     deadline,
                     self._timeout,
@@ -804,8 +774,13 @@ class Locator:
                 ):
                     break
                 try:
-                    fb_spec = parent_spec.child_window(**fb)
-                    _wait_until_visible(fb_spec, 0)
+                    fb_spec = self._find_candidate(
+                        parent_spec,
+                        fb,
+                        deadline,
+                        enforce_deadline,
+                        visible_only=True,
+                    )
                     if _deadline_expired(
                         deadline,
                         self._timeout,
@@ -904,6 +879,47 @@ class Locator:
         raise ElementNotFoundError(
             _NotFoundMessage(self._criteria, self._timeout, parent_spec)
         ) from primary_exc
+
+    def _find_candidate(
+        self,
+        parent: Any,
+        criteria: dict[str, Any],
+        deadline: float,
+        enforce_deadline: bool,
+        *,
+        visible_only: bool,
+    ) -> Any:
+        """Probe one selector without consuming the fallback loop's retry budget."""
+        if not hasattr(parent, "child_window"):
+            return _find_under_wrapper(
+                parent,
+                criteria,
+                0,
+                deadline=deadline,
+                enforce_deadline=enforce_deadline,
+                visible_only=visible_only,
+            )
+        if _is_negative_found_index(criteria):
+            resolved = _resolve_negative_found_index(
+                parent,
+                criteria,
+                timeout=0,
+                deadline=deadline,
+                enforce_deadline=enforce_deadline,
+            )
+            if not isinstance(resolved, dict):
+                return resolved
+            criteria = resolved
+        spec = (
+            parent.child_window(**criteria)
+            if visible_only
+            else parent.child_window(visible_only=False, **criteria)
+        )
+        if visible_only:
+            _wait_until_visible(spec, 0)
+        else:
+            _wait_until_present(spec, 0)
+        return spec
 
     def _resolve_readonly(self) -> Any:
         """Resolve without mutating the UI — the path predicates use.
@@ -1596,23 +1612,7 @@ class Locator:
         if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
             raise ElementNotFoundError(_NotFoundMessage(self._criteria, self._timeout, parent_spec))
         if not hasattr(parent_spec, "child_window"):
-            remaining = _remaining_timeout(
-                deadline,
-                self._timeout,
-                enforce=enforce_deadline,
-            )
-            if enforce_deadline and remaining <= 0:
-                raise ElementNotFoundError(
-                    _NotFoundMessage(self._criteria, self._timeout, parent_spec)
-                )
-            return _find_under_wrapper(
-                parent_spec,
-                self._criteria,
-                remaining if not single_attempt else 0,
-                deadline=deadline,
-                enforce_deadline=enforce_deadline,
-                visible_only=False,
-            )
+            _wrapper_backend(parent_spec, self._criteria)
 
         from pywinauto.findwindows import (  # type: ignore[import-untyped]
             ElementAmbiguousError as _PwAmbiguousError,
@@ -1625,29 +1625,13 @@ class Locator:
             if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
                 break
             try:
-                criteria = self._criteria
-                if _is_negative_found_index(criteria):
-                    resolved = _resolve_negative_found_index(
-                        parent_spec,
-                        criteria,
-                        timeout=0,
-                        deadline=deadline,
-                        enforce_deadline=enforce_deadline,
-                    )
-                    if isinstance(resolved, dict):
-                        criteria = resolved
-                    elif not _deadline_expired(
-                        deadline,
-                        self._timeout,
-                        enforce=enforce_deadline,
-                    ):
-                        return resolved
-                # Presence must not require visibility — pywinauto's own
-                # find_elements() defaults visible_only=True and filters a
-                # hidden-but-live control out server-side before dolphin's
-                # own wrapper-liveness check ever runs.
-                spec = parent_spec.child_window(visible_only=False, **criteria)
-                _wait_until_present(spec, 0)
+                spec = self._find_candidate(
+                    parent_spec,
+                    self._criteria,
+                    deadline,
+                    enforce_deadline,
+                    visible_only=False,
+                )
                 if not _deadline_expired(
                     deadline,
                     self._timeout,
@@ -1672,8 +1656,13 @@ class Locator:
                 ):
                     break
                 try:
-                    fb_spec = parent_spec.child_window(visible_only=False, **fb)
-                    _wait_until_present(fb_spec, 0)
+                    fb_spec = self._find_candidate(
+                        parent_spec,
+                        fb,
+                        deadline,
+                        enforce_deadline,
+                        visible_only=False,
+                    )
                     if _deadline_expired(
                         deadline,
                         self._timeout,
@@ -2648,6 +2637,19 @@ def _resolve_negative_found_index(
     ) from last_exc
 
 
+def _wrapper_backend(parent: Any, criteria: dict[str, Any]) -> tuple[str, Any]:
+    """Validate a resolved parent before entering the selector retry loop."""
+    backend_name = getattr(getattr(parent, "backend", None), "name", None)
+    wrapper_cls = getattr(getattr(parent, "backend", None), "generic_wrapper_class", None)
+    if backend_name is None or wrapper_cls is None:
+        raise ElementNotFoundError(
+            f"Cannot search for {criteria!r} inside a "
+            f"{type(parent).__name__!r}: it is not a pywinauto wrapper",
+            hint="chain .locator() off a Window or an unresolved Locator instead",
+        )
+    return backend_name, wrapper_cls
+
+
 def _find_under_wrapper(
     parent: Any,
     criteria: dict[str, Any],
@@ -2665,16 +2667,9 @@ def _find_under_wrapper(
     can omit realized virtualized items from that search, so use the same
     TreeWalker fallback as the WindowSpecification path.
     """
-    from pywinauto.findwindows import find_elements
+    from pywinauto.findwindows import ElementAmbiguousError, find_elements
 
-    backend_name = getattr(getattr(parent, "backend", None), "name", None)
-    wrapper_cls = getattr(getattr(parent, "backend", None), "generic_wrapper_class", None)
-    if backend_name is None or wrapper_cls is None:
-        raise ElementNotFoundError(
-            f"Cannot search for {criteria!r} inside a "
-            f"{type(parent).__name__!r}: it is not a pywinauto wrapper",
-            hint="chain .locator() off a Window or an unresolved Locator instead",
-        )
+    backend_name, wrapper_cls = _wrapper_backend(parent, criteria)
     deadline = time.monotonic() + timeout if deadline is None else deadline
     if enforce_deadline is None:
         enforce_deadline = timeout > 0
@@ -2707,6 +2702,8 @@ def _find_under_wrapper(
                 visible_only=visible_only,
                 **search_criteria,
             )
+            if len(found) > 1 and "found_index" not in criteria:
+                raise ElementAmbiguousError(f"{criteria!r} matched more than one element")
             if negative_index is not None and not tree_index:
                 resolved_index = len(found) + negative_index
                 if 0 <= resolved_index < len(found) and (
@@ -2719,6 +2716,8 @@ def _find_under_wrapper(
                 and (not enforce_deadline or time.monotonic() < deadline)
             ):
                 return wrapper_cls(found[0])
+        except ElementAmbiguousError:
+            raise
         except Exception as exc:
             last_exc = exc
         if backend_name == "uia" and not _deadline_expired(
