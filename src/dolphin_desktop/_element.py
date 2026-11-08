@@ -25,7 +25,8 @@ import time
 from typing import Any
 
 from ._exceptions import ElementNotFoundError, UnsupportedPatternError
-from ._locator import Locator, _require_check_state
+from ._locator import Locator, _require_check_state, _wrapper_of
+from ._win32_criteria import backend_name
 
 
 class Element(Locator):
@@ -136,6 +137,126 @@ class RadioButton(Element):
             return _require_check_state(element, "is_checked") == 1
 
 
+def _menu_text_key(text: str) -> str:
+    """Menu text without its ``&`` mnemonic and ``\\t``-separated shortcut."""
+    return str(text).split("\t", 1)[0].replace("&", "").strip()
+
+
+class _Win32MenuEntry:
+    """Locator-facing view of one item of a native Win32 menu (``HMENU``).
+
+    A ``MainMenu`` / MFC / VB6 menu bar is not a tree of child windows, so the
+    win32 backend cannot ``child_window()`` its items (KAN-747). pywinauto
+    reaches them through the owner window's menu handle instead. This wraps
+    such an item with the few methods :class:`Locator` calls on a resolved
+    element.
+    """
+
+    def __init__(self, item: Any) -> None:
+        self._item = item
+
+    def click_input(self) -> None:
+        """Physical click; pywinauto opens each parent menu on the way."""
+        self._item.click_input()
+
+    def invoke(self) -> None:
+        """Programmatic selection: ``WM_COMMAND`` to the owner, no mouse input."""
+        self._item.select()
+
+    def is_enabled(self) -> bool:
+        return bool(self._item.is_enabled())
+
+    def is_visible(self) -> bool:
+        # A native menu item exists for as long as its menu does, whether or
+        # not the popup is open; that is what visibility means for it here.
+        return True
+
+    def window_text(self) -> str:
+        return _menu_text_key(self._item.text())
+
+    def rectangle(self) -> Any:
+        return self._item.rectangle()
+
+
+def _native_menu_root(locator: Locator) -> tuple[Any, list[str]] | None:
+    """Return ``(window spec, title path)`` when *locator* is a win32 menu.
+
+    ``None`` keeps the UIA path: the chain is not rooted in a win32 window,
+    or some level has no title to match a native menu item by.
+    """
+    titles: list[str] = []
+    node: Any = locator
+    while isinstance(node, (Menu, MenuItem)):
+        title = node._criteria.get("title")
+        if not isinstance(title, str):
+            return None
+        titles.append(title)
+        node = node._parent
+    # The HMENU belongs to the top-level window, whatever locator a Menu was
+    # chained from, so walk on to the root as _root_window_spec() does.
+    while isinstance(node, Locator):
+        node = node._parent
+    try:
+        spec = node._get_spec()
+    except Exception:
+        return None
+    if backend_name(spec) != "win32":
+        return None
+    titles.reverse()
+    return spec, titles
+
+
+def _find_native_menu_item(spec: Any, titles: list[str]) -> Any:
+    """One pass over the owner window's menu; raises ``LookupError`` on a miss."""
+    menu = spec.wrapper_object().menu()
+    if menu is None:
+        raise ElementNotFoundError(
+            "this window has no native Win32 menu",
+            hint=(
+                "a WinForms MenuStrip / ToolStrip or a custom-drawn menu bar is a "
+                "control, not an HMENU: locate it with the uia backend instead"
+            ),
+        )
+    item = None
+    for depth, title in enumerate(titles):
+        if menu is None:
+            raise LookupError(f"{titles[depth - 1]!r} has no submenu")
+        items = menu.items()
+        item = next((i for i in items if _menu_text_key(i.text()) == title), None)
+        if item is None:
+            available = [_menu_text_key(i.text()) for i in items if i.text()]
+            raise LookupError(f"no item {title!r} at this level (available: {available})")
+        menu = item.sub_menu() if depth < len(titles) - 1 else None
+    return item
+
+
+def _resolve_native_menu(
+    locator: Locator,
+    root: tuple[Any, list[str]],
+    *,
+    deadline: float | None,
+    single_attempt: bool,
+) -> _Win32MenuEntry:
+    spec, titles = root
+    if single_attempt:
+        deadline = time.monotonic()
+    elif deadline is None:
+        deadline = time.monotonic() + locator._timeout
+    while True:
+        try:
+            return _Win32MenuEntry(_find_native_menu_item(spec, titles))
+        except ElementNotFoundError:
+            raise
+        except Exception as exc:
+            last_error: Exception = exc
+        if time.monotonic() >= deadline:
+            raise ElementNotFoundError(
+                f"Win32 menu item {' -> '.join(titles)!r} not found after "
+                f"{locator._timeout}s: {last_error}"
+            ) from last_error
+        time.sleep(0.1)
+
+
 class MenuItem(Locator):
     """A menu item that automatically opens its parent menu on resolution.
 
@@ -160,6 +281,14 @@ class MenuItem(Locator):
         *,
         single_attempt: bool = False,
     ) -> Any:
+        native = _native_menu_root(self)
+        if native is not None:
+            return _resolve_native_menu(
+                self,
+                native,
+                deadline=deadline,
+                single_attempt=single_attempt or self._timeout <= 0,
+            )
         inherited_deadline = deadline is not None
         single_attempt = single_attempt or self._timeout <= 0
         from ._locator import (
@@ -257,7 +386,15 @@ class MenuItem(Locator):
         on a menu an action repopulates asynchronously has to wait.
         ``is_visible`` / ``is_enabled`` pre-set it to ``0`` via ``timeout(0)``,
         which keeps them single-pass.
+
+        A native Win32 menu item is read from the menu handle, which opens
+        nothing either.
         """
+        native = _native_menu_root(self)
+        if native is not None:
+            return _resolve_native_menu(
+                self, native, deadline=None, single_attempt=self._timeout <= 0
+            )
         if isinstance(self._parent, (Menu, MenuItem)):
             deadline = time.monotonic() + self._timeout
             while True:
@@ -273,6 +410,22 @@ class MenuItem(Locator):
                 "named differently)"
             )
         return super()._resolve_readonly()
+
+    def _resolve_presence(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        native = _native_menu_root(self)
+        if native is not None:
+            return _resolve_native_menu(
+                self,
+                native,
+                deadline=deadline,
+                single_attempt=single_attempt or self._timeout <= 0,
+            )
+        return super()._resolve_presence(deadline=deadline, single_attempt=single_attempt)
 
     def _find_open_item(self) -> Any | None:
         """One non-mutating pass for this item in an already-open menu.
@@ -371,6 +524,41 @@ class Menu(Element):
         """
         return MenuItem(self, title=text, control_type="MenuItem")
 
+    # A menu-bar entry of a win32 window lives in the window's HMENU, not in
+    # its child windows: resolve it there (KAN-747), everything else as usual.
+
+    def _resolve(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        native = _native_menu_root(self)
+        if native is not None:
+            return _resolve_native_menu(
+                self,
+                native,
+                deadline=deadline,
+                single_attempt=single_attempt or self._timeout <= 0,
+            )
+        return super()._resolve(deadline=deadline, single_attempt=single_attempt)
+
+    def _resolve_presence(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        native = _native_menu_root(self)
+        if native is not None:
+            return _resolve_native_menu(
+                self,
+                native,
+                deadline=deadline,
+                single_attempt=single_attempt or self._timeout <= 0,
+            )
+        return super()._resolve_presence(deadline=deadline, single_attempt=single_attempt)
+
 
 class Tree(Element):
     """A tree view control.
@@ -382,9 +570,48 @@ class Tree(Element):
         tree.select_item_by_path("Root", "Branch", "Leaf")
     """
 
+    def _win32_tree(self, element: Any) -> Any | None:
+        """The pywinauto ``TreeViewWrapper`` behind *element*, on win32 only.
+
+        A Win32 ``SysTreeView32`` (classic, WinForms, VCL) is one window whose
+        nodes are not child windows, so the UIA ``TreeItem`` search below can
+        never see them (KAN-747). pywinauto drives them through ``TVM_*``
+        messages instead.
+        """
+        wrapper = _wrapper_of(element)
+        if backend_name(wrapper) != "win32" or not callable(getattr(wrapper, "get_item", None)):
+            return None
+        return wrapper
+
+    def _win32_tree_item(self, tree: Any, path: tuple[str, ...]) -> Any:
+        """Find the node at *path* by exact text, expanding its ancestors.
+
+        Polls like the UIA path does, for nodes an application adds lazily.
+        """
+        deadline = time.monotonic() + self._timeout
+        while True:
+            try:
+                item = tree.get_item(list(path), exact=True)
+                if item is not None:
+                    return item
+                last_error: Exception = LookupError("the tree has no items")
+            except Exception as exc:
+                last_error = exc
+            if time.monotonic() >= deadline:
+                raise ElementNotFoundError(
+                    f"Tree item {' -> '.join(path)!r} not found after {self._timeout}s: "
+                    f"{last_error}"
+                ) from last_error
+            time.sleep(0.1)
+
     def expand_item(self, *path: str) -> Tree:
         """Expand a tree node by its path of node titles."""
         element = self._resolve()
+        win32_tree = self._win32_tree(element)
+        if win32_tree is not None:
+            if path:
+                self._win32_tree_item(win32_tree, path).expand()
+            return self
         for name in path:
             item = element.child_window(title=name, control_type="TreeItem")
             item.wait("exists visible", timeout=self._timeout)
@@ -401,6 +628,12 @@ class Tree(Element):
         if not path:
             return self
         element = self._resolve()
+        win32_tree = self._win32_tree(element)
+        if win32_tree is not None:
+            # TVM_SELECTITEM raises TVN_SELCHANGED, so the application sees
+            # the same selection-changed event a click would fire.
+            self._win32_tree_item(win32_tree, path).select()
+            return self
         nodes = list(path)
         while len(nodes) > 1:
             name = nodes.pop(0)

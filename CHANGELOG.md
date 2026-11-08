@@ -43,6 +43,27 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* `Window.edit()`, `combo_box()`, `tree()`, `button()`, `check_box()`,
+  `list_box()`, `tab()` and the other typed shortcuts now find their controls
+  on the `win32` backend (`Desktop.for_legacy_apps()`), as does any
+  `locator(control_type=...)` there (KAN-747). Before, they always timed out
+  with `ElementNotFoundError`. The UIA control type they send was compared
+  with the .NET type of a WinForms control, and with an empty string on
+  classic HWND controls.
+  - On `win32`, a UIA control type now matches pywinauto's friendly class
+    name. That covers classic, WinForms, VB6 and VCL class spellings and
+    tells check boxes and radio buttons from push buttons by style.
+  - Win32 friendly names (`Static`, `TreeView`, …) and dotted .NET types are
+    accepted as given.
+  - `Tree.select_item_by_path` / `expand_item` drive `SysTreeView32` nodes
+    through tree-view messages.
+  - `menu().item()` resolves native `HMENU` menu bars: `click()` clicks the
+    item, `invoke()` sends its `WM_COMMAND`.
+  - A UIA type with no Win32 window class (`TreeItem`, `ListItem`,
+    `Hyperlink`, …) raises `UnsupportedCapabilityError` immediately, also
+    from `exists()`, instead of waiting out the timeout.
+  - `list_box().items()` / `selected_items()` and `tab().select_tab()` still
+    need UIA child items and are not supported on `win32` yet.
 * `playwright_compat.sync_playwright().chromium.connect_over_cdp()` no longer
   fails with Playwright's "Sync API inside the asyncio loop" error when a
   `CDPSession` (for example from `Desktop.launch_electron_cdp`) is already open

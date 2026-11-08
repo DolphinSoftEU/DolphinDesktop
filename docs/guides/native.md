@@ -52,6 +52,52 @@ win.get_by_class("Edit").type_text("hello")
 win.get_by_class("Button").click()
 ```
 
+### Convenience controls on the win32 backend
+
+The typed shortcuts locate their controls on `win32` too, for classic HWND
+controls (MFC, VB6, Delphi/VCL) and WinForms alike:
+
+```python
+win = Desktop.for_legacy_apps().launch("LegacyApp.exe").window(title="Main Window")
+
+win.edit().set_text("Dolphin")
+win.combo_box().select_item("Premium")
+win.tree().select_item_by_path("Root", "Child")
+win.check_box(name="Remember").exists()   # a BS_CHECKBOX, not the "Save" button
+win.menu("File").item("Show dialog").click()
+win.locator(title="ready", control_type="Static").wait_for()
+```
+
+The `win32` backend has no UI Automation control types. A UIA-style
+`control_type` (`Edit`, `ComboBox`, `Tree`, `List`, `Button`, `CheckBox`,
+`RadioButton`, `Group`, `Text`, `Tab`, `ToolBar`, `StatusBar`,
+`ProgressBar`, `Slider`, `Spinner`, `Header`, `Calendar`) is matched against
+pywinauto's friendly class name for the window instead. That name covers the
+classic, WinForms (`WindowsForms10.EDIT.*`), VB6 and VCL class spellings, and
+tells check boxes, radio buttons and group boxes apart from push buttons by
+their `BS_*` style. The win32 friendly names themselves (`Static`,
+`TreeView`, `ListBox`, `ListView`, `TabControl`, …) are accepted as
+`control_type` too, and a dotted .NET type such as
+`"System.Windows.Forms.TextBox"` keeps pywinauto's own WinForms meaning.
+
+- `tree()` drives `SysTreeView32` nodes through tree-view messages:
+  `select_item_by_path` selects the node, and the application gets the same
+  selection-changed notification a click produces.
+- `menu()` / `.item()` resolve a native menu bar (`HMENU`) by exact item
+  text, ignoring `&` mnemonics and `\t` shortcuts. `click()` clicks the item
+  with the mouse; `invoke()` sends its `WM_COMMAND` without any input. A
+  WinForms `MenuStrip`/`ToolStrip` is a control, not an `HMENU`; locate it
+  with the `uia` backend instead.
+- A UIA type with no Win32 window class of its own (`MenuItem` outside a
+  menu chain, `TreeItem`, `ListItem`, `Hyperlink`, `Pane`, `Window`, …)
+  raises `UnsupportedCapabilityError` at once, from `wait_for()` and
+  `exists()` alike, instead of timing out. Select such elements by
+  `class_name` / `title`, or use the `uia` backend.
+- `select_item()` works on win32 combo and list boxes. `list_box().items()` /
+  `selected_items()` and `tab().select_tab()` still read UIA `ListItem` /
+  `TabItem` children, which win32 list boxes and tab controls do not have;
+  use the `uia` backend for those.
+
 ## Inspect The UI Tree
 
 ```bash

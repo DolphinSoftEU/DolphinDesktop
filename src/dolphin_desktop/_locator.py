@@ -23,12 +23,32 @@ from ._config import get_timeout as _get_timeout
 from ._exceptions import (
     DolphinError,
     ElementNotFoundError,
+    UnsupportedCapabilityError,
     UnsupportedPatternError,
     WaitTimeoutError,
 )
 from ._helpers import _MISSING, _escape_keys
 from ._keyboard import _post_keys_to_hwnd, _send_keys_on_hidden_desktop
 from ._logging import Secret, unwrap_secret
+from ._win32_criteria import criteria_for_backend, enumeration_criteria
+
+
+def _backend_fallbacks(
+    scope: Any, fallbacks: list[dict[str, Any]]
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Pair each fallback selector with its backend-translated form.
+
+    A fallback whose control type the backend cannot express can never
+    match, so it is dropped here rather than aborting a lookup whose primary
+    selector may still succeed.
+    """
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for fallback in fallbacks:
+        try:
+            pairs.append((fallback, criteria_for_backend(scope, fallback)))
+        except UnsupportedCapabilityError:
+            continue
+    return pairs
 
 
 def _wrapper_of(element: Any) -> Any:
@@ -754,11 +774,16 @@ class Locator:
         primary_exc: Exception | None = None
         from . import _selfheal
 
+        # Translate once, before polling: a selector the backend cannot
+        # express must fail now, not after the whole timeout (KAN-747).
+        search_criteria = criteria_for_backend(parent_spec, self._criteria)
+        fallbacks = _backend_fallbacks(parent_spec, self._fallback)
+
         while True:
             if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
                 break
             try:
-                criteria = self._criteria
+                criteria = search_criteria
                 if _is_negative_found_index(criteria):
                     resolved = _resolve_negative_found_index(
                         parent_spec,
@@ -796,7 +821,7 @@ class Locator:
             except Exception as exc:
                 primary_exc = exc
 
-            for fb in self._fallback:
+            for fb, backend_fb in fallbacks:
                 if _deadline_expired(
                     deadline,
                     self._timeout,
@@ -804,7 +829,7 @@ class Locator:
                 ):
                     break
                 try:
-                    fb_spec = parent_spec.child_window(**fb)
+                    fb_spec = parent_spec.child_window(**backend_fb)
                     _wait_until_visible(fb_spec, 0)
                     if _deadline_expired(
                         deadline,
@@ -868,7 +893,7 @@ class Locator:
             ):
                 tree_result = _tree_walk_find(
                     parent_spec,
-                    self._criteria,
+                    search_criteria,
                     visible_only=True,
                     deadline=deadline if enforce_deadline else None,
                 )
@@ -1621,11 +1646,16 @@ class Locator:
         primary_exc: Exception | None = None
         from . import _selfheal
 
+        # Translate once, before polling: a selector the backend cannot
+        # express must fail now, not after the whole timeout (KAN-747).
+        search_criteria = criteria_for_backend(parent_spec, self._criteria)
+        fallbacks = _backend_fallbacks(parent_spec, self._fallback)
+
         while True:
             if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
                 break
             try:
-                criteria = self._criteria
+                criteria = search_criteria
                 if _is_negative_found_index(criteria):
                     resolved = _resolve_negative_found_index(
                         parent_spec,
@@ -1664,7 +1694,7 @@ class Locator:
             except Exception as exc:
                 primary_exc = exc
 
-            for fb in self._fallback:
+            for fb, backend_fb in fallbacks:
                 if _deadline_expired(
                     deadline,
                     self._timeout,
@@ -1672,7 +1702,7 @@ class Locator:
                 ):
                     break
                 try:
-                    fb_spec = parent_spec.child_window(visible_only=False, **fb)
+                    fb_spec = parent_spec.child_window(visible_only=False, **backend_fb)
                     _wait_until_present(fb_spec, 0)
                     if _deadline_expired(
                         deadline,
@@ -1734,7 +1764,7 @@ class Locator:
             ):
                 tree_result = _tree_walk_find(
                     parent_spec,
-                    self._criteria,
+                    search_criteria,
                     deadline=deadline if enforce_deadline else None,
                 )
                 if tree_result is not None and not _deadline_expired(
@@ -1771,7 +1801,9 @@ class Locator:
             return True
         except AmbiguousMatchError:
             return True
-        except ValueError:
+        except (ValueError, UnsupportedCapabilityError):
+            # A selector the backend cannot express is a usage error, not an
+            # absent element (KAN-747): answering False would hide it.
             raise
         except Exception:
             return False
@@ -2137,11 +2169,14 @@ class Locator:
         """
         self._refresh_object_repository()
         parent_spec = self._get_parent_spec()
+        # On win32 a UIA control type becomes a class predicate that
+        # children()/descendants() would silently ignore; apply it below.
+        search, predicate = enumeration_criteria(parent_spec, self._criteria)
         try:
             if depth is None:
-                elements = parent_spec.children(**self._criteria)
+                elements = parent_spec.children(**search)
             else:
-                elements = parent_spec.descendants(depth=depth, **self._criteria)
+                elements = parent_spec.descendants(depth=depth, **search)
         except TypeError:
             # UIAElementInfo.build_condition() in some pywinauto versions
             # does not accept ``auto_id``.  Search with the criteria that the
@@ -2180,6 +2215,8 @@ class Locator:
                             elements.append(element)
         except Exception:
             elements = []
+        if predicate is not None:
+            elements = [el for el in elements if predicate(el.element_info)]
         return [_ResolvedLocator(el, application=self._application_context()) for el in elements]
 
     def count(self) -> int:
@@ -2600,6 +2637,9 @@ def _resolve_negative_found_index(
 
     index = int(criteria["found_index"])
     match_criteria = {key: value for key, value in criteria.items() if key != "found_index"}
+    # descendants() never applies predicate_func (pywinauto honours it only in
+    # find_elements), so a backend-translated selector is filtered here.
+    predicate = match_criteria.pop("predicate_func", None)
     deadline = time.monotonic() + timeout if deadline is None else deadline
     if enforce_deadline is None:
         enforce_deadline = timeout > 0
@@ -2614,6 +2654,8 @@ def _resolve_negative_found_index(
             matches = _wrapper_object_until(parent_spec, deadline, timeout).descendants(
                 **match_criteria
             )
+            if predicate is not None:
+                matches = [match for match in matches if predicate(match.element_info)]
             resolved_index = len(matches) + index
             if 0 <= resolved_index < len(matches):
                 return {**criteria, "found_index": resolved_index}
@@ -2695,6 +2737,10 @@ def _find_under_wrapper(
         if negative_index is not None
         else criteria
     )
+    # find_elements() applies predicate_func, so the translated selector goes
+    # straight in. Translating before the loop makes an unsupported control
+    # type fail at once (KAN-747).
+    search_criteria = criteria_for_backend(parent, search_criteria)
     while True:
         if enforce_deadline and time.monotonic() >= deadline:
             break
