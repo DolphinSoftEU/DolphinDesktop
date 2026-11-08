@@ -105,3 +105,24 @@ def test_real_locator_wait_for_text_succeeds_after_a_state_change(real_window) -
 
     status = real_window.locator(auto_id=str(ID_STATUS))
     assert status.wait_for_text(STATUS_CLICKED, timeout=5) is status
+
+
+@pytest.mark.parametrize("presence", [False, True])
+def test_real_raw_wrapper_uses_fallback_and_records_once(real_window, monkeypatch, presence):
+    """KAN-745: resolved UIA parents retain selector healing and presence semantics."""
+    from dolphin_desktop import _selfheal
+    from dolphin_desktop._locator import _ResolvedLocator
+
+    events = []
+    monkeypatch.setattr(_selfheal, "record_fallback", lambda *args: events.append(args))
+    parent = _ResolvedLocator(real_window._get_spec().wrapper_object())
+    locator = parent.locator(
+        auto_id="stale-after-refactor",
+        fallback=[{"auto_id": "also-missing"}, {"auto_id": str(ID_CANCEL)}],
+    ).timeout(2)
+
+    if presence:
+        assert locator.exists(timeout=2)
+    else:
+        assert locator.text() == "Cancel"
+    assert events == [({"auto_id": "stale-after-refactor"}, {"auto_id": str(ID_CANCEL)})]
