@@ -18,6 +18,7 @@ import time
 import pytest
 import win32con
 import win32gui
+from pywinauto.controls.menuwrapper import MenuItemNotEnabled
 from tests.component._win32_controls_window import (
     COMBO_ITEMS,
     ID_BUTTON_TABS,
@@ -183,6 +184,82 @@ def test_native_menu_item_is_visible_only_while_its_popup_is_open(window) -> Non
     win32gui.PostMessage(hwnd, win32con.WM_CANCELMODE, 0, 0)
     mark.wait_until_hidden(timeout=10)
     assert not mark.is_visible()
+
+
+def test_all_and_count_apply_every_criterion(window) -> None:
+    window.edit(control_id=ID_EDIT).set_text("Username")
+
+    def count(**criteria) -> int:
+        return window.locator(**criteria).count()
+
+    assert count(control_type="Edit") == 2
+    assert count(control_type="Edit", title="Missing") == 0
+    assert count(control_type="Edit", title="Username") == 1
+    assert count(control_type="Edit", control_id=ID_EDIT) == 1
+    assert count(control_type="Edit", control_id=9999) == 0
+    assert count(control_type="Edit", title_re="User.*") == 1
+    # Not only a translated control_type: these used to return every control.
+    assert count(control_id=ID_EDIT) == 1
+    assert count(control_id=9999) == 0
+    assert count(class_name_re="^ListBox$") == 1
+
+    ids = [
+        item._resolve().control_id()
+        for item in window.locator(control_type="Edit", control_id=ID_EMPTY_EDIT).all()
+    ]
+    assert ids == [ID_EMPTY_EDIT]
+    assert window.locator(control_type="Edit").nth(1).count() == 1
+    assert window.locator(control_type="Edit").nth(9).count() == 0
+
+
+def _control_id(locator) -> int:
+    return locator.timeout(5)._resolve().wrapper_object().control_id()
+
+
+def test_negative_index_counts_the_same_matches_as_the_final_lookup(window) -> None:
+    window.edit(control_id=ID_EDIT).set_text("Username")
+    edits = window.locator(control_type="Edit")
+    assert _control_id(edits.nth(-1)) == ID_EMPTY_EDIT
+    assert _control_id(edits.nth(-2)) == ID_EDIT
+    assert _control_id(window.locator(control_type="Edit", title="Username").nth(-1)) == ID_EDIT
+    assert _control_id(window.locator(control_type="Edit", control_id=ID_EDIT).nth(-1)) == ID_EDIT
+    assert _control_id(window.locator(control_id=ID_EDIT).nth(-1)) == ID_EDIT
+    assert not window.locator(control_type="Edit", control_id=9999).nth(-1).exists(timeout=0)
+
+
+def test_negative_index_skips_a_hidden_control_only_when_visibility_counts(window) -> None:
+    hidden = window.locator(control_id=ID_EMPTY_EDIT)._resolve().wrapper_object().handle
+    win32gui.ShowWindow(hidden, win32con.SW_HIDE)
+    edits = window.locator(control_type="Edit")
+    # The last visible Edit, not an index past the end of the visible ones.
+    assert _control_id(edits.nth(-1)) == ID_EDIT
+    # Presence counts the hidden one: -2 is the first of two.
+    assert edits.nth(-2).exists(timeout=0)
+    assert not edits.nth(-3).exists(timeout=0)
+
+
+def test_checkable_native_menu_item(window) -> None:
+    file_menu = window.menu("File")
+    grid = file_menu.item("Show grid")
+    assert grid.is_checked() is False
+    grid.check()
+    assert grid.is_checked() is True
+    _wait_status(window, "grid=1")
+
+    # Already checked: the command must not be sent again, or it would flip back.
+    file_menu.item("Mark").invoke()
+    _wait_status(window, "menu=mark")
+    grid.check()
+    assert _status(window) == "menu=mark"
+    assert grid.is_checked() is True
+
+    grid.uncheck()
+    assert grid.is_checked() is False
+    _wait_status(window, "grid=0")
+
+    assert file_menu.item("Mark").is_checked() is False
+    with pytest.raises(MenuItemNotEnabled):
+        file_menu.item("Disabled item").check()
 
 
 def test_menu_caption_with_a_literal_ampersand(window) -> None:

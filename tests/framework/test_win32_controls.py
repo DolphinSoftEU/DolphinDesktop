@@ -127,15 +127,25 @@ class TestCriteriaForBackend:
         assert "class_name" in str(caught.value)
         assert "Edit" in str(caught.value)
 
-    def test_enumeration_criteria_splits_the_predicate_off(self, friendly_names):
-        criteria = {"control_type": "Edit", "title": "Name"}
-        assert w32.enumeration_criteria(SimpleNamespace(backend=UIA), criteria) == (
-            criteria,
-            None,
+    def test_find_win32_elements_runs_the_search_child_window_runs(self):
+        parent = object()
+        with patch("pywinauto.findwindows.find_elements", return_value=["match"]) as find:
+            assert w32.find_win32_elements(
+                parent, {"control_id": 7}, visible_only=False, depth=2
+            ) == ["match"]
+        find.assert_called_once_with(
+            parent=parent,
+            backend="win32",
+            depth=2,
+            top_level_only=False,
+            visible_only=False,
+            control_id=7,
         )
-        search, predicate = w32.enumeration_criteria(SimpleNamespace(backend=WIN32), criteria)
-        assert search == {"title": "Name"}
-        assert predicate(_info("Edit")) is True
+
+    def test_find_win32_elements_keeps_a_visibility_the_selector_asked_for(self):
+        with patch("pywinauto.findwindows.find_elements", return_value=[]) as find:
+            w32.find_win32_elements(object(), {"visible_only": True}, visible_only=False)
+        assert find.call_args.kwargs["visible_only"] is True
 
     def test_friendly_class_name_of_a_non_window_is_none(self):
         assert w32.win32_friendly_class_name(object()) is None
@@ -214,27 +224,169 @@ class TestLocatorOnWin32:
             {"auto_id": "renamed"}, {"control_type": "Edit", "title": "x"}
         )
 
-    def test_all_filters_enumerated_children_by_class(self, friendly_names):
-        edit = SimpleNamespace(element_info=_info("Edit"))
-        label = SimpleNamespace(element_info=_info("Static"))
-        second_edit = SimpleNamespace(element_info=_info("Edit"))
-        parent = self._parent(children=Mock(return_value=[edit, label, second_edit]))
-        found = Locator(_window(parent), control_type="Edit", title="x").all()
-        assert [item._element for item in found] == [edit, second_edit]
-        # HwndElementInfo.children() ignores predicate_func, so it is never passed.
-        parent.children.assert_called_once_with(title="x")
-
-    def test_negative_index_counts_only_class_matches(self, friendly_names):
-        edits = [SimpleNamespace(element_info=_info("Edit")) for _ in range(2)]
-        label = SimpleNamespace(element_info=_info("Static"))
-        wrapper = SimpleNamespace(descendants=Mock(return_value=[edits[0], label, edits[1]]))
-        criteria = w32.criteria_for_backend(
-            SimpleNamespace(backend=WIN32), {"control_type": "Edit", "found_index": -1}
+    def _all_parent(self, **attrs) -> SimpleNamespace:
+        wrap = Mock(side_effect=lambda info: ("wrapped", info))
+        return SimpleNamespace(
+            backend=SimpleNamespace(name="win32", generic_wrapper_class=wrap),
+            children=Mock(side_effect=AssertionError("children() ignores criteria")),
+            descendants=Mock(side_effect=AssertionError("descendants() ignores criteria")),
+            **attrs,
         )
+
+    def test_all_sends_every_criterion_to_the_search_the_lookup_uses(self, friendly_names):
+        parent = self._all_parent()
+        infos = [_info("Edit"), _info("Edit")]
+        locator = Locator(_window(parent), control_type="Edit", title="x", control_id=7)
+        with patch("pywinauto.findwindows.find_elements", return_value=infos) as find:
+            found = locator.all()
+        assert [item._element for item in found] == [("wrapped", info) for info in infos]
+        kwargs = find.call_args.kwargs
+        assert kwargs["parent"] is parent
+        assert kwargs["title"] == "x"
+        assert kwargs["control_id"] == 7
+        assert kwargs["predicate_func"](_info("Edit")) is True
+        assert kwargs["predicate_func"](_info("Static")) is False
+        assert "control_type" not in kwargs
+        # all() has always listed hidden controls, and children() its whole subtree.
+        assert kwargs["visible_only"] is False
+        assert kwargs["depth"] is None
+
+    def test_all_without_a_control_type_still_applies_the_criteria(self):
+        parent = self._all_parent()
+        with patch("pywinauto.findwindows.find_elements", return_value=[]) as find:
+            assert Locator(_window(parent), control_id=7).count() == 0
+        assert find.call_args.kwargs["control_id"] == 7
+        assert "predicate_func" not in find.call_args.kwargs
+
+    def test_all_passes_depth_on(self):
+        parent = self._all_parent()
+        with patch("pywinauto.findwindows.find_elements", return_value=[]) as find:
+            Locator(_window(parent), control_id=7).all(depth=2)
+        assert find.call_args.kwargs["depth"] == 2
+
+    @pytest.mark.parametrize(
+        ("index", "expected"), [(0, ["a"]), (2, ["c"]), (-1, ["c"]), (-3, ["a"]), (3, []), (-4, [])]
+    )
+    def test_all_narrows_to_the_nth_match(self, index, expected):
+        parent = self._all_parent()
+        with patch("pywinauto.findwindows.find_elements", return_value=["a", "b", "c"]) as find:
+            found = Locator(_window(parent), class_name="Edit").nth(index).all()
+        assert [item._element for item in found] == [("wrapped", info) for info in expected]
+        assert "found_index" not in find.call_args.kwargs
+
+    def test_all_resolves_a_specification_parent_to_its_wrapper(self):
+        wrapper = self._all_parent()
+
+        class Spec:
+            backend = WIN32
+
+            def wrapper_object(self):
+                return wrapper
+
+        with patch("pywinauto.findwindows.find_elements", return_value=[]) as find:
+            Locator(_window(Spec()), control_id=7).all()
+        assert find.call_args.kwargs["parent"] is wrapper
+
+    def test_all_is_empty_when_the_parent_is_gone(self):
+        class Spec:
+            backend = WIN32
+
+            def wrapper_object(self):
+                raise RuntimeError("window closed")
+
+        with patch("pywinauto.findwindows.find_elements") as find:
+            assert Locator(_window(Spec()), control_id=7).all() == []
+        find.assert_not_called()
+
+    def test_all_reports_a_selector_the_search_rejects(self):
+        parent = self._all_parent()
+        with patch("pywinauto.findwindows.find_elements", side_effect=TypeError("bad keyword")):
+            with pytest.raises(TypeError, match="bad keyword"):
+                Locator(_window(parent), bogus=1).all()
+
+    def test_all_fails_at_once_for_a_type_without_a_win32_class(self):
+        with pytest.raises(UnsupportedCapabilityError):
+            Locator(_window(self._all_parent()), control_type="TreeItem").all()
+
+    def test_uia_all_keeps_children_and_descendants(self):
+        parent = SimpleNamespace(
+            backend=UIA,
+            children=Mock(return_value=[]),
+            descendants=Mock(return_value=[]),
+        )
+        Locator(_window(parent), control_type="Edit").all()
+        parent.children.assert_called_once_with(control_type="Edit")
+        Locator(_window(parent), control_type="Edit").all(depth=2)
+        parent.descendants.assert_called_once_with(depth=2, control_type="Edit")
+
+    @pytest.mark.parametrize("visible_only", [True, False])
+    def test_negative_index_comes_from_the_final_match_set(self, friendly_names, visible_only):
+        wrapper = SimpleNamespace(descendants=Mock(side_effect=AssertionError("ignores criteria")))
+        criteria = w32.criteria_for_backend(
+            SimpleNamespace(backend=WIN32),
+            {"control_type": "Edit", "control_id": 7, "found_index": -1},
+        )
+        with (
+            patch.object(locator_module, "_wrapper_object_until", return_value=wrapper),
+            patch("pywinauto.findwindows.find_elements", return_value=["a", "b"]) as find,
+        ):
+            resolved = locator_module._resolve_negative_found_index(
+                SimpleNamespace(backend=WIN32), criteria, timeout=0, visible_only=visible_only
+            )
+        assert resolved["found_index"] == 1
+        kwargs = find.call_args.kwargs
+        assert kwargs["parent"] is wrapper
+        assert kwargs["control_id"] == 7
+        assert kwargs["visible_only"] is visible_only
+        assert kwargs["predicate_func"] is criteria["predicate_func"]
+        assert "found_index" not in kwargs
+
+    def test_negative_index_past_the_final_matches_does_not_tree_walk(self):
+        wrapper = SimpleNamespace()
+        with (
+            patch.object(locator_module, "_wrapper_object_until", return_value=wrapper),
+            patch("pywinauto.findwindows.find_elements", return_value=["only"]),
+            patch.object(locator_module, "_tree_walk_find") as tree_walk,
+            pytest.raises(Exception, match="negative index"),
+        ):
+            locator_module._resolve_negative_found_index(
+                SimpleNamespace(backend=WIN32), {"title": "x", "found_index": -2}, timeout=0
+            )
+        tree_walk.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("method", "wait", "visible_only"),
+        [
+            ("_resolve", "_wait_until_visible", True),
+            ("_resolve_presence", "_wait_until_present", False),
+        ],
+    )
+    def test_lookup_tells_the_negative_index_which_matches_count(
+        self, friendly_names, method, wait, visible_only
+    ):
+        child = Mock(name="child-spec")
+        parent = self._parent(child_window=Mock(return_value=child))
+        locator = Locator(_window(parent), control_type="Edit").nth(-1)
+        with (
+            patch.object(
+                locator_module,
+                "_resolve_negative_found_index",
+                return_value={"found_index": 0},
+            ) as negative,
+            patch.object(locator_module, wait),
+        ):
+            assert getattr(locator, method)() is child
+        assert negative.call_args.kwargs["visible_only"] is visible_only
+
+    def test_predicate_stays_a_local_filter_on_other_backends(self):
+        keep = SimpleNamespace(element_info=_info("keep"))
+        drop = SimpleNamespace(element_info=_info("drop"))
+        wrapper = SimpleNamespace(descendants=Mock(return_value=[drop, keep]))
+        criteria = {"predicate_func": lambda info: info.friendly == "keep", "found_index": -1}
         with patch.object(locator_module, "_wrapper_object_until", return_value=wrapper):
             resolved = locator_module._resolve_negative_found_index(Mock(), criteria, timeout=0)
-        assert resolved["found_index"] == 1
-        assert "predicate_func" not in wrapper.descendants.call_args.kwargs
+        assert resolved["found_index"] == 0
+        wrapper.descendants.assert_called_once_with()
 
     def test_search_under_a_resolved_win32_wrapper_is_translated(self, friendly_names):
         found = [_info("Edit")]
@@ -323,10 +475,18 @@ OPEN_RECT = SimpleNamespace(left=10, top=20, right=110, bottom=40)
 
 
 class _NativeItem:
-    def __init__(self, text: str, sub_menu: object = None, *, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        text: str,
+        sub_menu: object = None,
+        *,
+        enabled: bool = True,
+        checked: bool = False,
+    ) -> None:
         self._text = text
         self._sub_menu = sub_menu
         self._enabled = enabled
+        self._checked = checked
         self.select = Mock()
         self.click_input = Mock()
         # GetMenuItemRect answers an empty rectangle while the popup is closed.
@@ -341,6 +501,9 @@ class _NativeItem:
 
     def is_enabled(self) -> bool:
         return self._enabled
+
+    def is_checked(self) -> bool:
+        return self._checked
 
 
 class _NativeMenu:
@@ -386,6 +549,46 @@ class TestNativeWin32Menu:
         assert menu.item("Show dialog").exists() is True
         native_menu.show.select.assert_not_called()
         native_menu.show.click_input.assert_not_called()
+
+    @pytest.mark.parametrize(("checked", "state"), [(False, 0), (True, 1)])
+    def test_check_state_comes_from_the_menu_handle(self, checked, state):
+        item = _NativeItem("Grid", checked=checked)
+        window = _menu_window(_NativeMenu(_NativeItem("&View", _NativeMenu(item))))
+        grid = Menu(window, title="View").item("Grid")
+        assert element_module._Win32MenuEntry(item).get_check_state() == state
+        assert grid.is_checked() is checked
+        item.select.assert_not_called()
+        item.click_input.assert_not_called()
+
+    def test_check_and_uncheck_send_the_command_only_when_it_changes_something(self):
+        item = _NativeItem("Grid", checked=False)
+        window = _menu_window(_NativeMenu(_NativeItem("&View", _NativeMenu(item))))
+        grid = Menu(window, title="View").item("Grid")
+
+        grid.uncheck()
+        item.select.assert_not_called()
+        grid.check()
+        item.select.assert_called_once_with()
+        item.click_input.assert_not_called()
+
+        item._checked = True
+        item.select.reset_mock()
+        grid.check()
+        item.select.assert_not_called()
+        grid.uncheck()
+        item.select.assert_called_once_with()
+        item.click_input.assert_not_called()
+
+    def test_check_does_not_fall_back_to_a_click_when_the_item_is_disabled(self):
+        class NotEnabled(Exception):
+            pass
+
+        item = _NativeItem("Grid", enabled=False)
+        item.select.side_effect = NotEnabled("MenuItem Grid is disabled")
+        window = _menu_window(_NativeMenu(_NativeItem("&View", _NativeMenu(item))))
+        with pytest.raises(NotEnabled):
+            Menu(window, title="View").item("Grid").check()
+        item.click_input.assert_not_called()
 
     def test_adapter_reports_text_without_mnemonic_or_shortcut(self, native_menu):
         entry = element_module._Win32MenuEntry(native_menu.show)

@@ -201,22 +201,25 @@ def criteria_for_backend(scope: Any, criteria: dict[str, Any]) -> dict[str, Any]
     return translated
 
 
-def enumeration_criteria(
-    scope: Any, criteria: dict[str, Any]
-) -> tuple[dict[str, Any], Callable[[Any], bool] | None]:
-    """Split translated *criteria* for ``children()`` / ``descendants()`` calls.
+def find_win32_elements(
+    parent: Any,
+    criteria: dict[str, Any],
+    *,
+    visible_only: bool,
+    depth: int | None = None,
+) -> list[Any]:
+    """Return the elements under *parent* that ``child_window(**criteria)`` selects from.
 
-    pywinauto applies ``predicate_func`` only in ``find_elements`` (the
-    ``child_window`` path). ``HwndElementInfo.children()`` honours just
-    ``class_name``, ``title`` and ``control_type`` and silently ignores every
-    other keyword, so a translated selector passed there would match every
-    control. Returns the search keywords plus the predicate the caller must
-    apply to each returned element's ``element_info`` itself (``None`` when
-    nothing was translated).
+    ``HwndElementInfo.children()`` and ``descendants()`` honour only
+    ``class_name``, an exact ``title`` and ``control_type``, and silently ignore
+    every other keyword (``control_id``, ``title_re``, ``class_name_re``,
+    ``predicate_func``...). Counting or listing through them therefore disagrees
+    with the lookup that follows. ``find_elements`` is the search ``child_window``
+    itself runs and it enumerates the same windows, so anything computed from
+    this list holds for the final lookup. *criteria* must not hold ``found_index``.
     """
-    translated = criteria_for_backend(scope, criteria)
-    if translated is criteria:
-        return criteria, None
-    predicate = translated["predicate_func"]
-    search = {key: value for key, value in translated.items() if key != "predicate_func"}
-    return search, predicate
+    from pywinauto.findwindows import find_elements  # type: ignore[import-untyped]
+
+    search = {"top_level_only": False, "visible_only": visible_only, **criteria}
+    found: list[Any] = find_elements(parent=parent, backend="win32", depth=depth, **search)
+    return found

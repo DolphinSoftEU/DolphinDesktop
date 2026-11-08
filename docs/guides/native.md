@@ -93,11 +93,20 @@ their `BS_*` style. The win32 friendly names themselves (`Static`,
   `R&&D` is named `R&D`. `exists()` and `is_enabled()` read the menu whether
   or not it is open. `is_visible()`, `wait_for()` and `wait_until_hidden()`
   mean on screen, and unlike on `uia` they never open the parent menu.
+  `is_checked()` reads a checkable item the same way, and `check()` /
+  `uncheck()` send its `WM_COMMAND` only when the state differs. An application
+  that sets check marks when the popup opens, as MFC `ON_UPDATE_COMMAND_UI`
+  handlers do, reports the state from the last time the popup was open.
 - A UIA type with no Win32 window class of its own (`MenuItem` outside a
   menu chain, `TreeItem`, `ListItem`, `Hyperlink`, `Pane`, `Window`, …)
   raises `UnsupportedCapabilityError` at once, from `wait_for()` and
   `exists()` alike, instead of timing out. Select such elements by
   `class_name` / `title`, or use the `uia` backend.
+- `all()` and `count()` apply every criterion, including `control_id`,
+  `title_re` and `class_name_re`, as does the count behind a negative `nth()`.
+  `all()` and `count()` include hidden controls and every nested level. A
+  negative `nth()` counts what its lookup can select: visible controls for
+  actions, hidden ones too for `exists()`.
 - `list_box()` reads `items()` and `selected_items()` from a `LISTBOX` or a
   `SysListView32` (first column of each row) through their own messages, and
   `select_item()` selects an entry.

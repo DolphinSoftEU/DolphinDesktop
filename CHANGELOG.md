@@ -71,7 +71,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
     entries, and `Tab.select_tab()` selects a `SysTabControl32` tab by exact
     text.
   - `menu().item()` resolves native `HMENU` menu bars: `click()` clicks the
-    item, `invoke()` sends its `WM_COMMAND`.
+    item, `invoke()` sends its `WM_COMMAND`, and `is_checked()` / `check()` /
+    `uncheck()` work on checkable items.
+  - `Locator.all()` and `count()` on `win32` apply every criterion. Before,
+    `control_id`, `title_re`, `class_name_re` and `nth()` were ignored, so
+    `locator(control_id=7).count()` counted every control.
+  - A negative `nth()` on `win32` counts the same matches as the lookup that
+    follows, so it no longer reports a control as missing when other criteria
+    narrow the match or a matching control is hidden.
   - A UIA type with no Win32 window class (`TreeItem`, `ListItem`,
     `Hyperlink`, …) raises `UnsupportedCapabilityError` immediately, also
     from `exists()`, instead of waiting out the timeout.

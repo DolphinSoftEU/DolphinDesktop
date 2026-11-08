@@ -176,6 +176,19 @@ class _Win32MenuEntry:
     def is_enabled(self) -> bool:
         return bool(self._item.is_enabled())
 
+    def get_check_state(self) -> int:
+        """0 or 1 from the ``HMENU``, read without opening the menu."""
+        return int(bool(self._item.is_checked()))
+
+    def toggle(self) -> None:
+        """Flip a checkable item through its command, like :meth:`invoke`.
+
+        ``select()`` sends ``WM_COMMAND`` and waits for it (up to a second), so
+        the application has handled it by the time this returns. A disabled
+        item raises ``MenuItemNotEnabled``.
+        """
+        self._item.select()
+
     def is_visible(self) -> bool:
         """Whether the item is on screen, as opposed to merely in the ``HMENU``.
 

@@ -31,7 +31,7 @@ from ._exceptions import (
 from ._helpers import _MISSING, _escape_keys
 from ._keyboard import _post_keys_to_hwnd, _send_keys_on_hidden_desktop
 from ._logging import Secret, unwrap_secret
-from ._win32_criteria import backend_name, criteria_for_backend, enumeration_criteria
+from ._win32_criteria import backend_name, criteria_for_backend, find_win32_elements
 
 
 def _backend_fallbacks(
@@ -950,6 +950,7 @@ class Locator:
                 timeout=0,
                 deadline=deadline,
                 enforce_deadline=enforce_deadline,
+                visible_only=visible_only,
             )
             if not isinstance(resolved, dict):
                 return resolved
@@ -2180,6 +2181,8 @@ class Locator:
 
         If *depth* is None, only direct children are returned.
         If *depth* is given (including 0), descendants up to that depth are returned.
+        On win32, *depth* of None also lists nested controls, because the window
+        enumeration there walks the whole subtree.
 
         Raises:
             TypeError: If the backend rejects the search criteria, except for
@@ -2187,14 +2190,13 @@ class Locator:
         """
         self._refresh_object_repository()
         parent_spec = self._get_parent_spec()
-        # On win32 a UIA control type becomes a class predicate that
-        # children()/descendants() would silently ignore; apply it below.
-        search, predicate = enumeration_criteria(parent_spec, self._criteria)
+        if backend_name(parent_spec) == "win32":
+            return self._all_win32(parent_spec, depth)
         try:
             if depth is None:
-                elements = parent_spec.children(**search)
+                elements = parent_spec.children(**self._criteria)
             else:
-                elements = parent_spec.descendants(depth=depth, **search)
+                elements = parent_spec.descendants(depth=depth, **self._criteria)
         except TypeError:
             # UIAElementInfo.build_condition() in some pywinauto versions
             # does not accept ``auto_id``.  Search with the criteria that the
@@ -2233,8 +2235,32 @@ class Locator:
                             elements.append(element)
         except Exception:
             elements = []
-        if predicate is not None:
-            elements = [el for el in elements if predicate(el.element_info)]
+        return [_ResolvedLocator(el, application=self._application_context()) for el in elements]
+
+    def _all_win32(self, parent_spec: Any, depth: int | None) -> list[Locator]:
+        """:meth:`all` on win32: every criterion applies, as in the final lookup.
+
+        Hidden controls are included, as they are for ``children()``. A
+        ``found_index`` from :meth:`nth` narrows the list to that one match.
+        """
+        criteria = criteria_for_backend(parent_spec, self._criteria)
+        search = {key: value for key, value in criteria.items() if key != "found_index"}
+        try:
+            parent = (
+                parent_spec.wrapper_object()
+                if getattr(type(parent_spec), "wrapper_object", None) is not None
+                else parent_spec
+            )
+            found = find_win32_elements(parent, search, visible_only=False, depth=depth)
+            index = criteria.get("found_index")
+            if index is not None:
+                found = [found[index]] if -len(found) <= index < len(found) else []
+            wrapper_cls = parent.backend.generic_wrapper_class
+            elements = [wrapper_cls(info) for info in found]
+        except TypeError:
+            raise
+        except Exception:
+            elements = []
         return [_ResolvedLocator(el, application=self._application_context()) for el in elements]
 
     def count(self) -> int:
@@ -2640,6 +2666,7 @@ def _resolve_negative_found_index(
     *,
     deadline: float | None = None,
     enforce_deadline: bool | None = None,
+    visible_only: bool = True,
 ) -> dict[str, Any] | Any:
     """Resolve a negative index against the complete match set.
 
@@ -2649,15 +2676,21 @@ def _resolve_negative_found_index(
     it can evaluate when FindAll exposes no usable match. This keeps a
     depth-limited TreeWalker result from changing the requested ordering of the
     complete descendant set.
+
+    On win32 the index is computed from exactly what the final
+    ``child_window(found_index=N, ...)`` selects from, including *visible_only*:
+    ``descendants()`` there ignores most criteria and returns hidden controls,
+    which would turn ``-1`` into an index past the end of the final matches.
     """
     if not _is_negative_found_index(criteria):
         return criteria
 
     index = int(criteria["found_index"])
     match_criteria = {key: value for key, value in criteria.items() if key != "found_index"}
+    is_win32 = backend_name(parent_spec) == "win32"
     # descendants() never applies predicate_func (pywinauto honours it only in
-    # find_elements), so a backend-translated selector is filtered here.
-    predicate = match_criteria.pop("predicate_func", None)
+    # find_elements), so it is filtered here on the other backends.
+    predicate = None if is_win32 else match_criteria.pop("predicate_func", None)
     deadline = time.monotonic() + timeout if deadline is None else deadline
     if enforce_deadline is None:
         enforce_deadline = timeout > 0
@@ -2669,8 +2702,11 @@ def _resolve_negative_found_index(
         if _deadline_expired(deadline, timeout, enforce=enforce_deadline):
             break
         try:
-            matches = _wrapper_object_until(parent_spec, deadline, timeout).descendants(
-                **match_criteria
+            wrapper = _wrapper_object_until(parent_spec, deadline, timeout)
+            matches = (
+                find_win32_elements(wrapper, match_criteria, visible_only=visible_only)
+                if is_win32
+                else wrapper.descendants(**match_criteria)
             )
             if predicate is not None:
                 matches = [match for match in matches if predicate(match.element_info)]
@@ -2680,10 +2716,14 @@ def _resolve_negative_found_index(
         except Exception as exc:
             last_exc = exc
 
-        if set(match_criteria) <= _TREE_WALK_KEYS and not _deadline_expired(
-            deadline,
-            timeout,
-            enforce=enforce_deadline,
+        if (
+            not is_win32
+            and set(match_criteria) <= _TREE_WALK_KEYS
+            and not _deadline_expired(
+                deadline,
+                timeout,
+                enforce=enforce_deadline,
+            )
         ):
             tree_result = _tree_walk_find(
                 parent_spec, criteria, deadline=deadline if enforce_deadline else None
