@@ -145,7 +145,7 @@ class _MSLLHOOKSTRUCT(ctypes.Structure):
         ("mouseData", _wt.DWORD),
         ("flags", _wt.DWORD),
         ("time", _wt.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(_wt.ULONG)),
+        ("dwExtraInfo", ctypes.c_size_t),
     ]
 
 
@@ -155,15 +155,51 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
         ("scanCode", _wt.DWORD),
         ("flags", _wt.DWORD),
         ("time", _wt.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(_wt.ULONG)),
+        ("dwExtraInfo", ctypes.c_size_t),
     ]
 
 
 _HOOKPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
-    ctypes.c_longlong, ctypes.c_int, _wt.WPARAM, _wt.LPARAM
+    ctypes.c_ssize_t, ctypes.c_int, _wt.WPARAM, _wt.LPARAM
 )
 
-_user32 = ctypes.windll.user32 if sys.platform == "win32" else _UnavailableObject("recorder")
+_user32: Any = (
+    ctypes.WinDLL("user32", use_last_error=True)
+    if sys.platform == "win32"
+    else _UnavailableObject("recorder")
+)
+
+if sys.platform == "win32":
+    # ctypes otherwise defaults to C int arguments/results, truncating HWND,
+    # LPARAM and LRESULT on x64. Bind before any callback can run.
+    _user32.CallNextHookEx.argtypes = (_wt.HANDLE, ctypes.c_int, _wt.WPARAM, _wt.LPARAM)
+    _user32.CallNextHookEx.restype = ctypes.c_ssize_t
+    _user32.SetWindowsHookExW.argtypes = (ctypes.c_int, _HOOKPROC, _wt.HINSTANCE, _wt.DWORD)
+    _user32.SetWindowsHookExW.restype = _wt.HANDLE
+    _user32.UnhookWindowsHookEx.argtypes = (_wt.HANDLE,)
+    _user32.UnhookWindowsHookEx.restype = _wt.BOOL
+    _user32.GetMessageW.argtypes = (ctypes.POINTER(_wt.MSG), _wt.HWND, _wt.UINT, _wt.UINT)
+    _user32.GetMessageW.restype = _wt.BOOL
+    _user32.PeekMessageW.argtypes = (
+        ctypes.POINTER(_wt.MSG),
+        _wt.HWND,
+        _wt.UINT,
+        _wt.UINT,
+        _wt.UINT,
+    )
+    _user32.PeekMessageW.restype = _wt.BOOL
+    _user32.TranslateMessage.argtypes = (ctypes.POINTER(_wt.MSG),)
+    _user32.TranslateMessage.restype = _wt.BOOL
+    _user32.DispatchMessageW.argtypes = (ctypes.POINTER(_wt.MSG),)
+    _user32.DispatchMessageW.restype = ctypes.c_ssize_t
+    _user32.PostThreadMessageW.argtypes = (_wt.DWORD, _wt.UINT, _wt.WPARAM, _wt.LPARAM)
+    _user32.PostThreadMessageW.restype = _wt.BOOL
+    _user32.PostQuitMessage.argtypes = (ctypes.c_int,)
+    _user32.PostQuitMessage.restype = None
+    _user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+    _user32.GetAsyncKeyState.restype = ctypes.c_short
+    _user32.GetGUIThreadInfo.argtypes = (_wt.DWORD, ctypes.c_void_p)
+    _user32.GetGUIThreadInfo.restype = _wt.BOOL
 
 _log = get_logger("recorder")
 
@@ -172,6 +208,8 @@ _PASSWORD_PLACEHOLDER = "<REDACTED-PASSWORD>"
 
 # Seconds stop()/wait() give the processor thread to drain the event queue
 _PROC_JOIN_TIMEOUT = 2.0
+_STOP_POST_ATTEMPTS = 3
+_STOP_POST_RETRY_DELAY = 0.01
 
 # Data model
 
@@ -549,7 +587,7 @@ def _capture_context(hwnd: int | None = None) -> _InputContext:
                 and again_active == root
                 and win32gui.GetForegroundWindow() == root
                 and win32gui.GetWindowLong(focus, -16) == style
-                and win32process.GetWindowThreadProcessId(root) == (thread, pid)
+                and tuple(win32process.GetWindowThreadProcessId(root)) == (thread, pid)
                 and win32process.GetWindowThreadProcessId(focus)[1] == pid
             ):
                 password = bool(style & 0x20)  # ES_PASSWORD
@@ -618,6 +656,9 @@ def _resolve_app_pid(app: str) -> int:
 class Recorder:
     """Records mouse/keyboard interactions and generates dolphin Python test code.
 
+    Instances are single-use: create a new Recorder for each recording attempt,
+    including retries after a failed start. Completed actions remain readable.
+
     Captures input globally — read the privacy warning at the top of this module
     before using it.  :meth:`start` restates it on the recorder's own output.
 
@@ -676,6 +717,15 @@ class Recorder:
         self._proc_idle = threading.Event()
         self._stopped = threading.Event()
         self._hook_thread_id: int = 0
+        self._hook_ready = threading.Event()
+        self._hook_error: Exception | None = None
+        self._processor_error: Exception | None = None
+        self._start_error: Exception | None = None
+        self._stop_request_error: OSError | None = None
+        self._stop_lock = threading.Lock()
+        self._quit_posted = False
+        self._start_lock = threading.Lock()
+        self._started = False
 
         # Strong references — prevent GC while hooks are active
         self._mouse_cb: Any = None
@@ -691,7 +741,30 @@ class Recorder:
 
         Emits the privacy warning first — the hooks are system-wide, so this is the
         one point at which the user is told what is about to be captured.
+        Initialization failures trigger shutdown and make the session unavailable
+        to completion and read operations.
+
+        Raises:
+            RuntimeError: start() was already attempted on this instance. Create
+                a new Recorder to retry, even if the first attempt failed.
         """
+        with self._start_lock:
+            if self._started:
+                raise RuntimeError("Recorder instances are single-use; create a new Recorder")
+            self._started = True
+            try:
+                self._start_session()
+            except Exception as exc:
+                try:
+                    self._request_stop()
+                    self._join_processor()
+                except Exception as cleanup_error:
+                    exc.add_note(f"Recorder startup cleanup failed: {cleanup_error}")
+                self._start_error = exc
+                raise
+
+    def _start_session(self) -> None:
+        """Initialize the session while lifecycle operations hold the start lock."""
         if not self.app and self.pid is None and not self.global_recording:
             raise ValueError("Recording requires app, pid, or explicit global_recording=True")
         if self.global_recording and (self.app or self.pid is not None):
@@ -707,29 +780,107 @@ class Recorder:
             scope,
         )
         self._stopped.clear()
+        self._hook_ready.clear()
+        self._hook_error = None
+        self._processor_error = None
         self._hook_thread = threading.Thread(
             target=self._hook_loop, daemon=True, name="dolphin-rec-hook"
         )
-        self._hook_thread.start()
+        try:
+            self._hook_thread.start()
+        except Exception:
+            self._hook_thread = None  # An unstarted thread cannot be joined.
+            raise
+        if not self._hook_ready.wait(5.0):
+            raise TimeoutError("Recorder hooks did not initialize")
+        if self._hook_error is not None:
+            raise OSError("Could not install recorder hooks") from self._hook_error
         self._proc_thread = threading.Thread(
             target=self._process_loop, daemon=True, name="dolphin-rec-proc"
         )
-        self._proc_thread.start()
+        try:
+            self._proc_thread.start()
+        except Exception:
+            self._proc_thread = None
+            raise
 
     def stop(self) -> None:
-        """Stop recording, unhook, and wait for the queued events to be processed."""
-        if not self._stopped.is_set():
-            if self._hook_thread_id:
-                _user32.PostThreadMessageW(self._hook_thread_id, _WM_QUIT, 0, 0)
-            self._evt_queue.put(None)
-            self._stopped.set()
+        """Stop the hook producer, then drain all events queued before it exited.
+
+        Before the first start attempt, this is a no-op.
+        Callbacks stop queueing input when shutdown is requested; events already
+        queued are drained before this method returns.
+        Failed hook shutdown messages are retried up to three times per call.
+        A later call can retry again if all attempts fail.
+        A hook shutdown timeout retains the WinAPI failure as its cause.
+
+        Raises:
+            OSError: Hook recording or cleanup failed.
+            TimeoutError: The hook thread or event drain did not finish.
+            RuntimeError: Initialization or event processing failed.
+        """
+        with self._start_lock:
+            if not self._started:
+                return
+            self._request_stop()
         self._join_processor()
 
+    def _request_stop(self) -> None:
+        """Signal shutdown without joining either thread (safe for the worker)."""
+        with self._stop_lock:
+            first_request = not self._stopped.is_set()
+            self._stopped.set()
+            producer = self._hook_thread
+            # The stop signal wakes callers even if posting fails. Track message
+            # delivery separately so another stop can retry a still-live producer.
+            for attempt in range(_STOP_POST_ATTEMPTS):
+                if (
+                    self._quit_posted
+                    or not self._hook_thread_id
+                    or producer is None
+                    or not producer.is_alive()
+                ):
+                    break
+                if _user32.PostThreadMessageW(self._hook_thread_id, _WM_QUIT, 0, 0):
+                    self._quit_posted = True
+                    break
+                else:
+                    self._stop_request_error = ctypes.WinError(ctypes.get_last_error())
+                    _log.error(
+                        "Could not request recorder hook shutdown: %s", self._stop_request_error
+                    )
+                if attempt + 1 < _STOP_POST_ATTEMPTS:
+                    time.sleep(_STOP_POST_RETRY_DELAY)
+            # A running producer owns the final sentinel. In-flight callbacks
+            # recheck the stop signal before enqueueing.
+            if producer is None and first_request:
+                self._evt_queue.put(None)
+
     def wait(self, timeout: float | None = None) -> bool:
-        """Block until ``stop()`` is called or the stop key is pressed."""
+        """Wait for a stop signal, then finish shutdown and drain queued events.
+
+        ``timeout`` limits only the wait for the stop signal; ``None`` waits
+        indefinitely. Return False if that signal does not arrive within the
+        limit. Once signaled, synchronize with initialization, wait for the hook
+        thread to exit, and drain the event queue before returning True.
+
+        The total call duration can exceed ``timeout``, including when it is zero.
+        Hook shutdown and stalled event processing have separate internal limits.
+        A processor that continues making progress may drain for longer than
+        those limits so that queued actions are preserved.
+
+        Raises:
+            OSError: The hook thread failed during recording. The original
+                exception is retained as the cause, after queued events drain.
+            TimeoutError: Hook shutdown or the event drain stalled; recording
+                completion could not be confirmed.
+            RuntimeError: Initialization or event processing failed. The original
+                exception is retained as the cause; the recording must not be used.
+        """
         if not self._stopped.wait(timeout):
             return False
-        self._join_processor()
+        with self._start_lock:
+            self._join_processor()
         return True
 
     def _join_processor(self, timeout: float = _PROC_JOIN_TIMEOUT) -> None:
@@ -741,16 +892,30 @@ class Recorder:
 
         *timeout* bounds a stalled drain, not the whole drain: a processor that is
         still consuming events keeps the wait alive, so a long recording is never
-        truncated, while a wedged one is abandoned — with a warning, because the
-        recording it produced is then incomplete.
+        truncated. A stalled shutdown raises before readers can flush pending
+        text or generate an incomplete script alongside the worker.
 
         An empty queue is not the idle signal: an event leaves the queue before it is
         interpreted, so a processor wedged inside the UIA focus probe of the keystroke
         it just dequeued also leaves it empty.  Only ``_proc_idle`` says the processor
         is parked in ``get()`` holding nothing.
         """
+        if not self._stopped.is_set():
+            if self._started:
+                raise RuntimeError("Stop recording before reading actions or generating code")
+            return
+        producer = self._hook_thread
+        if producer is not None:
+            if producer is threading.current_thread():
+                raise RuntimeError("Cannot drain recorder events from the hook thread")
+            producer.join(timeout)
+            if producer.is_alive():
+                raise TimeoutError(
+                    "Recorder hook thread did not stop; recording is incomplete"
+                ) from self._stop_request_error
         thread = self._proc_thread
-        if thread is None or not self._stopped.is_set():
+        if thread is None:
+            self._raise_recording_error()
             return
         if thread is threading.current_thread():
             return
@@ -760,17 +925,14 @@ class Recorder:
             thread.join(timeout)
             if not thread.is_alive():
                 self._proc_thread = None
+                self._raise_recording_error()
                 return
             if self._processed != processed:
                 processed = self._processed
                 grace = True
                 continue
             if self._proc_idle.is_set():
-                if self._evt_queue.empty():
-                    # Parked with nothing left to hand over — the hook thread has not
-                    # posted its sentinel yet, which is not a stalled drain.
-                    return
-                if grace:
+                if not self._evt_queue.empty() and grace:
                     # An event landed as the wait expired; the get() about to return it
                     # gets one more pass before the drain is called stalled.
                     grace = False
@@ -782,12 +944,32 @@ class Recorder:
             timeout,
             self._evt_queue.qsize(),
         )
+        raise TimeoutError("Recorder event drain stalled; recording is incomplete")
+
+    def _raise_recording_error(self) -> None:
+        if self._start_error is not None:
+            raise RuntimeError(
+                "Recorder initialization failed; recording is unavailable"
+            ) from self._start_error
+        if self._processor_error is not None:
+            raise RuntimeError(
+                "Recorder event processor failed; recording is incomplete"
+            ) from self._processor_error
+        if self._hook_error is not None:
+            raise OSError("Recorder hook loop failed during recording") from self._hook_error
 
     def actions(self) -> list[RecordedAction]:
-        """Return a copy of recorded actions (flushes any pending text first)."""
-        self._join_processor()
-        self._flush_text()
-        return list(self._actions)
+        """Return recorded actions, flushing pending text after a successful drain.
+
+        Raises:
+            OSError: Hook recording or cleanup failed; partial actions are unavailable.
+            RuntimeError: Recording is active, or initialization or event processing failed.
+            TimeoutError: Recording shutdown or the event drain stalled.
+        """
+        with self._start_lock:
+            self._join_processor()
+            self._flush_text()
+            return list(self._actions)
 
     def generate_code(
         self,
@@ -808,13 +990,24 @@ class Recorder:
         -------
         str
             The generated Python source (also written to *output* if provided).
+
+        Raises
+        ------
+        OSError
+            Hook recording or cleanup failed; no output file is written.
+        RuntimeError
+            Recording is active, or initialization or event processing failed;
+            no output is written.
+        TimeoutError
+            Recording shutdown or the event drain stalled.
         """
-        self._join_processor()
-        self._flush_text()
-        code = "\n".join(self._build_code(self._actions, func_name)) + "\n"
-        if output is not None:
-            Path(output).write_text(code, encoding="utf-8")
-        return code
+        with self._start_lock:
+            self._join_processor()
+            self._flush_text()
+            code = "\n".join(self._build_code(self._actions, func_name)) + "\n"
+            if output is not None:
+                Path(output).write_text(code, encoding="utf-8")
+            return code
 
     # Hook thread
 
@@ -824,29 +1017,44 @@ class Recorder:
         stop_vk = self._stop_vk
         stopped = self._stopped
 
+        def queue_input(event: tuple[Any, ...]) -> None:
+            # Serialize the final enqueue with the stop signal. Context capture
+            # stays outside this lock so stop never waits for a native probe.
+            with self._stop_lock:
+                if not stopped.is_set():
+                    try:
+                        evt_queue.put_nowait(event)
+                    except queue.Full:
+                        pass
+
         def _mouse_proc(n_code: int, w_param: int, l_param: int) -> int:
+            if stopped.is_set():
+                # This runs on the installing thread and can wake its message
+                # loop even when another thread could not post WM_QUIT.
+                _user32.PostQuitMessage(0)
+                return _user32.CallNextHookEx(None, n_code, w_param, l_param)
             if n_code == _HC_ACTION and w_param in (_WM_LBUTTONDOWN, _WM_RBUTTONDOWN):
                 ms = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
                 kind = {
                     _WM_LBUTTONDOWN: "click",
                     _WM_RBUTTONDOWN: "right_click",
                 }[w_param]
-                try:
-                    evt_queue.put_nowait(
-                        (
-                            "mouse",
-                            kind,
-                            ms.pt.x,
-                            ms.pt.y,
-                            time.time(),
-                            _capture_mouse_context(ms.pt.x, ms.pt.y),
-                        )
+                queue_input(
+                    (
+                        "mouse",
+                        kind,
+                        ms.pt.x,
+                        ms.pt.y,
+                        time.time(),
+                        _capture_mouse_context(ms.pt.x, ms.pt.y),
                     )
-                except queue.Full:
-                    pass
+                )
             return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
         def _kbd_proc(n_code: int, w_param: int, l_param: int) -> int:
+            if stopped.is_set():
+                _user32.PostQuitMessage(0)
+                return _user32.CallNextHookEx(None, n_code, w_param, l_param)
             if n_code == _HC_ACTION and w_param in (_WM_KEYDOWN, _WM_SYSKEYDOWN):
                 kb = ctypes.cast(l_param, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
                 vk = int(kb.vkCode)
@@ -865,58 +1073,86 @@ class Recorder:
                 # Capture native process/focus/classification before queueing.
                 # No UIA or COM work runs in the low-level hook.
                 context = _capture_context()
-                try:
-                    evt_queue.put_nowait(
-                        ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time(), context)
-                    )
-                except queue.Full:
-                    pass
+                queue_input(
+                    ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time(), context)
+                )
             return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
         # Keep strong references on self so GC won't collect while hook is alive
         self._mouse_cb = _HOOKPROC(_mouse_proc)
         self._kbd_cb = _HOOKPROC(_kbd_proc)
 
-        mouse_hook = _user32.SetWindowsHookExW(_WH_MOUSE_LL, self._mouse_cb, None, 0)
-        kbd_hook = _user32.SetWindowsHookExW(_WH_KEYBOARD_LL, self._kbd_cb, None, 0)
+        mouse_hook = kbd_hook = None
+        try:
+            mouse_hook = _user32.SetWindowsHookExW(_WH_MOUSE_LL, self._mouse_cb, None, 0)
+            if not mouse_hook:
+                raise ctypes.WinError(ctypes.get_last_error())
+            kbd_hook = _user32.SetWindowsHookExW(_WH_KEYBOARD_LL, self._kbd_cb, None, 0)
+            if not kbd_hook:
+                raise ctypes.WinError(ctypes.get_last_error())
 
-        msg = _wt.MSG()
-        while not stopped.is_set():
-            ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-            if ret <= 0:
-                break
-            _user32.TranslateMessage(ctypes.byref(msg))
-            _user32.DispatchMessageW(ctypes.byref(msg))
-
-        if mouse_hook:
-            _user32.UnhookWindowsHookEx(mouse_hook)
-        if kbd_hook:
-            _user32.UnhookWindowsHookEx(kbd_hook)
-
-        stopped.set()
-        evt_queue.put(None)
+            # Create the message queue before start()/stop() may post WM_QUIT.
+            msg = _wt.MSG()
+            _user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+            self._hook_ready.set()
+            while not stopped.is_set():
+                ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret == -1:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if ret == 0:
+                    break
+                _user32.TranslateMessage(ctypes.byref(msg))
+                _user32.DispatchMessageW(ctypes.byref(msg))
+        except Exception as exc:
+            self._hook_error = exc
+            _log.error("Recorder hook loop failed: %s", exc)
+        finally:
+            for handle in (mouse_hook, kbd_hook):
+                if not handle:
+                    continue
+                try:
+                    if not _user32.UnhookWindowsHookEx(handle):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                except Exception as exc:
+                    if self._hook_error is None:
+                        self._hook_error = exc
+                    else:
+                        self._hook_error.add_note(f"Additional hook cleanup failure: {exc}")
+                    _log.error("Could not remove recorder hook: %s", exc)
+            # Low-level callbacks run on this installing thread. Its message
+            # loop has returned, so no callback can enqueue behind this marker.
+            evt_queue.put(None)
+            stopped.set()
+            self._hook_ready.set()
 
     # Processor thread
 
     def _process_loop(self) -> None:
-        while True:
-            self._proc_idle.set()
-            try:
-                evt = self._evt_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            finally:
-                self._proc_idle.clear()
-            if evt is None:
-                break
-            if evt[0] == "mouse":
-                _, kind, x, y, ts, context = evt
-                self._flush_text()
-                self._handle_mouse(kind, x, y, ts, context=context)
-            elif evt[0] == "key":
-                _, vk, scan, shift, ctrl, alt, ralt, ts, context = evt
-                self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt, context=context)
-            self._processed += 1
+        try:
+            while True:
+                self._proc_idle.set()
+                try:
+                    evt = self._evt_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                finally:
+                    self._proc_idle.clear()
+                if evt is None:
+                    break
+                if evt[0] == "mouse":
+                    _, kind, x, y, ts, context = evt
+                    self._flush_text()
+                    self._handle_mouse(kind, x, y, ts, context=context)
+                elif evt[0] == "key":
+                    _, vk, scan, shift, ctrl, alt, ralt, ts, context = evt
+                    self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt, context=context)
+                self._processed += 1
+        except Exception as exc:
+            self._processor_error = exc
+            self._request_stop()
+            # Handler exceptions may contain captured text. Keep the cause for
+            # callers, but never copy its payload to the recorder's log.
+            _log.error("Recorder event processor failed; recording is incomplete")
 
     def _in_scope(self, context: _InputContext) -> bool:
         if not context.hwnd or not context.pid:
