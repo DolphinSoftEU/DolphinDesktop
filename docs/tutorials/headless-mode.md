@@ -11,14 +11,23 @@ such groups. Programmatic Ctrl+C must target the whole shared console with
 See Microsoft's [console event documentation](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent).
 The launcher waits for application cleanup and returns the command's exit code.
 After an interrupt,
-an unresponsive command tree is terminated after ten seconds with exit code 130.
+an unresponsive command tree receives a termination request after ten seconds
+with exit code 130. The runner then waits at most another ten seconds for the
+command process to exit; if it remains active, a timeout error initiates job
+cleanup instead of repeatedly requesting termination.
 Processes that detach from the console cannot receive its console events, but
 remain in the runner's Windows Job Object for cleanup. Remaining descendants are
 terminated when the command finishes, including processes behind venv redirectors.
-The runner explicitly terminates the job and waits until it reports zero active
-processes before closing the job and hidden desktop handles. Failure to confirm
+The runner retains handles to the job's processes before requesting termination.
+It waits for those handles to be signalled and for the job to report zero active
+processes before closing the job and hidden desktop handles. The active process
+count alone does not confirm that process handles are already signalled. Failure to confirm
 termination within ten seconds raises a cleanup error instead of returning a
 successful command result.
+
+The real console, process-tree and desktop-handle regressions run in the Windows
+component suite: `pytest tests/component/test_runner_console.py`. Deterministic
+cleanup and timeout tests remain in `tests/framework/test_runner_cleanup.py`.
 
 ```bash
 dolphin-run pytest tests/ -v

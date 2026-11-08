@@ -13,6 +13,24 @@ import time
 from pathlib import Path
 
 
+def duplicate_process_handle(process: subprocess.Popen, parent_pid: int) -> int:
+    """Pin the exact process object in the observing parent, before it can exit."""
+    import _winapi
+
+    parent = _winapi.OpenProcess(0x0040, False, parent_pid)  # PROCESS_DUP_HANDLE
+    try:
+        return _winapi.DuplicateHandle(
+            _winapi.GetCurrentProcess(),
+            int(process._handle),
+            parent,
+            0,
+            False,
+            2,  # DUPLICATE_SAME_ACCESS
+        )
+    finally:
+        _winapi.CloseHandle(parent)
+
+
 def child(folder: Path, mode: str) -> None:
     def interrupt(signum, frame):
         (folder / "interrupt.json").write_text(json.dumps({"signal": signum}))

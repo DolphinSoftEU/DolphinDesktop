@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -83,6 +84,10 @@ def test_runner_releases_process_job_and_desktop_handles(monkeypatch, tmp_path, 
     kernel32.GetCurrentProcess.restype = wt.HANDLE
     kernel32.GetProcessHandleCount.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
     kernel32.GetProcessHandleCount.restype = wt.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    kernel32.WaitForSingleObject.restype = wt.DWORD
+    kernel32.TerminateProcess.argtypes = [wt.HANDLE, wt.UINT]
+    kernel32.CloseHandle.argtypes = [wt.HANDLE]
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.OpenDesktopW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.BOOL, wt.DWORD]
     user32.OpenDesktopW.restype = wt.HANDLE
@@ -98,14 +103,29 @@ def test_runner_releases_process_job_and_desktop_handles(monkeypatch, tmp_path, 
         report = tmp_path / f"grandchild-{iteration}.json"
         code = (
             "import json, subprocess, sys; from pathlib import Path; "
+            "from tests._runner_console_probe import duplicate_process_handle; "
             "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
-            "Path(sys.argv[1]).write_text(json.dumps({'pid': p.pid}))"
+            "handle = duplicate_process_handle(p, int(sys.argv[2])); "
+            "Path(sys.argv[1]).write_text(json.dumps({'pid': p.pid, 'handle': handle}))"
             if leave_grandchild
             else "pass"
         )
-        assert _runner.run_hidden([sys.executable, "-c", code, str(report)]) == 0
-        if leave_grandchild:
-            _assert_exited(json.loads(report.read_text())["pid"], timeout_ms=0)
+        try:
+            assert (
+                _runner.run_hidden([sys.executable, "-c", code, str(report), str(os.getpid())]) == 0
+            )
+            if leave_grandchild:
+                # The child duplicates its original handle before exiting.
+                # Reopening its PID here could observe an unrelated new process.
+                handle = json.loads(report.read_text())["handle"]
+                assert kernel32.WaitForSingleObject(handle, 0) == 0
+        finally:
+            if leave_grandchild and report.exists():
+                handle = json.loads(report.read_text())["handle"]
+                if kernel32.WaitForSingleObject(handle, 0) == _runner._WAIT_TIMEOUT:
+                    kernel32.TerminateProcess(handle, 1)
+                    kernel32.WaitForSingleObject(handle, 5000)
+                kernel32.CloseHandle(handle)
         desktop = user32.OpenDesktopW(name, 0, False, 1)  # DESKTOP_READOBJECTS
         if desktop:
             user32.CloseDesktop(desktop)

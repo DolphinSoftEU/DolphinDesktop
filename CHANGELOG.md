@@ -52,6 +52,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   processes are cleaned up before the hidden desktop handle is closed (KAN-753).
   Job cleanup now waits for zero active processes before releasing handles;
   a failed query, termination failure or cleanup timeout is reported as an error.
+  After forced termination, waiting for the command process is also limited to
+  ten seconds; a stuck process raises a timeout instead of retrying indefinitely.
+  Console regressions run in the Windows component suite. Descendant cleanup
+  checks retain the original process handle before exit, avoiding PID reuse races.
+  Job cleanup also waits on retained process handles: zero active processes can
+  be reported before those handles become signalled, especially during startup.
 
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).

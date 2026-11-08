@@ -128,6 +128,10 @@ _kernel32.QueryInformationJobObject.argtypes = [
     ctypes.POINTER(_wt.DWORD),
 ]
 _kernel32.QueryInformationJobObject.restype = _wt.BOOL
+_kernel32.OpenProcess.argtypes = [_wt.DWORD, _wt.BOOL, _wt.DWORD]
+_kernel32.OpenProcess.restype = _wt.HANDLE
+_kernel32.IsProcessInJob.argtypes = [_wt.HANDLE, _wt.HANDLE, ctypes.POINTER(_wt.BOOL)]
+_kernel32.IsProcessInJob.restype = _wt.BOOL
 _kernel32.ResumeThread.argtypes = [_wt.HANDLE]
 _kernel32.ResumeThread.restype = _wt.DWORD
 
@@ -144,6 +148,7 @@ _UOI_FLAGS = 1
 _WSF_VISIBLE = 0x0001
 _CREATE_SUSPENDED = 0x00000004
 _INTERRUPT_GRACE_SECONDS = 10.0
+_PROCESS_TERMINATION_TIMEOUT_SECONDS = 10.0
 _JOB_CLEANUP_TIMEOUT_SECONDS = 10.0
 
 
@@ -185,27 +190,77 @@ class _JobBasicAccountingInformation(ctypes.Structure):
     ]
 
 
+@contextmanager
+def _job_process_handles(job: int) -> Iterator[list[int]]:
+    """Retain process identities before termination removes them from the job."""
+    handles: list[int] = []
+    try:
+        capacity = 16
+        for _ in range(4):
+            buffer = ctypes.create_string_buffer(8 + ctypes.sizeof(ctypes.c_size_t) * capacity)
+            if _kernel32.QueryInformationJobObject(job, 3, buffer, ctypes.sizeof(buffer), None):
+                break
+            error = ctypes.get_last_error()
+            if error != 234:  # ERROR_MORE_DATA: the job grew during enumeration
+                raise ctypes.WinError(error)
+            assigned = ctypes.cast(buffer, ctypes.POINTER(_wt.DWORD))[0]
+            capacity = max(capacity * 2, assigned)
+        else:
+            raise OSError("command job process list kept growing during cleanup")
+        count = ctypes.cast(buffer, ctypes.POINTER(_wt.DWORD))[1]
+        pids = (ctypes.c_size_t * count).from_buffer(buffer, 8)
+        for pid in pids:
+            # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION (for IsProcessInJob)
+            handle = _kernel32.OpenProcess(0x101000, False, pid)
+            if not handle:
+                error = ctypes.get_last_error()
+                if error == 87:  # ERROR_INVALID_PARAMETER: already exited
+                    continue
+                raise ctypes.WinError(error)
+            handles.append(handle)
+            member = _wt.BOOL()
+            if not _kernel32.IsProcessInJob(handle, job, ctypes.byref(member)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not member.value:
+                # The PID was reused between enumeration and OpenProcess.
+                handles.pop()
+                _kernel32.CloseHandle(handle)
+        yield handles
+    finally:
+        for handle in handles:
+            _kernel32.CloseHandle(handle)
+
+
 def _terminate_and_wait_for_job(job: int) -> None:
     """Drain the job before releasing its handle and the command's desktop.
 
     TerminateJobObject, like TerminateProcess, can return before processes exit.
-    Keep the job queryable until its active process count reaches zero. A stuck
+    Retain process handles before terminating and require them to be signalled,
+    as well as a zero active count: job accounting can reach zero before handles
+    become signalled. A stuck
     driver must produce a cleanup error rather than an indefinite launcher hang.
     """
-    if not _kernel32.TerminateJobObject(job, 130):
-        raise ctypes.WinError(ctypes.get_last_error())
-    deadline = time.monotonic() + _JOB_CLEANUP_TIMEOUT_SECONDS
-    accounting = _JobBasicAccountingInformation()
-    while True:
-        if not _kernel32.QueryInformationJobObject(
-            job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
-        ):
+    with _job_process_handles(job) as handles:
+        if not _kernel32.TerminateJobObject(job, 130):
             raise ctypes.WinError(ctypes.get_last_error())
-        if accounting.ActiveProcesses == 0:
-            return
-        if time.monotonic() >= deadline:
-            raise TimeoutError("command job still has active processes after cleanup timeout")
-        time.sleep(0.01)
+        deadline = time.monotonic() + _JOB_CLEANUP_TIMEOUT_SECONDS
+        accounting = _JobBasicAccountingInformation()
+        while True:
+            stopped = True
+            for handle in handles:
+                result = _kernel32.WaitForSingleObject(handle, 0)
+                if result not in (_WAIT_OBJECT_0, _WAIT_TIMEOUT):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                stopped &= result == _WAIT_OBJECT_0
+            if not _kernel32.QueryInformationJobObject(
+                job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if accounting.ActiveProcesses == 0 and stopped:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError("command job still has pending processes after cleanup timeout")
+            time.sleep(0.01)
 
 
 @contextmanager
@@ -580,18 +635,22 @@ def run_hidden(args: list[str]) -> int:
 
 def _wait_for_command(h_process: int, job: int, interrupted: threading.Event) -> int:
     deadline = None
+    termination_deadline = None
     while True:
         # An unchecked wait is worse than no wait: on WAIT_FAILED the process is
         # still running, GetExitCodeProcess reports STILL_ACTIVE (259), and
         # dolphin-run exits 259 — a fabricated result for CI to act on.
         waited = _kernel32.WaitForSingleObject(h_process, 100)
         if waited == _WAIT_TIMEOUT:
-            if interrupted.is_set():
+            if termination_deadline is not None:
+                if time.monotonic() >= termination_deadline:
+                    raise TimeoutError("command process did not exit after forced termination")
+            elif interrupted.is_set():
                 if deadline is None:
                     deadline = time.monotonic() + _INTERRUPT_GRACE_SECONDS
                 elif time.monotonic() >= deadline:
-                    if not _kernel32.TerminateJobObject(job, 130):
-                        raise ctypes.WinError(ctypes.get_last_error())
+                    _terminate_and_wait_for_job(job)
+                    termination_deadline = time.monotonic() + _PROCESS_TERMINATION_TIMEOUT_SECONDS
             continue
         if waited != _WAIT_OBJECT_0:
             raise OSError(
