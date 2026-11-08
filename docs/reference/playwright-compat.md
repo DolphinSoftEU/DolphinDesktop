@@ -26,6 +26,30 @@ with sync_playwright() as p:
     browser.close()
 ```
 
+## Next to an existing session
+
+The facade can attach to an app that dolphin already drives, on the same
+thread, for example one started with `Desktop().launch_electron_cdp(...)`:
+
+```python
+from dolphin_desktop import Desktop
+from dolphin_desktop.playwright_compat import sync_playwright
+
+app, session = Desktop().launch_electron_cdp("app.exe", debug_port=9222)
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
+    assert page.title()
+    browser.close()          # disconnects the facade only
+session.locator("#ready").wait_for()   # the first session still works
+session.close()
+```
+
+All CDP sessions on one thread share a single Playwright driver, because
+Playwright's sync API allows only one running instance per thread. Each
+session still has its own CDP connection, so closing one never disconnects
+another. The driver stops when the last session on the thread closes.
+
 ## Not implemented
 
 The following Playwright APIs are **not** available through the

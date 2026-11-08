@@ -43,6 +43,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* `playwright_compat.sync_playwright().chromium.connect_over_cdp()` no longer
+  fails with Playwright's "Sync API inside the asyncio loop" error when a
+  `CDPSession` (for example from `Desktop.launch_electron_cdp`) is already open
+  on the same thread (KAN-746). Every `CDPSession.connect` used to start its own
+  sync Playwright driver, and Playwright allows only one per thread. Sessions
+  on one thread now share that driver, each over its own CDP connection:
+  closing one session disconnects only that session, and the driver stops when
+  the last session on the thread closes.
 * PR #57 re-review follow-ups on Outlook:
   - `delete(permanent=True)` now confirms removal by COM status code: only an
     unambiguous `MAPI_E_NOT_FOUND` from the re-fetch counts as deleted; any

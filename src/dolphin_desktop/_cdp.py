@@ -35,6 +35,7 @@ Basic usage::
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -341,6 +342,67 @@ def _require_playwright() -> Any:
     return sync_api
 
 
+class _PlaywrightLease:
+    """One thread's sync Playwright driver, shared by the sessions opened on that thread.
+
+    Playwright's sync API refuses a second ``sync_playwright().start()`` on a
+    thread whose first instance is still running ("Sync API inside the asyncio
+    loop"). Every :class:`CDPSession` opened on a thread therefore borrows the
+    same driver, each over its own ``connect_over_cdp`` connection, and the
+    driver stops only when the last of them closes.
+    """
+
+    __slots__ = ("playwright", "thread", "users")
+
+    def __init__(self, playwright: Any, thread: threading.Thread) -> None:
+        self.playwright = playwright
+        self.thread = thread
+        self.users = 0
+
+
+_PLAYWRIGHT_LEASES: dict[int, _PlaywrightLease] = {}
+_PLAYWRIGHT_LEASES_LOCK = threading.Lock()
+
+
+def _acquire_playwright(sync_api: Any) -> _PlaywrightLease:
+    """Borrow the calling thread's Playwright driver, starting it on first use.
+
+    Playwright sync objects are bound to the thread that started them, so the
+    lease is per thread. The ``thread`` check stops a new thread that reuses a
+    finished thread's ident from inheriting a driver it cannot drive.
+    """
+    current = threading.current_thread()
+    key = threading.get_ident()
+    with _PLAYWRIGHT_LEASES_LOCK:
+        lease = _PLAYWRIGHT_LEASES.get(key)
+        if lease is not None and lease.thread is current:
+            lease.users += 1
+            return lease
+    lease = _PlaywrightLease(sync_api.sync_playwright().start(), current)
+    lease.users = 1
+    with _PLAYWRIGHT_LEASES_LOCK:
+        _PLAYWRIGHT_LEASES[key] = lease
+    return lease
+
+
+def _release_playwright(lease: _PlaywrightLease) -> None:
+    """Return one borrow of *lease*; stop the driver after the last one.
+
+    The lease leaves the registry before ``stop()`` runs, so a failing stop
+    cannot leave a dead driver for the next session on the thread to pick up.
+    """
+    with _PLAYWRIGHT_LEASES_LOCK:
+        if lease.users <= 0:
+            return
+        lease.users -= 1
+        if lease.users:
+            return
+        key = lease.thread.ident
+        if key is not None and _PLAYWRIGHT_LEASES.get(key) is lease:
+            del _PLAYWRIGHT_LEASES[key]
+    lease.playwright.stop()
+
+
 class CDPSession:
     """Live CDP connection to an Electron process.
 
@@ -385,6 +447,9 @@ class CDPSession:
         endpoint: str,
     ) -> None:
         self._playwright = playwright
+        # Set by connect() when the driver is the thread's shared one; a session
+        # built directly around its own driver keeps stopping it on close().
+        self._playwright_lease: _PlaywrightLease | None = None
         self._browser = browser
         self._context = context
         self._page = page
@@ -475,16 +540,25 @@ class CDPSession:
             for a page whose URL is non-blank (i.e. the actual UI
             renderer) so ``session.page`` points at a stable target,
             not a short-lived helper that closes moments later.
+
+            Sessions opened on the same thread share one Playwright driver,
+            each with its own CDP connection, so a second session (for
+            example ``playwright_compat``'s ``connect_over_cdp`` next to a
+            session from :meth:`Desktop.launch_electron_cdp`) does not trip
+            Playwright's one-sync-instance-per-thread rule. Closing one
+            session leaves the others connected; the driver stops with the
+            last of them.
         """
         sync_api = _require_playwright()
-        pw = sync_api.sync_playwright().start()
+        lease = _acquire_playwright(sync_api)
+        pw = lease.playwright
         import time as _t
 
         deadline = _t.monotonic() + timeout
         try:
             browser = pw.chromium.connect_over_cdp(endpoint, timeout=timeout * 1000)
         except Exception as exc:
-            pw.stop()
+            _release_playwright(lease)
             raise RuntimeError(f"CDP connect_over_cdp({endpoint!r}) failed: {exc}") from exc
 
         # Everything past ``connect_over_cdp`` may still raise — a stale
@@ -506,15 +580,17 @@ class CDPSession:
                 else:
                     context = browser.contexts[0]
                 page = context.new_page()
+            session = cls(pw, browser, context, page, endpoint=endpoint)
         except Exception:
             try:
                 browser.close()
             except Exception:
                 pass
-            pw.stop()
+            _release_playwright(lease)
             raise
 
-        return cls(pw, browser, context, page, endpoint=endpoint)
+        session._playwright_lease = lease
+        return session
 
     @staticmethod
     def _pick_stable_page(browser: Browser, *, timeout: float) -> tuple[Any, Any]:
@@ -1301,6 +1377,10 @@ class CDPSession:
         session kept in a fixture would otherwise hold the whole dead
         Playwright object graph — pages, contexts, handlers — alive for the
         rest of the run.
+
+        Only this session's CDP connection is closed. The thread's shared
+        Playwright driver keeps serving other open sessions and stops when
+        the last one closes.
         """
         if self._closed:
             return
@@ -1313,8 +1393,12 @@ class CDPSession:
             self._browser.close()
         except Exception:
             pass
+        lease, self._playwright_lease = self._playwright_lease, None
         try:
-            self._playwright.stop()
+            if lease is not None:
+                _release_playwright(lease)
+            else:
+                self._playwright.stop()
         except Exception:
             pass
         self._page = None  # type: ignore[assignment]
