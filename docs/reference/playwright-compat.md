@@ -51,7 +51,10 @@ session still has its own CDP connection, so closing one never disconnects
 another. The driver stops when the last session on the thread closes.
 Close every session (or use it as a context manager) on the thread that
 opened it, before that thread ends: a session left open keeps the driver, a
-`node` process, running until it is closed or garbage collected.
+`node` process, running until it is closed or garbage collected. Playwright
+objects only work on the thread that created them, so `close()` from any
+other thread raises `DolphinError` and leaves the session open for its owner
+to close.
 
 ## Not implemented
 

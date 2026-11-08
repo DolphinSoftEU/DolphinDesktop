@@ -1140,18 +1140,84 @@ class TestSharedPlaywrightDriver:
         main_session.close()
         api.drivers[0].stop.assert_not_called()
 
-    def test_abandoned_session_still_releases_its_driver_when_closed_later(self):
+    def test_close_from_a_foreign_thread_is_refused_and_the_owner_can_still_close(self):
+        """PR #60 review: real Playwright cannot be closed from another thread.
+
+        Real sync objects raise ``greenlet.error`` there and the driver keeps
+        running, so a cross-thread close() that swallowed it would mark the
+        lease dead while its driver lives — and the owner's next connect would
+        hit the very KAN-746 error. close() must refuse before changing state.
+        """
         import threading
 
         api = CountingSyncApi()
-        seen: dict[str, CDPSession] = {}
-        worker = threading.Thread(target=lambda: seen.setdefault("s", self._connect(api)))
+        opened, close_now, closed = threading.Event(), threading.Event(), threading.Event()
+        box: dict[str, CDPSession] = {}
+
+        def _owner():
+            box["s"] = self._connect(api)
+            opened.set()
+            close_now.wait(timeout=10)
+            box["s"].close()
+            closed.set()
+
+        owner = threading.Thread(target=_owner, name="cdp-owner")
+        owner.start()
+        try:
+            assert opened.wait(timeout=10)
+            session = box["s"]
+            with pytest.raises(DolphinError, match=r"'cdp-owner', which is still running"):
+                session.close()
+            assert session._closed is False
+            assert session._playwright_lease.users == 1
+            api.browsers[0].close.assert_not_called()
+            api.drivers[0].stop.assert_not_called()
+        finally:
+            close_now.set()
+            owner.join(timeout=10)
+
+        assert closed.is_set()
+        assert session._closed is True
+        api.browsers[0].close.assert_called_once_with()
+        api.drivers[0].stop.assert_called_once_with()
+
+    def test_close_after_the_owner_thread_exited_is_refused_without_side_effects(self):
+        import threading
+
+        api = CountingSyncApi()
+        box: dict[str, CDPSession] = {}
+        worker = threading.Thread(
+            target=lambda: box.setdefault("s", self._connect(api)), name="cdp-gone"
+        )
         worker.start()
         worker.join()
 
-        seen["s"].close()
+        session = box["s"]
+        with pytest.raises(DolphinError, match=r"'cdp-gone', which has already exited"):
+            session.close()
+        assert session._closed is False
+        assert session._playwright_lease.users == 1
+        api.drivers[0].stop.assert_not_called()
+
+    def test_closed_session_close_is_a_no_op_on_any_thread(self):
+        import threading
+
+        api = CountingSyncApi()
+        session = self._connect(api)
+        session.close()
+        errors: list[BaseException] = []
+
+        def _close_again():
+            try:
+                session.close()
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        worker = threading.Thread(target=_close_again)
+        worker.start()
+        worker.join()
+        assert errors == []
         api.drivers[0].stop.assert_called_once_with()
-        assert seen["s"]._playwright_lease is None
 
     def test_releasing_an_already_released_lease_is_a_no_op(self):
         driver = MagicMock(name="driver")

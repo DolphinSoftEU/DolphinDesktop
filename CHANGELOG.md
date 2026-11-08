@@ -50,7 +50,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   sync Playwright driver, and Playwright allows only one per thread. Sessions
   on one thread now share that driver, each over its own CDP connection:
   closing one session disconnects only that session, and the driver stops when
-  the last session on the thread closes.
+  the last session on the thread closes. `CDPSession.close()` called on a
+  thread other than the one that opened the session now raises `DolphinError`
+  and leaves the session open. Before, it swallowed Playwright's
+  `greenlet.error` and reported success while the driver kept running.
 * PR #57 re-review follow-ups on Outlook:
   - `delete(permanent=True)` now confirms removal by COM status code: only an
     unambiguous `MAPI_E_NOT_FOUND` from the re-fetch counts as deleted; any

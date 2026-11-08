@@ -455,6 +455,8 @@ class CDPSession:
         # Set by connect() when the driver is the thread's shared one; a session
         # built directly around its own driver keeps stopping it on close().
         self._playwright_lease: _PlaywrightLease | None = None
+        # The thread connect() ran on: Playwright sync objects only work there.
+        self._owner_thread: threading.Thread | None = None
         self._browser = browser
         self._context = context
         self._page = page
@@ -598,6 +600,7 @@ class CDPSession:
             raise
 
         session._playwright_lease = lease
+        session._owner_thread = threading.current_thread()
         return session
 
     @staticmethod
@@ -1389,9 +1392,19 @@ class CDPSession:
         Only this session's CDP connection is closed. The thread's shared
         Playwright driver keeps serving other open sessions and stops when
         the last one closes.
+
+        Raises:
+            DolphinError: if called on a thread other than the one that
+                opened the session with :meth:`connect`. Playwright's sync
+                objects are bound to that thread (a foreign thread gets
+                ``greenlet.error`` and the driver keeps running), so closing
+                from elsewhere could only pretend to succeed. Nothing is
+                changed: the session stays open and its owner thread can
+                still close it.
         """
         if self._closed:
             return
+        self._require_owner_thread()
         self._closed = True
         if self._events_page is not None:
             self._unbind_page_events(self._events_page)
@@ -1411,6 +1424,22 @@ class CDPSession:
             pass
         self._page = None  # type: ignore[assignment]
         self._opener_page = None
+
+    def _require_owner_thread(self) -> None:
+        owner = self._owner_thread
+        current = threading.current_thread()
+        if owner is None or owner is current:
+            return
+        state = "is still running" if owner.is_alive() else "has already exited"
+        raise DolphinError(
+            f"CDPSession.close() called on thread {current.name!r}, but the session "
+            f"was opened on thread {owner.name!r}, which {state}",
+            hint=(
+                "Playwright objects only work on the thread that created them: close "
+                "the session on that thread (for example submit session.close to the "
+                "executor that opened it) before the thread ends"
+            ),
+        )
 
     def __enter__(self) -> CDPSession:
         return self
