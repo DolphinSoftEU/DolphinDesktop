@@ -850,22 +850,27 @@ class CDPSession:
         Same technique as :meth:`_pick_stable_page`: a sync API call (here a
         zero-length ``wait_for_timeout``, a driver-side timer that never
         reaches the renderer) pumps Playwright's event loop, while
-        ``time.sleep`` blocks it. The round trip rides on the first live page.
-        Without one, a 1 ms wait for a ``page`` event on the first context
-        pumps the loop instead. Failures are ignored: the caller then reads
-        the state Playwright already has, as before.
+        ``time.sleep`` blocks it. The round trip rides on the first live page;
+        if that call fails (the page closed meanwhile), the next live page is
+        tried. Only when there is no live page at all does a 1 ms wait for a
+        ``page`` event on the first context pump the loop instead. A failed
+        round trip has already run the loop, so it does not fall back to that
+        wait. Failures are ignored: the caller then reads the state Playwright
+        already has, as before.
         """
         contexts = list(self._browser.contexts)
+        tried_a_page = False
         for ctx in contexts:
             for p in ctx.pages:
                 try:
                     if p.is_closed():
                         continue
+                    tried_a_page = True
                     p.wait_for_timeout(0)
                     return
                 except Exception:
                     continue
-        if contexts:
+        if contexts and not tried_a_page:
             try:
                 contexts[0].wait_for_event("page", timeout=1)
             except Exception:
