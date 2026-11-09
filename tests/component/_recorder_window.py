@@ -98,37 +98,67 @@ def _native_edit_text(edit):
 
 def _wait_for_edit_text(field, root, edit, expected, stage, rec, output, timeout=5):
     """Keep stage-specific native/UIA evidence before the owned AUT is closed."""
+    evidence = {}
+    errors = {}
+    failure = None
+
+    def probe(name, query):
+        nonlocal failure
+        try:
+            value = query()
+            evidence[name] = value
+            return value
+        except Exception as exc:
+            errors[name] = {"type": type(exc).__name__, "message": str(exc)}
+            if failure is None:
+                failure = (exc, exc.__traceback__)
+            return None
+
     deadline = time.monotonic() + timeout
     while True:
-        uia_text = field.text()
-        native_text = _native_edit_text(edit)
-        matched = uia_text == native_text == expected
-        if matched or time.monotonic() >= deadline:
-            context = _recorder._capture_context()
-            evidence = {
-                "stage": stage,
-                "expected": expected,
-                "uia_text": uia_text,
-                "native_text": native_text,
-                "root_hwnd": root,
-                "edit_hwnd": edit,
-                "resolved_hwnd": field._resolve().handle,
-                "foreground_hwnd": win32gui.GetForegroundWindow(),
-                "context_hwnd": context.hwnd,
-                "focus_hwnd": context.focus,
-                "context_pid": context.pid,
-                "password": context.password,
-                "processed_events": rec._processed,
-                "hook_error": repr(rec._hook_error),
-                "modifiers": {
+        evidence = {
+            "stage": stage,
+            "expected": expected,
+            "root_hwnd": root,
+            "edit_hwnd": edit,
+            "processed_events": rec._processed,
+            "hook_error": repr(rec._hook_error),
+        }
+        uia_text = probe("uia_text", field.text)
+        native_text = probe("native_text", lambda: _native_edit_text(edit))
+        matched = not errors and uia_text == native_text == expected
+        if errors or matched or time.monotonic() >= deadline:
+            context = probe("context", _recorder._capture_context)
+            if context is not None:
+                evidence.pop("context")  # Flatten the non-JSON input-context object.
+                evidence.update(
+                    context_hwnd=context.hwnd,
+                    focus_hwnd=context.focus,
+                    context_pid=context.pid,
+                    password=context.password,
+                )
+            probe("resolved_hwnd", lambda: field._resolve().handle)
+            probe("foreground_hwnd", win32gui.GetForegroundWindow)
+            probe(
+                "modifiers",
+                lambda: {
                     str(vk): win32api.GetAsyncKeyState(vk)
                     for vk in (win32con.VK_SHIFT, win32con.VK_CONTROL, win32con.VK_MENU)
                 },
-                "caps_lock": win32api.GetKeyState(win32con.VK_CAPITAL),
-            }
+            )
+            probe("caps_lock", lambda: win32api.GetKeyState(win32con.VK_CAPITAL))
+            if errors:
+                evidence["errors"] = errors
             report = Path(output).with_suffix(".diagnostics.json")
-            previous = json.loads(report.read_text(encoding="utf-8")) if report.exists() else []
-            report.write_text(json.dumps([*previous, evidence], indent=2), encoding="utf-8")
+            try:
+                previous = json.loads(report.read_text(encoding="utf-8")) if report.exists() else []
+                report.write_text(json.dumps([*previous, evidence], indent=2), encoding="utf-8")
+            except Exception as write_error:
+                if failure is None:
+                    raise
+                failure[0].add_note(f"Could not save recorder diagnostics: {write_error}")
+            if failure is not None:
+                raise failure[0].with_traceback(failure[1])
             assert matched, f"Native Edit text mismatch: {json.dumps(evidence, sort_keys=True)}"
             return
         time.sleep(0.01)

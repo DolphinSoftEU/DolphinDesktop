@@ -122,6 +122,49 @@ def test_replay_diagnostic_identifies_stage_and_text_disagreement(
     assert evidence[-1]["stage"] == "generated script replay"
 
 
+@pytest.mark.parametrize("failed_probe", ["uia_text", "native_text", "resolved_hwnd"])
+def test_replay_diagnostic_saves_partial_data_before_reraising(monkeypatch, tmp_path, failed_probe):
+    field = Mock()
+    field.text.return_value = "tttt"
+    field._resolve.return_value.handle = 789
+    rec = Mock(_processed=5, _hook_error=None)
+    native = Mock(return_value="tttt")
+    failure = OSError("controlled diagnostic read failure")
+    probes = {"uia_text": field.text, "native_text": native, "resolved_hwnd": field._resolve}
+    probes[failed_probe].side_effect = failure
+    monkeypatch.setattr(_recorder_window, "_native_edit_text", native)
+    monkeypatch.setattr(
+        _recorder_window._recorder,
+        "_capture_context",
+        lambda: _recorder_window._recorder._InputContext(123, 456, 789, password=False),
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    output = tmp_path / "recorded.py"
+    report = output.with_suffix(".diagnostics.json")
+    report.write_text('[{"stage": "recorded input"}]', encoding="utf-8")
+
+    with pytest.raises(OSError) as caught:
+        _recorder_window._wait_for_edit_text(
+            field, 123, 789, "tttt", "generated script replay", rec, output, timeout=0
+        )
+
+    assert caught.value is failure
+    history = json.loads(report.read_text(encoding="utf-8"))
+    assert history[0] == {"stage": "recorded input"}
+    evidence = history[1]
+    assert evidence["stage"] == "generated script replay"
+    assert evidence["errors"][failed_probe] == {
+        "type": "OSError",
+        "message": "controlled diagnostic read failure",
+    }
+    assert failed_probe not in evidence
+    assert evidence["foreground_hwnd"] == 123
+    assert evidence["focus_hwnd"] == 789
+    for name, expected in (("uia_text", "tttt"), ("native_text", "tttt"), ("resolved_hwnd", 789)):
+        if name != failed_probe:
+            assert evidence[name] == expected
+
+
 def test_real_hook_installation_and_cleanup():
     check_real_hook_lifecycle()
 
