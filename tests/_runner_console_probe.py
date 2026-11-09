@@ -153,8 +153,79 @@ def harness(folder: Path, launcher: str, mode: str) -> None:
                 )
 
 
+def parallel_controller(folder: Path) -> None:
+    """Two threads must both escalate a real ignored console interrupt."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from dolphin_desktop import _runner
+
+    os.environ["DOLPHIN_HEADLESS"] = "0"
+
+    def run(index: int) -> int:
+        return _runner.run_hidden(
+            [
+                sys.executable,
+                __file__,
+                "--child",
+                str(folder / str(index)),
+                "ignore",
+            ]
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(run, (0, 1)))
+    (folder / "parallel-result.json").write_text(
+        json.dumps(
+            {
+                "returncodes": results,
+                "parent_headless": os.environ.get("DOLPHIN_HEADLESS"),
+            }
+        )
+    )
+
+
+def parallel_harness(folder: Path) -> None:
+    for index in (0, 1):
+        (folder / str(index)).mkdir()
+    with (
+        (folder / "parallel-stdout.bin").open("wb") as stdout,
+        (folder / "parallel-stderr.bin").open("wb") as stderr,
+    ):
+        process = subprocess.Popen(
+            [sys.executable, __file__, "--parallel-controller", str(folder)],
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not all((folder / str(index) / "ready.json").exists() for index in (0, 1)):
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError("parallel commands did not become ready")
+                time.sleep(0.05)
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+            process.wait(timeout=20)
+            if process.returncode != 0:
+                raise RuntimeError(f"parallel controller failed with code {process.returncode}")
+        finally:
+            if process.poll() is None:
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        capture_output=True,
+                        check=False,
+                        timeout=10,
+                    )
+                finally:
+                    process.wait(timeout=3)
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "--child":
         child(Path(sys.argv[2]), sys.argv[3])
+    elif sys.argv[1] == "--parallel-controller":
+        parallel_controller(Path(sys.argv[2]))
+    elif sys.argv[1] == "--parallel-harness":
+        parallel_harness(Path(sys.argv[2]))
     else:
         harness(Path(sys.argv[1]), sys.argv[2], sys.argv[3])

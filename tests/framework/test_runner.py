@@ -370,7 +370,11 @@ def test_run_hidden_executes_directly_when_already_on_hidden_desktop(monkeypatch
 
     assert _runner.run_hidden(["pytest", "-q"]) == 13
     launch.assert_called_once_with(
-        ["pytest", "-q"], _runner.DESKTOP_NAME, inherit_stdio=True, job_handle=99
+        ["pytest", "-q"],
+        _runner.DESKTOP_NAME,
+        inherit_stdio=True,
+        job_handle=99,
+        env={"DOLPHIN_HEADLESS": "1"},
     )
     create.assert_not_called()
 

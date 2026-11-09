@@ -15,6 +15,13 @@ an unresponsive command tree receives a termination request after ten seconds
 with exit code 130. The runner then waits at most another ten seconds for the
 command process to exit; if it remains active, a timeout error initiates job
 cleanup instead of repeatedly requesting termination.
+Concurrent `run_hidden()` calls in one Python process share one native console
+handler, which notifies every active caller. Child environment overrides are
+private, so one runner cannot change another runner's `DOLPHIN_HEADLESS` setting
+or the parent's environment. The handler is removed when the last caller exits.
+Removal failures are reported; the module retains the callback reference and
+reuses the existing registration until a later removal succeeds. With no active
+callers, a retained callback returns `FALSE` and lets other handlers run.
 Processes that detach from the console cannot receive its console events, but
 remain in the runner's Windows Job Object for cleanup. Remaining descendants are
 terminated when the command finishes, including processes behind venv redirectors.

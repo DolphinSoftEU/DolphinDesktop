@@ -293,3 +293,29 @@ def test_stale_notification_cannot_add_a_real_foreign_process_to_cleanup():
             assert kernel32.WaitForSingleObject(handle, 0) == 258
         finally:
             _runner.close_process_handle(handle)
+
+
+@pytest.mark.timeout(80)
+def test_parallel_run_hidden_broadcasts_real_ctrl_break_and_preserves_parent_environment(tmp_path):
+    probe = Path(__file__).parents[1] / "_runner_console_probe.py"
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startup.wShowWindow = 0
+    result = subprocess.run(
+        [sys.executable, str(probe), "--parallel-harness", str(tmp_path)],
+        creationflags=subprocess.CREATE_NEW_CONSOLE,
+        startupinfo=startup,
+        capture_output=True,
+        timeout=70,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    report = json.loads((tmp_path / "parallel-result.json").read_text())
+    assert report == {"returncodes": [130, 130], "parent_headless": "0"}
+    for index in (0, 1):
+        folder = tmp_path / str(index)
+        ready = json.loads((folder / "ready.json").read_text())
+        assert ready["headless"] == "1"
+        assert ready["desktop"] == "DolphinHidden"
+        assert not (folder / "interrupt.json").exists()
+        _assert_exited(ready["pid"])
+        _assert_exited(json.loads((folder / "grandchild.json").read_text())["pid"])

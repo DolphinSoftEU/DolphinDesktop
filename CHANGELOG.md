@@ -71,6 +71,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   Incomplete successful PID-list responses are retried. A required CI matrix
   verifies Ctrl+Break on Python 3.11 and 3.13, including installed and nested
   launchers, without allowing skipped tests.
+  Concurrent `run_hidden()` calls now share one console handler that broadcasts
+  interrupts to all active callers, and use private child environment blocks.
+  Handler removal errors are checked; a module-held callback remains safe after
+  failed removal and the registration is reused until removal succeeds.
 
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).

@@ -420,6 +420,23 @@ def _owned_job() -> Iterator[int]:
         _kernel32.CloseHandle(job)
 
 
+_console_registration_lock = threading.Lock()
+_console_subscribers: tuple[threading.Event, ...] = ()
+_console_handler_registered = False
+
+
+@_ConsoleHandler
+def _console_control_handler(event: int) -> bool:
+    if event not in (0, 1):  # CTRL_C_EVENT, CTRL_BREAK_EVENT
+        return False
+    # Read an immutable snapshot without taking the registration lock. Windows
+    # may call us while another thread is inside SetConsoleCtrlHandler.
+    subscribers = _console_subscribers
+    for interrupted in subscribers:
+        interrupted.set()
+    return bool(subscribers)
+
+
 @contextmanager
 def _console_interrupts() -> Iterator[threading.Event]:
     """Let the command handle console interrupts while its launcher waits.
@@ -431,23 +448,33 @@ def _console_interrupts() -> Iterator[threading.Event]:
     change the inherited ignore setting.
     Use a native handler because SIGBREAK has a terminating default,
     and Python signal handlers cannot run during an infinite native wait.
+    A single module-pinned callback broadcasts to all active callers. If removal
+    fails, the callback remains alive and its registration is reused until a
+    later removal succeeds. With no subscribers it returns FALSE.
     """
+    global _console_handler_registered, _console_subscribers
     interrupted = threading.Event()
-
-    @_ConsoleHandler
-    def handler(event: int) -> bool:
-        if event in (0, 1):  # CTRL_C_EVENT, CTRL_BREAK_EVENT
-            interrupted.set()
-            return True
-        return False
-
-    if not _kernel32.SetConsoleCtrlHandler(handler, True):
-        raise ctypes.WinError(ctypes.get_last_error())
+    with _console_registration_lock:
+        previous = _console_subscribers
+        _console_subscribers += (interrupted,)
+        try:
+            if not _console_handler_registered:
+                if not _kernel32.SetConsoleCtrlHandler(_console_control_handler, True):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                _console_handler_registered = True
+        except BaseException:
+            _console_subscribers = previous
+            raise
+    del previous
     try:
         yield interrupted
     finally:
-        # Keep the callback alive until Windows has removed it.
-        _kernel32.SetConsoleCtrlHandler(handler, False)
+        with _console_registration_lock:
+            _console_subscribers = tuple(s for s in _console_subscribers if s is not interrupted)
+            if not _console_subscribers:
+                if not _kernel32.SetConsoleCtrlHandler(_console_control_handler, False):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                _console_handler_registered = False
 
 
 class _StartupInfoW(ctypes.Structure):
@@ -599,6 +626,7 @@ def launch_on_desktop(
     *,
     inherit_stdio: bool = True,
     job_handle: int | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[int, int]:
     """Launch *args* as a new process on *desktop_name*, forwarding stdio.
 
@@ -610,6 +638,7 @@ def launch_on_desktop(
 
     When *job_handle* is provided, assign the suspended child to that job before
     resuming it, so even immediately spawned descendants belong to the job.
+    Environment overrides are private to the child; the parent is not modified.
     """
     si = _StartupInfoW()
     si.cb = ctypes.sizeof(_StartupInfoW)
@@ -623,6 +652,11 @@ def launch_on_desktop(
 
     pi = _ProcessInformation()
     cmd_str = _build_cmd_string(args)
+    environment = _build_environment_block(env)
+    creation_flags = _CREATE_SUSPENDED if job_handle is not None else 0
+    if environment is not None:
+        creation_flags |= _CREATE_UNICODE_ENVIRONMENT
+    environment_ptr = ctypes.cast(environment, ctypes.c_void_p) if environment is not None else None
 
     ok = _kernel32.CreateProcessW(
         None,
@@ -630,8 +664,8 @@ def launch_on_desktop(
         None,  # process security attrs
         None,  # thread security attrs
         True,  # bInheritHandles — stdio handles must be inheritable
-        _CREATE_SUSPENDED if job_handle is not None else 0,
-        None,  # lpEnvironment=NULL → inherit parent env (including DOLPHIN_HEADLESS)
+        creation_flags,
+        environment_ptr,
         None,  # lpCurrentDirectory=NULL → inherit parent cwd
         ctypes.byref(si),
         ctypes.byref(pi),
@@ -756,24 +790,22 @@ def run_hidden(args: list[str]) -> int:
     without extra flags.
     """
     h_desk = None
-    previous_headless = os.environ.get("DOLPHIN_HEADLESS")
-    os.environ["DOLPHIN_HEADLESS"] = "1"
     try:
         with _console_interrupts() as interrupted, _owned_job() as job:
             if get_current_desktop_name() != DESKTOP_NAME:
                 h_desk = create_hidden_desktop()
             _pid, h_process = launch_on_desktop(
-                args, DESKTOP_NAME, inherit_stdio=True, job_handle=job
+                args,
+                DESKTOP_NAME,
+                inherit_stdio=True,
+                job_handle=job,
+                env={"DOLPHIN_HEADLESS": "1"},
             )
             try:
                 return _wait_for_command(h_process, job, interrupted)
             finally:
                 close_process_handle(h_process)
     finally:
-        if previous_headless is None:
-            os.environ.pop("DOLPHIN_HEADLESS", None)
-        else:
-            os.environ["DOLPHIN_HEADLESS"] = previous_headless
         if h_desk is not None:
             close_desktop(h_desk)
 
