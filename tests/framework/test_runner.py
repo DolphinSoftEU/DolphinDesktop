@@ -397,7 +397,7 @@ def test_runner_assigns_suspended_child_before_resuming_and_cleans_up_failures(
         with pytest.raises(OSError):
             _runner.launch_on_desktop(["python"], job_handle=99)
         terminate.assert_called_once_with(5678, 1)
-        wait.assert_called_once_with(5678, _runner._INFINITE)
+        wait.assert_called_once_with(5678, int(_runner._PROCESS_TERMINATION_TIMEOUT_SECONDS * 1000))
         assert kernel32.closed_handles == [5678, 9012]
     assert kernel32.create_process_args[5] == _runner._CREATE_SUSPENDED
     assign.assert_called_once_with(99, 5678)
@@ -405,6 +405,45 @@ def test_runner_assigns_suspended_child_before_resuming_and_cleans_up_failures(
         resume.assert_called_once_with(9012)
     else:
         resume.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["assign", "resume"])
+@pytest.mark.parametrize(
+    "outcome", ["terminated", "timeout", "wait-failed", "unexpected", "terminate-error"]
+)
+def test_failed_launch_cleanup_is_bounded_and_closes_handles(monkeypatch, phase, outcome):
+    kernel32 = _FakeLauncher()
+    kernel32.AssignProcessToJobObject = Mock(return_value=phase != "assign")
+    kernel32.ResumeThread = Mock(return_value=0xFFFFFFFF)
+    kernel32.TerminateProcess = Mock(return_value=outcome != "terminate-error")
+    result = {
+        "terminated": _runner._WAIT_OBJECT_0,
+        "timeout": _runner._WAIT_TIMEOUT,
+        "wait-failed": _runner._WAIT_FAILED,
+        "unexpected": 0x80,
+        "terminate-error": _runner._WAIT_OBJECT_0,
+    }[outcome]
+    kernel32.WaitForSingleObject = Mock(return_value=result)
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(_runner.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(_runner, "_PROCESS_TERMINATION_TIMEOUT_SECONDS", 0.025)
+
+    with pytest.raises(TimeoutError if outcome == "timeout" else OSError) as error:
+        _runner.launch_on_desktop(["python"], job_handle=99)
+    assert kernel32.closed_handles == [5678, 9012]
+    kernel32.TerminateProcess.assert_called_once_with(5678, 1)
+    if outcome == "terminate-error":
+        kernel32.WaitForSingleObject.assert_not_called()
+    else:
+        kernel32.WaitForSingleObject.assert_called_once_with(5678, 25)
+    if outcome == "terminated":
+        assert error.value.winerror == 5
+    else:
+        # Cleanup diagnostics retain the original assignment/resume error.
+        assert isinstance(error.value.__context__, OSError)
+        assert error.value.__context__.winerror == 5
+        if outcome in ("wait-failed", "unexpected"):
+            assert f"0x{result:08X}" in str(error.value)
 
 
 @pytest.mark.parametrize("configure_ok", [True, False])

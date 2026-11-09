@@ -54,6 +54,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   a failed query, termination failure or cleanup timeout is reported as an error.
   After forced termination, waiting for the command process is also limited to
   ten seconds; a stuck process raises a timeout instead of retrying indefinitely.
+  Cleanup after a failed job assignment or thread resume also uses a bounded
+  wait, validates its result, and releases process/thread handles on every path.
   Console regressions run in the Windows component suite. Descendant cleanup
   checks retain the original process handle before exit, avoiding PID reuse races.
   Job cleanup also waits on retained process handles: zero active processes can

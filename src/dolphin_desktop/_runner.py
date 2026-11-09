@@ -148,7 +148,6 @@ _kernel32.GetQueuedCompletionStatus.restype = _wt.BOOL
 DESKTOP_NAME = "DolphinHidden"
 _DESKTOP_ACCESS = 0x10000000  # GENERIC_ALL
 
-_INFINITE = 0xFFFFFFFF
 _WAIT_OBJECT_0 = 0x00000000
 _WAIT_TIMEOUT = 0x00000102
 _WAIT_FAILED = 0xFFFFFFFF
@@ -633,7 +632,16 @@ def launch_on_desktop(
     except BaseException:
         try:
             terminate_process_handle(pi.hProcess)
-            _kernel32.WaitForSingleObject(pi.hProcess, _INFINITE)
+            waited = _kernel32.WaitForSingleObject(
+                pi.hProcess, int(_PROCESS_TERMINATION_TIMEOUT_SECONDS * 1000)
+            )
+            if waited == _WAIT_TIMEOUT:
+                raise TimeoutError("suspended command process did not exit after termination")
+            if waited != _WAIT_OBJECT_0:
+                raise OSError(
+                    "WaitForSingleObject during failed launch cleanup returned "
+                    f"0x{waited:08X}: error {ctypes.get_last_error()}"
+                )
         finally:
             close_process_handle(pi.hProcess)
         raise
