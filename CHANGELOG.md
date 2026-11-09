@@ -46,6 +46,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 * The pytest `--dolphin-backend` option accepts registered and entry-point
   backends, as well as `auto`, and reports unknown IDs with registry diagnostics
   instead of restricting selection to UIA/Win32 (KAN-754).
+  Validation waits for nested `conftest.py` registrations during collection,
+  the repository bootstrap accepts the same IDs, and `Desktop(backend="auto")`
+  resolves the concrete backend before launching or connecting to native apps.
 
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).

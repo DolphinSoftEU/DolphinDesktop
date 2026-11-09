@@ -42,13 +42,18 @@ def test_backend_name(dolphin_backend):
 
 Session-scoped value of `--dolphin-backend`. Accepts registered backend IDs,
 including installed `dolphin_desktop.backends` entry points and backends registered
-with `register_backend()` while loading `conftest.py`, plus `auto`.
+with `register_backend()` while loading `conftest.py`, plus `auto`. Final
+validation runs after collection, so nested `conftest.py` files discovered
+under the selected test paths can register backends before validation.
 Unknown IDs produce a pytest usage error listing registered backends; there is no
 fallback. Validation does not construct backends or check optional dependencies.
 The `desktop` fixture passes the selected ID to `Desktop`; backend capabilities
 and stack-specific launch requirements still apply. Native `Desktop.launch()`
 and `connect()` use pywinauto; external providers can be called through the public
 `resolve_backend(dolphin_backend)` API.
+With `auto`, `dolphin_backend` retains the requested string, while `Desktop`
+resolves it once during construction (`uia` on Windows) and uses that concrete
+backend for `launch()`, `connect()` and capability queries.
 
 ### `dolphin_timeout`
 
