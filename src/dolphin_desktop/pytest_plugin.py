@@ -952,13 +952,18 @@ def _collect_artifacts(item: pytest.Item, call: pytest.CallInfo, report: pytest.
         if capstderr:
             _attach_allure_text(_redact(capstderr), "stderr")
 
-    # enrich JUnit XML <properties> with artifact paths
-    if screenshot_path:
-        report.user_properties.append(("dolphin_screenshot", str(screenshot_path)))
-    if trace_dir:
-        report.user_properties.append(("dolphin_trace", str(trace_dir)))
-    if video_path:
-        report.user_properties.append(("dolphin_video", str(video_path)))
+    # JUnit finalises properties from the teardown report, which pytest builds
+    # from item.user_properties. Also enrich this already-created report for
+    # consumers of the outcome phase. Retrying attempts return before this point.
+    for name, path in (
+        ("dolphin_screenshot", screenshot_path),
+        ("dolphin_trace", trace_dir),
+        ("dolphin_video", video_path),
+    ):
+        if path:
+            prop = (name, str(path))
+            item.user_properties.append(prop)
+            report.user_properties.append(prop)
 
     # accumulate for HTML fallback report
     _session_reports.append(

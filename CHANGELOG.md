@@ -86,6 +86,45 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   within the shared deadline, record self-healing on success, and report
   ambiguous matches for both visible and presence searches (KAN-745).
 
+* `Window.edit()`, `combo_box()`, `tree()`, `button()`, `check_box()`,
+  `list_box()`, `tab()` and the other typed shortcuts now find their controls
+  on the `win32` backend (`Desktop.for_legacy_apps()`), as does any
+  `locator(control_type=...)` there (KAN-747). Before, they always timed out
+  with `ElementNotFoundError`. The UIA control type they send was compared
+  with the .NET type of a WinForms control, and with an empty string on
+  classic HWND controls.
+  - On `win32`, a UIA control type now matches pywinauto's friendly class
+    name. That covers classic, WinForms, VB6 and VCL class spellings and
+    tells check boxes and radio buttons from push buttons by style.
+  - Win32 friendly names (`Static`, `TreeView`, …) and dotted .NET types are
+    accepted as given.
+  - `Tree.select_item_by_path` / `expand_item` drive `SysTreeView32` nodes
+    through tree-view messages.
+  - `ListBox.items()` / `selected_items()` read `LISTBOX` and `SysListView32`
+    entries, and `Tab.select_tab()` selects a `SysTabControl32` tab by exact
+    text.
+  - `menu().item()` resolves native `HMENU` menu bars: `click()` clicks the
+    item, `invoke()` sends its `WM_COMMAND`, and `is_checked()` / `check()` /
+    `uncheck()` work on checkable items.
+  - `Locator.all()` and `count()` on `win32` apply every criterion. Before,
+    `control_id`, `title_re`, `class_name_re` and `nth()` were ignored, so
+    `locator(control_id=7).count()` counted every control.
+  - A negative `nth()` on `win32` counts the same matches as the lookup that
+    follows, so it no longer reports a control as missing when other criteria
+    narrow the match or a matching control is hidden.
+  - A UIA type with no Win32 window class (`TreeItem`, `ListItem`,
+    `Hyperlink`, …) raises `UnsupportedCapabilityError` immediately, also
+    from `exists()`, instead of waiting out the timeout.
+  - `Locator.text()` and `scroll_into_view()` no longer stall for about 5 s
+    per call on `win32`. They probed a UIA pattern on the unresolved
+    `WindowSpecification`, which pywinauto answered with a child-window wait.
+  - `Locator.text()` on an empty plain `Edit` or `Static` returns `""` at once.
+    It used to take focus, send Ctrl+A / Ctrl+C and clear the user's clipboard.
+    RichEdit controls keep that fallback.
+* JUnit XML now retains screenshot, trace and video paths through test teardown,
+  including retained videos for passing tests. Retried attempts still suppress
+  artifacts, and capture failures preserve the original test failure (KAN-748).
+
 * `playwright_compat.sync_playwright().chromium.connect_over_cdp()` no longer
   fails with Playwright's "Sync API inside the asyncio loop" error when a
   `CDPSession` (for example from `Desktop.launch_electron_cdp`) is already open
