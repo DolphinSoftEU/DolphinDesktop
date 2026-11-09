@@ -49,7 +49,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   failure remains the cause when the message loop or hook cleanup subsequently
   fails; secondary failures are attached as exception notes. Regression tests cover the
   real ctypes callbacks with pointer-sized arguments and results on x64, alongside
-  the existing WinAPI signature fix (KAN-757).
+  the existing WinAPI signature fix. Logging handler failures during hook cleanup
+  cannot interrupt removal of remaining hooks or completion signaling (KAN-757).
 
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).

@@ -1905,11 +1905,14 @@ def test_start_timeout_stops_capture_without_starting_processor(monkeypatch):
     assert rec._evt_queue.empty()
 
 
-def test_unhook_failure_still_removes_remaining_hook_and_signals_completion(monkeypatch):
+@pytest.mark.parametrize("logger_fails", [False, True])
+def test_unhook_failure_still_removes_remaining_hook_and_signals_completion(
+    monkeypatch, logger_fails
+):
     api = _HookAPI({}, message_returns=(0,))
     unhook = Mock(side_effect=[0, 1])
     api.UnhookWindowsHookEx = unhook
-    error = Mock()
+    error = Mock(side_effect=RuntimeError("logging handler failed") if logger_fails else None)
     monkeypatch.setattr(_recorder, "_user32", api)
     monkeypatch.setattr(_recorder._log, "error", error)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
@@ -1929,11 +1932,60 @@ def test_unhook_failure_still_removes_remaining_hook_and_signals_completion(monk
     assert caught.value.__cause__ is rec._hook_error
 
 
-def test_cleanup_failures_preserve_original_hook_error(monkeypatch):
+@pytest.mark.parametrize("reader", ["wait", "stop"])
+def test_cleanup_logging_failure_does_not_strand_recorder_threads(monkeypatch, reader):
+    release = threading.Event()
+    api = _HookAPI({})
+    unhook = Mock(side_effect=[0, 1])
+    api.UnhookWindowsHookEx = unhook
+
+    def get_message(*args):
+        assert release.wait(2), "Test did not release the hook loop"
+        return 0
+
+    api.GetMessageW = get_message
+    monkeypatch.setattr(_recorder, "_user32", api)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(
+        _recorder._log, "error", Mock(side_effect=RuntimeError("logging handler failed"))
+    )
+    rec = Recorder(pid=100)
+    try:
+        rec.start()
+        processor = rec._proc_thread
+        hook = rec._hook_thread
+        release.set()
+        with pytest.raises(OSError, match="failed during recording") as caught:
+            if reader == "wait":
+                rec.wait(2)
+            else:
+                rec.stop()
+        assert caught.value.__cause__ is rec._hook_error
+        assert rec._hook_error.winerror == 5
+        assert [call.args for call in unhook.call_args_list] == [(101,), (202,)]
+        assert not hook.is_alive()
+        assert not processor.is_alive()
+        assert rec._evt_queue.empty()  # Processor consumed the sentinel.
+        assert rec._stopped.is_set()
+        assert rec._hook_ready.is_set()
+    finally:
+        release.set()
+        if rec._hook_thread is not None:
+            rec._hook_thread.join(3)
+        if rec._proc_thread is not None:
+            rec._proc_thread.join(3)
+
+
+@pytest.mark.parametrize("logger_fails", [False, True])
+def test_cleanup_failures_preserve_original_hook_error(monkeypatch, logger_fails):
     api = _HookAPI({}, message_returns=(-1,))
     api.UnhookWindowsHookEx = Mock(return_value=0)
     monkeypatch.setattr(_recorder, "_user32", api)
     monkeypatch.setattr(ctypes, "get_last_error", Mock(side_effect=[6, 5, 87]))
+    if logger_fails:
+        monkeypatch.setattr(
+            _recorder._log, "error", Mock(side_effect=RuntimeError("logging handler failed"))
+        )
     rec = Recorder(pid=100)
     rec._hook_loop()
     assert rec._hook_error.winerror == 6
