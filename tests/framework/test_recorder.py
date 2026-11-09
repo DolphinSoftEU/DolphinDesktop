@@ -2080,6 +2080,78 @@ def test_stop_discards_in_flight_callback_and_drains_already_queued_events(monke
         rec.stop()
 
 
+@pytest.mark.parametrize("event_kind", ["mouse", "key"])
+@pytest.mark.parametrize("failure_site", ["context", "queue", "shutdown"])
+def test_callback_failure_still_forwards_input_and_rejects_recording(
+    monkeypatch, caplog, event_kind, failure_site
+):
+    rec = Recorder(pid=100)
+    api = _HookAPI({})
+    failure = RuntimeError("sensitive captured input")
+    next_hook = Mock(return_value=123)
+    api.CallNextHookEx = next_hook
+    mouse = _recorder._MSLLHOOKSTRUCT()
+    key = _recorder._KBDLLHOOKSTRUCT(vkCode=ord("A"))
+    data = mouse if event_kind == "mouse" else key
+    message = _recorder._WM_LBUTTONDOWN if event_kind == "mouse" else _recorder._WM_KEYDOWN
+    pointer = ctypes.addressof(data)
+    context = _recorder._InputContext(11, 100, 12, "Owned", "Dialog", False)
+    probe = Mock(return_value=context, side_effect=failure if failure_site == "context" else None)
+    monkeypatch.setattr(_recorder, "_capture_context", probe)
+    monkeypatch.setattr(_recorder, "_capture_mouse_context", probe)
+    if failure_site == "queue":
+        monkeypatch.setattr(rec._evt_queue, "put_nowait", Mock(side_effect=failure))
+    elif failure_site == "shutdown":
+        api.PostQuitMessage = Mock(side_effect=failure)
+
+    def dispatch():
+        if failure_site == "shutdown":
+            rec._stopped.set()
+        callback = rec._mouse_cb if event_kind == "mouse" else rec._kbd_cb
+        assert callback(_recorder._HC_ACTION, message, pointer) == 123
+
+    api.dispatch = dispatch
+    monkeypatch.setattr(_recorder, "_user32", api)
+    # Keep the real ctypes callback boundary: uncaught exceptions would be
+    # swallowed by ctypes and reported as unraisable, losing the hook result.
+    rec._hook_loop()
+
+    next_hook.assert_called_once_with(None, _recorder._HC_ACTION, message, pointer)
+    assert api.unhooked == [101, 202]
+    assert rec._hook_error is failure
+    with pytest.raises(OSError, match="hook loop failed") as caught:
+        rec.wait(0)
+    assert caught.value.__cause__ is failure
+    assert rec._evt_queue.get_nowait() is None
+    assert rec._evt_queue.empty()
+    assert "sensitive captured input" not in caplog.text
+
+
+@pytest.mark.parametrize("event_kind", ["mouse", "key"])
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_actual_hook_callbacks_preserve_pointer_sized_arguments_and_result(
+    monkeypatch, event_kind, sign
+):
+    rec = Recorder(pid=100)
+    api = _HookAPI({}, message_returns=(0,))
+    monkeypatch.setattr(_recorder, "_user32", api)
+    rec._hook_loop()
+    magnitude = 1 << (ctypes.sizeof(ctypes.c_void_p) * 8 - 2)
+    result = sign * (magnitude + 123)
+    next_hook = Mock(return_value=result)
+    api.CallNextHookEx = next_hook
+    probe = Mock(side_effect=AssertionError("negative nCode must not inspect input"))
+    monkeypatch.setattr(_recorder, "_capture_context", probe)
+    monkeypatch.setattr(_recorder, "_capture_mouse_context", probe)
+    rec._stopped.clear()
+    callback = rec._mouse_cb if event_kind == "mouse" else rec._kbd_cb
+
+    assert callback(-1, magnitude + 1, magnitude + 2) == result
+    next_hook.assert_called_once_with(None, -1, magnitude + 1, magnitude + 2)
+    assert rec._hook_error is None
+    probe.assert_not_called()
+
+
 def test_hook_callback_forwards_pointer_sized_lparam_to_real_winapi():
     # Negative nCode forwards without dereferencing lParam; no installed hook or
     # injected input is needed to exercise the actual ctypes boundary.
@@ -2088,13 +2160,18 @@ def test_hook_callback_forwards_pointer_sized_lparam_to_real_winapi():
     )
     failures = []
     previous = sys.unraisablehook
+    magnitude = 1 << (ctypes.sizeof(ctypes.c_void_p) * 8 - 2)
     try:
         sys.unraisablehook = failures.append
-        callback(-1, 0, (1 << (ctypes.sizeof(ctypes.c_void_p) * 8 - 2)) + 123)
+        callback(-1, magnitude + 321, magnitude + 123)
     finally:
         sys.unraisablehook = previous
     assert not failures
     assert ctypes.sizeof(_recorder._HOOKPROC._restype_) == ctypes.sizeof(ctypes.c_void_p)
+    assert ctypes.sizeof(_recorder._user32.CallNextHookEx.restype) == ctypes.sizeof(ctypes.c_void_p)
+    assert ctypes.sizeof(_recorder._user32.SetWindowsHookExW.restype) == ctypes.sizeof(
+        ctypes.c_void_p
+    )
 
 
 @pytest.mark.parametrize("reader", ["stop", "wait", "actions", "generate_code"])

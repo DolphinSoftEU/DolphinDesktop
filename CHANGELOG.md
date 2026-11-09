@@ -43,6 +43,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder mouse and keyboard callbacks forward input even when context capture,
+  queueing or shutdown raises. Failures stop recording and are reported by
+  completion methods without logging captured input. Regression tests cover the
+  real ctypes callbacks with pointer-sized arguments and results on x64, alongside
+  the existing WinAPI signature fix (KAN-757).
+
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).
 
