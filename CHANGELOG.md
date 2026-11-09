@@ -58,6 +58,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   drain window messages before HWND cleanup, preventing queued test input from
   crossing test boundaries. Concurrent runner tests seed pipe input before launch
   and surface startup exceptions instead of masking them with pipe-write errors.
+  Process-isolation runs also verify cumulative native text in each AUT before
+  moving focus. WM_GETTEXT diagnostics distinguish a failed call from a successful
+  empty read. Contributor documentation keeps the acceptance procedure and CI links.
 
 * Recorder mouse and keyboard callbacks forward input even when context capture,
   queueing, shutdown or a logging handler raises. Failures stop recording and are

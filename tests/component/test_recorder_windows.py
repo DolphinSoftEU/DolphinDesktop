@@ -96,6 +96,43 @@ def test_native_edit_diagnostic_reads_actual_control_text(text):
         gui.DestroyWindow(edit)
 
 
+@pytest.mark.parametrize("status", [0, 1])
+def test_native_read_status_distinguishes_failure_from_empty_text(monkeypatch, tmp_path, status):
+    field = Mock()
+    field.text.return_value = ""
+    field._resolve.return_value.handle = 789
+    rec = Mock(_processed=5, _hook_error=None)
+    monkeypatch.setattr(
+        _recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(status, 0))
+    )
+    monkeypatch.setattr(
+        _recorder_window._recorder,
+        "_capture_context",
+        lambda: _recorder_window._recorder._InputContext(123, 456, 789, password=False),
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    output = tmp_path / "recorded.py"
+
+    def read():
+        _recorder_window._wait_for_edit_text(
+            field, 123, 789, "", "cleared before replay", rec, output, timeout=0
+        )
+
+    if status:
+        read()
+    else:
+        with pytest.raises(OSError, match=r"WM_GETTEXT.*zero status"):
+            read()
+    evidence = json.loads(output.with_suffix(".diagnostics.json").read_text(encoding="utf-8"))[-1]
+    if status:
+        assert evidence["native_text"] == ""
+        assert "errors" not in evidence
+    else:
+        assert "native_text" not in evidence
+        assert evidence["errors"]["native_text"]["type"] == "OSError"
+        assert "zero status" in evidence["errors"]["native_text"]["message"]
+
+
 @pytest.mark.parametrize("uia_text,native_text", [("tttt", ""), ("", "tttt"), ("TTTT", "TTTT")])
 def test_replay_diagnostic_identifies_stage_and_text_disagreement(
     monkeypatch, tmp_path, uia_text, native_text

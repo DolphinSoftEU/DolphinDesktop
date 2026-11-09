@@ -85,7 +85,7 @@ def _query_on_worker(query, timeout=2):
 def _native_edit_text(edit):
     """Read the owned Edit directly, with a bounded cross-process WM_GETTEXT."""
     buffer = ctypes.create_unicode_buffer(256)
-    win32gui.SendMessageTimeout(
+    status, _copied = win32gui.SendMessageTimeout(
         edit,
         win32con.WM_GETTEXT,
         len(buffer),
@@ -93,6 +93,8 @@ def _native_edit_text(edit):
         win32con.SMTO_ABORTIFHUNG,
         500,
     )
+    if not status:
+        raise OSError("WM_GETTEXT failed: SendMessageTimeout returned zero status")
     return buffer.value
 
 
@@ -374,6 +376,7 @@ def record_process_isolation(directory):
                 return [event for event in rec._evt_queue.queue if event and event[0] == "key"]
 
         expected = []
+        native_text = {owned[0]: "", foreign[0]: ""}
         for (root, pid), letter in ((owned, "t"), (foreign, "q"), (owned, "s"), (foreign, "z")):
             edit = win32gui.GetDlgItem(root, ID_EDIT)
             _activate_owned_window(root)
@@ -396,6 +399,10 @@ def record_process_isolation(directory):
                 win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
                 expected.append((vk, root, pid, edit))
             wait_until(lambda: len(key_events()) >= len(expected))
+            native_text[root] += letter * 4
+            # Hook callbacks precede target delivery. Keep focus on this AUT
+            # until its cumulative text proves that the keys were consumed.
+            wait_until(lambda edit=edit, text=native_text[root]: _native_edit_text(edit) == text)
 
         # Prove that both processes were captured, in order, before any interpretation.
         assert rec._processed == 0

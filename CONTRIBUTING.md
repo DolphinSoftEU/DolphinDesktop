@@ -106,55 +106,23 @@ runs may skip when Windows refuses foreground activation; this is incomplete
 verification, and does not satisfy acceptance. The tests never send activation
 shortcuts or input to a foreign foreground window.
 
-KAN-759 verification on 2026-11-09 (CPython 3.12.13 x64, pywin32 311): the
-241 recorder/acceptance unit tests, repository-wide Ruff lint/format checks and
-`mypy src/` passed. The actual pywin32 identity result was a list. The desktop
-gate returned 2 passed and 3 failed because Windows refused `SetForegroundWindow`
-for the owned AUTs, before native classification or replay could run. This is
-incomplete acceptance; rerun the command above on an interactive desktop before
-claiming real record/replay verification. Local failure evidence is in
-`artifacts/KAN-759/recorder-acceptance.xml`.
+Both transition tests wait for actual native Edit text before changing focus;
+hook callbacks alone do not prove target delivery. The process-isolation test
+checks cumulative text separately for each AUT while the recorder worker remains
+paused. Worker queries pump owner-thread messages and use a bounded wait.
 
-The PR #69 review follow-up replaces blocking executor waits with owner-thread
-message pumping and a daemon worker with a bounded wait. Three focused regressions
-passed: real same-process `GetWindowText`, timeout before a blocked worker exits,
-and propagation of worker exceptions. The 241 unit tests and static checks passed
-again. The first desktop rerun returned 6 passed and 2 failed: native classification
-on both threads and delayed transitions passed, but replay timed out waiting
-for Edit text and process isolation could not activate its AUT. An isolated rerun
-returned 5 passed and 3 failed, all three failures at foreground activation.
-Evidence: `artifacts/KAN-759/recorder-acceptance-review.xml` and
-`artifacts/KAN-759/recorder-acceptance-review-isolated.xml`. Full record/replay
-acceptance remains unverified; keep the PR unmerged until it passes.
+Replay checks retain stage-specific native/UIA text, HWND/focus, modifier state
+and recorder progress in `recorded.diagnostics.json`. Native WM_GETTEXT reads
+have a 500 ms timeout and require a successful call status; zero characters on
+a successful read means an empty field. Probe errors retain partial evidence
+and earlier stages before the original exception is re-raised.
 
-CI run `42691212390`, Windows component job `129415455498`, failed at the
-post-replay check (line 416 in commit `9ed9497`), after the original input and
-generated-selector assertions had passed. A subsequent isolated local execution
-passed once; this does not resolve the intermittent CI failure. Text checks now
-name their stage and retain native WM_GETTEXT and UIA text, expected/resolved
-HWNDs, foreground/focus, modifier state and recorder progress in
-`recorded.diagnostics.json`. CI uploads this evidence, the generated script and
-JUnit report as `windows-component-evidence`, including on failure. The direct
-native read has a 500 ms timeout and is tested against empty, ASCII and Unicode
-Edit content. Six diagnostic regressions, 241 recorder/acceptance unit tests and
-52 workflow security tests passed; Ruff and mypy also passed. Full acceptance
-with the diagnostic changes returned 11 passed and 3 foreground-activation
-failures. The replay failure remains unresolved pending diagnostic evidence.
-
-CI run `42702711779` provided that evidence: initial input was `tttt`, the Edit
-was then empty, and post-replay native/UIA text was `qqqqtttt` with the expected
-HWND/focus and no modifiers. The generated script contained only `tttt`; `qqqq`
-matches the preceding transition test's synthetic password input. This points to
-pending native input from that test. Transition tests now wait for actual native
-Edit contents after each run, while the target still has focus, and pump remaining
-window messages before destroying HWNDs. Local acceptance then returned 16 passed
-and 1 foreground-activation failure in process isolation: both native transitions
-and complete record/generate/replay passed in this run. Evidence:
-`artifacts/KAN-759/recorder-acceptance-input-drain.xml`. The same CI run also exposed
-a concurrent-runner test pipe-write error; input is now seeded before runners can
-close the pipe's read end, and startup exceptions are surfaced directly. The full
-runner-inheritance and recorder unit suites returned 259 passed; Ruff and mypy
-passed. New CI and a fully passing interactive gate are still required.
+CI uploads the generated script, diagnostics and JUnit report as
+`windows-component-evidence`, including on failure. Review the
+[PR checks](https://github.com/DolphinSoftEU/DolphinDesktop/pull/69/checks) and
+[CI runs](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml)
+for execution results. Keep run-specific findings in the PR or CI reports;
+merge requires passing current-commit CI and a fully passing interactive gate.
 
 ## Code Style
 
