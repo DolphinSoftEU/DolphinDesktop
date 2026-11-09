@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import ctypes
 import json
 import os
 import queue
@@ -79,6 +80,58 @@ def _query_on_worker(query, timeout=2):
         win32gui.PumpWaitingMessages()
         worker.join(min(0.005, max(0, deadline - time.monotonic())))
     return result.result(timeout=0)
+
+
+def _native_edit_text(edit):
+    """Read the owned Edit directly, with a bounded cross-process WM_GETTEXT."""
+    buffer = ctypes.create_unicode_buffer(256)
+    win32gui.SendMessageTimeout(
+        edit,
+        win32con.WM_GETTEXT,
+        len(buffer),
+        ctypes.addressof(buffer),
+        win32con.SMTO_ABORTIFHUNG,
+        500,
+    )
+    return buffer.value
+
+
+def _wait_for_edit_text(field, root, edit, expected, stage, rec, output, timeout=5):
+    """Keep stage-specific native/UIA evidence before the owned AUT is closed."""
+    deadline = time.monotonic() + timeout
+    while True:
+        uia_text = field.text()
+        native_text = _native_edit_text(edit)
+        matched = uia_text == native_text == expected
+        if matched or time.monotonic() >= deadline:
+            context = _recorder._capture_context()
+            evidence = {
+                "stage": stage,
+                "expected": expected,
+                "uia_text": uia_text,
+                "native_text": native_text,
+                "root_hwnd": root,
+                "edit_hwnd": edit,
+                "resolved_hwnd": field._resolve().handle,
+                "foreground_hwnd": win32gui.GetForegroundWindow(),
+                "context_hwnd": context.hwnd,
+                "focus_hwnd": context.focus,
+                "context_pid": context.pid,
+                "password": context.password,
+                "processed_events": rec._processed,
+                "hook_error": repr(rec._hook_error),
+                "modifiers": {
+                    str(vk): win32api.GetAsyncKeyState(vk)
+                    for vk in (win32con.VK_SHIFT, win32con.VK_CONTROL, win32con.VK_MENU)
+                },
+                "caps_lock": win32api.GetKeyState(win32con.VK_CAPITAL),
+            }
+            report = Path(output).with_suffix(".diagnostics.json")
+            previous = json.loads(report.read_text(encoding="utf-8")) if report.exists() else []
+            report.write_text(json.dumps([*previous, evidence], indent=2), encoding="utf-8")
+            assert matched, f"Native Edit text mismatch: {json.dumps(evidence, sort_keys=True)}"
+            return
+        time.sleep(0.01)
 
 
 def record_native_transitions():
@@ -392,7 +445,7 @@ def record_generate_replay(output):
             win32api.keybd_event(ord("T"), 0, 0, 0)
             win32api.keybd_event(ord("T"), 0, win32con.KEYEVENTF_KEYUP, 0)
         wait_until(lambda: rec._processed >= 5)
-        wait_until(lambda: field.text() == "tttt")
+        _wait_for_edit_text(field, root, edit, "tttt", "recorded input", rec, output)
         rec.stop()
         assert rec.wait(2)
         rec._hook_thread.join(2)
@@ -410,10 +463,10 @@ def record_generate_replay(output):
         namespace = {}
         exec(compile(Path(output).read_text(encoding="utf-8"), str(output), "exec"), namespace)
         win32gui.SendMessage(edit, win32con.WM_SETTEXT, 0, "")
-        assert field.text() == ""
+        _wait_for_edit_text(field, root, edit, "", "cleared before replay", rec, output)
         guard()
         namespace["test_recorded"](process_id=pid)
-        wait_until(lambda: field.text() == "tttt")
+        _wait_for_edit_text(field, root, edit, "tttt", "generated script replay", rec, output)
         assert status_field._resolve().handle == status
         assert status_field.text() == STATUS_IDLE
     finally:

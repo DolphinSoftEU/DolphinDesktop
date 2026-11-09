@@ -73,6 +73,55 @@ def test_worker_query_propagates_failure():
     assert caught.value is failure
 
 
+@pytest.mark.parametrize("text", ["", "tttt", "zażółć"])
+def test_native_edit_diagnostic_reads_actual_control_text(text):
+    gui = _recorder_window.win32gui
+    edit = gui.CreateWindowEx(
+        0,
+        "Edit",
+        text,
+        0,
+        0,
+        0,
+        100,
+        100,
+        0,
+        0,
+        _recorder_window.win32api.GetModuleHandle(None),
+        None,
+    )
+    try:
+        assert _recorder_window._native_edit_text(edit) == text
+    finally:
+        gui.DestroyWindow(edit)
+
+
+@pytest.mark.parametrize("uia_text,native_text", [("tttt", ""), ("", "tttt"), ("TTTT", "TTTT")])
+def test_replay_diagnostic_identifies_stage_and_text_disagreement(
+    monkeypatch, tmp_path, uia_text, native_text
+):
+    field = Mock()
+    field.text.return_value = uia_text
+    field._resolve.return_value.handle = 789
+    rec = Mock(_processed=5, _hook_error=None)
+    monkeypatch.setattr(_recorder_window, "_native_edit_text", lambda hwnd: native_text)
+    monkeypatch.setattr(
+        _recorder_window._recorder,
+        "_capture_context",
+        lambda: _recorder_window._recorder._InputContext(123, 456, 789, password=False),
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    output = tmp_path / "recorded.py"
+    with pytest.raises(AssertionError, match="generated script replay"):
+        _recorder_window._wait_for_edit_text(
+            field, 123, 789, "tttt", "generated script replay", rec, output, timeout=0
+        )
+    evidence = json.loads(output.with_suffix(".diagnostics.json").read_text(encoding="utf-8"))
+    assert evidence[-1]["uia_text"] == uia_text
+    assert evidence[-1]["native_text"] == native_text
+    assert evidence[-1]["stage"] == "generated script replay"
+
+
 def test_real_hook_installation_and_cleanup():
     check_real_hook_lifecycle()
 

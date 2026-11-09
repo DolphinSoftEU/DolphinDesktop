@@ -322,7 +322,7 @@ jobs:
         shell: pwsh
         run: |
           $report = Join-Path $env:RUNNER_TEMP "component-results.xml"
-          uv run --locked pytest -m "(component or windows_component) and not qt_agent" -q --junitxml $report
+          uv run --locked pytest -m "(component or windows_component) and not qt_agent" -q --junitxml $report --basetemp "$env:RUNNER_TEMP/component-pytest"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
@@ -331,6 +331,16 @@ jobs:
           if ($cdp.Count -ne 1 -or $cdp[0].SelectNodes("skipped|failure|error").Count -ne 0) {
             throw "KAN-475 requires a passing real Chromium handshake and profile-isolation regression"
           }
+
+      - name: Upload component test and recorder replay evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-component-evidence
+          path: |
+            ${{ runner.temp }}/component-results.xml
+            ${{ runner.temp }}/component-pytest/**/test_real_record_generate_repl*/recorded*
+          if-no-files-found: warn
 
       - name: Install Qt agent test bindings
         run: uv sync --locked --group dev --group qt-tests --extra vision

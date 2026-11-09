@@ -50,6 +50,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   Sequence normalization was already included in the KAN-576 fix.
   Worker queries pump the owner thread's window messages and use a bounded wait
   without blocking executor shutdown, avoiding same-process WM_GETTEXT deadlocks.
+  Record/replay checks retain stage-specific native/UIA text and focus diagnostics;
+  CI preserves these with the generated script and JUnit report on failure.
 
 * `dolphin-run` survives Ctrl+Break (and Ctrl+C when console Ctrl+C processing is
   enabled) while the command handles the console event and preserves its exit

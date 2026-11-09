@@ -120,12 +120,26 @@ message pumping and a daemon worker with a bounded wait. Three focused regressio
 passed: real same-process `GetWindowText`, timeout before a blocked worker exits,
 and propagation of worker exceptions. The 241 unit tests and static checks passed
 again. The first desktop rerun returned 6 passed and 2 failed: native classification
-on both threads and delayed transitions passed, but recording timed out waiting
+on both threads and delayed transitions passed, but replay timed out waiting
 for Edit text and process isolation could not activate its AUT. An isolated rerun
 returned 5 passed and 3 failed, all three failures at foreground activation.
 Evidence: `artifacts/KAN-759/recorder-acceptance-review.xml` and
 `artifacts/KAN-759/recorder-acceptance-review-isolated.xml`. Full record/replay
 acceptance remains unverified; keep the PR unmerged until it passes.
+
+CI run `42691212390`, Windows component job `129415455498`, failed at the
+post-replay check (line 416 in commit `9ed9497`), after the original input and
+generated-selector assertions had passed. A subsequent isolated local execution
+passed once; this does not resolve the intermittent CI failure. Text checks now
+name their stage and retain native WM_GETTEXT and UIA text, expected/resolved
+HWNDs, foreground/focus, modifier state and recorder progress in
+`recorded.diagnostics.json`. CI uploads this evidence, the generated script and
+JUnit report as `windows-component-evidence`, including on failure. The direct
+native read has a 500 ms timeout and is tested against empty, ASCII and Unicode
+Edit content. Six diagnostic regressions, 241 recorder/acceptance unit tests and
+52 workflow security tests passed; Ruff and mypy also passed. Full acceptance
+with the diagnostic changes returned 11 passed and 3 foreground-activation
+failures. The replay failure remains unresolved pending diagnostic evidence.
 
 ## Code Style
 
