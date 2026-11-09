@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
@@ -114,12 +115,20 @@ def record_native_transitions():
     try:
         win32gui.ShowWindow(root, win32con.SW_SHOW)
         _activate_owned_window(root)
-        focus_control(controls[0])
-        assert _recorder._capture_context().password is False
-        focus_control(controls[1])
-        assert _recorder._capture_context().password is True
-        focus_control(controls[2])
-        assert _recorder._capture_context().password is None
+        # KAN-759: use the unmodified pywin32 result and query the real focus
+        # both on its owning thread and on a worker, as the hook does.
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            for control, password in zip(controls, (False, True, None), strict=True):
+                focus_control(control)
+                identity = win32process.GetWindowThreadProcessId(root)
+                assert tuple(identity) == (win32api.GetCurrentThreadId(), pid)
+                contexts = [
+                    _recorder._capture_context(),
+                    worker.submit(_recorder._capture_context).result(timeout=2),
+                ]
+                for context in contexts:
+                    assert (context.hwnd, context.pid, context.focus) == (root, pid, control)
+                    assert context.password is password
 
         sys.unraisablehook = failures.append
         hook.start()

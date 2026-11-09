@@ -97,10 +97,23 @@ focus transitions, and record → generate → replay against an owned native AU
 The replay test verifies the generated selector's HWND, clears the Edit, executes
 the unmodified generated script and checks the resulting field text. The JUnit
 report is saved to `artifacts/recorder-acceptance.xml` (`--output` overrides it).
+For KAN-759, native classification uses the actual pywin32 TID/PID sequence on
+both the window-owning thread and a worker, checking ordinary Edit, ES_PASSWORD
+Edit and unknown controls. Unit coverage separately exercises list and tuple
+results, including changes to either TID or PID between stability checks.
 Missing tests, skips, failures and errors cannot pass the gate. Ordinary developer
 runs may skip when Windows refuses foreground activation; this is incomplete
 verification, and does not satisfy acceptance. The tests never send activation
 shortcuts or input to a foreign foreground window.
+
+KAN-759 verification on 2026-11-09 (CPython 3.12.13 x64, pywin32 311): the
+241 recorder/acceptance unit tests, repository-wide Ruff lint/format checks and
+`mypy src/` passed. The actual pywin32 identity result was a list. The desktop
+gate returned 2 passed and 3 failed because Windows refused `SetForegroundWindow`
+for the owned AUTs, before native classification or replay could run. This is
+incomplete acceptance; rerun the command above on an interactive desktop before
+claiming real record/replay verification. Local failure evidence is in
+`artifacts/KAN-759/recorder-acceptance.xml`.
 
 ## Code Style
 

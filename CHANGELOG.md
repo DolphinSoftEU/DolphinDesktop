@@ -43,6 +43,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder native Edit regression now checks real pywin32 thread/process
+  results on both the owning thread and a worker (KAN-759). The regression covers
+  ordinary text, password and unknown controls, followed by delayed hook events;
+  the acceptance gate also requires generated selectors and record/replay to pass.
+  Sequence normalization was already included in the KAN-576 fix.
+
 * `dolphin-run` survives Ctrl+Break (and Ctrl+C when console Ctrl+C processing is
   enabled) while the command handles the console event and preserves its exit
   code. The inherited Ctrl+C ignore setting is preserved; use Ctrl+Break for

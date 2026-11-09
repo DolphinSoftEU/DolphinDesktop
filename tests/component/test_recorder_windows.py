@@ -1,4 +1,4 @@
-"""Real native focus classification and low-level hook regression for KAN-576."""
+"""Real native focus and low-level hook regressions for KAN-576 / KAN-759."""
 
 import json
 from unittest.mock import Mock
