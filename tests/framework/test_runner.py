@@ -261,6 +261,9 @@ def test_missing_standard_handles_disable_handle_inheritance(monkeypatch):
     _runner.launch_on_desktop(["tool.exe"])
     assert kernel32.create_process_args[4] is False
     assert kernel32.create_process_args[5] & _runner._EXTENDED_STARTUPINFO_PRESENT == 0
+    startup = kernel32.create_process_args[8]._obj
+    assert startup.dwFlags & _runner._STARTF_USESTDHANDLES == 0
+    assert (startup.hStdInput, startup.hStdOutput, startup.hStdError) == (None, None, None)
     assert kernel32.inherited_handles == []
 
 

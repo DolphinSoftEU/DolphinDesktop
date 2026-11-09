@@ -548,7 +548,6 @@ def _startup_stdio(desktop_name: str, inherit_stdio: bool) -> Iterator[_StartupI
     with ExitStack() as cleanup:
         handles = []
         if inherit_stdio:
-            si.dwFlags = _STARTF_USESTDHANDLES
             process = _kernel32.GetCurrentProcess()
             for field, kind in (("hStdInput", -10), ("hStdOutput", -11), ("hStdError", -12)):
                 handle = _kernel32.GetStdHandle(_wt.DWORD(kind))
@@ -563,6 +562,7 @@ def _startup_stdio(desktop_name: str, inherit_stdio: bool) -> Iterator[_StartupI
                 setattr(si, field, duplicate.value)
                 handles.append(duplicate.value)
         if handles:
+            si.dwFlags = _STARTF_USESTDHANDLES
             size = ctypes.c_size_t()
             _kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
             attributes = ctypes.create_string_buffer(size.value)

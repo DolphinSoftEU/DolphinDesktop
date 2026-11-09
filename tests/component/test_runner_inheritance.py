@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import json
 import msvcrt
 import os
 import subprocess
@@ -12,12 +13,71 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from textwrap import dedent
 
 import pytest
 
 from dolphin_desktop import _runner
 
 pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(40)]
+
+
+@pytest.mark.parametrize("missing_handle", [0, -1])
+def test_runner_without_standard_handles_launches_real_command(tmp_path, missing_handle):
+    # Change the Win32 standard handles only in a separate host process, so
+    # pytest's console and other concurrent callers are unaffected.
+    host = tmp_path / "no_stdio_host.py"
+    report = tmp_path / "report.json"
+    executed = tmp_path / "executed"
+    host.write_text(
+        dedent("""\
+        import ctypes
+        import json
+        import sys
+        from pathlib import Path
+        from dolphin_desktop import _runner as r
+
+        missing, report, executed = sys.argv[1:]
+        k = r._kernel32
+        k.SetStdHandle.argtypes = [r._wt.DWORD, r._wt.HANDLE]
+        k.SetStdHandle.restype = r._wt.BOOL
+        for kind in (-10, -11, -12):
+            assert k.SetStdHandle(r._wt.DWORD(kind), r._wt.HANDLE(int(missing)))
+            assert k.GetStdHandle(r._wt.DWORD(kind)) in (None, r._wt.HANDLE(-1).value)
+
+        create_process = k.CreateProcessW
+        observed = {}
+
+        def record_creation(*args):
+            startup = args[8]._obj
+            observed.update(
+                inherit_handles=bool(args[4]), creation_flags=args[5],
+                startup_flags=startup.dwFlags, startup_size=startup.cb,
+                standard_handles=[startup.hStdInput, startup.hStdOutput, startup.hStdError],
+            )
+            return create_process(*args)
+
+        k.CreateProcessW = record_creation
+        code = f"from pathlib import Path; Path({executed!r}).touch(); raise SystemExit(7)"
+        observed['exit_code'] = r.run_hidden([sys.executable, '-c', code])
+        Path(report).write_text(json.dumps(observed))
+    """)
+    )
+    result = subprocess.run(
+        [sys.executable, str(host), str(missing_handle), str(report), str(executed)],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        capture_output=True,
+        timeout=25,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    observed = json.loads(report.read_text())
+    assert observed["exit_code"] == 7
+    assert executed.exists()
+    assert observed["inherit_handles"] is False
+    assert observed["startup_flags"] & _runner._STARTF_USESTDHANDLES == 0
+    assert observed["creation_flags"] & _runner._EXTENDED_STARTUPINFO_PRESENT == 0
+    assert observed["startup_size"] == ctypes.sizeof(_runner._StartupInfoW)
+    assert observed["standard_handles"] == [None, None, None]
 
 
 def test_parallel_runners_keep_stdio_pipes_private(monkeypatch, tmp_path):
