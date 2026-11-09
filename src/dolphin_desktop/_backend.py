@@ -1099,6 +1099,18 @@ def register(cls: type[Backend]) -> type[Backend]:
 # Resolver
 
 
+def _validate_backend_id(backend_id: str) -> None:
+    """Validate a registry ID without constructing or probing any backend."""
+    _load_plugins()
+    if backend_id != "auto" and backend_id not in _REGISTRY:
+        raise ValueError(
+            f"Unknown backend {backend_id!r}.  "
+            f"Available backends: {sorted(_REGISTRY)}.  "
+            "Third-party backends can be added via the "
+            "'dolphin_desktop.backends' entry-point group."
+        )
+
+
 def resolve(backend_id: str) -> Backend:
     """Return an instantiated :class:`Backend` for *backend_id*.
 
@@ -1114,19 +1126,10 @@ def resolve(backend_id: str) -> Backend:
     ValueError
         If *backend_id* is not found in the registry.
     """
-    _load_plugins()
+    _validate_backend_id(backend_id)
 
     if backend_id == "auto":
         return _auto_detect()
-
-    if backend_id not in _REGISTRY:
-        available = sorted(_REGISTRY)
-        raise ValueError(
-            f"Unknown backend {backend_id!r}.  "
-            f"Available backends: {available}.  "
-            "Third-party backends can be added via the "
-            "'dolphin_desktop.backends' entry-point group."
-        )
 
     cls = _REGISTRY[backend_id]
     try:
