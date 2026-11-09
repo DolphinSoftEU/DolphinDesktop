@@ -66,6 +66,40 @@ def test_constructor_validation_auto_detection_and_repr(monkeypatch) -> None:
     assert desktop_module.Desktop()._is_hidden is False
 
 
+@pytest.mark.parametrize("detected_backend", ["uia", "win32"])
+@pytest.mark.parametrize("hidden", [False, True])
+@pytest.mark.parametrize("operation", ["launch", "connect"])
+def test_auto_resolves_once_before_native_launch_or_connect(
+    monkeypatch, detected_backend, hidden, operation
+) -> None:
+    from dolphin_desktop import _backend, _runner
+
+    auto_detect = Mock(return_value=_backend._REGISTRY[detected_backend]())
+    monkeypatch.setattr(_backend, "_auto_detect", auto_detect)
+    process_app = Mock(process=321)
+    pywin_app = Mock(return_value=process_app)
+    application = Mock(return_value="wrapped")
+    launcher = Mock(return_value=(321, 987))
+    monkeypatch.setattr(desktop_module, "_PyWinApp", pywin_app)
+    monkeypatch.setattr(desktop_module, "Application", application)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
+    monkeypatch.setattr(_runner, "launch_cmd_on_desktop", launcher)
+
+    desktop = Desktop(backend="auto", hidden=hidden)
+    monkeypatch.setattr(desktop, "_ensure_hidden_mode", Mock())
+    if operation == "launch":
+        assert desktop.launch("probe.exe", startup_delay=0) == "wrapped"
+        launcher.assert_called_once()
+    else:
+        assert desktop.connect(process=321) == "wrapped"
+        process_app.connect.assert_called_once_with(timeout=10.0, process=321)
+        launcher.assert_not_called()
+    auto_detect.assert_called_once_with()
+    pywin_app.assert_called_once_with(backend=detected_backend)
+    assert application.call_args.kwargs["backend"] == detected_backend
+    assert desktop._backend == detected_backend
+
+
 def test_ensure_hidden_mode_initializes_once_and_registers_cleanup(monkeypatch) -> None:
     import dolphin_desktop._runner as runner
 

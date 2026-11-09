@@ -52,6 +52,45 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   the existing WinAPI signature fix. Logging handler failures during hook cleanup
   cannot interrupt removal of remaining hooks or completion signaling (KAN-757).
 
+* The pytest `--dolphin-backend` option accepts registered and entry-point
+  backends, as well as `auto`, and reports unknown IDs with registry diagnostics
+  instead of restricting selection to UIA/Win32 (KAN-754).
+  Validation waits for nested `conftest.py` registrations during collection,
+  the repository bootstrap accepts the same IDs, and `Desktop(backend="auto")`
+  resolves the concrete backend before launching or connecting to native apps.
+* `dolphin-run` survives Ctrl+Break (and Ctrl+C when console Ctrl+C processing is
+  enabled) while the command handles the console event and preserves its exit
+  code. The inherited Ctrl+C ignore setting is preserved; use Ctrl+Break for
+  `CREATE_NEW_PROCESS_GROUP` launchers. Commands have ten seconds to finish after
+  interruption; a Windows Job Object then terminates an unresponsive command
+  tree with code 130. Venv redirectors and nested runners are covered, and owned
+  processes are cleaned up before the hidden desktop handle is closed (KAN-753).
+  Job cleanup now waits for zero active processes before releasing handles;
+  a failed query, termination failure or cleanup timeout is reported as an error.
+  After forced termination, waiting for the command process is also limited to
+  ten seconds; a stuck process raises a timeout instead of retrying indefinitely.
+  Cleanup after a failed job assignment or thread resume also uses a bounded
+  wait, validates its result, and releases process/thread handles on every path.
+  Console regressions run in the Windows component suite. Descendant cleanup
+  checks retain the original process handle before exit, avoiding PID reuse races.
+  Job cleanup also waits on retained process handles: zero active processes can
+  be reported before those handles become signalled, especially during startup.
+  A completion port retains additional handles during execution. Final cleanup
+  first blocks new job members with a zero active-process limit, then captures
+  the complete process set. Lost advisory birth notifications no longer cause
+  false cleanup timeouts or replace valid exit codes.
+  Monitoring now validates job membership before retaining a notified process,
+  tolerates advisory read/access failures, and releases completed process
+  handles during execution. PID reuse therefore cannot add foreign processes
+  to cleanup waits or grow a historical handle cache.
+  Incomplete successful PID-list responses are retried. A required CI matrix
+  verifies Ctrl+Break on Python 3.11 and 3.13, including installed and nested
+  launchers, without allowing skipped tests.
+  Concurrent `run_hidden()` calls now share one console handler that broadcasts
+  interrupts to all active callers, and use private child environment blocks.
+  Handler removal errors are checked; a module-held callback remains safe after
+  failed removal and the registration is reused until removal succeeds.
+
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).
 

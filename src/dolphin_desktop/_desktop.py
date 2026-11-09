@@ -86,7 +86,8 @@ class Desktop:
     backend:
         ``"uia"`` (default) uses Microsoft UI Automation — works with UWP,
         WPF, and modern Win32 apps.  ``"win32"`` uses the legacy Win32 API
-        and is better for older applications.
+        and is better for older applications. ``"auto"`` resolves once when
+        constructing Desktop (to ``"uia"`` on Windows), before launch/connect.
     hidden:
         ``True``  — launch AUT processes on a hidden desktop (``DolphinHidden``)
         so windows are invisible on the physical display.  Full UIA support
@@ -109,6 +110,10 @@ class Desktop:
     ) -> None:
         if default_timeout_ms < 0:
             raise ValueError("default_timeout_ms must be non-negative")
+        if backend == "auto":
+            from ._backend import resolve
+
+            backend = resolve("auto").id
         self._backend = backend
         self._default_timeout_ms = default_timeout_ms
         self._hidden_mode = hidden
