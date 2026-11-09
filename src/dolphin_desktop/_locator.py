@@ -24,12 +24,32 @@ from ._exceptions import (
     AmbiguousMatchError,
     DolphinError,
     ElementNotFoundError,
+    UnsupportedCapabilityError,
     UnsupportedPatternError,
     WaitTimeoutError,
 )
 from ._helpers import _MISSING, _escape_keys
 from ._keyboard import _post_keys_to_hwnd, _send_keys_on_hidden_desktop
 from ._logging import Secret, unwrap_secret
+from ._win32_criteria import backend_name, criteria_for_backend, find_win32_elements
+
+
+def _backend_fallbacks(
+    scope: Any, fallbacks: list[dict[str, Any]]
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Pair each fallback selector with its backend-translated form.
+
+    A fallback whose control type the backend cannot express can never
+    match, so it is dropped here rather than aborting a lookup whose primary
+    selector may still succeed.
+    """
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for fallback in fallbacks:
+        try:
+            pairs.append((fallback, criteria_for_backend(scope, fallback)))
+        except UnsupportedCapabilityError:
+            continue
+    return pairs
 
 
 def _wrapper_of(element: Any) -> Any:
@@ -248,6 +268,23 @@ def _read_text_via_pattern(element: Any) -> str | None:
     if not isinstance(text, str):
         return None
     return text
+
+
+def _reads_text_by_message(wrapper: Any) -> bool:
+    """Whether ``window_text()`` of *wrapper* is the whole text of a win32 control.
+
+    ``WM_GETTEXT`` is authoritative for a plain edit box or label, so an empty
+    answer means empty. A RichEdit class stays out: Windows 11 Notepad's
+    ``RichEditD2DPT`` keeps its text out of reach of the window text.
+    """
+    if backend_name(wrapper) != "win32":
+        return False
+    try:
+        kind = wrapper.friendly_class_name()
+        class_name = str(wrapper.class_name()).casefold()
+    except Exception:
+        return False
+    return kind in ("Edit", "Static") and "rich" not in class_name
 
 
 def _element_hwnd(element: Any) -> int | None:
@@ -737,13 +774,18 @@ class Locator:
         primary_exc: Exception | None = None
         from . import _selfheal
 
+        # Translate once, before polling: a selector the backend cannot
+        # express must fail now, not after the whole timeout (KAN-747).
+        search_criteria = criteria_for_backend(parent_spec, self._criteria)
+        fallbacks = _backend_fallbacks(parent_spec, self._fallback)
+
         while True:
             if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
                 break
             try:
                 spec = self._find_candidate(
                     parent_spec,
-                    self._criteria,
+                    search_criteria,
                     deadline,
                     enforce_deadline,
                     visible_only=True,
@@ -768,7 +810,7 @@ class Locator:
             except Exception as exc:
                 primary_exc = exc
 
-            for fb in self._fallback:
+            for fb, backend_fb in fallbacks:
                 if _deadline_expired(
                     deadline,
                     self._timeout,
@@ -778,7 +820,7 @@ class Locator:
                 try:
                     fb_spec = self._find_candidate(
                         parent_spec,
-                        fb,
+                        backend_fb,
                         deadline,
                         enforce_deadline,
                         visible_only=True,
@@ -845,7 +887,7 @@ class Locator:
             ):
                 tree_result = _tree_walk_find(
                     parent_spec,
-                    self._criteria,
+                    search_criteria,
                     visible_only=True,
                     deadline=deadline if enforce_deadline else None,
                 )
@@ -908,6 +950,7 @@ class Locator:
                 timeout=0,
                 deadline=deadline,
                 enforce_deadline=enforce_deadline,
+                visible_only=visible_only,
             )
             if not isinstance(resolved, dict):
                 return resolved
@@ -1524,7 +1567,8 @@ class Locator:
         # (iface_scroll_item) when available, falling back to set_focus(), which
         # also brings the element into view for most scrollable containers.
         try:
-            element.iface_scroll_item.ScrollIntoView()
+            # On the wrapper, for the reason given in text().
+            _wrapper_of(element).iface_scroll_item.ScrollIntoView()
         except Exception:
             try:
                 element.set_focus()
@@ -1542,12 +1586,22 @@ class Locator:
         an empty string, so we fall back to select-all + clipboard.
         """
         element = self._resolve_readonly()
-        pattern_text = _read_text_via_pattern(element)
+        # Probe the pattern on the wrapper, never on a WindowSpecification: a
+        # win32 spec answers an unknown attribute such as ``iface_text`` with a
+        # ``child_window(best_match=...)`` lookup that waits out its default
+        # timeout (~5 s) before failing (KAN-747).
+        wrapper = _wrapper_of(element)
+        pattern_text = _read_text_via_pattern(wrapper)
         if pattern_text is not None:
             return pattern_text
         t = element.window_text()
         if t:
             return t
+        # An empty plain win32 Edit/Static really is empty. The clipboard path
+        # below would take focus, send Ctrl+A/Ctrl+C and wipe the user's
+        # clipboard just to confirm that (KAN-747).
+        if _reads_text_by_message(wrapper):
+            return ""
         # IValueProvider.Value works for most edit controls including Qt
         # QLineEdit / QPlainTextEdit. If get_value() succeeds (even returning
         # an empty string for a legitimately-empty field), trust it — falling
@@ -1623,13 +1677,18 @@ class Locator:
         primary_exc: Exception | None = None
         from . import _selfheal
 
+        # Translate once, before polling: a selector the backend cannot
+        # express must fail now, not after the whole timeout (KAN-747).
+        search_criteria = criteria_for_backend(parent_spec, self._criteria)
+        fallbacks = _backend_fallbacks(parent_spec, self._fallback)
+
         while True:
             if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
                 break
             try:
                 spec = self._find_candidate(
                     parent_spec,
-                    self._criteria,
+                    search_criteria,
                     deadline,
                     enforce_deadline,
                     visible_only=False,
@@ -1650,7 +1709,7 @@ class Locator:
             except Exception as exc:
                 primary_exc = exc
 
-            for fb in self._fallback:
+            for fb, backend_fb in fallbacks:
                 if _deadline_expired(
                     deadline,
                     self._timeout,
@@ -1660,7 +1719,7 @@ class Locator:
                 try:
                     fb_spec = self._find_candidate(
                         parent_spec,
-                        fb,
+                        backend_fb,
                         deadline,
                         enforce_deadline,
                         visible_only=False,
@@ -1725,7 +1784,7 @@ class Locator:
             ):
                 tree_result = _tree_walk_find(
                     parent_spec,
-                    self._criteria,
+                    search_criteria,
                     deadline=deadline if enforce_deadline else None,
                 )
                 if tree_result is not None and not _deadline_expired(
@@ -1761,7 +1820,9 @@ class Locator:
             return True
         except AmbiguousMatchError:
             return True
-        except ValueError:
+        except (ValueError, UnsupportedCapabilityError):
+            # A selector the backend cannot express is a usage error, not an
+            # absent element (KAN-747): answering False would hide it.
             raise
         except Exception:
             return False
@@ -2120,6 +2181,8 @@ class Locator:
 
         If *depth* is None, only direct children are returned.
         If *depth* is given (including 0), descendants up to that depth are returned.
+        On win32, *depth* of None also lists nested controls, because the window
+        enumeration there walks the whole subtree.
 
         Raises:
             TypeError: If the backend rejects the search criteria, except for
@@ -2127,6 +2190,8 @@ class Locator:
         """
         self._refresh_object_repository()
         parent_spec = self._get_parent_spec()
+        if backend_name(parent_spec) == "win32":
+            return self._all_win32(parent_spec, depth)
         try:
             if depth is None:
                 elements = parent_spec.children(**self._criteria)
@@ -2168,6 +2233,32 @@ class Locator:
                             or getattr(info, "automation_id", None) == auto_id
                         ):
                             elements.append(element)
+        except Exception:
+            elements = []
+        return [_ResolvedLocator(el, application=self._application_context()) for el in elements]
+
+    def _all_win32(self, parent_spec: Any, depth: int | None) -> list[Locator]:
+        """:meth:`all` on win32: every criterion applies, as in the final lookup.
+
+        Hidden controls are included, as they are for ``children()``. A
+        ``found_index`` from :meth:`nth` narrows the list to that one match.
+        """
+        criteria = criteria_for_backend(parent_spec, self._criteria)
+        search = {key: value for key, value in criteria.items() if key != "found_index"}
+        try:
+            parent = (
+                parent_spec.wrapper_object()
+                if getattr(type(parent_spec), "wrapper_object", None) is not None
+                else parent_spec
+            )
+            found = find_win32_elements(parent, search, visible_only=False, depth=depth)
+            index = criteria.get("found_index")
+            if index is not None:
+                found = [found[index]] if -len(found) <= index < len(found) else []
+            wrapper_cls = parent.backend.generic_wrapper_class
+            elements = [wrapper_cls(info) for info in found]
+        except TypeError:
+            raise
         except Exception:
             elements = []
         return [_ResolvedLocator(el, application=self._application_context()) for el in elements]
@@ -2575,6 +2666,7 @@ def _resolve_negative_found_index(
     *,
     deadline: float | None = None,
     enforce_deadline: bool | None = None,
+    visible_only: bool = True,
 ) -> dict[str, Any] | Any:
     """Resolve a negative index against the complete match set.
 
@@ -2584,12 +2676,21 @@ def _resolve_negative_found_index(
     it can evaluate when FindAll exposes no usable match. This keeps a
     depth-limited TreeWalker result from changing the requested ordering of the
     complete descendant set.
+
+    On win32 the index is computed from exactly what the final
+    ``child_window(found_index=N, ...)`` selects from, including *visible_only*:
+    ``descendants()`` there ignores most criteria and returns hidden controls,
+    which would turn ``-1`` into an index past the end of the final matches.
     """
     if not _is_negative_found_index(criteria):
         return criteria
 
     index = int(criteria["found_index"])
     match_criteria = {key: value for key, value in criteria.items() if key != "found_index"}
+    is_win32 = backend_name(parent_spec) == "win32"
+    # descendants() never applies predicate_func (pywinauto honours it only in
+    # find_elements), so it is filtered here on the other backends.
+    predicate = None if is_win32 else match_criteria.pop("predicate_func", None)
     deadline = time.monotonic() + timeout if deadline is None else deadline
     if enforce_deadline is None:
         enforce_deadline = timeout > 0
@@ -2601,19 +2702,28 @@ def _resolve_negative_found_index(
         if _deadline_expired(deadline, timeout, enforce=enforce_deadline):
             break
         try:
-            matches = _wrapper_object_until(parent_spec, deadline, timeout).descendants(
-                **match_criteria
+            wrapper = _wrapper_object_until(parent_spec, deadline, timeout)
+            matches = (
+                find_win32_elements(wrapper, match_criteria, visible_only=visible_only)
+                if is_win32
+                else wrapper.descendants(**match_criteria)
             )
+            if predicate is not None:
+                matches = [match for match in matches if predicate(match.element_info)]
             resolved_index = len(matches) + index
             if 0 <= resolved_index < len(matches):
                 return {**criteria, "found_index": resolved_index}
         except Exception as exc:
             last_exc = exc
 
-        if set(match_criteria) <= _TREE_WALK_KEYS and not _deadline_expired(
-            deadline,
-            timeout,
-            enforce=enforce_deadline,
+        if (
+            not is_win32
+            and set(match_criteria) <= _TREE_WALK_KEYS
+            and not _deadline_expired(
+                deadline,
+                timeout,
+                enforce=enforce_deadline,
+            )
         ):
             tree_result = _tree_walk_find(
                 parent_spec, criteria, deadline=deadline if enforce_deadline else None
@@ -2691,6 +2801,10 @@ def _find_under_wrapper(
         if negative_index is not None
         else criteria
     )
+    # find_elements() applies predicate_func, so the translated selector goes
+    # straight in. Translating before the loop makes an unsupported control
+    # type fail at once (KAN-747).
+    search_criteria = criteria_for_backend(parent, search_criteria)
     while True:
         if enforce_deadline and time.monotonic() >= deadline:
             break
