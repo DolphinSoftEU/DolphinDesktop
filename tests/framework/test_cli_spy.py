@@ -64,6 +64,33 @@ class TestWindowArgument:
 
 
 class TestPickWiring:
+    def test_main_reports_provider_denial_and_cleans_up(self, monkeypatch, capsys):
+        monkeypatch.setattr("sys.argv", ["dolphin", "spy", "--pick"])
+        clear = patch("dolphin_desktop._spy._Highlighter.clear")
+        error = Exception(-2147024891, "localized provider diagnostic")
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "win32api": SimpleNamespace(
+                        GetCursorPos=lambda: (1, 2), GetAsyncKeyState=lambda key: 0
+                    ),
+                    "win32con": SimpleNamespace(VK_ESCAPE=27),
+                },
+            ),
+            patch("dolphin_desktop._spy._element_info_from_point", side_effect=error) as lookup,
+            clear as cleanup,
+            pytest.raises(SystemExit) as caught,
+        ):
+            _cli.main()
+        assert caught.value.code == 1
+        lookup.assert_called_once_with(1, 2)
+        cleanup.assert_called_once_with()
+        output = capsys.readouterr()
+        assert "error:" in output.err and "E_ACCESSDENIED" in output.err
+        assert "Cancelled." not in output.out
+        assert "Locator call" not in output.out
+
     def test_status_message_is_printed(self, monkeypatch, capsys):
         monkeypatch.setattr(
             _spy, "pick", lambda backend: _spy._pick_result("unreachable", [{"title": "OK"}])
