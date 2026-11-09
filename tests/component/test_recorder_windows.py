@@ -17,6 +17,39 @@ from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
 pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(20)]
 
 
+def test_owned_activation_waits_for_foreground_transition(monkeypatch):
+    activate = Mock()
+    pump = Mock()
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", activate)
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(1, 0)))
+    monkeypatch.setattr(
+        _recorder_window.win32gui, "GetForegroundWindow", Mock(side_effect=[987, 987, 123])
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    monkeypatch.setattr(_recorder_window.time, "sleep", Mock())
+    _recorder_window._activate_owned_window(123)
+    activate.assert_called_once_with(123)
+    assert pump.call_count == 2
+
+
+def test_owned_activation_timeout_remains_acceptance_failure(monkeypatch):
+    monkeypatch.setenv("DOLPHIN_RECORDER_ACCEPTANCE", "1")
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", Mock())
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(1, 0)))
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 987)
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 1, 3]))
+    monkeypatch.setattr(_recorder_window.time, "sleep", Mock())
+    mouse = Mock()
+    keyboard = Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    with pytest.raises(pytest.fail.Exception, match="foreground HWND is 987"):
+        _recorder_window._activate_owned_window(123)
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
+
+
 def test_worker_query_pumps_same_process_window_messages():
     # No foreground activation or desktop input is needed for WM_GETTEXT.
     gui = _recorder_window.win32gui

@@ -61,6 +61,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   Process-isolation runs also verify cumulative native text in each AUT before
   moving focus. WM_GETTEXT diagnostics distinguish a failed call from a successful
   empty read. Contributor documentation keeps the acceptance procedure and CI links.
+  Owned-window activation waits for the AUT to acknowledge activation and for its
+  foreground HWND, rather than rejecting asynchronous cross-process activation
+  immediately. A bounded timeout remains an acceptance failure before input.
 
 * Recorder mouse and keyboard callbacks forward input even when context capture,
   queueing, shutdown or a logging handler raises. Failures stop recording and are

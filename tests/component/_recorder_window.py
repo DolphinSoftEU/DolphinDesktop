@@ -31,13 +31,27 @@ def _desktop_unavailable(reason):
     pytest.skip(reason)
 
 
-def _activate_owned_window(root):
+def _activate_owned_window(root, timeout=2):
     try:
         win32gui.SetForegroundWindow(root)
+        status, _ = win32gui.SendMessageTimeout(
+            root, win32con.WM_NULL, 0, 0, win32con.SMTO_ABORTIFHUNG, int(timeout * 1000)
+        )
+        if not status:
+            _desktop_unavailable("Owned AUT did not acknowledge foreground activation")
     except win32gui.error as exc:
         _desktop_unavailable(f"Interactive desktop refused activation of owned AUT: {exc}")
-    if win32gui.GetForegroundWindow() != root:
-        _desktop_unavailable("Interactive desktop did not activate owned AUT")
+    # Cross-input-queue foreground activation is asynchronous. Keep servicing
+    # our own windows while the target processes its activation request.
+    deadline = time.monotonic() + timeout
+    while (foreground := win32gui.GetForegroundWindow()) != root:
+        if time.monotonic() >= deadline:
+            _desktop_unavailable(
+                f"Interactive desktop did not activate owned AUT {root} within {timeout}s; "
+                f"foreground HWND is {foreground}"
+            )
+        win32gui.PumpWaitingMessages()
+        time.sleep(0.005)
 
 
 def check_real_hook_lifecycle():
@@ -368,7 +382,11 @@ def record_process_isolation(directory):
         def wait_until(predicate):
             deadline = time.monotonic() + 2
             while not predicate():
-                assert time.monotonic() < deadline, "Timed out waiting for focus or queued events"
+                assert time.monotonic() < deadline, (
+                    f"Timed out waiting for focus or queued events: "
+                    f"context={_recorder._capture_context()!r}, "
+                    f"hook_error={rec._hook_error!r}, queued_keys={len(key_events())}"
+                )
                 time.sleep(0.005)
 
         def key_events():
