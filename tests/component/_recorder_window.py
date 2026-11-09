@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
@@ -52,6 +52,33 @@ def check_real_hook_lifecycle():
             rec._hook_thread.join(3)
             assert not rec._hook_thread.is_alive()
     assert rec._hook_error is None
+
+
+def _query_on_worker(query, timeout=2):
+    """Pump owner-window messages while a daemon worker runs a bounded query.
+
+    Same-process GetWindowText sends synchronous WM_GETTEXT to the owner thread.
+    A blocking Future.result() here would prevent that thread from replying.
+    Do not join on timeout: even executor shutdown would wait indefinitely for
+    a stuck native call. Daemon workers cannot hold up test-process shutdown.
+    """
+    result = Future()
+
+    def run():
+        try:
+            result.set_result(query())
+        except BaseException as exc:
+            result.set_exception(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + timeout
+    while worker.is_alive():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Timed out waiting for native context worker")
+        win32gui.PumpWaitingMessages()
+        worker.join(min(0.005, max(0, deadline - time.monotonic())))
+    return result.result(timeout=0)
 
 
 def record_native_transitions():
@@ -117,18 +144,17 @@ def record_native_transitions():
         _activate_owned_window(root)
         # KAN-759: use the unmodified pywin32 result and query the real focus
         # both on its owning thread and on a worker, as the hook does.
-        with ThreadPoolExecutor(max_workers=1) as worker:
-            for control, password in zip(controls, (False, True, None), strict=True):
-                focus_control(control)
-                identity = win32process.GetWindowThreadProcessId(root)
-                assert tuple(identity) == (win32api.GetCurrentThreadId(), pid)
-                contexts = [
-                    _recorder._capture_context(),
-                    worker.submit(_recorder._capture_context).result(timeout=2),
-                ]
-                for context in contexts:
-                    assert (context.hwnd, context.pid, context.focus) == (root, pid, control)
-                    assert context.password is password
+        for control, password in zip(controls, (False, True, None), strict=True):
+            focus_control(control)
+            identity = win32process.GetWindowThreadProcessId(root)
+            assert tuple(identity) == (win32api.GetCurrentThreadId(), pid)
+            contexts = [
+                _recorder._capture_context(),
+                _query_on_worker(_recorder._capture_context),
+            ]
+            for context in contexts:
+                assert (context.hwnd, context.pid, context.focus) == (root, pid, control)
+                assert context.password is password
 
         sys.unraisablehook = failures.append
         hook.start()

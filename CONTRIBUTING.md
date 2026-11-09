@@ -115,6 +115,18 @@ incomplete acceptance; rerun the command above on an interactive desktop before
 claiming real record/replay verification. Local failure evidence is in
 `artifacts/KAN-759/recorder-acceptance.xml`.
 
+The PR #69 review follow-up replaces blocking executor waits with owner-thread
+message pumping and a daemon worker with a bounded wait. Three focused regressions
+passed: real same-process `GetWindowText`, timeout before a blocked worker exits,
+and propagation of worker exceptions. The 241 unit tests and static checks passed
+again. The first desktop rerun returned 6 passed and 2 failed: native classification
+on both threads and delayed transitions passed, but recording timed out waiting
+for Edit text and process isolation could not activate its AUT. An isolated rerun
+returned 5 passed and 3 failed, all three failures at foreground activation.
+Evidence: `artifacts/KAN-759/recorder-acceptance-review.xml` and
+`artifacts/KAN-759/recorder-acceptance-review-isolated.xml`. Full record/replay
+acceptance remains unverified; keep the PR unmerged until it passes.
+
 ## Code Style
 
 This project uses [ruff](https://docs.astral.sh/ruff/) for linting and formatting, and [mypy](https://mypy-lang.org/) for type checking.

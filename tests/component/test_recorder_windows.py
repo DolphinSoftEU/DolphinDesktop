@@ -17,6 +17,62 @@ from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
 pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(20)]
 
 
+def test_worker_query_pumps_same_process_window_messages():
+    # No foreground activation or desktop input is needed for WM_GETTEXT.
+    gui = _recorder_window.win32gui
+    root = gui.CreateWindowEx(
+        0,
+        "Static",
+        "KAN-759 worker query",
+        0,
+        0,
+        0,
+        100,
+        100,
+        0,
+        0,
+        _recorder_window.win32api.GetModuleHandle(None),
+        None,
+    )
+    try:
+        owner = _recorder_window.win32api.GetCurrentThreadId()
+
+        def query():
+            assert _recorder_window.win32api.GetCurrentThreadId() != owner
+            return gui.GetWindowText(root)
+
+        assert _recorder_window._query_on_worker(query) == "KAN-759 worker query"
+    finally:
+        gui.DestroyWindow(root)
+
+
+def test_worker_query_timeout_does_not_wait_for_worker_shutdown():
+    release = _recorder_window.threading.Event()
+    finished = _recorder_window.threading.Event()
+
+    def query():
+        try:
+            assert release.wait(5), "Test did not release the blocked worker"
+        finally:
+            finished.set()
+
+    try:
+        with pytest.raises(TimeoutError, match="native context worker"):
+            _recorder_window._query_on_worker(query, timeout=0.05)
+        # The caller must receive the timeout before the worker is unblocked.
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(2), "Controlled worker did not exit"
+
+
+def test_worker_query_propagates_failure():
+    failure = RuntimeError("controlled worker failure")
+    with pytest.raises(RuntimeError) as caught:
+        _recorder_window._query_on_worker(Mock(side_effect=failure))
+    assert caught.value is failure
+
+
 def test_real_hook_installation_and_cleanup():
     check_real_hook_lifecycle()
 
