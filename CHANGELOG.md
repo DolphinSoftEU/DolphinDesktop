@@ -59,6 +59,15 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   crossing test boundaries. Concurrent runner tests seed pipe input before launch
   and surface startup exceptions instead of masking them with pipe-write errors.
 
+* Recorder mouse and keyboard callbacks forward input even when context capture,
+  queueing, shutdown or a logging handler raises. Failures stop recording and are
+  reported by completion methods without logging captured input. The first callback
+  failure remains the cause when the message loop or hook cleanup subsequently
+  fails; secondary failures are attached as exception notes. Regression tests cover the
+  real ctypes callbacks with pointer-sized arguments and results on x64, alongside
+  the existing WinAPI signature fix. Logging handler failures during hook cleanup
+  cannot interrupt removal of remaining hooks or completion signaling (KAN-757).
+
 * The pytest `--dolphin-backend` option accepts registered and entry-point
   backends, as well as `auto`, and reports unknown IDs with registry diagnostics
   instead of restricting selection to UIA/Win32 (KAN-754).

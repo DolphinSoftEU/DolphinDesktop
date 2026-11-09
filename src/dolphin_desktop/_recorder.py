@@ -42,6 +42,7 @@ import re
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1018,6 +1019,14 @@ class Recorder:
         stop_vk = self._stop_vk
         stopped = self._stopped
 
+        def log_error(message: str, *args: Any) -> None:
+            try:
+                _log.error(message, *args)
+            except Exception:
+                # User-configured handlers must not interrupt input forwarding,
+                # remaining hook cleanup or completion signaling.
+                pass
+
         def queue_input(event: tuple[Any, ...]) -> None:
             # Serialize the final enqueue with the stop signal. Context capture
             # stays outside this lock so stop never waits for a native probe.
@@ -1028,12 +1037,12 @@ class Recorder:
                     except queue.Full:
                         pass
 
-        def _mouse_proc(n_code: int, w_param: int, l_param: int) -> int:
+        def _mouse_proc(n_code: int, w_param: int, l_param: int) -> None:
             if stopped.is_set():
                 # This runs on the installing thread and can wake its message
                 # loop even when another thread could not post WM_QUIT.
                 _user32.PostQuitMessage(0)
-                return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+                return
             if n_code == _HC_ACTION and w_param in (_WM_LBUTTONDOWN, _WM_RBUTTONDOWN):
                 ms = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
                 kind = {
@@ -1050,19 +1059,18 @@ class Recorder:
                         _capture_mouse_context(ms.pt.x, ms.pt.y),
                     )
                 )
-            return _user32.CallNextHookEx(None, n_code, w_param, l_param)
 
-        def _kbd_proc(n_code: int, w_param: int, l_param: int) -> int:
+        def _kbd_proc(n_code: int, w_param: int, l_param: int) -> None:
             if stopped.is_set():
                 _user32.PostQuitMessage(0)
-                return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+                return
             if n_code == _HC_ACTION and w_param in (_WM_KEYDOWN, _WM_SYSKEYDOWN):
                 kb = ctypes.cast(l_param, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
                 vk = int(kb.vkCode)
                 if vk == stop_vk and bool(_user32.GetAsyncKeyState(_VK_CONTROL) & 0x8000):
                     stopped.set()
                     _user32.PostQuitMessage(0)
-                    return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+                    return
                 shift = bool(_user32.GetAsyncKeyState(_VK_SHIFT) & 0x8000)
                 ctrl = bool(_user32.GetAsyncKeyState(_VK_CONTROL) & 0x8000)
                 alt = bool(_user32.GetAsyncKeyState(_VK_MENU) & 0x8000)
@@ -1077,11 +1085,32 @@ class Recorder:
                 queue_input(
                     ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time(), context)
                 )
-            return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+        def forwarding_callback(handler: Callable[[int, int, int], None]) -> Any:
+            def callback(n_code: int, w_param: int, l_param: int) -> int:
+                try:
+                    handler(n_code, w_param, l_param)
+                except Exception as exc:
+                    # ctypes swallows callback exceptions and returns an undefined
+                    # result. Preserve the failure for completion methods, but
+                    # always let the next hook deliver input to the application.
+                    if self._hook_error is None:
+                        self._hook_error = exc
+                    stopped.set()
+                    # Exception payloads may contain captured input.
+                    log_error("Recorder input callback failed; recording is incomplete")
+                    try:
+                        _user32.PostQuitMessage(0)
+                    except Exception:
+                        # Even a shutdown error must not break the hook chain.
+                        pass
+                return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+            return _HOOKPROC(callback)
 
         # Keep strong references on self so GC won't collect while hook is alive
-        self._mouse_cb = _HOOKPROC(_mouse_proc)
-        self._kbd_cb = _HOOKPROC(_kbd_proc)
+        self._mouse_cb = forwarding_callback(_mouse_proc)
+        self._kbd_cb = forwarding_callback(_kbd_proc)
 
         mouse_hook = kbd_hook = None
         try:
@@ -1105,26 +1134,33 @@ class Recorder:
                 _user32.TranslateMessage(ctypes.byref(msg))
                 _user32.DispatchMessageW(ctypes.byref(msg))
         except Exception as exc:
-            self._hook_error = exc
-            _log.error("Recorder hook loop failed: %s", exc)
+            if self._hook_error is None:
+                self._hook_error = exc
+            else:
+                self._hook_error.add_note(f"Additional hook loop failure: {exc}")
+            log_error("Recorder hook loop failed: %s", exc)
         finally:
-            for handle in (mouse_hook, kbd_hook):
-                if not handle:
-                    continue
+            try:
+                for handle in (mouse_hook, kbd_hook):
+                    if not handle:
+                        continue
+                    try:
+                        if not _user32.UnhookWindowsHookEx(handle):
+                            raise ctypes.WinError(ctypes.get_last_error())
+                    except Exception as exc:
+                        if self._hook_error is None:
+                            self._hook_error = exc
+                        else:
+                            self._hook_error.add_note(f"Additional hook cleanup failure: {exc}")
+                        log_error("Could not remove recorder hook: %s", exc)
+            finally:
+                # Low-level callbacks run on this installing thread. Its message
+                # loop has returned, so no callback can enqueue behind this marker.
                 try:
-                    if not _user32.UnhookWindowsHookEx(handle):
-                        raise ctypes.WinError(ctypes.get_last_error())
-                except Exception as exc:
-                    if self._hook_error is None:
-                        self._hook_error = exc
-                    else:
-                        self._hook_error.add_note(f"Additional hook cleanup failure: {exc}")
-                    _log.error("Could not remove recorder hook: %s", exc)
-            # Low-level callbacks run on this installing thread. Its message
-            # loop has returned, so no callback can enqueue behind this marker.
-            evt_queue.put(None)
-            stopped.set()
-            self._hook_ready.set()
+                    evt_queue.put(None)
+                finally:
+                    stopped.set()
+                    self._hook_ready.set()
 
     # Processor thread
 
