@@ -2138,6 +2138,56 @@ def test_callback_failure_still_forwards_input_and_rejects_recording(
 
 
 @pytest.mark.parametrize("event_kind", ["mouse", "key"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_message_loop_failure_preserves_callback_error(monkeypatch, event_kind, cleanup_fails):
+    rec = Recorder(pid=100)
+    api = _HookAPI({})
+    original = RuntimeError("sensitive captured input")
+    secondary = OSError("message loop failure")
+    next_hook = Mock(return_value=123)
+    api.CallNextHookEx = next_hook
+    data = (
+        _recorder._MSLLHOOKSTRUCT()
+        if event_kind == "mouse"
+        else _recorder._KBDLLHOOKSTRUCT(vkCode=ord("A"))
+    )
+    message = _recorder._WM_LBUTTONDOWN if event_kind == "mouse" else _recorder._WM_KEYDOWN
+    pointer = ctypes.addressof(data)
+    probe = Mock(side_effect=original)
+    monkeypatch.setattr(_recorder, "_capture_context", probe)
+    monkeypatch.setattr(_recorder, "_capture_mouse_context", probe)
+    monkeypatch.setattr(_recorder, "_user32", api)
+    if cleanup_fails:
+        api.UnhookWindowsHookEx = Mock(side_effect=[0, 1])
+        monkeypatch.setattr(ctypes, "get_last_error", lambda: 5)
+
+    def get_message(*args):
+        # Windows dispatches low-level callbacks while GetMessageW is pending.
+        callback = rec._mouse_cb if event_kind == "mouse" else rec._kbd_cb
+        assert callback(_recorder._HC_ACTION, message, pointer) == 123
+        raise secondary
+
+    api.GetMessageW = get_message
+    rec._hook_loop()
+
+    next_hook.assert_called_once_with(None, _recorder._HC_ACTION, message, pointer)
+    assert rec._hook_error is original
+    assert original.__notes__[0] == "Additional hook loop failure: message loop failure"
+    assert len(original.__notes__) == (2 if cleanup_fails else 1)
+    if cleanup_fails:
+        assert original.__notes__[1].startswith("Additional hook cleanup failure:")
+        assert [call.args for call in api.UnhookWindowsHookEx.call_args_list] == [(101,), (202,)]
+    else:
+        assert api.unhooked == [101, 202]
+    assert rec._hook_ready.is_set()
+    assert rec._evt_queue.get_nowait() is None
+    assert rec._evt_queue.empty()
+    with pytest.raises(OSError, match="hook loop failed") as caught:
+        rec.wait(0)
+    assert caught.value.__cause__ is original
+
+
+@pytest.mark.parametrize("event_kind", ["mouse", "key"])
 @pytest.mark.parametrize("sign", [-1, 1])
 def test_actual_hook_callbacks_preserve_pointer_sized_arguments_and_result(
     monkeypatch, event_kind, sign

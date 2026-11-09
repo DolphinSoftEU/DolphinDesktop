@@ -1130,7 +1130,10 @@ class Recorder:
                 _user32.TranslateMessage(ctypes.byref(msg))
                 _user32.DispatchMessageW(ctypes.byref(msg))
         except Exception as exc:
-            self._hook_error = exc
+            if self._hook_error is None:
+                self._hook_error = exc
+            else:
+                self._hook_error.add_note(f"Additional hook loop failure: {exc}")
             _log.error("Recorder hook loop failed: %s", exc)
         finally:
             for handle in (mouse_hook, kbd_hook):
