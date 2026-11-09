@@ -17,6 +17,60 @@ from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
 pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(20)]
 
 
+@pytest.mark.parametrize(
+    "controller,requested_pid,foreground,granted",
+    [
+        (456, 456, 123, True),
+        (456, 789, 123, False),
+        (456, 456, 987, False),
+        (None, 456, 123, False),
+    ],
+)
+def test_aut_grants_foreground_only_to_its_controller(
+    monkeypatch, controller, requested_pid, foreground, granted
+):
+    from tests.component import _real_window
+
+    allow = Mock(return_value=1)
+    monkeypatch.setattr(_real_window, "_controller_pid", controller)
+    monkeypatch.setattr(_real_window.win32gui, "GetForegroundWindow", lambda: foreground)
+    monkeypatch.setattr(_real_window._user32, "AllowSetForegroundWindow", allow)
+    result = _real_window._wnd_proc(
+        123, _real_window.WM_ALLOW_CONTROLLER_FOREGROUND, requested_pid, 0
+    )
+    assert bool(result) is granted
+    if granted:
+        allow.assert_called_once_with(controller)
+    else:
+        allow.assert_not_called()
+
+
+def test_aut_restores_edit_focus_on_owning_thread(monkeypatch):
+    from tests.component import _real_window
+
+    focus = Mock()
+    monkeypatch.setattr(_real_window, "_controls", {_real_window.ID_EDIT: 789})
+    monkeypatch.setattr(_real_window.win32gui, "SetFocus", focus)
+    assert _real_window._wnd_proc(123, _real_window.win32con.WM_SETFOCUS, 0, 0) == 0
+    focus.assert_called_once_with(789)
+
+
+def test_foreground_handoff_never_contacts_unowned_window(monkeypatch):
+    send = Mock()
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 987)
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", send)
+    _recorder_window._handoff_owned_foreground({123, 456})
+    send.assert_not_called()
+
+
+def test_refused_foreground_handoff_fails_acceptance(monkeypatch):
+    monkeypatch.setenv("DOLPHIN_RECORDER_ACCEPTANCE", "1")
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(1, 0)))
+    with pytest.raises(pytest.fail.Exception, match="refused to hand activation"):
+        _recorder_window._handoff_owned_foreground({123, 456})
+
+
 def test_owned_activation_waits_for_foreground_transition(monkeypatch):
     activate = Mock()
     pump = Mock()

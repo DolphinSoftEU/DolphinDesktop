@@ -110,6 +110,11 @@ Both transition tests wait for actual native Edit text before changing focus;
 hook callbacks alone do not prove target delivery. The process-isolation test
 checks cumulative text separately for each AUT while the recorder worker remains
 paused. Worker queries pump owner-thread messages and use a bounded wait.
+The controlled AUT restores focus to its Edit on activation. Before switching
+between AUTs, the foreground AUT explicitly allows its declared controller PID
+to activate the next window. This handoff is limited to the two owned AUTs;
+unrelated foreground windows never receive a request. Each AUT is clicked once
+so rapid return visits cannot select existing text through a double-click.
 
 Replay checks retain stage-specific native/UIA text, HWND/focus, modifier state
 and recorder progress in `recorded.diagnostics.json`. Native WM_GETTEXT reads

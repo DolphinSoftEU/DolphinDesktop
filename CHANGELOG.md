@@ -64,6 +64,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   Owned-window activation waits for the AUT to acknowledge activation and for its
   foreground HWND, rather than rejecting asynchronous cross-process activation
   immediately. A bounded timeout remains an acceptance failure before input.
+  Process-isolation fixtures restore Edit focus and hand foreground permission
+  back to their explicit controller before switching AUTs. Repeated keyboard
+  runs no longer risk selecting prior text with a second physical click.
 
 * Recorder mouse and keyboard callbacks forward input even when context capture,
   queueing, shutdown or a logging handler raises. Failures stop recording and are

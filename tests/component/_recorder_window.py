@@ -54,6 +54,25 @@ def _activate_owned_window(root, timeout=2):
         time.sleep(0.005)
 
 
+def _handoff_owned_foreground(owners):
+    """Ask the foreground AUT to let this controller activate the next AUT."""
+    from ._real_window import WM_ALLOW_CONTROLLER_FOREGROUND
+
+    foreground = win32gui.GetForegroundWindow()
+    if foreground not in owners:
+        return
+    status, granted = win32gui.SendMessageTimeout(
+        foreground,
+        WM_ALLOW_CONTROLLER_FOREGROUND,
+        os.getpid(),
+        0,
+        win32con.SMTO_ABORTIFHUNG,
+        2000,
+    )
+    if not status or not granted:
+        _desktop_unavailable("Foreground AUT refused to hand activation back to its controller")
+
+
 def check_real_hook_lifecycle():
     """Install and remove production hooks without sending desktop input."""
     rec = _recorder.Recorder(pid=win32api.GetCurrentProcessId())
@@ -320,6 +339,8 @@ def _owned_recorder_window(ready):
             str(Path(__file__).with_name("_real_window.py")),
             "--ready-file",
             str(ready),
+            "--controller-pid",
+            str(os.getpid()),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -379,13 +400,13 @@ def record_process_isolation(directory):
         assert rec._hook_ready.wait(3), "Hooks did not initialize"
         assert rec._hook_error is None
 
-        def wait_until(predicate):
+        def wait_until(predicate, details=lambda: ""):
             deadline = time.monotonic() + 2
             while not predicate():
                 assert time.monotonic() < deadline, (
                     f"Timed out waiting for focus or queued events: "
                     f"context={_recorder._capture_context()!r}, "
-                    f"hook_error={rec._hook_error!r}, queued_keys={len(key_events())}"
+                    f"hook_error={rec._hook_error!r}, queued_keys={len(key_events())}, {details()}"
                 )
                 time.sleep(0.005)
 
@@ -397,15 +418,24 @@ def record_process_isolation(directory):
         native_text = {owned[0]: "", foreign[0]: ""}
         for (root, pid), letter in ((owned, "t"), (foreign, "q"), (owned, "s"), (foreign, "z")):
             edit = win32gui.GetDlgItem(root, ID_EDIT)
+            _handoff_owned_foreground(native_text)
             _activate_owned_window(root)
             left, top, right, bottom = win32gui.GetWindowRect(edit)
             point = ((left + right) // 2, (top + bottom) // 2)
             win32api.SetCursorPos(point)
             assert win32gui.GetForegroundWindow() == root
             assert win32process.GetWindowThreadProcessId(root)[1] == pid
-            assert win32gui.WindowFromPoint(point) == edit, "Owned Edit is obscured"
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            under_pointer = win32gui.WindowFromPoint(point)
+            assert under_pointer == edit, (
+                f"Owned Edit is obscured: root={root}, edit={edit}, point={point}, "
+                f"hit={under_pointer}, hit_info={_recorder._get_window_info(under_pointer)!r}"
+            )
+            if not native_text[root]:
+                # Returning to the same Edit quickly can make a second click a
+                # double-click that selects its existing text. One real click
+                # per AUT exercises mouse isolation; activation restores focus.
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
             wait_until(lambda edit=edit: _recorder._capture_context().focus == edit)
             for _ in range(4):
                 context = _recorder._capture_context()
@@ -420,7 +450,12 @@ def record_process_isolation(directory):
             native_text[root] += letter * 4
             # Hook callbacks precede target delivery. Keep focus on this AUT
             # until its cumulative text proves that the keys were consumed.
-            wait_until(lambda edit=edit, text=native_text[root]: _native_edit_text(edit) == text)
+            wait_until(
+                lambda edit=edit, text=native_text[root]: _native_edit_text(edit) == text,
+                details=lambda edit=edit, text=native_text[root]: (
+                    f"native_text={_native_edit_text(edit)!r}, expected={text!r}"
+                ),
+            )
 
         # Prove that both processes were captured, in order, before any interpretation.
         assert rec._processed == 0
