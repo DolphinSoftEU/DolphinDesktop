@@ -64,8 +64,9 @@ class TestWindowArgument:
 
 
 class TestPickWiring:
-    def test_main_reports_provider_denial_and_cleans_up(self, monkeypatch, capsys):
-        monkeypatch.setattr("sys.argv", ["dolphin", "spy", "--pick"])
+    @pytest.mark.parametrize("mode", ["--pick", "--image-pick"])
+    def test_main_reports_provider_denial_and_cleans_up(self, monkeypatch, capsys, tmp_path, mode):
+        monkeypatch.setattr("sys.argv", ["dolphin", "spy", mode, "--output-dir", str(tmp_path)])
         clear = patch("dolphin_desktop._spy._Highlighter.clear")
         error = Exception(-2147024891, "localized provider diagnostic")
         with (
@@ -88,8 +89,10 @@ class TestPickWiring:
         cleanup.assert_called_once_with()
         output = capsys.readouterr()
         assert "error:" in output.err and "E_ACCESSDENIED" in output.err
+        assert "Traceback" not in output.err
         assert "Cancelled." not in output.out
         assert "Locator call" not in output.out
+        assert list(tmp_path.iterdir()) == []
 
     def test_status_message_is_printed(self, monkeypatch, capsys):
         monkeypatch.setattr(
