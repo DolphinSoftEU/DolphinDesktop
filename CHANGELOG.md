@@ -43,6 +43,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* `Tree.select_item_by_path()` and `expand_item()` now work on Qt 5 and Qt 6 trees
+  through UIA (KAN-756). Before, they timed out on the second level, because Qt
+  lists all rows as siblings, and on Qt 5 they also clicked the ancestors on the
+  way. They now walk the rows by indentation, scroll to rows outside the viewport,
+  open closed ancestors through the branch arrow and click the node. A path that
+  does not exist raises `ElementNotFoundError` naming how far it got, and a column
+  too narrow to read a level from raises `UnsupportedCapabilityError`.
+
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).
 

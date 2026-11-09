@@ -164,6 +164,32 @@ assert win.edit(name="Username").text() == "alice"
 `Locator.text()` on Qt no longer falls through to a clipboard read, so it
 never hangs on empty values (a previous bug fixed during Qt 6 support work).
 
+### Trees — `select_item_by_path` and `expand_item`
+
+```python
+tree = win.tree(name="Files")
+tree.expand_item("Project", "src")
+tree.select_item_by_path("Project", "src", "main.py")
+```
+
+UIA lists a `QTreeWidget` / `QTreeView` flat: every cell of every row is a
+sibling `TreeItem`, and only rows around the viewport are listed. The UIA
+patterns do not drive it either. Qt 5 has no `ExpandCollapse` or `SelectionItem`,
+and on Qt 6 `Select` picks the wrong row for a nested node. So these calls read
+the rows and use the pointer, like a user:
+
+- `select_item_by_path` clicks the row, so `itemClicked` fires. Closed ancestors
+  open through their branch arrow, which selects nothing, and rows outside the
+  viewport are scrolled to with the wheel.
+- They need a visible desktop. On a hidden desktop they raise `DolphinError`.
+- Levels are read from the indentation of the first column, and only that column
+  names a node. A tree without indentation (`setIndentation(0)`) cannot be walked
+  by path. A cell indented past the width of its column reports no position, so
+  it raises `UnsupportedCapabilityError` until the column is wider.
+- A root without an arrow (`setRootIsDecorated(False)`) cannot be opened.
+- A path that continues below a leaf clicks that leaf once, because Qt 5 does not
+  tell a closed branch from a leaf, and then raises `ElementNotFoundError`.
+
 ## Menus & submenus
 
 Top-level menubar items are found like any other element:
