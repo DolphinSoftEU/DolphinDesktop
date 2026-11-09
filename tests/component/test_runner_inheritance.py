@@ -80,6 +80,89 @@ def test_runner_without_standard_handles_launches_real_command(tmp_path, missing
     assert observed["standard_handles"] == [None, None, None]
 
 
+@pytest.mark.parametrize("available", range(1, 7))
+@pytest.mark.parametrize("missing_handle", [0, -1])
+def test_partial_stdio_uses_nul_for_missing_streams(tmp_path, available, missing_handle):
+    host = tmp_path / "partial_stdio_host.py"
+    child = tmp_path / "child.py"
+    report = tmp_path / "report.json"
+    (tmp_path / "stdin").write_bytes(b"input")
+    child.write_text(
+        dedent("""\
+        import sys
+        data = sys.stdin.read()
+        assert data == sys.argv[1]
+        sys.stdout.write('out:' + data)
+        sys.stdout.flush()
+        sys.stderr.write('err:' + data)
+        sys.stderr.flush()
+    """)
+    )
+    host.write_text(
+        dedent("""\
+        import ctypes
+        import json
+        import msvcrt
+        import os
+        import sys
+        from contextlib import ExitStack
+        from pathlib import Path
+        from dolphin_desktop import _runner as r
+
+        folder, available, missing = Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+        k = r._kernel32
+        k.SetStdHandle.argtypes = [r._wt.DWORD, r._wt.HANDLE]
+        k.SetStdHandle.restype = r._wt.BOOL
+        k.GetProcessHandleCount.argtypes = [r._wt.HANDLE, ctypes.POINTER(r._wt.DWORD)]
+        k.GetProcessHandleCount.restype = r._wt.BOOL
+        def handle_count():
+            count = r._wt.DWORD()
+            assert k.GetProcessHandleCount(k.GetCurrentProcess(), ctypes.byref(count))
+            return count.value
+
+        with ExitStack() as cleanup:
+            descriptors = {}
+            streams = zip((-10, -11, -12), ('stdin', 'stdout', 'stderr'))
+            for index, (kind, name) in enumerate(streams):
+                handle = r._wt.HANDLE(missing).value
+                if available & (1 << index):
+                    flags = os.O_RDONLY if index == 0 else os.O_WRONLY | os.O_CREAT
+                    fd = os.open(folder / name, flags | os.O_BINARY)
+                    cleanup.callback(os.close, fd)
+                    descriptors[name] = fd
+                    handle = msvcrt.get_osfhandle(fd)
+                assert k.SetStdHandle(r._wt.DWORD(kind), handle)
+            before = None
+            # The first launch warms up Windows; subsequent counts must stay stable.
+            for _ in range(3):
+                args = [sys.executable, str(folder / 'child.py'), 'input' if available & 1 else '']
+                assert r.run_hidden(args) == 0
+                if before is not None:
+                    assert handle_count() == before, (before, handle_count())
+                before = handle_count()
+                if available & 1:
+                    # Inherited stdin shares its file offset with the parent.
+                    os.lseek(descriptors['stdin'], 0, os.SEEK_SET)
+            (folder / 'report.json').write_text(json.dumps({'exit_code': 0}))
+    """)
+    )
+    result = subprocess.run(
+        [sys.executable, str(host), str(tmp_path), str(available), str(missing_handle)],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        capture_output=True,
+        timeout=25,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert json.loads(report.read_text()) == {"exit_code": 0}
+    for bit, name, prefix in ((2, "stdout", b"out:"), (4, "stderr", b"err:")):
+        if available & bit:
+            assert (tmp_path / name).read_bytes() == (
+                prefix + (b"input" if available & 1 else b"")
+            ) * 3
+        else:
+            assert not (tmp_path / name).exists()
+
+
 def test_parallel_runners_keep_stdio_pipes_private(monkeypatch, tmp_path):
     local = threading.local()
     barrier = threading.Barrier(2)

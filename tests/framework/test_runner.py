@@ -642,3 +642,36 @@ def test_runner_quotes_windows_command_arguments() -> None:
     assert _build_cmd_string(["python.exe", "script with spaces.py", "--name", "A B"]) == (
         'python.exe "script with spaces.py" --name "A B"'
     )
+
+
+@pytest.mark.parametrize("failure", [None, "open", "duplicate", "create"])
+def test_partial_stdio_nul_resources_are_closed(monkeypatch, failure):
+    kernel32 = _FakeLauncher(create_result=failure != "create")
+    kernel32.GetStdHandle = Mock(side_effect=[10, 11, None])
+    if failure == "duplicate":
+        duplicate = kernel32.DuplicateHandle
+        kernel32.DuplicateHandle = lambda *args: duplicate(*args) if args[1] != 50 else False
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(_runner.ctypes, "get_last_error", lambda: 5)
+    opened = Mock(return_value=ctypes.wintypes.HANDLE(-1).value if failure == "open" else 50)
+    kernel32.CreateFileW = opened
+    if failure:
+        with pytest.raises(OSError):
+            _runner.launch_on_desktop(["tool.exe"])
+    else:
+        _runner.launch_on_desktop(["tool.exe"])
+        startup = kernel32.create_process_args[8]._obj
+        assert (startup.hStdInput, startup.hStdOutput, startup.hStdError) == (110, 111, 150)
+        assert kernel32.inherited_handles == [110, 111, 150]
+        assert kernel32.create_process_args[4] is True
+    opened.assert_called_once_with("NUL", 0x40000000, 3, None, 3, 0, None)
+    expected = [110, 111]
+    if failure != "open":
+        expected.append(50)
+    if failure not in ("open", "duplicate"):
+        expected.append(150)
+    if failure is None:
+        expected.append(kernel32.thread)
+    assert sorted(kernel32.closed_handles) == sorted(expected)
+    if failure in ("open", "duplicate"):
+        assert kernel32.create_process_args is None

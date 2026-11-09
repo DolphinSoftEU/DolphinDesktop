@@ -27,6 +27,8 @@ Each command inherits only private copies of its standard input, output and erro
 handles through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Other inheritable handles,
 including pipes belonging to concurrent runners, are excluded. When all standard
 handles are absent or forwarding is disabled, handle inheritance is disabled.
+When only some streams are available, missing stdin reads EOF from `NUL`, and
+missing stdout or stderr writes to `NUL`. All three forwarded handles are valid.
 
 Processes that detach from the console cannot receive its console events, but
 remain in the runner's Windows Job Object for cleanup. Remaining descendants are

@@ -79,6 +79,17 @@ _user32.WaitForInputIdle.restype = _wt.DWORD
 _kernel32.GetStdHandle.argtypes = [_wt.DWORD]
 _kernel32.GetStdHandle.restype = _wt.HANDLE
 
+_kernel32.CreateFileW.argtypes = [
+    _wt.LPCWSTR,
+    _wt.DWORD,
+    _wt.DWORD,
+    ctypes.c_void_p,
+    _wt.DWORD,
+    _wt.DWORD,
+    _wt.HANDLE,
+]
+_kernel32.CreateFileW.restype = _wt.HANDLE
+
 _kernel32.GetCurrentProcess.argtypes = []
 _kernel32.GetCurrentProcess.restype = _wt.HANDLE
 _kernel32.DuplicateHandle.argtypes = [
@@ -548,11 +559,25 @@ def _startup_stdio(desktop_name: str, inherit_stdio: bool) -> Iterator[_StartupI
     with ExitStack() as cleanup:
         handles = []
         if inherit_stdio:
+            streams = [
+                (field, _kernel32.GetStdHandle(_wt.DWORD(kind)))
+                for field, kind in (("hStdInput", -10), ("hStdOutput", -11), ("hStdError", -12))
+            ]
+            missing = (None, 0, _wt.HANDLE(-1).value)
+            # Preserve the no-stdio case; partial stdio needs three valid handles
+            # once STARTF_USESTDHANDLES is enabled.
+            if not any(handle not in missing for _, handle in streams):
+                streams = []
             process = _kernel32.GetCurrentProcess()
-            for field, kind in (("hStdInput", -10), ("hStdOutput", -11), ("hStdError", -12)):
-                handle = _kernel32.GetStdHandle(_wt.DWORD(kind))
-                if handle in (None, 0, _wt.HANDLE(-1).value):
-                    continue  # GUI/service hosts may have no standard handles.
+            for field, handle in streams:
+                if handle in missing:
+                    access = 0x80000000 if field == "hStdInput" else 0x40000000
+                    # GENERIC_READ/WRITE, FILE_SHARE_READ|WRITE, OPEN_EXISTING.
+                    # Native handles avoid allocating or changing CRT stdio slots.
+                    handle = _kernel32.CreateFileW("NUL", access, 3, None, 3, 0, None)
+                    if handle in missing:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    cleanup.callback(_kernel32.CloseHandle, handle)
                 duplicate = _wt.HANDLE()
                 if not _kernel32.DuplicateHandle(
                     process, handle, process, ctypes.byref(duplicate), 0, True, 2
