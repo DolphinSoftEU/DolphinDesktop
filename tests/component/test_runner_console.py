@@ -219,3 +219,77 @@ def test_process_creation_is_blocked_before_final_snapshot(monkeypatch, tmp_path
                     kernel32.TerminateProcess(handle, 1)
                     kernel32.WaitForSingleObject(handle, 5000)
                 kernel32.CloseHandle(handle)
+
+
+def test_finished_helpers_release_handles_while_command_is_still_running(monkeypatch, tmp_path):
+    finished = tmp_path / "helpers-finished"
+    release = tmp_path / "release-command"
+    original_drain = _runner._JobNotifications.drain
+    observed = []
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wt.HANDLE
+    kernel32.GetProcessHandleCount.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+    kernel32.GetProcessHandleCount.restype = wt.BOOL
+
+    def handle_count():
+        count = wt.DWORD()
+        assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count))
+        return count.value
+
+    before = handle_count()
+
+    def inspect_running_command(tracker):
+        original_drain(tracker)
+        if finished.exists() and not observed:
+            # Only the command's venv redirector and Python may still be live.
+            assert len(tracker.processes) <= 2
+            assert handle_count() <= before + 12
+            observed.append(len(tracker.processes))
+            release.touch()
+
+    monkeypatch.setattr(_runner._JobNotifications, "drain", inspect_running_command)
+    code = (
+        "import subprocess,sys,time; from pathlib import Path\n"
+        "for _ in range(40): subprocess.run([sys.executable, '-c', 'pass'], check=True)\n"
+        "Path(sys.argv[1]).touch()\n"
+        "deadline = time.monotonic() + 10\n"
+        "while not Path(sys.argv[2]).exists():\n"
+        " if time.monotonic() >= deadline: raise TimeoutError('observer did not release command')\n"
+        " time.sleep(.01)\n"
+    )
+    try:
+        assert _runner.run_hidden([sys.executable, "-c", code, str(finished), str(release)]) == 0
+        assert len(observed) == 1
+    finally:
+        release.touch()
+
+
+def test_stale_notification_cannot_add_a_real_foreign_process_to_cleanup():
+    """Inject the PID of a live process in another job as a stale birth packet."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.PostQueuedCompletionStatus.argtypes = [
+        wt.HANDLE,
+        wt.DWORD,
+        ctypes.c_size_t,
+        ctypes.c_void_p,
+    ]
+    kernel32.PostQueuedCompletionStatus.restype = wt.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    kernel32.WaitForSingleObject.restype = wt.DWORD
+    with _runner._owned_job() as foreign_job:
+        pid, handle = _runner.launch_on_desktop(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            _runner.get_current_desktop_name(),
+            job_handle=foreign_job,
+        )
+        try:
+            with _runner._owned_job() as target_job:
+                tracker = _runner._job_notifications[target_job]
+                assert kernel32.PostQueuedCompletionStatus(tracker.port, 6, target_job, pid)
+                tracker.drain()
+                assert tracker.processes == {}
+                assert not tracker.pending()
+            # The unrelated process remains alive after the empty job's cleanup.
+            assert kernel32.WaitForSingleObject(handle, 0) == 258
+        finally:
+            _runner.close_process_handle(handle)

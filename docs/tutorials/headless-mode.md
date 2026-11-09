@@ -27,8 +27,12 @@ responses containing fewer IDs than assigned processes.
 The runner waits for retained handles to be signalled and for the job to report
 zero active processes before closing its handles and the hidden desktop handle.
 A private completion port provides additional process handles during execution,
-but notifications are advisory: missing historical notifications do not replace
-a valid application exit code with a cleanup error. Cleanup still raises an
+but notifications are advisory: missing, inaccessible or unverifiable entries
+do not replace a valid application exit code with a cleanup error. Opened handles
+are checked for membership in the owned job before caching. Completed handles
+and their PID entries are released during execution; a reused PID is checked
+again on a newly opened handle. If monitoring cannot start, final cleanup still
+uses sealing and the authoritative process snapshot. Cleanup still raises an
 error if sealing, enumeration or termination fails, or if processes remain
 pending after its ten-second timeout.
 

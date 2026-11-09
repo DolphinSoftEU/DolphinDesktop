@@ -63,9 +63,14 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   A completion port retains additional handles during execution. Final cleanup
   first blocks new job members with a zero active-process limit, then captures
   the complete process set. Lost advisory birth notifications no longer cause
-  false cleanup timeouts or replace valid exit codes. Incomplete successful
-  PID-list responses are retried. A required CI matrix verifies Ctrl+Break on Python 3.11 and
-  3.13, including installed and nested launchers, without allowing skipped tests.
+  false cleanup timeouts or replace valid exit codes.
+  Monitoring now validates job membership before retaining a notified process,
+  tolerates advisory read/access failures, and releases completed process
+  handles during execution. PID reuse therefore cannot add foreign processes
+  to cleanup waits or grow a historical handle cache.
+  Incomplete successful PID-list responses are retried. A required CI matrix
+  verifies Ctrl+Break on Python 3.11 and 3.13, including installed and nested
+  launchers, without allowing skipped tests.
 
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).

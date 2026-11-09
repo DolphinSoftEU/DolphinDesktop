@@ -204,7 +204,7 @@ class _JobCompletionPort(ctypes.Structure):
 
 
 class _JobNotifications:
-    """Retain process handles from NEW_PROCESS notifications, including late births.
+    """Track live job members from advisory NEW_PROCESS notifications.
 
     Associate while the job is empty, before its suspended root is assigned.
     Notifications are advisory. Cleanup seals process admission and takes a
@@ -214,7 +214,7 @@ class _JobNotifications:
 
     def __init__(self, job: int) -> None:
         self.job = job
-        self.processes: dict[int, int | None] = {}
+        self.processes: dict[int, int] = {}
         self.port = _kernel32.CreateIoCompletionPort(_wt.HANDLE(-1), None, 0, 1)
         if not self.port:
             raise ctypes.WinError(ctypes.get_last_error())
@@ -227,40 +227,57 @@ class _JobNotifications:
             raise ctypes.WinError(error)
 
     def drain(self) -> None:
+        self.pending()
         # A producer cannot starve the command wait or its deadlines by flooding
         # the port. A subsequent poll drains the remaining packets.
-        for _ in range(256):
-            message = _wt.DWORD()
-            key = ctypes.c_size_t()
-            pid = ctypes.c_void_p()
-            if not _kernel32.GetQueuedCompletionStatus(
-                self.port, ctypes.byref(message), ctypes.byref(key), ctypes.byref(pid), 0
-            ):
-                error = ctypes.get_last_error()
-                if error == _WAIT_TIMEOUT:
+        try:
+            for _ in range(256):
+                message = _wt.DWORD()
+                key = ctypes.c_size_t()
+                pid = ctypes.c_void_p()
+                if not _kernel32.GetQueuedCompletionStatus(
+                    self.port, ctypes.byref(message), ctypes.byref(key), ctypes.byref(pid), 0
+                ):
+                    # Both an empty queue and a monitoring failure fall back to
+                    # the sealed, authoritative snapshot during final cleanup.
                     return
-                raise ctypes.WinError(error)
-            if key.value != self.job:
-                raise OSError("unexpected command job completion key")
-            if message.value != 6:  # JOB_OBJECT_MSG_NEW_PROCESS
-                continue
-            if not pid.value:
-                raise OSError("command job reported an invalid process identifier")
-            if pid.value in self.processes:
-                continue
-            handle = _kernel32.OpenProcess(0x100000, False, pid.value)  # SYNCHRONIZE
-            if not handle:
-                error = ctypes.get_last_error()
-                if error != 87:  # already gone; its PID cannot refer to a pending object
-                    raise ctypes.WinError(error)
-            # Hold even a possibly recycled handle: waiting is conservative and
-            # never terminates a foreign process.
-            self.processes[pid.value] = handle or None
+                if key.value != self.job or message.value != 6 or not pid.value:
+                    continue  # unrelated, malformed or non-birth notification
+                if pid.value in self.processes:
+                    continue
+                # Membership must be checked on the opened handle: the PID in
+                # an advisory packet may already belong to a foreign process.
+                handle = _kernel32.OpenProcess(0x101000, False, pid.value)
+                if not handle:
+                    continue
+                member = _wt.BOOL()
+                if (
+                    not _kernel32.IsProcessInJob(handle, self.job, ctypes.byref(member))
+                    or not member.value
+                ):
+                    _kernel32.CloseHandle(handle)
+                    continue
+                self.processes[pid.value] = handle
+        finally:
+            self.pending()
+
+    def pending(self) -> bool:
+        """Keep only live, verified members; release completed process identities.
+
+        An open handle pins its PID until removal. Later packets for a reused
+        PID must open a new handle and pass membership validation again. Errors
+        in this advisory cache never substitute for authoritative cleanup errors.
+        """
+        for pid, handle in list(self.processes.items()):
+            if _kernel32.WaitForSingleObject(handle, 0) != _WAIT_TIMEOUT:
+                del self.processes[pid]
+                _kernel32.CloseHandle(handle)
+        return bool(self.processes)
 
     def close(self) -> None:
         for handle in self.processes.values():
-            if handle is not None:
-                _kernel32.CloseHandle(handle)
+            _kernel32.CloseHandle(handle)
+        self.processes.clear()
         _kernel32.CloseHandle(self.port)
 
 
@@ -354,13 +371,8 @@ def _terminate_and_wait_for_job(job: int) -> None:
         while True:
             if notifications is not None:
                 notifications.drain()
-            stopped = True
-            observed = handles + (
-                [h for h in notifications.processes.values() if h is not None]
-                if notifications is not None
-                else []
-            )
-            for handle in observed:
+            stopped = notifications is None or not notifications.pending()
+            for handle in handles:
                 result = _kernel32.WaitForSingleObject(handle, 0)
                 if result not in (_WAIT_OBJECT_0, _WAIT_TIMEOUT):
                     raise ctypes.WinError(ctypes.get_last_error())
@@ -389,16 +401,21 @@ def _owned_job() -> Iterator[int]:
             job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
         ):
             raise ctypes.WinError(ctypes.get_last_error())
-        notifications = _JobNotifications(job)
-        _job_notifications[job] = notifications
+        try:
+            notifications = _JobNotifications(job)
+        except OSError:
+            notifications = None  # final sealing/snapshot remains authoritative
+        if notifications is not None:
+            _job_notifications[job] = notifications
         try:
             try:
                 yield job
             finally:
                 _terminate_and_wait_for_job(job)
         finally:
-            del _job_notifications[job]
-            notifications.close()
+            if notifications is not None:
+                del _job_notifications[job]
+                notifications.close()
     finally:
         _kernel32.CloseHandle(job)
 

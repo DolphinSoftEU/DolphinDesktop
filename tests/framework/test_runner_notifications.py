@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
+from collections import deque
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -15,12 +16,12 @@ from dolphin_desktop import _runner
 pytestmark = pytest.mark.unit
 
 
-def _tracker(monkeypatch, packets, *, open_error=0):
-    pending = iter(packets)
+def _tracker(monkeypatch, packets, *, open_error=0, member=True, membership_ok=True):
+    pending = deque(packets)
 
     def dequeue(port, message, key, pid, timeout):
         assert (port, timeout) == (88, 0)
-        packet = next(pending, None)
+        packet = pending.popleft() if pending else None
         if packet is None or packet == "error":
             ctypes.set_last_error(258 if packet is None else 5)
             return False
@@ -28,18 +29,26 @@ def _tracker(monkeypatch, packets, *, open_error=0):
         return True
 
     def open_process(access, inherit, pid):
-        assert (access, inherit) == (0x100000, False)
+        assert (access, inherit) == (0x101000, False)
         if open_error:
             ctypes.set_last_error(open_error)
             return 0
         return pid + 1000
+
+    def in_job(handle, job, output):
+        assert job == 99
+        output._obj.value = member
+        return membership_ok
 
     api = SimpleNamespace(
         CreateIoCompletionPort=Mock(return_value=88),
         SetInformationJobObject=Mock(return_value=True),
         GetQueuedCompletionStatus=dequeue,
         OpenProcess=Mock(side_effect=open_process),
+        IsProcessInJob=Mock(side_effect=in_job),
+        WaitForSingleObject=Mock(return_value=258),
         CloseHandle=Mock(),
+        packets=pending,
     )
     monkeypatch.setattr(_runner, "_kernel32", api)
     tracker = _runner._JobNotifications(99)
@@ -50,7 +59,7 @@ def _tracker(monkeypatch, packets, *, open_error=0):
     return tracker, api
 
 
-def test_notifications_retain_each_process_until_cleanup_even_after_exit(monkeypatch):
+def test_notifications_retain_verified_live_processes_without_duplicate_handles(monkeypatch):
     tracker, api = _tracker(monkeypatch, [(6, 99, 42), (6, 99, 42), (7, 99, 42), (6, 99, 43)])
     try:
         tracker.drain()
@@ -63,27 +72,24 @@ def test_notifications_retain_each_process_until_cleanup_even_after_exit(monkeyp
 
 
 @pytest.mark.parametrize("packets", [["error"], [(6, 1, 42)], [(6, 99, 0)]])
-def test_invalid_completion_packets_are_errors(monkeypatch, packets):
+def test_invalid_completion_packets_do_not_abort_the_command(monkeypatch, packets):
     tracker, api = _tracker(monkeypatch, packets)
     try:
-        with pytest.raises(OSError):
-            tracker.drain()
+        tracker.drain()
+        assert tracker.processes == {}
+        api.OpenProcess.assert_not_called()
     finally:
         tracker.close()
     api.CloseHandle.assert_called_once_with(88)
 
 
 @pytest.mark.parametrize("open_error", [5, 87])
-def test_unopenable_births_are_checked_instead_of_silently_lost(monkeypatch, open_error):
+def test_unopenable_notifications_fall_back_to_final_cleanup(monkeypatch, open_error):
     tracker, api = _tracker(monkeypatch, [(6, 99, 42)], open_error=open_error)
     try:
-        if open_error == 87:
-            tracker.drain()
-            assert tracker.processes == {42: None}
-        else:
-            with pytest.raises(OSError):
-                tracker.drain()
-            assert tracker.processes == {}
+        tracker.drain()
+        assert tracker.processes == {}
+        api.IsProcessInJob.assert_not_called()
     finally:
         tracker.close()
     api.CloseHandle.assert_called_once_with(88)
@@ -141,6 +147,8 @@ def test_late_notification_is_still_synchronized_after_sealing(monkeypatch):
         events.append((handle, state))
         return state
 
+    tracker.pending = lambda: wait(1043, 0) == 258
+
     def accounting(job, kind, output, size, returned):
         output._obj.ActiveProcesses = 0
         output._obj.TotalProcesses = 2
@@ -155,7 +163,7 @@ def test_late_notification_is_still_synchronized_after_sealing(monkeypatch):
 
 
 def test_lost_historical_notification_does_not_reject_an_empty_job(monkeypatch):
-    tracker = SimpleNamespace(processes={42: None}, drain=Mock())
+    tracker = SimpleNamespace(processes={}, drain=Mock(), pending=Mock(return_value=False))
     monkeypatch.setitem(_runner._job_notifications, 99, tracker)
     monkeypatch.setattr(_runner, "_job_process_handles", lambda job: nullcontext([]))
     monkeypatch.setattr(_runner, "_seal_job", Mock())
@@ -224,8 +232,127 @@ def test_admission_is_sealed_before_snapshot_even_when_all_notifications_are_mis
         output._obj.TotalProcesses = 999
         return True
 
-    monkeypatch.setitem(_runner._job_notifications, 99, SimpleNamespace(processes={}, drain=Mock()))
+    monkeypatch.setitem(
+        _runner._job_notifications,
+        99,
+        SimpleNamespace(processes={}, drain=Mock(), pending=Mock(return_value=False)),
+    )
     monkeypatch.setattr(_runner, "_job_process_handles", snapshot)
     monkeypatch.setattr(_runner._kernel32, "TerminateJobObject", Mock(return_value=True))
     monkeypatch.setattr(_runner._kernel32, "QueryInformationJobObject", accounting)
     _runner._terminate_and_wait_for_job(99)
+
+
+@pytest.mark.parametrize("membership_ok", [False, True])
+def test_recycled_or_unverifiable_pid_is_never_retained_or_waited_on(monkeypatch, membership_ok):
+    tracker, api = _tracker(monkeypatch, [(6, 99, 42)], member=False, membership_ok=membership_ok)
+    try:
+        tracker.drain()
+        assert tracker.processes == {}
+        api.CloseHandle.assert_called_once_with(1042)
+        api.WaitForSingleObject.assert_not_called()
+    finally:
+        tracker.close()
+    assert [call.args[0] for call in api.CloseHandle.call_args_list] == [1042, 88]
+
+
+@pytest.mark.parametrize("completion", [0, 0xFFFFFFFF])
+def test_finished_or_failed_advisory_handles_are_released_before_job_ends(monkeypatch, completion):
+    tracker, api = _tracker(monkeypatch, [(6, 99, 42)])
+    tracker.drain()
+    assert tracker.processes == {42: 1042}
+    api.WaitForSingleObject.return_value = completion
+    assert not tracker.pending()
+    assert tracker.processes == {}
+    api.CloseHandle.assert_called_once_with(1042)
+    # A second reaper pass must not close the handle again.
+    assert not tracker.pending()
+    tracker.close()
+    assert [call.args[0] for call in api.CloseHandle.call_args_list] == [1042, 88]
+
+
+@pytest.mark.parametrize("new_member", [False, True])
+def test_pid_reuse_after_reaping_requires_fresh_membership_validation(monkeypatch, new_member):
+    tracker, api = _tracker(monkeypatch, [(6, 99, 42)])
+    tracker.drain()
+    api.WaitForSingleObject.return_value = 0
+    tracker.pending()
+    assert tracker.processes == {}
+
+    def membership(handle, job, output):
+        output._obj.value = new_member
+        return True
+
+    api.IsProcessInJob.side_effect = membership
+    api.packets.append((6, 99, 42))
+    api.WaitForSingleObject.return_value = 258
+    api.WaitForSingleObject.reset_mock()
+    tracker.drain()
+    assert api.OpenProcess.call_count == 2
+    assert api.IsProcessInJob.call_count == 2
+    if new_member:
+        assert tracker.processes == {42: 1042}
+    else:
+        assert tracker.processes == {}
+        api.WaitForSingleObject.assert_not_called()
+    tracker.close()
+
+
+def test_many_finished_processes_do_not_accumulate_handles_or_pid_tombstones(monkeypatch):
+    tracker, api = _tracker(monkeypatch, [])
+    for pid in range(1, 1001):
+        api.packets.append((6, 99, pid))
+        api.WaitForSingleObject.return_value = 258
+        tracker.drain()
+        assert len(tracker.processes) == 1
+        api.WaitForSingleObject.return_value = 0
+        assert not tracker.pending()
+        assert tracker.processes == {}
+    assert api.CloseHandle.call_count == 1000
+    tracker.close()
+    assert api.CloseHandle.call_count == 1001
+
+
+def test_monitoring_access_denied_does_not_replace_exit_code_or_cleanup_result(monkeypatch):
+    tracker, api = _tracker(monkeypatch, [(6, 99, 42)], open_error=5)
+    monkeypatch.setitem(_runner._job_notifications, 99, tracker)
+    monkeypatch.setattr(_runner, "_seal_job", Mock())
+    monkeypatch.setattr(_runner, "_job_process_handles", lambda job: nullcontext([]))
+    api.WaitForSingleObject.return_value = 0  # the actual command has exited
+    api.TerminateJobObject = Mock(return_value=True)
+
+    def accounting(job, kind, output, size, returned):
+        output._obj.ActiveProcesses = 0
+        return True
+
+    def exit_code(handle, output):
+        output._obj.value = 23
+        return True
+
+    api.QueryInformationJobObject = accounting
+    api.GetExitCodeProcess = exit_code
+    try:
+        result = _runner._wait_for_command(456, 99, threading.Event())
+        _runner._terminate_and_wait_for_job(99)
+        assert result == 23
+        assert tracker.processes == {}
+    finally:
+        tracker.close()
+
+
+def test_unavailable_completion_port_falls_back_to_primary_cleanup(monkeypatch):
+    monkeypatch.delitem(_runner._job_notifications, 99, raising=False)
+    monkeypatch.setattr(_runner._kernel32, "CreateJobObjectW", Mock(return_value=99))
+    monkeypatch.setattr(_runner._kernel32, "SetInformationJobObject", Mock(return_value=True))
+    monkeypatch.setattr(_runner, "_JobNotifications", Mock(side_effect=OSError("port unavailable")))
+    cleanup = Mock()
+    close = Mock()
+    monkeypatch.setattr(_runner, "_terminate_and_wait_for_job", cleanup)
+    monkeypatch.setattr(_runner._kernel32, "CloseHandle", close)
+    with _runner._owned_job() as job:
+        assert job == 99
+        assert job not in _runner._job_notifications
+        result = 23
+    assert result == 23
+    cleanup.assert_called_once_with(99)
+    close.assert_called_once_with(99)

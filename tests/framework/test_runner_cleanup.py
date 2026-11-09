@@ -17,7 +17,9 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def fake_job_notifications(monkeypatch):
-    tracker = SimpleNamespace(processes={}, drain=Mock(), close=Mock())
+    tracker = SimpleNamespace(
+        processes={}, drain=Mock(), close=Mock(), pending=Mock(return_value=False)
+    )
     monkeypatch.setattr(_runner, "_JobNotifications", lambda job: tracker)
     return tracker
 
