@@ -43,6 +43,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* The pytest `--dolphin-backend` option accepts registered and entry-point
+  backends, as well as `auto`, and reports unknown IDs with registry diagnostics
+  instead of restricting selection to UIA/Win32 (KAN-754).
+  Validation waits for nested `conftest.py` registrations during collection,
+  the repository bootstrap accepts the same IDs, and `Desktop(backend="auto")`
+  resolves the concrete backend before launching or connecting to native apps.
 * `dolphin-run` survives Ctrl+Break (and Ctrl+C when console Ctrl+C processing is
   enabled) while the command handles the console event and preserves its exit
   code. The inherited Ctrl+C ignore setting is preserved; use Ctrl+Break for
