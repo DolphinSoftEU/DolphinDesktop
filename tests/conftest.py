@@ -19,8 +19,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--dolphin-backend",
         default="uia",
-        choices=["uia", "win32"],
-        help="pywinauto backend to use (default: uia)",
+        metavar="ID",
+        help="Registered backend ID (including installed plugins), or auto (default: uia)",
     )
     group.addoption(
         "--dolphin-timeout",
@@ -199,7 +199,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 @pytest.fixture(scope="session")
-def desktop() -> Desktop:
+def desktop(dolphin_backend: str, dolphin_headless: bool) -> Desktop:
     from dolphin_desktop import Desktop
 
-    return Desktop(backend="uia")
+    return Desktop(backend=dolphin_backend, hidden=True if dolphin_headless else None)
