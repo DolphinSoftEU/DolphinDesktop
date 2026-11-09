@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -78,6 +78,38 @@ _user32.WaitForInputIdle.restype = _wt.DWORD
 
 _kernel32.GetStdHandle.argtypes = [_wt.DWORD]
 _kernel32.GetStdHandle.restype = _wt.HANDLE
+
+_kernel32.GetCurrentProcess.argtypes = []
+_kernel32.GetCurrentProcess.restype = _wt.HANDLE
+_kernel32.DuplicateHandle.argtypes = [
+    _wt.HANDLE,
+    _wt.HANDLE,
+    _wt.HANDLE,
+    ctypes.POINTER(_wt.HANDLE),
+    _wt.DWORD,
+    _wt.BOOL,
+    _wt.DWORD,
+]
+_kernel32.DuplicateHandle.restype = _wt.BOOL
+_kernel32.InitializeProcThreadAttributeList.argtypes = [
+    ctypes.c_void_p,
+    _wt.DWORD,
+    _wt.DWORD,
+    ctypes.POINTER(ctypes.c_size_t),
+]
+_kernel32.InitializeProcThreadAttributeList.restype = _wt.BOOL
+_kernel32.UpdateProcThreadAttribute.argtypes = [
+    ctypes.c_void_p,
+    _wt.DWORD,
+    ctypes.c_size_t,
+    ctypes.c_void_p,
+    ctypes.c_size_t,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+]
+_kernel32.UpdateProcThreadAttribute.restype = _wt.BOOL
+_kernel32.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+_kernel32.DeleteProcThreadAttributeList.restype = None
 
 _kernel32.GetCurrentThreadId.argtypes = []
 _kernel32.GetCurrentThreadId.restype = _wt.DWORD
@@ -156,6 +188,8 @@ _CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _UOI_FLAGS = 1
 _WSF_VISIBLE = 0x0001
 _CREATE_SUSPENDED = 0x00000004
+_EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+_PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 _INTERRUPT_GRACE_SECONDS = 10.0
 _PROCESS_TERMINATION_TIMEOUT_SECONDS = 10.0
 _JOB_CLEANUP_TIMEOUT_SECONDS = 10.0
@@ -500,6 +534,59 @@ class _StartupInfoW(ctypes.Structure):
     ]
 
 
+class _StartupInfoExW(ctypes.Structure):
+    _anonymous_ = ("StartupInfo",)
+    _fields_ = [("StartupInfo", _StartupInfoW), ("lpAttributeList", ctypes.c_void_p)]
+
+
+@contextmanager
+def _startup_stdio(desktop_name: str, inherit_stdio: bool) -> Iterator[_StartupInfoExW]:
+    """Keep private stdio duplicates and the inheritance list alive through creation."""
+    si = _StartupInfoExW()
+    si.cb = ctypes.sizeof(_StartupInfoW)
+    si.lpDesktop = desktop_name
+    with ExitStack() as cleanup:
+        handles = []
+        if inherit_stdio:
+            si.dwFlags = _STARTF_USESTDHANDLES
+            process = _kernel32.GetCurrentProcess()
+            for field, kind in (("hStdInput", -10), ("hStdOutput", -11), ("hStdError", -12)):
+                handle = _kernel32.GetStdHandle(_wt.DWORD(kind))
+                if handle in (None, 0, _wt.HANDLE(-1).value):
+                    continue  # GUI/service hosts may have no standard handles.
+                duplicate = _wt.HANDLE()
+                if not _kernel32.DuplicateHandle(
+                    process, handle, process, ctypes.byref(duplicate), 0, True, 2
+                ):  # DUPLICATE_SAME_ACCESS; do not change the original's inherit flag.
+                    raise ctypes.WinError(ctypes.get_last_error())
+                cleanup.callback(_kernel32.CloseHandle, duplicate.value)
+                setattr(si, field, duplicate.value)
+                handles.append(duplicate.value)
+        if handles:
+            size = ctypes.c_size_t()
+            _kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+            attributes = ctypes.create_string_buffer(size.value)
+            if not _kernel32.InitializeProcThreadAttributeList(
+                attributes, 1, 0, ctypes.byref(size)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            cleanup.callback(_kernel32.DeleteProcThreadAttributeList, attributes)
+            handle_list = (_wt.HANDLE * len(handles))(*handles)
+            if not _kernel32.UpdateProcThreadAttribute(
+                attributes,
+                0,
+                _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                handle_list,
+                ctypes.sizeof(handle_list),
+                None,
+                None,
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            si.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
+            si.cb = ctypes.sizeof(_StartupInfoExW)
+        yield si
+
+
 class _ProcessInformation(ctypes.Structure):
     _fields_ = [
         ("hProcess", ctypes.wintypes.HANDLE),
@@ -640,16 +727,6 @@ def launch_on_desktop(
     resuming it, so even immediately spawned descendants belong to the job.
     Environment overrides are private to the child; the parent is not modified.
     """
-    si = _StartupInfoW()
-    si.cb = ctypes.sizeof(_StartupInfoW)
-    si.lpDesktop = desktop_name
-
-    if inherit_stdio:
-        si.dwFlags = _STARTF_USESTDHANDLES
-        si.hStdInput = _kernel32.GetStdHandle(ctypes.c_ulong(-10))  # STD_INPUT_HANDLE
-        si.hStdOutput = _kernel32.GetStdHandle(ctypes.c_ulong(-11))  # STD_OUTPUT_HANDLE
-        si.hStdError = _kernel32.GetStdHandle(ctypes.c_ulong(-12))  # STD_ERROR_HANDLE
-
     pi = _ProcessInformation()
     cmd_str = _build_cmd_string(args)
     environment = _build_environment_block(env)
@@ -658,26 +735,36 @@ def launch_on_desktop(
         creation_flags |= _CREATE_UNICODE_ENVIRONMENT
     environment_ptr = ctypes.cast(environment, ctypes.c_void_p) if environment is not None else None
 
-    ok = _kernel32.CreateProcessW(
-        None,
-        cmd_str,
-        None,  # process security attrs
-        None,  # thread security attrs
-        True,  # bInheritHandles — stdio handles must be inheritable
-        creation_flags,
-        environment_ptr,
-        None,  # lpCurrentDirectory=NULL → inherit parent cwd
-        ctypes.byref(si),
-        ctypes.byref(pi),
-    )
-    if not ok:
-        raise OSError(f"CreateProcessW({cmd_str!r}) failed: error {ctypes.get_last_error()}")
+    with _startup_stdio(desktop_name, inherit_stdio) as si:
+        inherit_handles = bool(si.lpAttributeList)
+        if inherit_handles:
+            creation_flags |= _EXTENDED_STARTUPINFO_PRESENT
+        ok = _kernel32.CreateProcessW(
+            None,
+            cmd_str,
+            None,  # process security attrs
+            None,  # thread security attrs
+            inherit_handles,  # TRUE only with an explicit HANDLE_LIST
+            creation_flags,
+            environment_ptr,
+            None,  # lpCurrentDirectory=NULL → inherit parent cwd
+            ctypes.byref(si),
+            ctypes.byref(pi),
+        )
+        if not ok:
+            raise OSError(f"CreateProcessW({cmd_str!r}) failed: error {ctypes.get_last_error()}")
     try:
         if job_handle is not None:
             # Assign before any code runs: a venv redirector may immediately
             # create another Python process, which must inherit job membership.
             if not _kernel32.AssignProcessToJobObject(job_handle, pi.hProcess):
-                raise ctypes.WinError(ctypes.get_last_error())
+                error = ctypes.get_last_error()
+                raise ctypes.WinError(
+                    error,
+                    "AssignProcessToJobObject failed; an existing Windows Job Object "
+                    "may prevent nesting (for example, CI agent UI restrictions). "
+                    "The command was not resumed. " + ctypes.FormatError(error),
+                )
             if _kernel32.ResumeThread(pi.hThread) == 0xFFFFFFFF:
                 raise ctypes.WinError(ctypes.get_last_error())
     except BaseException:
