@@ -1088,8 +1088,13 @@ class Recorder:
                     if self._hook_error is None:
                         self._hook_error = exc
                     stopped.set()
-                    # Exception payloads may contain captured input.
-                    _log.error("Recorder input callback failed; recording is incomplete")
+                    try:
+                        # Exception payloads may contain captured input.
+                        _log.error("Recorder input callback failed; recording is incomplete")
+                    except Exception:
+                        # User-configured logging handlers may raise. Diagnostics
+                        # must not prevent shutdown or forwarding to the next hook.
+                        pass
                     try:
                         _user32.PostQuitMessage(0)
                     except Exception:

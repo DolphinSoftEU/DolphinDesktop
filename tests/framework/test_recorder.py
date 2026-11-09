@@ -2082,8 +2082,9 @@ def test_stop_discards_in_flight_callback_and_drains_already_queued_events(monke
 
 @pytest.mark.parametrize("event_kind", ["mouse", "key"])
 @pytest.mark.parametrize("failure_site", ["context", "queue", "shutdown"])
+@pytest.mark.parametrize("logger_fails", [False, True])
 def test_callback_failure_still_forwards_input_and_rejects_recording(
-    monkeypatch, caplog, event_kind, failure_site
+    monkeypatch, caplog, event_kind, failure_site, logger_fails
 ):
     rec = Recorder(pid=100)
     api = _HookAPI({})
@@ -2103,6 +2104,9 @@ def test_callback_failure_still_forwards_input_and_rejects_recording(
         monkeypatch.setattr(rec._evt_queue, "put_nowait", Mock(side_effect=failure))
     elif failure_site == "shutdown":
         api.PostQuitMessage = Mock(side_effect=failure)
+    if logger_fails:
+        log_error = Mock(side_effect=RuntimeError("logging handler failed"))
+        monkeypatch.setattr(_recorder._log, "error", log_error)
 
     def dispatch():
         if failure_site == "shutdown":
@@ -2125,6 +2129,12 @@ def test_callback_failure_still_forwards_input_and_rejects_recording(
     assert rec._evt_queue.get_nowait() is None
     assert rec._evt_queue.empty()
     assert "sensitive captured input" not in caplog.text
+    if logger_fails:
+        log_error.assert_called_once_with("Recorder input callback failed; recording is incomplete")
+    if failure_site == "shutdown":
+        assert api.PostQuitMessage.call_count == 2
+    else:
+        assert api.quit_calls == [0]
 
 
 @pytest.mark.parametrize("event_kind", ["mouse", "key"])
