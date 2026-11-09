@@ -18,16 +18,26 @@ cleanup instead of repeatedly requesting termination.
 Processes that detach from the console cannot receive its console events, but
 remain in the runner's Windows Job Object for cleanup. Remaining descendants are
 terminated when the command finishes, including processes behind venv redirectors.
-The runner retains handles to the job's processes before requesting termination.
-It waits for those handles to be signalled and for the job to report zero active
-processes before closing the job and hidden desktop handles. The active process
-count alone does not confirm that process handles are already signalled. Failure to confirm
+The runner connects a private job completion port before launching the command
+and retains handles from process-birth notifications throughout execution and
+cleanup. This also covers descendants born between the final process-list read
+and the termination request. Incomplete process lists are retried with a larger
+buffer, including when Windows reports success with fewer IDs than assigned
+processes.
+The runner waits for retained handles to be signalled and for the job to report
+zero active processes before closing the job and hidden desktop handles. Since
+job notifications are advisory, their distinct birth count must also match the
+job's lifetime process count. A missing notification or an ambiguous recycled PID
+cannot produce a successful cleanup result. Failure to confirm
 termination within ten seconds raises a cleanup error instead of returning a
 successful command result.
 
 The real console, process-tree and desktop-handle regressions run in the Windows
 component suite: `pytest tests/component/test_runner_console.py`. Deterministic
 cleanup and timeout tests remain in `tests/framework/test_runner_cleanup.py`.
+The required `runner-console` CI matrix runs the real console regressions on
+Python 3.11 and 3.13, rejects skips, and checks that the Ctrl+Break cases for the
+installed executable, Python invocation and nested launcher all passed.
 
 ```bash
 dolphin-run pytest tests/ -v

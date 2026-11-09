@@ -58,6 +58,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   checks retain the original process handle before exit, avoiding PID reuse races.
   Job cleanup also waits on retained process handles: zero active processes can
   be reported before those handles become signalled, especially during startup.
+  A completion port is now associated before the root process is assigned, so
+  late-born descendants are retained through cleanup. Lifetime process counts
+  detect missing birth notifications; incomplete successful PID-list responses
+  are retried. A required CI matrix verifies real Ctrl+Break on Python 3.11 and
+  3.13, including installed and nested launchers, without allowing skipped tests.
 
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).

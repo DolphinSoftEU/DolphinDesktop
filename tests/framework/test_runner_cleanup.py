@@ -15,8 +15,17 @@ from dolphin_desktop import _runner
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture
+def fake_job_notifications(monkeypatch):
+    tracker = SimpleNamespace(processes={}, drain=Mock(), close=Mock())
+    monkeypatch.setattr(_runner, "_JobNotifications", lambda job: tracker)
+    return tracker
+
+
 @pytest.mark.parametrize("command_fails", [False, True])
-def test_desktop_is_closed_only_after_delayed_job_termination(monkeypatch, command_fails):
+def test_desktop_is_closed_only_after_delayed_job_termination(
+    monkeypatch, command_fails, fake_job_notifications
+):
     monkeypatch.setattr(_runner, "_job_process_handles", lambda job: nullcontext([]))
     events = []
     remaining = iter([2, 1, 0])
@@ -76,7 +85,9 @@ def test_desktop_is_closed_only_after_delayed_job_termination(monkeypatch, comma
 
 
 @pytest.mark.parametrize("failure", ["terminate", "query", "timeout"])
-def test_cleanup_errors_are_reported_and_job_handle_is_closed(monkeypatch, failure):
+def test_cleanup_errors_are_reported_and_job_handle_is_closed(
+    monkeypatch, failure, fake_job_notifications
+):
     monkeypatch.setattr(_runner, "_job_process_handles", lambda job: nullcontext([]))
     monkeypatch.setattr(_runner._kernel32, "CreateJobObjectW", Mock(return_value=99))
     monkeypatch.setattr(_runner._kernel32, "SetInformationJobObject", Mock(return_value=True))
@@ -212,6 +223,8 @@ def test_zero_job_count_does_not_replace_process_handle_synchronization(monkeypa
     [
         "success",
         "retry",
+        "partial-success",
+        "partial-growing",
         "growing",
         "query-error",
         "exited",
@@ -232,6 +245,9 @@ def test_job_process_handles_pin_members_and_release_handles_on_errors(monkeypat
         if outcome == "growing" or (outcome == "retry" and len(queries) == 1):
             ctypes.set_last_error(234)
             return False
+        if outcome == "partial-growing" or (outcome == "partial-success" and len(queries) == 1):
+            header[0] = 20
+            return True
         if outcome == "query-error":
             ctypes.set_last_error(5)
             return False
@@ -259,15 +275,17 @@ def test_job_process_handles_pin_members_and_release_handles_on_errors(monkeypat
             CloseHandle=close,
         ),
     )
-    errors = {"growing", "query-error", "denied", "membership-error"}
+    errors = {"growing", "partial-growing", "query-error", "denied", "membership-error"}
     if outcome in errors:
         with pytest.raises(OSError), _runner._job_process_handles(99):
             pytest.fail("invalid process snapshot was accepted")
     else:
         with _runner._job_process_handles(99) as handles:
             assert handles == ([] if outcome in ("exited", "reused") else [456])
-    assert close.call_count == int(outcome in {"success", "retry", "membership-error", "reused"})
-    if outcome == "retry":
+    assert close.call_count == int(
+        outcome in {"success", "retry", "partial-success", "membership-error", "reused"}
+    )
+    if outcome in {"retry", "partial-success"}:
         assert len(queries) == 2 and queries[1] > queries[0]
-    elif outcome == "growing":
+    elif outcome in {"growing", "partial-growing"}:
         assert len(queries) == 4

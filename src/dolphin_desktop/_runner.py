@@ -134,6 +134,16 @@ _kernel32.IsProcessInJob.argtypes = [_wt.HANDLE, _wt.HANDLE, ctypes.POINTER(_wt.
 _kernel32.IsProcessInJob.restype = _wt.BOOL
 _kernel32.ResumeThread.argtypes = [_wt.HANDLE]
 _kernel32.ResumeThread.restype = _wt.DWORD
+_kernel32.CreateIoCompletionPort.argtypes = [_wt.HANDLE, _wt.HANDLE, ctypes.c_size_t, _wt.DWORD]
+_kernel32.CreateIoCompletionPort.restype = _wt.HANDLE
+_kernel32.GetQueuedCompletionStatus.argtypes = [
+    _wt.HANDLE,
+    ctypes.POINTER(_wt.DWORD),
+    ctypes.POINTER(ctypes.c_size_t),
+    ctypes.POINTER(ctypes.c_void_p),
+    _wt.DWORD,
+]
+_kernel32.GetQueuedCompletionStatus.restype = _wt.BOOL
 
 DESKTOP_NAME = "DolphinHidden"
 _DESKTOP_ACCESS = 0x10000000  # GENERIC_ALL
@@ -190,6 +200,75 @@ class _JobBasicAccountingInformation(ctypes.Structure):
     ]
 
 
+class _JobCompletionPort(ctypes.Structure):
+    _fields_ = [("CompletionKey", ctypes.c_void_p), ("CompletionPort", _wt.HANDLE)]
+
+
+class _JobNotifications:
+    """Retain process handles from NEW_PROCESS notifications, including late births.
+
+    Associate while the job is empty, before its suspended root is assigned.
+    Notifications are advisory: cleanup must additionally match TotalProcesses
+    against the distinct birth notifications received. Missing or ambiguous
+    notifications must never produce a successful cleanup result.
+    """
+
+    def __init__(self, job: int) -> None:
+        self.job = job
+        self.processes: dict[int, int | None] = {}
+        self.port = _kernel32.CreateIoCompletionPort(_wt.HANDLE(-1), None, 0, 1)
+        if not self.port:
+            raise ctypes.WinError(ctypes.get_last_error())
+        association = _JobCompletionPort(job, self.port)
+        if not _kernel32.SetInformationJobObject(
+            job, 7, ctypes.byref(association), ctypes.sizeof(association)
+        ):
+            error = ctypes.get_last_error()
+            _kernel32.CloseHandle(self.port)
+            raise ctypes.WinError(error)
+
+    def drain(self) -> None:
+        # A producer cannot starve the command wait or its deadlines by flooding
+        # the port. A subsequent poll drains the remaining packets.
+        for _ in range(256):
+            message = _wt.DWORD()
+            key = ctypes.c_size_t()
+            pid = ctypes.c_void_p()
+            if not _kernel32.GetQueuedCompletionStatus(
+                self.port, ctypes.byref(message), ctypes.byref(key), ctypes.byref(pid), 0
+            ):
+                error = ctypes.get_last_error()
+                if error == _WAIT_TIMEOUT:
+                    return
+                raise ctypes.WinError(error)
+            if key.value != self.job:
+                raise OSError("unexpected command job completion key")
+            if message.value != 6:  # JOB_OBJECT_MSG_NEW_PROCESS
+                continue
+            if not pid.value:
+                raise OSError("command job reported an invalid process identifier")
+            if pid.value in self.processes:
+                continue
+            handle = _kernel32.OpenProcess(0x100000, False, pid.value)  # SYNCHRONIZE
+            if not handle:
+                error = ctypes.get_last_error()
+                if error != 87:  # already gone; its PID cannot refer to a pending object
+                    raise ctypes.WinError(error)
+            # Hold even a possibly recycled handle: waiting is conservative and
+            # never terminates a foreign process. A repeated, unpinned PID is
+            # counted once, so PID reuse cannot hide a missing birth notification.
+            self.processes[pid.value] = handle or None
+
+    def close(self) -> None:
+        for handle in self.processes.values():
+            if handle is not None:
+                _kernel32.CloseHandle(handle)
+        _kernel32.CloseHandle(self.port)
+
+
+_job_notifications: dict[int, _JobNotifications] = {}
+
+
 @contextmanager
 def _job_process_handles(job: int) -> Iterator[list[int]]:
     """Retain process identities before termination removes them from the job."""
@@ -198,15 +277,20 @@ def _job_process_handles(job: int) -> Iterator[list[int]]:
         capacity = 16
         for _ in range(4):
             buffer = ctypes.create_string_buffer(8 + ctypes.sizeof(ctypes.c_size_t) * capacity)
-            if _kernel32.QueryInformationJobObject(job, 3, buffer, ctypes.sizeof(buffer), None):
+            complete = _kernel32.QueryInformationJobObject(
+                job, 3, buffer, ctypes.sizeof(buffer), None
+            )
+            header = ctypes.cast(buffer, ctypes.POINTER(_wt.DWORD))
+            assigned, listed = header[0], header[1]
+            if complete and listed == assigned and listed <= capacity:
                 break
-            error = ctypes.get_last_error()
-            if error != 234:  # ERROR_MORE_DATA: the job grew during enumeration
-                raise ctypes.WinError(error)
-            assigned = ctypes.cast(buffer, ctypes.POINTER(_wt.DWORD))[0]
+            if not complete:
+                error = ctypes.get_last_error()
+                if error != 234:  # ERROR_MORE_DATA: the job grew during enumeration
+                    raise ctypes.WinError(error)
             capacity = max(capacity * 2, assigned)
         else:
-            raise OSError("command job process list kept growing during cleanup")
+            raise OSError("command job process list remained incomplete during cleanup")
         count = ctypes.cast(buffer, ctypes.POINTER(_wt.DWORD))[1]
         pids = (ctypes.c_size_t * count).from_buffer(buffer, 8)
         for pid in pids:
@@ -237,17 +321,27 @@ def _terminate_and_wait_for_job(job: int) -> None:
     TerminateJobObject, like TerminateProcess, can return before processes exit.
     Retain process handles before terminating and require them to be signalled,
     as well as a zero active count: job accounting can reach zero before handles
-    become signalled. A stuck
-    driver must produce a cleanup error rather than an indefinite launcher hang.
+    become signalled. A stuck driver must produce a cleanup error rather than
+    an indefinite launcher hang.
     """
     with _job_process_handles(job) as handles:
+        notifications = _job_notifications.get(job)
+        if notifications is not None:
+            notifications.drain()
         if not _kernel32.TerminateJobObject(job, 130):
             raise ctypes.WinError(ctypes.get_last_error())
         deadline = time.monotonic() + _JOB_CLEANUP_TIMEOUT_SECONDS
         accounting = _JobBasicAccountingInformation()
         while True:
+            if notifications is not None:
+                notifications.drain()
             stopped = True
-            for handle in handles:
+            observed = handles + (
+                [h for h in notifications.processes.values() if h is not None]
+                if notifications is not None
+                else []
+            )
+            for handle in observed:
                 result = _kernel32.WaitForSingleObject(handle, 0)
                 if result not in (_WAIT_OBJECT_0, _WAIT_TIMEOUT):
                     raise ctypes.WinError(ctypes.get_last_error())
@@ -256,10 +350,15 @@ def _terminate_and_wait_for_job(job: int) -> None:
                 job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
             ):
                 raise ctypes.WinError(ctypes.get_last_error())
-            if accounting.ActiveProcesses == 0 and stopped:
+            births_confirmed = notifications is None or accounting.TotalProcesses == len(
+                notifications.processes
+            )
+            if accounting.ActiveProcesses == 0 and stopped and births_confirmed:
                 return
             if time.monotonic() >= deadline:
-                raise TimeoutError("command job still has pending processes after cleanup timeout")
+                raise TimeoutError(
+                    "command job has pending processes or unconfirmed births after cleanup timeout"
+                )
             time.sleep(0.01)
 
 
@@ -276,10 +375,16 @@ def _owned_job() -> Iterator[int]:
             job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
         ):
             raise ctypes.WinError(ctypes.get_last_error())
+        notifications = _JobNotifications(job)
+        _job_notifications[job] = notifications
         try:
-            yield job
+            try:
+                yield job
+            finally:
+                _terminate_and_wait_for_job(job)
         finally:
-            _terminate_and_wait_for_job(job)
+            del _job_notifications[job]
+            notifications.close()
     finally:
         _kernel32.CloseHandle(job)
 
@@ -637,6 +742,9 @@ def _wait_for_command(h_process: int, job: int, interrupted: threading.Event) ->
     deadline = None
     termination_deadline = None
     while True:
+        notifications = _job_notifications.get(job)
+        if notifications is not None:
+            notifications.drain()
         # An unchecked wait is worse than no wait: on WAIT_FAILED the process is
         # still running, GetExitCodeProcess reports STILL_ACTIVE (259), and
         # dolphin-run exits 259 — a fabricated result for CI to act on.

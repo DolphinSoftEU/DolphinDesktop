@@ -9,7 +9,10 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -132,3 +135,73 @@ def test_runner_releases_process_job_and_desktop_handles(monkeypatch, tmp_path, 
             pytest.fail("runner left its hidden desktop alive")
         assert ctypes.get_last_error() == 2  # ERROR_FILE_NOT_FOUND
     assert handle_count() == before
+
+
+def test_child_born_after_snapshot_is_synchronized_before_return(monkeypatch, tmp_path):
+    """Force a real birth in the old snapshot-to-TerminateJobObject gap."""
+    trigger = tmp_path / "spawn"
+    report = tmp_path / "late.json"
+    original_terminate = _runner._kernel32.TerminateJobObject
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    kernel32.WaitForSingleObject.restype = wt.DWORD
+    kernel32.CloseHandle.argtypes = [wt.HANDLE]
+    kernel32.TerminateProcess.argtypes = [wt.HANDLE, wt.UINT]
+    witness = []
+
+    def spawn_then_terminate(job, code):
+        if not trigger.exists():
+            # The source has already read the snapshot and drained the port.
+            trigger.touch()
+            deadline = time.monotonic() + 10
+            while not report.exists():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("late child did not start")
+                time.sleep(0.01)
+            child = json.loads(report.read_text())
+            tracker = _runner._job_notifications[job]
+            assert child["pid"] not in tracker.processes
+            assert kernel32.WaitForSingleObject(child["handle"], 0) == 258
+            witness.append((tracker, child["pid"]))
+        return original_terminate(job, code)
+
+    interrupted = threading.Event()
+    interrupted.set()
+    monkeypatch.setattr(_runner, "_console_interrupts", lambda: nullcontext(interrupted))
+    monkeypatch.setattr(_runner, "_INTERRUPT_GRACE_SECONDS", 0)
+    monkeypatch.setattr(_runner._kernel32, "TerminateJobObject", spawn_then_terminate)
+    child_code = (
+        "import json, subprocess, sys, time; from pathlib import Path; "
+        "from tests._runner_console_probe import duplicate_process_handle\n"
+        "while not Path(sys.argv[1]).exists(): time.sleep(0.01)\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+        "h = duplicate_process_handle(p, int(sys.argv[3])); "
+        "out = Path(sys.argv[2]); tmp = out.with_suffix('.tmp'); "
+        "tmp.write_text(json.dumps({'pid': p.pid, 'handle': h})); tmp.replace(out); "
+        "time.sleep(120)"
+    )
+    try:
+        assert (
+            _runner.run_hidden(
+                [
+                    sys.executable,
+                    "-c",
+                    child_code,
+                    str(trigger),
+                    str(report),
+                    str(os.getpid()),
+                ]
+            )
+            == 130
+        )
+        child = json.loads(report.read_text())
+        assert kernel32.WaitForSingleObject(child["handle"], 0) == 0
+        assert len(witness) == 1
+        assert witness[0][1] in witness[0][0].processes
+    finally:
+        if report.exists():
+            handle = json.loads(report.read_text())["handle"]
+            if kernel32.WaitForSingleObject(handle, 0) == 258:
+                kernel32.TerminateProcess(handle, 1)
+                kernel32.WaitForSingleObject(handle, 5000)
+            kernel32.CloseHandle(handle)
