@@ -97,11 +97,10 @@ class FlatTree:
         """Click the node at *path*, opening its ancestors on the way."""
         match = self._locate(path)
         row = self._reveal(match.row.index)
-        if row.left is None:
-            raise self._too_narrow(row.name)
+        left = self._left(row)
         rect = self._tree.rectangle()
         # A column wider than the tree would put the cell's centre outside it.
-        x = min((row.left + row.right) // 2, rect.right - _FRAME_PIXELS)
+        x = min((left + row.right) // 2, rect.right - _FRAME_PIXELS)
         self._click(x, (row.top + row.bottom) // 2)
 
     def expand_item(self, path: tuple[str, ...]) -> None:
@@ -139,10 +138,9 @@ class FlatTree:
                 levels.pop()
             depth = len(levels)
             if row.name == self._path[depth]:
-                if row.left is None:
-                    raise self._too_narrow(row.name)
                 level_left = levels[-1].child_left if levels else first.left
-                if row.left == level_left:
+                left = self._left(row)
+                if left == level_left:
                     if depth == len(self._path) - 1:
                         return _Match(row, depth)
                     reached = self._path[: depth + 1]
@@ -150,7 +148,7 @@ class FlatTree:
                         self._reached = reached
                     child_left = self._child_left(row, depth)
                     if child_left is not None:
-                        levels.append(_Level(row.left, child_left))
+                        levels.append(_Level(left, child_left))
             index += 1
 
     def _child_left(self, row: _Row, depth: int) -> int | None:
@@ -167,9 +165,8 @@ class FlatTree:
         following = self._row_at(row.index + 1)
         if following is None:
             return None
-        if following.left is None:
-            raise self._too_narrow(following.name)
-        return following.left if row.left is not None and following.left > row.left else None
+        following_left = self._left(following)
+        return following_left if following_left > self._left(row) else None
 
     def _open(self, row: _Row, depth: int) -> bool:
         """Click *row*'s branch arrow. Only ever called while it shows no children.
@@ -184,12 +181,13 @@ class FlatTree:
             return False
         self._arrows_clicked.add(attempt)
         row = self._reveal(row.index)
+        left = self._left(row)
         rect = self._tree.rectangle()
         decorated = self._root_left is not None and (self._root_left - rect.left > _FRAME_PIXELS)
         indent_levels = depth + (1 if decorated else 0)
-        if row.left is None or indent_levels == 0:
+        if indent_levels == 0:
             return False
-        x = int(row.left - (row.left - rect.left) / indent_levels / 2)
+        x = int(left - (left - rect.left) / indent_levels / 2)
         if not rect.left < x < rect.right:
             return False
         count = self._row_count()
@@ -306,6 +304,12 @@ class FlatTree:
                 bottom=int(rect.bottom),
             )
         return rows
+
+    def _left(self, row: _Row) -> int:
+        """*row*'s left edge, which gives its level; a row without one is unsupported."""
+        if row.left is None:
+            raise self._too_narrow(row.name)
+        return row.left
 
     def _not_found(self) -> ElementNotFoundError:
         reached = (

@@ -59,8 +59,10 @@ class _FakeQtTree:
         column_width: int = 200,
         root_decorated: bool = True,
         header: bool = True,
+        scroll_x: int = 0,
     ) -> None:
         self.roots = list(roots)
+        self.scroll_x = scroll_x
         self.visible_rows = visible_rows
         self.column_width = column_width
         self.root_decorated = root_decorated
@@ -103,7 +105,7 @@ class _FakeQtTree:
         assert LEFT < x < RIGHT, f"click at x={x} landed outside the tree"
         index = self.first_row + (y - self._rows_top()) // ROW_HEIGHT
         node, depth = self._rows()[index]
-        cell_left = LEFT + self._indent(depth)
+        cell_left = LEFT + self._indent(depth) - self.scroll_x
         if node.children and cell_left - INDENT <= x < cell_left:
             node.expanded = not node.expanded
             self.toggled.append(node.name)
@@ -142,8 +144,8 @@ class _FakeQtTree:
         return self._rows_top() + (index - self.first_row) * ROW_HEIGHT
 
     def _cell_rect(self, index: int, depth: int) -> _Rect:
-        left = LEFT + self._indent(depth)
-        right = LEFT + self.column_width
+        left = LEFT + self._indent(depth) - self.scroll_x
+        right = LEFT + self.column_width - self.scroll_x
         if left >= right:
             return _Rect(0, 0, 0, 0)
         top = self._row_top(index)
@@ -199,6 +201,10 @@ class TestIsFlatTree:
         wrapper = Mock(spec=["backend", "children"])
         wrapper.backend = UIA
         type(wrapper).iface_grid = property(lambda _self: no_pattern())
+        assert is_flat_tree(wrapper) is False
+
+    def test_tree_whose_grid_pattern_is_none_is_nested(self):
+        wrapper = SimpleNamespace(backend=UIA, iface_grid=None, children=Mock(return_value=[]))
         assert is_flat_tree(wrapper) is False
 
     def test_grid_tree_whose_items_have_no_grid_item_stays_nested(self):
@@ -322,6 +328,19 @@ class TestSelect:
         _flat(view).select_item_by_path(("Project",))
         assert view.clicked == ["Project"]
 
+    def test_unreadable_header_falls_back_to_the_top_of_the_tree(self):
+        view = _FakeQtTree(_project(), header=False)
+        original = view.children
+
+        def children(control_type=None):
+            if control_type == "Header":
+                raise RuntimeError("ElementNotAvailable")
+            return original(control_type)
+
+        view.children = children
+        _flat(view).select_item_by_path(("Project", "README.md"))
+        assert view.clicked == ["README.md"]
+
     def test_child_added_late_is_found_by_polling(self):
         src = _Node("src", expanded=True)
         view = _FakeQtTree(_Node("Project", src, expanded=True))
@@ -397,6 +416,45 @@ class TestFailures:
         view.children = children
         _flat(view).select_item_by_path(("Project",))
         assert view.clicked == ["Project"]
+
+    def test_rows_that_never_read_are_not_found_at_the_deadline(self):
+        view = _FakeQtTree(_project())
+        original = view.children
+
+        def children(control_type=None):
+            if control_type == "TreeItem":
+                raise RuntimeError("ElementNotAvailable")
+            return original(control_type)
+
+        view.children = children
+        with pytest.raises(ElementNotFoundError, match="not found after"):
+            _flat(view, timeout=0.2).select_item_by_path(("Project",))
+        assert view.clicked == []
+
+    def test_row_gone_before_the_click_is_not_found(self):
+        view = _FakeQtTree(_project())
+        flat = _flat(view, timeout=0.2)
+        locate = flat._locate
+
+        def locate_then_collapse(path):
+            match = locate(path)
+            view.roots[0].expanded = False
+            view._sync_row_count()
+            return match
+
+        flat._locate = locate_then_collapse  # type: ignore[method-assign]
+        with pytest.raises(ElementNotFoundError, match=r"'Project -> README\.md' not found"):
+            flat.select_item_by_path(("Project", "README.md"))
+        assert view.clicked == []
+
+    def test_branch_arrow_scrolled_out_of_the_tree_is_not_clicked(self):
+        # Scrolled sideways, the arrow of src lies left of the tree's edge.
+        root = _Node("Project", _Node("src", _Node("main.py")), expanded=True)
+        view = _FakeQtTree(root, scroll_x=50)
+        with pytest.raises(ElementNotFoundError, match=r"'Project -> src' was reached"):
+            _flat(view, timeout=0.2).select_item_by_path(("Project", "src", "main.py"))
+        assert view.toggled == []
+        assert view.clicked == []
 
     def test_wheeling_stops_at_the_deadline(self):
         view = _FakeQtTree(*[_Node(f"Row {i}") for i in range(60)])
