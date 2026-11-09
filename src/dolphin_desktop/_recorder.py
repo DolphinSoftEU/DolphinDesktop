@@ -588,6 +588,7 @@ def _capture_context(hwnd: int | None = None) -> _InputContext:
                 and again_active == root
                 and win32gui.GetForegroundWindow() == root
                 and win32gui.GetWindowLong(focus, -16) == style
+                # pywin32 returns a list; compare IDs independently of sequence type.
                 and tuple(win32process.GetWindowThreadProcessId(root)) == (thread, pid)
                 and win32process.GetWindowThreadProcessId(focus)[1] == pid
             ):

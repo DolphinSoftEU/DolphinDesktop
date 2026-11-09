@@ -1,4 +1,4 @@
-"""Real native focus classification and low-level hook regression for KAN-576."""
+"""Real native focus and low-level hook regressions for KAN-576 / KAN-759."""
 
 import json
 from unittest.mock import Mock
@@ -15,6 +15,278 @@ from tests.component._recorder_window import (
 from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
 
 pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(20)]
+
+
+@pytest.mark.parametrize(
+    "controller,requested_pid,foreground,granted",
+    [
+        (456, 456, 123, True),
+        (456, 789, 123, False),
+        (456, 456, 987, False),
+        (None, 456, 123, False),
+    ],
+)
+def test_aut_grants_foreground_only_to_its_controller(
+    monkeypatch, controller, requested_pid, foreground, granted
+):
+    from tests.component import _real_window
+
+    allow = Mock(return_value=1)
+    monkeypatch.setattr(_real_window, "_controller_pid", controller)
+    monkeypatch.setattr(_real_window.win32gui, "GetForegroundWindow", lambda: foreground)
+    monkeypatch.setattr(_real_window._user32, "AllowSetForegroundWindow", allow)
+    result = _real_window._wnd_proc(
+        123, _real_window.WM_ALLOW_CONTROLLER_FOREGROUND, requested_pid, 0
+    )
+    assert bool(result) is granted
+    if granted:
+        allow.assert_called_once_with(controller)
+    else:
+        allow.assert_not_called()
+
+
+def test_aut_restores_edit_focus_on_owning_thread(monkeypatch):
+    from tests.component import _real_window
+
+    focus = Mock()
+    monkeypatch.setattr(_real_window, "_controls", {_real_window.ID_EDIT: 789})
+    monkeypatch.setattr(_real_window.win32gui, "SetFocus", focus)
+    assert _real_window._wnd_proc(123, _real_window.win32con.WM_SETFOCUS, 0, 0) == 0
+    focus.assert_called_once_with(789)
+
+
+def test_foreground_handoff_never_contacts_unowned_window(monkeypatch):
+    send = Mock()
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 987)
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", send)
+    _recorder_window._handoff_owned_foreground({123, 456})
+    send.assert_not_called()
+
+
+def test_refused_foreground_handoff_fails_acceptance(monkeypatch):
+    monkeypatch.setenv("DOLPHIN_RECORDER_ACCEPTANCE", "1")
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(1, 0)))
+    with pytest.raises(pytest.fail.Exception, match="refused to hand activation"):
+        _recorder_window._handoff_owned_foreground({123, 456})
+
+
+def test_owned_activation_waits_for_foreground_transition(monkeypatch):
+    activate = Mock()
+    pump = Mock()
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", activate)
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(1, 0)))
+    monkeypatch.setattr(
+        _recorder_window.win32gui, "GetForegroundWindow", Mock(side_effect=[987, 987, 123])
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    monkeypatch.setattr(_recorder_window.time, "sleep", Mock())
+    _recorder_window._activate_owned_window(123)
+    activate.assert_called_once_with(123)
+    assert pump.call_count == 2
+
+
+def test_owned_activation_timeout_remains_acceptance_failure(monkeypatch):
+    monkeypatch.setenv("DOLPHIN_RECORDER_ACCEPTANCE", "1")
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", Mock())
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(1, 0)))
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 987)
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 1, 3]))
+    monkeypatch.setattr(_recorder_window.time, "sleep", Mock())
+    mouse = Mock()
+    keyboard = Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    with pytest.raises(pytest.fail.Exception, match="foreground HWND is 987"):
+        _recorder_window._activate_owned_window(123)
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
+
+
+def test_worker_query_pumps_same_process_window_messages():
+    # No foreground activation or desktop input is needed for WM_GETTEXT.
+    gui = _recorder_window.win32gui
+    root = gui.CreateWindowEx(
+        0,
+        "Static",
+        "KAN-759 worker query",
+        0,
+        0,
+        0,
+        100,
+        100,
+        0,
+        0,
+        _recorder_window.win32api.GetModuleHandle(None),
+        None,
+    )
+    try:
+        owner = _recorder_window.win32api.GetCurrentThreadId()
+
+        def query():
+            assert _recorder_window.win32api.GetCurrentThreadId() != owner
+            return gui.GetWindowText(root)
+
+        assert _recorder_window._query_on_worker(query) == "KAN-759 worker query"
+    finally:
+        gui.DestroyWindow(root)
+
+
+def test_worker_query_timeout_does_not_wait_for_worker_shutdown():
+    release = _recorder_window.threading.Event()
+    finished = _recorder_window.threading.Event()
+
+    def query():
+        try:
+            assert release.wait(5), "Test did not release the blocked worker"
+        finally:
+            finished.set()
+
+    try:
+        with pytest.raises(TimeoutError, match="native context worker"):
+            _recorder_window._query_on_worker(query, timeout=0.05)
+        # The caller must receive the timeout before the worker is unblocked.
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(2), "Controlled worker did not exit"
+
+
+def test_worker_query_propagates_failure():
+    failure = RuntimeError("controlled worker failure")
+    with pytest.raises(RuntimeError) as caught:
+        _recorder_window._query_on_worker(Mock(side_effect=failure))
+    assert caught.value is failure
+
+
+@pytest.mark.parametrize("text", ["", "tttt", "zażółć"])
+def test_native_edit_diagnostic_reads_actual_control_text(text):
+    gui = _recorder_window.win32gui
+    edit = gui.CreateWindowEx(
+        0,
+        "Edit",
+        text,
+        0,
+        0,
+        0,
+        100,
+        100,
+        0,
+        0,
+        _recorder_window.win32api.GetModuleHandle(None),
+        None,
+    )
+    try:
+        assert _recorder_window._native_edit_text(edit) == text
+    finally:
+        gui.DestroyWindow(edit)
+
+
+@pytest.mark.parametrize("status", [0, 1])
+def test_native_read_status_distinguishes_failure_from_empty_text(monkeypatch, tmp_path, status):
+    field = Mock()
+    field.text.return_value = ""
+    field._resolve.return_value.handle = 789
+    rec = Mock(_processed=5, _hook_error=None)
+    monkeypatch.setattr(
+        _recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(status, 0))
+    )
+    monkeypatch.setattr(
+        _recorder_window._recorder,
+        "_capture_context",
+        lambda: _recorder_window._recorder._InputContext(123, 456, 789, password=False),
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    output = tmp_path / "recorded.py"
+
+    def read():
+        _recorder_window._wait_for_edit_text(
+            field, 123, 789, "", "cleared before replay", rec, output, timeout=0
+        )
+
+    if status:
+        read()
+    else:
+        with pytest.raises(OSError, match=r"WM_GETTEXT.*zero status"):
+            read()
+    evidence = json.loads(output.with_suffix(".diagnostics.json").read_text(encoding="utf-8"))[-1]
+    if status:
+        assert evidence["native_text"] == ""
+        assert "errors" not in evidence
+    else:
+        assert "native_text" not in evidence
+        assert evidence["errors"]["native_text"]["type"] == "OSError"
+        assert "zero status" in evidence["errors"]["native_text"]["message"]
+
+
+@pytest.mark.parametrize("uia_text,native_text", [("tttt", ""), ("", "tttt"), ("TTTT", "TTTT")])
+def test_replay_diagnostic_identifies_stage_and_text_disagreement(
+    monkeypatch, tmp_path, uia_text, native_text
+):
+    field = Mock()
+    field.text.return_value = uia_text
+    field._resolve.return_value.handle = 789
+    rec = Mock(_processed=5, _hook_error=None)
+    monkeypatch.setattr(_recorder_window, "_native_edit_text", lambda hwnd: native_text)
+    monkeypatch.setattr(
+        _recorder_window._recorder,
+        "_capture_context",
+        lambda: _recorder_window._recorder._InputContext(123, 456, 789, password=False),
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    output = tmp_path / "recorded.py"
+    with pytest.raises(AssertionError, match="generated script replay"):
+        _recorder_window._wait_for_edit_text(
+            field, 123, 789, "tttt", "generated script replay", rec, output, timeout=0
+        )
+    evidence = json.loads(output.with_suffix(".diagnostics.json").read_text(encoding="utf-8"))
+    assert evidence[-1]["uia_text"] == uia_text
+    assert evidence[-1]["native_text"] == native_text
+    assert evidence[-1]["stage"] == "generated script replay"
+
+
+@pytest.mark.parametrize("failed_probe", ["uia_text", "native_text", "resolved_hwnd"])
+def test_replay_diagnostic_saves_partial_data_before_reraising(monkeypatch, tmp_path, failed_probe):
+    field = Mock()
+    field.text.return_value = "tttt"
+    field._resolve.return_value.handle = 789
+    rec = Mock(_processed=5, _hook_error=None)
+    native = Mock(return_value="tttt")
+    failure = OSError("controlled diagnostic read failure")
+    probes = {"uia_text": field.text, "native_text": native, "resolved_hwnd": field._resolve}
+    probes[failed_probe].side_effect = failure
+    monkeypatch.setattr(_recorder_window, "_native_edit_text", native)
+    monkeypatch.setattr(
+        _recorder_window._recorder,
+        "_capture_context",
+        lambda: _recorder_window._recorder._InputContext(123, 456, 789, password=False),
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    output = tmp_path / "recorded.py"
+    report = output.with_suffix(".diagnostics.json")
+    report.write_text('[{"stage": "recorded input"}]', encoding="utf-8")
+
+    with pytest.raises(OSError) as caught:
+        _recorder_window._wait_for_edit_text(
+            field, 123, 789, "tttt", "generated script replay", rec, output, timeout=0
+        )
+
+    assert caught.value is failure
+    history = json.loads(report.read_text(encoding="utf-8"))
+    assert history[0] == {"stage": "recorded input"}
+    evidence = history[1]
+    assert evidence["stage"] == "generated script replay"
+    assert evidence["errors"][failed_probe] == {
+        "type": "OSError",
+        "message": "controlled diagnostic read failure",
+    }
+    assert failed_probe not in evidence
+    assert evidence["foreground_hwnd"] == 123
+    assert evidence["focus_hwnd"] == 789
+    for name, expected in (("uia_text", "tttt"), ("native_text", "tttt"), ("resolved_hwnd", 789)):
+        if name != failed_probe:
+            assert evidence[name] == expected
 
 
 def test_real_hook_installation_and_cleanup():

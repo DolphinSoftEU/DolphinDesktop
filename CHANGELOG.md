@@ -43,6 +43,31 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder native Edit regression now checks real pywin32 thread/process
+  results on both the owning thread and a worker (KAN-759). The regression covers
+  ordinary text, password and unknown controls, followed by delayed hook events;
+  the acceptance gate also requires generated selectors and record/replay to pass.
+  Sequence normalization was already included in the KAN-576 fix.
+  Worker queries pump the owner thread's window messages and use a bounded wait
+  without blocking executor shutdown, avoiding same-process WM_GETTEXT deadlocks.
+  Record/replay checks retain stage-specific native/UIA text and focus diagnostics;
+  CI preserves these with the generated script and JUnit report on failure.
+  Diagnostic probe exceptions retain partial evidence and earlier stages before
+  propagating the original error; independent probes still run after a failure.
+  Native transition tests now wait for text delivery before changing focus and
+  drain window messages before HWND cleanup, preventing queued test input from
+  crossing test boundaries. Concurrent runner tests seed pipe input before launch
+  and surface startup exceptions instead of masking them with pipe-write errors.
+  Process-isolation runs also verify cumulative native text in each AUT before
+  moving focus. WM_GETTEXT diagnostics distinguish a failed call from a successful
+  empty read. Contributor documentation keeps the acceptance procedure and CI links.
+  Owned-window activation waits for the AUT to acknowledge activation and for its
+  foreground HWND, rather than rejecting asynchronous cross-process activation
+  immediately. A bounded timeout remains an acceptance failure before input.
+  Process-isolation fixtures restore Edit focus and hand foreground permission
+  back to their explicit controller before switching AUTs. Repeated keyboard
+  runs no longer risk selecting prior text with a second physical click.
+
 * Recorder mouse and keyboard callbacks forward input even when context capture,
   queueing, shutdown or a logging handler raises. Failures stop recording and are
   reported by completion methods without logging captured input. The first callback

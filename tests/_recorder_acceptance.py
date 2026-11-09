@@ -10,6 +10,9 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 REQUIRED_TESTS = {
+    "test_worker_query_pumps_same_process_window_messages",
+    "test_worker_query_timeout_does_not_wait_for_worker_shutdown",
+    "test_worker_query_propagates_failure",
     "test_real_hook_installation_and_cleanup",
     "test_real_hook_delayed_password_text_transitions",
     "test_real_hook_delayed_events_stay_in_target_process",
