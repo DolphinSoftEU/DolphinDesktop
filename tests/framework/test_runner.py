@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import ctypes
 import os
-import subprocess
 import threading
-from types import SimpleNamespace
+from contextlib import nullcontext
 from unittest.mock import Mock
 
 import pytest
@@ -32,6 +31,27 @@ class _FakeLauncher:
         self.std_handle_calls: list[int] = []
         self.create_process_args: tuple[object, ...] | None = None
         self.closed_handles: list[int] = []
+        self.inherited_handles: list[int] = []
+        self.deleted_attributes = 0
+
+    def GetCurrentProcess(self):  # noqa: N802
+        return -1
+
+    def DuplicateHandle(self, source, handle, target, output, access, inherit, options):  # noqa: N802
+        output._obj.value = handle + 100
+        return True
+
+    def InitializeProcThreadAttributeList(self, attributes, count, flags, size):  # noqa: N802
+        size._obj.value = 64
+        return attributes is not None
+
+    def UpdateProcThreadAttribute(self, attributes, flags, kind, handles, size, old, needed):  # noqa: N802
+        assert kind == _runner._PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+        self.inherited_handles = list(handles)
+        return True
+
+    def DeleteProcThreadAttributeList(self, attributes):  # noqa: N802
+        self.deleted_attributes += 1
 
     def GetStdHandle(self, kind):  # noqa: N802
         self.std_handle_calls.append(kind.value)
@@ -166,7 +186,9 @@ def test_launch_on_desktop_forwards_stdio_and_process_structures(monkeypatch) ->
 
     assert _runner.launch_on_desktop(["pytest", "C:\\my tests\\"], "HiddenDesk") == (707, 808)
     assert kernel32.std_handle_calls == [4294967286, 4294967285, 4294967284]
-    assert kernel32.closed_handles == [909]
+    assert kernel32.closed_handles == [112, 111, 110, 909]
+    assert kernel32.inherited_handles == [110, 111, 112]
+    assert kernel32.deleted_attributes == 1
 
     args = kernel32.create_process_args
     assert args is not None
@@ -175,10 +197,15 @@ def test_launch_on_desktop_forwards_stdio_and_process_structures(monkeypatch) ->
     assert args[4] is True
     assert args[7] is None
     startup_info = args[8]._obj
-    assert startup_info.cb == ctypes.sizeof(_runner._StartupInfoW)
+    assert startup_info.cb == ctypes.sizeof(_runner._StartupInfoExW)
     assert startup_info.lpDesktop == "HiddenDesk"
     assert startup_info.dwFlags == _runner._STARTF_USESTDHANDLES
-    assert (startup_info.hStdInput, startup_info.hStdOutput, startup_info.hStdError) == (10, 11, 12)
+    assert (startup_info.hStdInput, startup_info.hStdOutput, startup_info.hStdError) == (
+        110,
+        111,
+        112,
+    )
+    assert args[5] & _runner._EXTENDED_STARTUPINFO_PRESENT
 
 
 def test_launch_on_desktop_can_leave_stdio_uninherited(monkeypatch) -> None:
@@ -189,7 +216,7 @@ def test_launch_on_desktop_can_leave_stdio_uninherited(monkeypatch) -> None:
     assert kernel32.std_handle_calls == []
     assert kernel32.closed_handles == [3]
     assert kernel32.create_process_args is not None
-    assert kernel32.create_process_args[4] is True
+    assert kernel32.create_process_args[4] is False
     assert kernel32.create_process_args[1] == "tool.exe"
     assert kernel32.create_process_args[8]._obj.dwFlags == 0
 
@@ -201,7 +228,43 @@ def test_launch_on_desktop_reports_create_process_failure(monkeypatch) -> None:
 
     with pytest.raises(OSError, match=r"CreateProcessW\('tool.exe'\) failed: error 740"):
         _runner.launch_on_desktop(["tool.exe"])
-    assert kernel32.closed_handles == []
+    assert kernel32.closed_handles == [112, 111, 110]
+    assert kernel32.deleted_attributes == 1
+
+
+@pytest.mark.parametrize("phase", ["duplicate", "initialize", "update"])
+def test_stdio_setup_failure_releases_resources_without_starting_child(monkeypatch, phase):
+    kernel32 = _FakeLauncher()
+    if phase == "duplicate":
+        duplicate = kernel32.DuplicateHandle
+        kernel32.DuplicateHandle = lambda *args: duplicate(*args) if args[1] == 10 else False
+    elif phase == "initialize":
+        initialize = kernel32.InitializeProcThreadAttributeList
+        kernel32.InitializeProcThreadAttributeList = lambda *args: (
+            initialize(*args) if args[0] is None else False
+        )
+    else:
+        kernel32.UpdateProcThreadAttribute = Mock(return_value=False)
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(_runner.ctypes, "get_last_error", lambda: 5)
+    with pytest.raises(OSError):
+        _runner.launch_on_desktop(["tool.exe"])
+    assert kernel32.create_process_args is None
+    assert kernel32.closed_handles == ([110] if phase == "duplicate" else [112, 111, 110])
+    assert kernel32.deleted_attributes == (1 if phase == "update" else 0)
+
+
+def test_missing_standard_handles_disable_handle_inheritance(monkeypatch):
+    kernel32 = _FakeLauncher()
+    kernel32.GetStdHandle = Mock(side_effect=[None, 0, ctypes.wintypes.HANDLE(-1).value])
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    _runner.launch_on_desktop(["tool.exe"])
+    assert kernel32.create_process_args[4] is False
+    assert kernel32.create_process_args[5] & _runner._EXTENDED_STARTUPINFO_PRESENT == 0
+    startup = kernel32.create_process_args[8]._obj
+    assert startup.dwFlags & _runner._STARTF_USESTDHANDLES == 0
+    assert (startup.hStdInput, startup.hStdOutput, startup.hStdError) == (None, None, None)
+    assert kernel32.inherited_handles == []
 
 
 def test_launch_cmd_on_desktop_forwards_command_work_dir_and_no_stdio(monkeypatch) -> None:
@@ -359,12 +422,143 @@ def test_launch_cmd_on_desktop_rejects_negative_timeout_before_spawning(monkeypa
 
 
 def test_run_hidden_executes_directly_when_already_on_hidden_desktop(monkeypatch) -> None:
-    run = Mock(return_value=SimpleNamespace(returncode=13))
+    launch = Mock(return_value=(123, 456))
+    create = Mock()
     monkeypatch.setattr(_runner, "get_current_desktop_name", lambda: _runner.DESKTOP_NAME)
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(_runner, "create_hidden_desktop", create)
+    monkeypatch.setattr(_runner, "launch_on_desktop", launch)
+    monkeypatch.setattr(_runner, "_console_interrupts", lambda: nullcontext(threading.Event()))
+    monkeypatch.setattr(_runner, "_owned_job", lambda: nullcontext(99))
+    monkeypatch.setattr(_runner, "_wait_for_command", lambda *args: 13)
+    monkeypatch.setattr(_runner, "close_process_handle", Mock())
 
     assert _runner.run_hidden(["pytest", "-q"]) == 13
-    run.assert_called_once_with(["pytest", "-q"])
+    launch.assert_called_once_with(
+        ["pytest", "-q"],
+        _runner.DESKTOP_NAME,
+        inherit_stdio=True,
+        job_handle=99,
+        env={"DOLPHIN_HEADLESS": "1"},
+    )
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize("assign_ok,resume_result", [(True, 1), (False, 1), (True, 0xFFFFFFFF)])
+def test_runner_assigns_suspended_child_before_resuming_and_cleans_up_failures(
+    monkeypatch, assign_ok, resume_result
+) -> None:
+    kernel32 = _FakeLauncher()
+    assign = Mock(return_value=assign_ok)
+    resume = Mock(return_value=resume_result)
+    terminate = Mock(return_value=True)
+    wait = Mock(return_value=0)
+    kernel32.AssignProcessToJobObject = assign
+    kernel32.ResumeThread = resume
+    kernel32.TerminateProcess = terminate
+    kernel32.WaitForSingleObject = wait
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    if assign_ok and resume_result != 0xFFFFFFFF:
+        assert _runner.launch_on_desktop(["python"], job_handle=99) == (1234, 5678)
+        assert kernel32.closed_handles == [112, 111, 110, 9012]
+        terminate.assert_not_called()
+    else:
+        with pytest.raises(OSError) as error:
+            _runner.launch_on_desktop(["python"], job_handle=99)
+        if not assign_ok:
+            assert "AssignProcessToJobObject failed" in str(error.value)
+            assert "existing Windows Job Object" in str(error.value)
+        terminate.assert_called_once_with(5678, 1)
+        wait.assert_called_once_with(5678, int(_runner._PROCESS_TERMINATION_TIMEOUT_SECONDS * 1000))
+        assert kernel32.closed_handles == [112, 111, 110, 5678, 9012]
+    assert kernel32.create_process_args[5] == (
+        _runner._CREATE_SUSPENDED | _runner._EXTENDED_STARTUPINFO_PRESENT
+    )
+    assign.assert_called_once_with(99, 5678)
+    if assign_ok:
+        resume.assert_called_once_with(9012)
+    else:
+        resume.assert_not_called()
+
+
+@pytest.mark.parametrize("phase", ["assign", "resume"])
+@pytest.mark.parametrize(
+    "outcome", ["terminated", "timeout", "wait-failed", "unexpected", "terminate-error"]
+)
+def test_failed_launch_cleanup_is_bounded_and_closes_handles(monkeypatch, phase, outcome):
+    kernel32 = _FakeLauncher()
+    kernel32.AssignProcessToJobObject = Mock(return_value=phase != "assign")
+    kernel32.ResumeThread = Mock(return_value=0xFFFFFFFF)
+    kernel32.TerminateProcess = Mock(return_value=outcome != "terminate-error")
+    result = {
+        "terminated": _runner._WAIT_OBJECT_0,
+        "timeout": _runner._WAIT_TIMEOUT,
+        "wait-failed": _runner._WAIT_FAILED,
+        "unexpected": 0x80,
+        "terminate-error": _runner._WAIT_OBJECT_0,
+    }[outcome]
+    kernel32.WaitForSingleObject = Mock(return_value=result)
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(_runner.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(_runner, "_PROCESS_TERMINATION_TIMEOUT_SECONDS", 0.025)
+
+    with pytest.raises(TimeoutError if outcome == "timeout" else OSError) as error:
+        _runner.launch_on_desktop(["python"], job_handle=99)
+    assert kernel32.closed_handles == [112, 111, 110, 5678, 9012]
+    kernel32.TerminateProcess.assert_called_once_with(5678, 1)
+    if outcome == "terminate-error":
+        kernel32.WaitForSingleObject.assert_not_called()
+    else:
+        kernel32.WaitForSingleObject.assert_called_once_with(5678, 25)
+    if outcome == "terminated":
+        assert error.value.winerror == 5
+    else:
+        # Cleanup diagnostics retain the original assignment/resume error.
+        assert isinstance(error.value.__context__, OSError)
+        assert error.value.__context__.winerror == 5
+        if outcome in ("wait-failed", "unexpected"):
+            assert f"0x{result:08X}" in str(error.value)
+
+
+@pytest.mark.parametrize("configure_ok", [True, False])
+def test_owned_job_closes_its_handle_on_configuration_or_command_failure(
+    monkeypatch, configure_ok
+) -> None:
+    create = Mock(return_value=99)
+    configure = Mock(return_value=configure_ok)
+    close = Mock()
+    monkeypatch.setattr(_runner._kernel32, "CreateJobObjectW", create)
+    monkeypatch.setattr(_runner._kernel32, "SetInformationJobObject", configure)
+    monkeypatch.setattr(_runner._kernel32, "CloseHandle", close)
+    monkeypatch.setattr(_runner, "_JobNotifications", Mock())
+    cleanup = Mock()
+    monkeypatch.setattr(_runner, "_terminate_and_wait_for_job", cleanup)
+    with pytest.raises((OSError, RuntimeError)):
+        with _runner._owned_job() as job:
+            assert job == 99
+            raise RuntimeError("command failed")
+    close.assert_called_once_with(99)
+    assert cleanup.call_count == int(configure_ok)
+
+
+def test_console_handler_consumes_only_interrupts_and_is_unregistered(monkeypatch) -> None:
+    handlers = []
+
+    def register(callback, enabled):
+        handlers.append((callback, enabled))
+        return True
+
+    monkeypatch.setattr(_runner._kernel32, "SetConsoleCtrlHandler", register)
+    with pytest.raises(RuntimeError), _runner._console_interrupts() as interrupted:
+        callback = handlers[0][0]
+        assert not callback(2)  # CTRL_CLOSE_EVENT retains its existing semantics
+        assert not interrupted.is_set()
+        assert callback(1)
+        assert interrupted.is_set()
+        interrupted.clear()
+        assert callback(0)
+        assert interrupted.is_set()
+        raise RuntimeError("command failed")
+    assert handlers == [(callback, True), (callback, False)]
 
 
 def test_run_hidden_restores_environment_and_closes_desktop_on_launch_failure(monkeypatch) -> None:
@@ -380,7 +574,8 @@ def test_run_hidden_restores_environment_and_closes_desktop_on_launch_failure(mo
     with pytest.raises(RuntimeError, match="child could not start"):
         _runner.run_hidden(["pytest"])
 
-    launch.assert_called_once_with(["pytest"], _runner.DESKTOP_NAME, inherit_stdio=True)
+    assert launch.call_args.args == (["pytest"], _runner.DESKTOP_NAME)
+    assert launch.call_args.kwargs["inherit_stdio"] is True
     assert os.environ["DOLPHIN_HEADLESS"] == "caller-value"
     close.assert_called_once_with(7070)
 
@@ -447,3 +642,36 @@ def test_runner_quotes_windows_command_arguments() -> None:
     assert _build_cmd_string(["python.exe", "script with spaces.py", "--name", "A B"]) == (
         'python.exe "script with spaces.py" --name "A B"'
     )
+
+
+@pytest.mark.parametrize("failure", [None, "open", "duplicate", "create"])
+def test_partial_stdio_nul_resources_are_closed(monkeypatch, failure):
+    kernel32 = _FakeLauncher(create_result=failure != "create")
+    kernel32.GetStdHandle = Mock(side_effect=[10, 11, None])
+    if failure == "duplicate":
+        duplicate = kernel32.DuplicateHandle
+        kernel32.DuplicateHandle = lambda *args: duplicate(*args) if args[1] != 50 else False
+    monkeypatch.setattr(_runner, "_kernel32", kernel32)
+    monkeypatch.setattr(_runner.ctypes, "get_last_error", lambda: 5)
+    opened = Mock(return_value=ctypes.wintypes.HANDLE(-1).value if failure == "open" else 50)
+    kernel32.CreateFileW = opened
+    if failure:
+        with pytest.raises(OSError):
+            _runner.launch_on_desktop(["tool.exe"])
+    else:
+        _runner.launch_on_desktop(["tool.exe"])
+        startup = kernel32.create_process_args[8]._obj
+        assert (startup.hStdInput, startup.hStdOutput, startup.hStdError) == (110, 111, 150)
+        assert kernel32.inherited_handles == [110, 111, 150]
+        assert kernel32.create_process_args[4] is True
+    opened.assert_called_once_with("NUL", 0x40000000, 3, None, 3, 0, None)
+    expected = [110, 111]
+    if failure != "open":
+        expected.append(50)
+    if failure not in ("open", "duplicate"):
+        expected.append(150)
+    if failure is None:
+        expected.append(kernel32.thread)
+    assert sorted(kernel32.closed_handles) == sorted(expected)
+    if failure in ("open", "duplicate"):
+        assert kernel32.create_process_args is None
