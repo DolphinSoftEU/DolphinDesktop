@@ -244,6 +244,7 @@ def record_native_transitions():
         assert rec._hook_ready.wait(3), "Hooks did not initialize"
         assert rec._hook_error is None
         # No worker exists until all four runs and the final focus change finish.
+        native_text = {controls[0]: "", controls[1]: ""}
         for index, (control, letter) in enumerate(
             [(controls[1], "q"), (controls[0], "t"), (controls[1], "s"), (controls[2], "k")]
         ):
@@ -254,6 +255,15 @@ def record_native_transitions():
                 win32api.keybd_event(vk, 0, 0, 0)
                 win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
             pump_until(lambda count=(index + 1) * 4: rec._evt_queue.qsize() >= count)
+            if control in native_text:
+                native_text[control] += letter * 4
+                # A low-level callback runs before delivery to the target queue.
+                # Consume WM_KEYDOWN/WM_CHAR while this control still has focus,
+                # before moving focus or destroying HWNDs another test may reuse.
+                pump_until(
+                    lambda control=control: win32gui.GetWindowText(control) == native_text[control]
+                )
+            win32gui.PumpWaitingMessages()
         focus_control(controls[0])
         assert rec._processed == 0
         assert rec._evt_queue.qsize() == 16
@@ -272,6 +282,7 @@ def record_native_transitions():
             rec.stop()
             hook.join(3)
         sys.unraisablehook = previous
+        win32gui.PumpWaitingMessages()
         win32gui.DestroyWindow(root)
         # A bounded check also prevents an unnoticed leaked global hook thread.
         assert not hook.is_alive()

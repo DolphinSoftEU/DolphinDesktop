@@ -177,6 +177,11 @@ def test_parallel_runners_keep_stdio_pipes_private(monkeypatch, tmp_path):
         for fd in (stdin_r, stdout_w, stderr_w):
             os.set_handle_inheritable(msvcrt.get_osfhandle(fd), True)
         streams.append((stdin_r, stdin_w, stdout_r, stdout_w, stderr_r, stderr_w))
+    # Seed each tiny input before a runner can close its read end on failure.
+    # Otherwise os.write may report EINVAL and hide the runner's real exception.
+    for index, fds in enumerate(streams):
+        os.write(fds[1], f"{index}\n".encode())
+        os.close(fds[1])
 
     def create_together(*args):
         # Both callers have prepared their inheritable handles before either launch.
@@ -224,11 +229,11 @@ def test_parallel_runners_keep_stdio_pipes_private(monkeypatch, tmp_path):
             (pool.submit(read_pipe, fds[2]), pool.submit(read_pipe, fds[4])) for fds in streams
         ]
         try:
-            for index, fds in enumerate(streams):
-                os.write(fds[1], f"{index}\n".encode())
-                os.close(fds[1])
             deadline = time.monotonic() + 15
             while not ready.exists():
+                for runner in runners:
+                    if runner.done():
+                        runner.result()  # Surface startup errors before the ready-file timeout.
                 if time.monotonic() > deadline:
                     raise TimeoutError("second command did not become ready")
                 time.sleep(0.01)

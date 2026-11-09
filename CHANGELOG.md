@@ -54,6 +54,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   CI preserves these with the generated script and JUnit report on failure.
   Diagnostic probe exceptions retain partial evidence and earlier stages before
   propagating the original error; independent probes still run after a failure.
+  Native transition tests now wait for text delivery before changing focus and
+  drain window messages before HWND cleanup, preventing queued test input from
+  crossing test boundaries. Concurrent runner tests seed pipe input before launch
+  and surface startup exceptions instead of masking them with pipe-write errors.
 
 * The pytest `--dolphin-backend` option accepts registered and entry-point
   backends, as well as `auto`, and reports unknown IDs with registry diagnostics

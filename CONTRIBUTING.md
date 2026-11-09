@@ -141,6 +141,21 @@ Edit content. Six diagnostic regressions, 241 recorder/acceptance unit tests and
 with the diagnostic changes returned 11 passed and 3 foreground-activation
 failures. The replay failure remains unresolved pending diagnostic evidence.
 
+CI run `42702711779` provided that evidence: initial input was `tttt`, the Edit
+was then empty, and post-replay native/UIA text was `qqqqtttt` with the expected
+HWND/focus and no modifiers. The generated script contained only `tttt`; `qqqq`
+matches the preceding transition test's synthetic password input. This points to
+pending native input from that test. Transition tests now wait for actual native
+Edit contents after each run, while the target still has focus, and pump remaining
+window messages before destroying HWNDs. Local acceptance then returned 16 passed
+and 1 foreground-activation failure in process isolation: both native transitions
+and complete record/generate/replay passed in this run. Evidence:
+`artifacts/KAN-759/recorder-acceptance-input-drain.xml`. The same CI run also exposed
+a concurrent-runner test pipe-write error; input is now seeded before runners can
+close the pipe's read end, and startup exceptions are surfaced directly. The full
+runner-inheritance and recorder unit suites returned 259 passed; Ruff and mypy
+passed. New CI and a fully passing interactive gate are still required.
+
 ## Code Style
 
 This project uses [ruff](https://docs.astral.sh/ruff/) for linting and formatting, and [mypy](https://mypy-lang.org/) for type checking.
