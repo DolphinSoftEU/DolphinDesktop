@@ -38,6 +38,21 @@ def test_native_reproducibility_is_required_before_packaging() -> None:
     assert "ref" not in job["steps"][0].get("with", {})
 
 
+def test_real_runner_console_regression_gates_packaging_on_python_311() -> None:
+    jobs = load("ci.yml")["jobs"]
+    job = jobs["runner-console"]
+    assert "runner-console" in jobs["package"]["needs"]
+    assert job["runs-on"] == "windows-latest"
+    assert job["strategy"]["matrix"]["python-version"] == ["3.11", "3.13"]
+    assert "if" not in job and "continue-on-error" not in job
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "tests/component/test_runner_console.py" in commands
+    assert "interrupt-$launcher" in commands
+    assert "skipped|failure|error" in commands
+    for step in job["steps"]:
+        assert "continue-on-error" not in step
+
+
 def test_ci_provisions_the_exact_compiler_before_reproducing_qt_agents() -> None:
     job = load("ci.yml")["jobs"]["qt-agent-reproducibility"]
     steps = job["steps"]

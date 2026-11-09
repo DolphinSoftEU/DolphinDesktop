@@ -49,6 +49,38 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   Validation waits for nested `conftest.py` registrations during collection,
   the repository bootstrap accepts the same IDs, and `Desktop(backend="auto")`
   resolves the concrete backend before launching or connecting to native apps.
+* `dolphin-run` survives Ctrl+Break (and Ctrl+C when console Ctrl+C processing is
+  enabled) while the command handles the console event and preserves its exit
+  code. The inherited Ctrl+C ignore setting is preserved; use Ctrl+Break for
+  `CREATE_NEW_PROCESS_GROUP` launchers. Commands have ten seconds to finish after
+  interruption; a Windows Job Object then terminates an unresponsive command
+  tree with code 130. Venv redirectors and nested runners are covered, and owned
+  processes are cleaned up before the hidden desktop handle is closed (KAN-753).
+  Job cleanup now waits for zero active processes before releasing handles;
+  a failed query, termination failure or cleanup timeout is reported as an error.
+  After forced termination, waiting for the command process is also limited to
+  ten seconds; a stuck process raises a timeout instead of retrying indefinitely.
+  Cleanup after a failed job assignment or thread resume also uses a bounded
+  wait, validates its result, and releases process/thread handles on every path.
+  Console regressions run in the Windows component suite. Descendant cleanup
+  checks retain the original process handle before exit, avoiding PID reuse races.
+  Job cleanup also waits on retained process handles: zero active processes can
+  be reported before those handles become signalled, especially during startup.
+  A completion port retains additional handles during execution. Final cleanup
+  first blocks new job members with a zero active-process limit, then captures
+  the complete process set. Lost advisory birth notifications no longer cause
+  false cleanup timeouts or replace valid exit codes.
+  Monitoring now validates job membership before retaining a notified process,
+  tolerates advisory read/access failures, and releases completed process
+  handles during execution. PID reuse therefore cannot add foreign processes
+  to cleanup waits or grow a historical handle cache.
+  Incomplete successful PID-list responses are retried. A required CI matrix
+  verifies Ctrl+Break on Python 3.11 and 3.13, including installed and nested
+  launchers, without allowing skipped tests.
+  Concurrent `run_hidden()` calls now share one console handler that broadcasts
+  interrupts to all active callers, and use private child environment blocks.
+  Handler removal errors are checked; a module-held callback remains safe after
+  failed removal and the registration is reused until removal succeeds.
 
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).
@@ -59,6 +91,45 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 * Locators under resolved wrappers now try ordered selector and image fallbacks
   within the shared deadline, record self-healing on success, and report
   ambiguous matches for both visible and presence searches (KAN-745).
+
+* `Window.edit()`, `combo_box()`, `tree()`, `button()`, `check_box()`,
+  `list_box()`, `tab()` and the other typed shortcuts now find their controls
+  on the `win32` backend (`Desktop.for_legacy_apps()`), as does any
+  `locator(control_type=...)` there (KAN-747). Before, they always timed out
+  with `ElementNotFoundError`. The UIA control type they send was compared
+  with the .NET type of a WinForms control, and with an empty string on
+  classic HWND controls.
+  - On `win32`, a UIA control type now matches pywinauto's friendly class
+    name. That covers classic, WinForms, VB6 and VCL class spellings and
+    tells check boxes and radio buttons from push buttons by style.
+  - Win32 friendly names (`Static`, `TreeView`, …) and dotted .NET types are
+    accepted as given.
+  - `Tree.select_item_by_path` / `expand_item` drive `SysTreeView32` nodes
+    through tree-view messages.
+  - `ListBox.items()` / `selected_items()` read `LISTBOX` and `SysListView32`
+    entries, and `Tab.select_tab()` selects a `SysTabControl32` tab by exact
+    text.
+  - `menu().item()` resolves native `HMENU` menu bars: `click()` clicks the
+    item, `invoke()` sends its `WM_COMMAND`, and `is_checked()` / `check()` /
+    `uncheck()` work on checkable items.
+  - `Locator.all()` and `count()` on `win32` apply every criterion. Before,
+    `control_id`, `title_re`, `class_name_re` and `nth()` were ignored, so
+    `locator(control_id=7).count()` counted every control.
+  - A negative `nth()` on `win32` counts the same matches as the lookup that
+    follows, so it no longer reports a control as missing when other criteria
+    narrow the match or a matching control is hidden.
+  - A UIA type with no Win32 window class (`TreeItem`, `ListItem`,
+    `Hyperlink`, …) raises `UnsupportedCapabilityError` immediately, also
+    from `exists()`, instead of waiting out the timeout.
+  - `Locator.text()` and `scroll_into_view()` no longer stall for about 5 s
+    per call on `win32`. They probed a UIA pattern on the unresolved
+    `WindowSpecification`, which pywinauto answered with a child-window wait.
+  - `Locator.text()` on an empty plain `Edit` or `Static` returns `""` at once.
+    It used to take focus, send Ctrl+A / Ctrl+C and clear the user's clipboard.
+    RichEdit controls keep that fallback.
+* JUnit XML now retains screenshot, trace and video paths through test teardown,
+  including retained videos for passing tests. Retried attempts still suppress
+  artifacts, and capture failures preserve the original test failure (KAN-748).
 
 * `playwright_compat.sync_playwright().chromium.connect_over_cdp()` no longer
   fails with Playwright's "Sync API inside the asyncio loop" error when a
