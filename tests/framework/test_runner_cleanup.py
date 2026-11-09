@@ -26,6 +26,7 @@ def fake_job_notifications(monkeypatch):
 def test_desktop_is_closed_only_after_delayed_job_termination(
     monkeypatch, command_fails, fake_job_notifications
 ):
+    monkeypatch.setattr(_runner, "_seal_job", Mock())
     monkeypatch.setattr(_runner, "_job_process_handles", lambda job: nullcontext([]))
     events = []
     remaining = iter([2, 1, 0])
@@ -88,6 +89,7 @@ def test_desktop_is_closed_only_after_delayed_job_termination(
 def test_cleanup_errors_are_reported_and_job_handle_is_closed(
     monkeypatch, failure, fake_job_notifications
 ):
+    monkeypatch.setattr(_runner, "_seal_job", Mock())
     monkeypatch.setattr(_runner, "_job_process_handles", lambda job: nullcontext([]))
     monkeypatch.setattr(_runner._kernel32, "CreateJobObjectW", Mock(return_value=99))
     monkeypatch.setattr(_runner._kernel32, "SetInformationJobObject", Mock(return_value=True))
@@ -194,6 +196,7 @@ def test_forced_termination_has_a_separate_deadline(monkeypatch, eventually_exit
 
 @pytest.mark.parametrize("outcome", ["success", "timeout", "wait-error"])
 def test_zero_job_count_does_not_replace_process_handle_synchronization(monkeypatch, outcome):
+    monkeypatch.setattr(_runner, "_seal_job", Mock())
     monkeypatch.setattr(_runner, "_job_process_handles", lambda job: nullcontext([456]))
     monkeypatch.setattr(_runner._kernel32, "TerminateJobObject", Mock(return_value=True))
     states = iter([_runner._WAIT_TIMEOUT, _runner._WAIT_OBJECT_0])

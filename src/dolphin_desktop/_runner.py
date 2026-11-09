@@ -208,9 +208,9 @@ class _JobNotifications:
     """Retain process handles from NEW_PROCESS notifications, including late births.
 
     Associate while the job is empty, before its suspended root is assigned.
-    Notifications are advisory: cleanup must additionally match TotalProcesses
-    against the distinct birth notifications received. Missing or ambiguous
-    notifications must never produce a successful cleanup result.
+    Notifications are advisory. Cleanup seals process admission and takes a
+    complete snapshot independently, so lost historical notifications do not
+    invalidate an otherwise successful command.
     """
 
     def __init__(self, job: int) -> None:
@@ -255,8 +255,7 @@ class _JobNotifications:
                 if error != 87:  # already gone; its PID cannot refer to a pending object
                     raise ctypes.WinError(error)
             # Hold even a possibly recycled handle: waiting is conservative and
-            # never terminates a foreign process. A repeated, unpinned PID is
-            # counted once, so PID reuse cannot hide a missing birth notification.
+            # never terminates a foreign process.
             self.processes[pid.value] = handle or None
 
     def close(self) -> None:
@@ -315,6 +314,24 @@ def _job_process_handles(job: int) -> Iterator[list[int]]:
             _kernel32.CloseHandle(handle)
 
 
+def _seal_job(job: int) -> None:
+    """Reject new process associations before capturing the final process set.
+
+    Existing members remain alive until explicitly terminated. A zero active
+    process limit also applies to inherited associations in nested jobs. Keep
+    the job's other limits, including KILL_ON_JOB_CLOSE, unchanged.
+    """
+    limits = _JobExtendedLimitInformation()
+    if not _kernel32.QueryInformationJobObject(
+        job, 9, ctypes.byref(limits), ctypes.sizeof(limits), None
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    limits.BasicLimitInformation.LimitFlags |= 0x00000008  # JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+    limits.BasicLimitInformation.ActiveProcessLimit = 0
+    if not _kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 def _terminate_and_wait_for_job(job: int) -> None:
     """Drain the job before releasing its handle and the command's desktop.
 
@@ -324,6 +341,9 @@ def _terminate_and_wait_for_job(job: int) -> None:
     become signalled. A stuck driver must produce a cleanup error rather than
     an indefinite launcher hang.
     """
+    # Sealing first removes the snapshot-to-termination birth race without
+    # relying on delivery of NEW_PROCESS notifications.
+    _seal_job(job)
     with _job_process_handles(job) as handles:
         notifications = _job_notifications.get(job)
         if notifications is not None:
@@ -350,15 +370,10 @@ def _terminate_and_wait_for_job(job: int) -> None:
                 job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None
             ):
                 raise ctypes.WinError(ctypes.get_last_error())
-            births_confirmed = notifications is None or accounting.TotalProcesses == len(
-                notifications.processes
-            )
-            if accounting.ActiveProcesses == 0 and stopped and births_confirmed:
+            if accounting.ActiveProcesses == 0 and stopped:
                 return
             if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    "command job has pending processes or unconfirmed births after cleanup timeout"
-                )
+                raise TimeoutError("command job still has pending processes after cleanup timeout")
             time.sleep(0.01)
 
 

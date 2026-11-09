@@ -107,6 +107,13 @@ def harness(folder: Path, launcher: str, mode: str) -> None:
         if launcher == "exe"
         else [sys.executable, "-c", "from dolphin_desktop._runner import main; main()"]
     )
+    if launcher == "python-no-notifications":
+        command = [
+            sys.executable,
+            "-c",
+            "from dolphin_desktop import _runner; "
+            "_runner._JobNotifications.drain = lambda self: None; _runner.main()",
+        ]
     if launcher == "nested":
         command += [entry]
     command += [sys.executable, __file__, "--child", str(folder), mode]

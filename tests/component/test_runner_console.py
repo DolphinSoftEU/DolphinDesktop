@@ -27,6 +27,15 @@ pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(55)]
     "mode", ["exit0", "exit7", "exit-with-grandchild", "interrupt", "interrupt-c", "ignore"]
 )
 def test_runner_preserves_result_and_controls_its_tree(tmp_path, launcher, mode):
+    _assert_runner_case(tmp_path, launcher, mode)
+
+
+@pytest.mark.parametrize("mode", ["exit0", "exit7", "exit-with-grandchild", "interrupt", "ignore"])
+def test_missing_notifications_preserve_controlled_exit_code(tmp_path, mode):
+    _assert_runner_case(tmp_path, "python-no-notifications", mode)
+
+
+def _assert_runner_case(tmp_path, launcher, mode):
     probe = Path(__file__).parents[1] / "_runner_console_probe.py"
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -137,8 +146,8 @@ def test_runner_releases_process_job_and_desktop_handles(monkeypatch, tmp_path, 
     assert handle_count() == before
 
 
-def test_child_born_after_snapshot_is_synchronized_before_return(monkeypatch, tmp_path):
-    """Force a real birth in the old snapshot-to-TerminateJobObject gap."""
+def test_process_creation_is_blocked_before_final_snapshot(monkeypatch, tmp_path):
+    """A real actor cannot create a new member during final cleanup."""
     trigger = tmp_path / "spawn"
     report = tmp_path / "late.json"
     original_terminate = _runner._kernel32.TerminateJobObject
@@ -148,6 +157,7 @@ def test_child_born_after_snapshot_is_synchronized_before_return(monkeypatch, tm
     kernel32.CloseHandle.argtypes = [wt.HANDLE]
     kernel32.TerminateProcess.argtypes = [wt.HANDLE, wt.UINT]
     witness = []
+    executed = tmp_path / "unexpected-child"
 
     def spawn_then_terminate(job, code):
         if not trigger.exists():
@@ -159,10 +169,9 @@ def test_child_born_after_snapshot_is_synchronized_before_return(monkeypatch, tm
                     raise TimeoutError("late child did not start")
                 time.sleep(0.01)
             child = json.loads(report.read_text())
-            tracker = _runner._job_notifications[job]
-            assert child["pid"] not in tracker.processes
-            assert kernel32.WaitForSingleObject(child["handle"], 0) == 258
-            witness.append((tracker, child["pid"]))
+            assert child["error"] == 1816  # ERROR_NOT_ENOUGH_QUOTA
+            assert not executed.exists()
+            witness.append(child["error"])
         return original_terminate(job, code)
 
     interrupted = threading.Event()
@@ -174,10 +183,14 @@ def test_child_born_after_snapshot_is_synchronized_before_return(monkeypatch, tm
         "import json, subprocess, sys, time; from pathlib import Path; "
         "from tests._runner_console_probe import duplicate_process_handle\n"
         "while not Path(sys.argv[1]).exists(): time.sleep(0.01)\n"
-        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
-        "h = duplicate_process_handle(p, int(sys.argv[3])); "
+        "try:\n"
+        " p = subprocess.Popen([sys.executable, '-c', "
+        "'import sys,time; from pathlib import Path; Path(sys.argv[1]).touch(); time.sleep(120)', "
+        "sys.argv[4]])\n"
+        "except OSError as exc: data = {'error': exc.winerror}\n"
+        "else: data = {'error': None, 'handle': duplicate_process_handle(p, int(sys.argv[3]))}\n"
         "out = Path(sys.argv[2]); tmp = out.with_suffix('.tmp'); "
-        "tmp.write_text(json.dumps({'pid': p.pid, 'handle': h})); tmp.replace(out); "
+        "tmp.write_text(json.dumps(data)); tmp.replace(out); "
         "time.sleep(120)"
     )
     try:
@@ -190,18 +203,19 @@ def test_child_born_after_snapshot_is_synchronized_before_return(monkeypatch, tm
                     str(trigger),
                     str(report),
                     str(os.getpid()),
+                    str(executed),
                 ]
             )
             == 130
         )
         child = json.loads(report.read_text())
-        assert kernel32.WaitForSingleObject(child["handle"], 0) == 0
-        assert len(witness) == 1
-        assert witness[0][1] in witness[0][0].processes
+        assert child["error"] == 1816
+        assert witness == [1816]
     finally:
         if report.exists():
-            handle = json.loads(report.read_text())["handle"]
-            if kernel32.WaitForSingleObject(handle, 0) == 258:
-                kernel32.TerminateProcess(handle, 1)
-                kernel32.WaitForSingleObject(handle, 5000)
-            kernel32.CloseHandle(handle)
+            handle = json.loads(report.read_text()).get("handle")
+            if handle is not None:
+                if kernel32.WaitForSingleObject(handle, 0) == 258:
+                    kernel32.TerminateProcess(handle, 1)
+                    kernel32.WaitForSingleObject(handle, 5000)
+                kernel32.CloseHandle(handle)

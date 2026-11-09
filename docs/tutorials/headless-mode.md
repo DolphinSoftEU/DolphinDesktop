@@ -18,19 +18,19 @@ cleanup instead of repeatedly requesting termination.
 Processes that detach from the console cannot receive its console events, but
 remain in the runner's Windows Job Object for cleanup. Remaining descendants are
 terminated when the command finishes, including processes behind venv redirectors.
-The runner connects a private job completion port before launching the command
-and retains handles from process-birth notifications throughout execution and
-cleanup. This also covers descendants born between the final process-list read
-and the termination request. Incomplete process lists are retried with a larger
-buffer, including when Windows reports success with fewer IDs than assigned
-processes.
+Before final cleanup, the runner sets the job's active process limit to zero.
+This blocks new process associations while preserving the existing job limits.
+It then reads the complete process list and retains handles before requesting
+termination, closing the window in which an unobserved descendant could start.
+Incomplete lists are retried with a larger buffer, including successful Windows
+responses containing fewer IDs than assigned processes.
 The runner waits for retained handles to be signalled and for the job to report
-zero active processes before closing the job and hidden desktop handles. Since
-job notifications are advisory, their distinct birth count must also match the
-job's lifetime process count. A missing notification or an ambiguous recycled PID
-cannot produce a successful cleanup result. Failure to confirm
-termination within ten seconds raises a cleanup error instead of returning a
-successful command result.
+zero active processes before closing its handles and the hidden desktop handle.
+A private completion port provides additional process handles during execution,
+but notifications are advisory: missing historical notifications do not replace
+a valid application exit code with a cleanup error. Cleanup still raises an
+error if sealing, enumeration or termination fails, or if processes remain
+pending after its ten-second timeout.
 
 The real console, process-tree and desktop-handle regressions run in the Windows
 component suite: `pytest tests/component/test_runner_console.py`. Deterministic

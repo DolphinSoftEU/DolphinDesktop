@@ -1,4 +1,4 @@
-"""Job birth notifications close the snapshot-to-termination race."""
+"""Advisory job notifications and final process-admission sealing."""
 
 from __future__ import annotations
 
@@ -114,7 +114,8 @@ def test_completion_port_setup_failures_release_owned_handles(monkeypatch, port_
     assert close.call_count == int(port_ok)
 
 
-def test_birth_after_snapshot_and_before_termination_is_still_synchronized(monkeypatch):
+def test_late_notification_is_still_synchronized_after_sealing(monkeypatch):
+    monkeypatch.setattr(_runner, "_seal_job", Mock())
     tracker = SimpleNamespace(processes={42: 1042})
     terminated = False
     events = []
@@ -153,10 +154,11 @@ def test_birth_after_snapshot_and_before_termination_is_still_synchronized(monke
     assert [state for handle, state in events if handle == 1043] == [258, 0]
 
 
-def test_lost_notification_cannot_produce_success_with_zero_active_processes(monkeypatch):
+def test_lost_historical_notification_does_not_reject_an_empty_job(monkeypatch):
     tracker = SimpleNamespace(processes={42: None}, drain=Mock())
     monkeypatch.setitem(_runner._job_notifications, 99, tracker)
     monkeypatch.setattr(_runner, "_job_process_handles", lambda job: nullcontext([]))
+    monkeypatch.setattr(_runner, "_seal_job", Mock())
     monkeypatch.setattr(_runner._kernel32, "TerminateJobObject", Mock(return_value=True))
 
     def accounting(job, kind, output, size, returned):
@@ -166,8 +168,7 @@ def test_lost_notification_cannot_produce_success_with_zero_active_processes(mon
 
     monkeypatch.setattr(_runner._kernel32, "QueryInformationJobObject", accounting)
     monkeypatch.setattr(_runner, "_JOB_CLEANUP_TIMEOUT_SECONDS", 0)
-    with pytest.raises(TimeoutError, match="unconfirmed births"):
-        _runner._terminate_and_wait_for_job(99)
+    _runner._terminate_and_wait_for_job(99)
 
 
 def test_normal_command_wait_services_queued_birth_notifications(monkeypatch):
@@ -182,3 +183,49 @@ def test_normal_command_wait_services_queued_birth_notifications(monkeypatch):
     monkeypatch.setattr(_runner._kernel32, "GetExitCodeProcess", exit_code)
     assert _runner._wait_for_command(456, 99, threading.Event()) == 23
     assert tracker.drain.call_count == 2
+
+
+@pytest.mark.parametrize("outcome", ["success", "query-error", "set-error"])
+def test_sealing_rejects_new_members_and_preserves_existing_limits(monkeypatch, outcome):
+    def query(job, kind, output, size, returned):
+        assert (job, kind) == (99, 9)
+        output._obj.BasicLimitInformation.LimitFlags = 0x2100
+        output._obj.BasicLimitInformation.ActiveProcessLimit = 8
+        output._obj.ProcessMemoryLimit = 123456
+        return outcome != "query-error"
+
+    configure = Mock(return_value=outcome != "set-error")
+    monkeypatch.setattr(_runner._kernel32, "QueryInformationJobObject", query)
+    monkeypatch.setattr(_runner._kernel32, "SetInformationJobObject", configure)
+    if outcome == "success":
+        _runner._seal_job(99)
+        job, kind, output, _size = configure.call_args.args
+        assert (job, kind) == (99, 9)
+        assert output._obj.BasicLimitInformation.LimitFlags == 0x2108
+        assert output._obj.BasicLimitInformation.ActiveProcessLimit == 0
+        assert output._obj.ProcessMemoryLimit == 123456
+    else:
+        with pytest.raises(OSError):
+            _runner._seal_job(99)
+        assert configure.call_count == int(outcome == "set-error")
+
+
+def test_admission_is_sealed_before_snapshot_even_when_all_notifications_are_missing(monkeypatch):
+    events = []
+    monkeypatch.setattr(_runner, "_seal_job", lambda job: events.append("seal"))
+
+    def snapshot(job):
+        assert events == ["seal"]
+        events.append("snapshot")
+        return nullcontext([])
+
+    def accounting(job, kind, output, size, returned):
+        output._obj.ActiveProcesses = 0
+        output._obj.TotalProcesses = 999
+        return True
+
+    monkeypatch.setitem(_runner._job_notifications, 99, SimpleNamespace(processes={}, drain=Mock()))
+    monkeypatch.setattr(_runner, "_job_process_handles", snapshot)
+    monkeypatch.setattr(_runner._kernel32, "TerminateJobObject", Mock(return_value=True))
+    monkeypatch.setattr(_runner._kernel32, "QueryInformationJobObject", accounting)
+    _runner._terminate_and_wait_for_job(99)
