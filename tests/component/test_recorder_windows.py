@@ -17,6 +17,27 @@ from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
 pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(20)]
 
 
+def test_ready_identity_is_not_visible_during_partial_write(monkeypatch, tmp_path):
+    from tests.component import _real_window
+
+    ready = tmp_path / "owned.ready.json"
+    write_text = _real_window.Path.write_text
+    observed = []
+
+    def interrupted_write(path, data, *, encoding):
+        write_text(path, '{"hwnd":', encoding=encoding)
+        observed.append(ready.exists())
+        result = write_text(path, data, encoding=encoding)
+        observed.append(ready.exists())
+        return result
+
+    monkeypatch.setattr(_real_window.Path, "write_text", interrupted_write)
+    _real_window._publish_ready(ready, 123, 456)
+    assert observed == [False, False]
+    assert json.loads(ready.read_text(encoding="utf-8")) == {"hwnd": 123, "pid": 456}
+    assert list(tmp_path.iterdir()) == [ready]
+
+
 @pytest.mark.parametrize(
     "controller,requested_pid,foreground,granted",
     [

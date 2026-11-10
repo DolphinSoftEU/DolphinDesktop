@@ -52,6 +52,10 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Native component AUT readiness is published by renaming a completed JSON
+  file, preventing recorder replay and process-isolation tests from reading
+  an empty or partially written HWND/PID identity.
+
 * Recorder process-isolation acceptance now pumps controller-thread messages
   while waiting for cross-process focus and native input delivery. It checks
   HWND, PID and focus together before sending keys, retains bounded failure
