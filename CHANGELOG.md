@@ -29,6 +29,15 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Breaking changes
 
+* Corrected the Delphi support contract: stock VCL (including Delphi 12 /
+  `delphivcl==1.0.7`) does not automatically expose `TForm.Name` or
+  `TComponent.Name` as UIA AutomationId. Name lookup requires an
+  application-supplied provider; Dolphin ships no VCL Name provider or RTTI
+  agent. Updated prerequisites, support matrix, examples and lookup failure
+  hints; added a real VCL reference regression separate from the Name-based
+  DESKTOP-161 acceptance scenario (KAN-761). Component lookup now probes
+  each criteria variant without pywinauto's extra default existence wait.
+
 * Java Access Bridge now requires an explicitly configured absolute `JAVA_HOME`
   and loads its DLL exclusively from `JAVA_HOME\bin`. HLLAPI requires an explicit
   absolute `hllapi_dll_path`; automatic DLL discovery has been removed (KAN-473).

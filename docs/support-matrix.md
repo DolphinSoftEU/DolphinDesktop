@@ -22,7 +22,7 @@ Companion pages:
 | `cdp`            | Chrome DevTools Protocol via Playwright                      | `CDPBackend` marker → `CDPSession` |
 | `sap`            | SAP GUI Scripting COM engine                                 | `SapBackend` marker → `SapGui` |
 | `mainframe`      | s3270 subprocess **or** HLLAPI DLL binding                   | `MainframeBackend` marker → `MainframeTerminal` |
-| `delphi`         | UIA + `TComponent.Name → AutomationId` name resolution       | `DelphiBackend` marker → `DelphiApp` |
+| `delphi`         | UIA + provider-published ID / caption / index resolution       | `DelphiBackend` marker → `DelphiApp` |
 | `java`           | Java Access Bridge (JAB) — Swing / Oracle Forms / JavaFX     | `JavaBackend` marker → `OracleFormsApp` / `JavaAccessBridge` |
 
 Marker backends surface in `list_backends()` and publish the same
@@ -88,11 +88,11 @@ the headline **capabilities** it exposes (against the
 | Field         | Value                                                              |
 | ------------- | ------------------------------------------------------------------ |
 | Primary       | `delphi` (marker → `DelphiApp` on UIA)                             |
-| Alt           | `win32` — for pre-VCL-10.4 Delphi that does not publish `TComponent.Name` as UIA AutomationId |
+| Alt           | `win32` — standard HWND controls through the generic API; does not recover `TComponent.Name` |
 | Alt           | `image` — Ownerdraw controls (custom TCanvas paint)                |
 | Modes         | Launch, Attach, Hidden desktop                                     |
-| Capabilities  | Full accessibility set + SCREENSHOT + DRAG + SCROLL                |
-| Limitations   | Lazarus LCL does not publish AutomationId — falls back to class + role matching. VCL 10.4+ works out-of-the-box; earlier VCL requires the `win32` alt. |
+| Capabilities  | Operations depend on the target UIA provider and exposed patterns |
+| Limitations   | `TForm.Name` / `TComponent.Name` lookup is unsupported on stock VCL (including Delphi 12 / delphivcl 1.0.7) and LCL unless an application-supplied UIA provider publishes matching AutomationIds. Dolphin ships no such provider or RTTI agent. Use inspected UIA captions/indices; non-windowed `TLabel` can be absent. See [Delphi prerequisites and reference](guides/delphi.md). |
 
 ### PowerBuilder (2019+ Appeon)
 
