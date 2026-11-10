@@ -52,6 +52,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   Image capture also preserves access denial when reading the selected element's
   name before capturing the screen or creating the output directory, preventing
   a PNG save and successful exit after that error.
+  Rectangle coordinate reads also preserve permission errors instead of silently
+  returning a zero-sized bounding box.
 
 * Recorder native Edit regression now checks real pywin32 thread/process
   results on both the owning thread and a worker (KAN-759). The regression covers

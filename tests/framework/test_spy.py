@@ -261,6 +261,27 @@ class TestSelectorAndNodeHelpers:
 
 
 class TestAccessDenied:
+    @pytest.mark.parametrize("hresult", [-2147024891, 0x80070005])
+    def test_bbox_preserves_denial_reading_left(self, hresult):
+        error = Exception(hresult, "localized provider denial")
+
+        class DeniedRect:
+            @property
+            def left(self):
+                raise error
+
+        with pytest.raises(PermissionError, match="E_ACCESSDENIED") as caught:
+            _spy._bbox_from_rect(DeniedRect())
+        assert caught.value.__cause__ is error
+
+    def test_bbox_tolerates_transient_error_reading_left(self):
+        class BrokenRect:
+            @property
+            def left(self):
+                raise RuntimeError("rectangle unavailable")
+
+        assert _spy._bbox_from_rect(BrokenRect()) == {"x": 0, "y": 0, "width": 0, "height": 0}
+
     @pytest.mark.parametrize(
         ("operation", "field"),
         [
@@ -377,7 +398,7 @@ class TestAccessDenied:
         _spy._raise_if_access_denied(error)
 
     @pytest.mark.parametrize("image", [False, True])
-    @pytest.mark.parametrize("stage", ["point", "after_hover", "rectangle"])
+    @pytest.mark.parametrize("stage", ["point", "after_hover", "rectangle", "rect_left"])
     def test_denial_aborts_picker_and_clears_highlight(self, monkeypatch, tmp_path, image, stage):
         tick = {"value": 0}
         _install_input_modules(monkeypatch, tick=tick, escape_at=3)
@@ -391,10 +412,17 @@ class TestAccessDenied:
             def rectangle(self):
                 raise error
 
+        class DeniedRectLeft:
+            @property
+            def left(self):
+                raise error
+
         def point(x, y):
             tick["value"] += 1
             if stage == "rectangle":
                 return DeniedRectangle()
+            if stage == "rect_left":
+                return _Info(rect=DeniedRectLeft())
             if stage == "after_hover" and tick["value"] == 1:
                 return _Info()
             raise error

@@ -109,7 +109,8 @@ def _bbox_from_rect(rect: Any) -> dict[str, int]:
             "width": int(rect.right - rect.left),
             "height": int(rect.bottom - rect.top),
         }
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return {"x": 0, "y": 0, "width": 0, "height": 0}
 
 
