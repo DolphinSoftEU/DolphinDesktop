@@ -95,6 +95,14 @@ dolphin spy --image-pick --output-dir templates
 
 Use `--pick` to select an element interactively. Use `--image-pick` to capture a template PNG for image fallback.
 
+If UI Automation denies access during `--pick` or `--image-pick`, the picker removes its highlight,
+prints an access-denied diagnostic to stderr and exits with code 1. Check the target
+application's permissions and integrity level. Transient element disappearance
+remains tolerated, and pressing Escape normally cancels the picker.
+For `--pick`, access denial also fails the command during owner checks and after selection,
+including selector construction and verification; it is not reported as cancellation
+or an unverified locator.
+
 ## `dolphin record`
 
 ```text

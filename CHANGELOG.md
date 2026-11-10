@@ -43,6 +43,18 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* `dolphin spy --pick` and `dolphin spy --image-pick` now report UI Automation access denial
+  (`E_ACCESSDENIED`) and exits with code 1 instead of silently waiting for
+  cancellation. Both UIA lookup paths preserve the error, and the picker clears
+  its highlight while continuing to tolerate transient element loss (KAN-760).
+  Permission errors also propagate during owner-liveness checks and selector
+  construction, verification and repair after Ctrl+Click.
+  Image capture also preserves access denial when reading the selected element's
+  name before capturing the screen or creating the output directory, preventing
+  a PNG save and successful exit after that error.
+  Rectangle coordinate reads also preserve permission errors instead of silently
+  returning a zero-sized bounding box.
+
 * Recorder native Edit regression now checks real pywin32 thread/process
   results on both the owning thread and a worker (KAN-759). The regression covers
   ordinary text, password and unknown controls, followed by delayed hook events;

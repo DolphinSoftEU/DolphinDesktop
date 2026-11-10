@@ -260,6 +260,184 @@ class TestSelectorAndNodeHelpers:
         assert _spy._element_info_from_point(1, 2) is None
 
 
+class TestAccessDenied:
+    @pytest.mark.parametrize("hresult", [-2147024891, 0x80070005])
+    def test_bbox_preserves_denial_reading_left(self, hresult):
+        error = Exception(hresult, "localized provider denial")
+
+        class DeniedRect:
+            @property
+            def left(self):
+                raise error
+
+        with pytest.raises(PermissionError, match="E_ACCESSDENIED") as caught:
+            _spy._bbox_from_rect(DeniedRect())
+        assert caught.value.__cause__ is error
+
+    def test_bbox_tolerates_transient_error_reading_left(self):
+        class BrokenRect:
+            @property
+            def left(self):
+                raise RuntimeError("rectangle unavailable")
+
+        assert _spy._bbox_from_rect(BrokenRect()) == {"x": 0, "y": 0, "width": 0, "height": 0}
+
+    @pytest.mark.parametrize(
+        ("operation", "field"),
+        [
+            ("selector", "name"),
+            ("selector", "control_type"),
+            ("selector", "automation_id"),
+            ("selector", "class_name"),
+            ("chain", "control_type"),
+            ("chain", "parent"),
+            ("owner", "top_level_parent"),
+            ("owner", "control_type"),
+            ("owner", "parent"),
+            ("owner", "handle"),
+            ("owner", "rectangle"),
+            ("resolve", "class_name"),
+            ("resolve", "name"),
+            ("info_rect", "rectangle"),
+            ("wrapper_rect", "rectangle"),
+            ("siblings", "parent"),
+            ("siblings", "control_type"),
+            ("siblings", "class_name"),
+            ("tree", "children"),
+        ],
+    )
+    def test_selector_and_owner_properties_preserve_denial(self, operation, field):
+        denial = Exception(-2147024891, "localized provider denial")
+
+        class DeniedInfo:
+            name = "Save"
+            control_type = "Button"
+            automation_id = "save"
+            class_name = "Button"
+            rectangle = _Rect()
+            parent = _Info()
+
+            def __getattribute__(self, name):
+                if name == field:
+                    raise denial
+                return super().__getattribute__(name)
+
+        info = DeniedInfo()
+        operations = {
+            "selector": lambda: _spy._selector_for_info(info),
+            "chain": lambda: _spy._build_parent_chain(info),
+            "owner": lambda: _spy._element_owner_is_alive(info),
+            "resolve": lambda: _spy._resolve_chain_to_wrapper(info, [], "uia"),
+            "info_rect": lambda: _spy._info_rect(info),
+            "wrapper_rect": lambda: _spy._wrapper_rect(info),
+            "siblings": lambda: _spy._index_among_siblings(info),
+            "tree": lambda: _spy._find_info_by_selector(info, {"title": "Save"}),
+        }
+        # Keep the owner traversal on this object so each requested property is reached.
+        if operation == "owner":
+            DeniedInfo.parent = None
+        with pytest.raises(PermissionError, match="E_ACCESSDENIED"):
+            operations[operation]()
+
+    @pytest.mark.parametrize("hresult", [-2147024891, 0x80070005])
+    @pytest.mark.parametrize("fallback", [False, True])
+    @pytest.mark.parametrize("representation", ["hresult", "args"])
+    def test_provider_denial_never_becomes_a_point_miss(
+        self, monkeypatch, hresult, fallback, representation
+    ):
+        error = Exception("localized provider diagnostic")
+        if representation == "hresult":
+            error.hresult = hresult
+        else:
+            error.args = (hresult, "localized provider diagnostic")
+        raw_lookup = Mock(side_effect=error)
+
+        class UIA:
+            @classmethod
+            def from_point(cls, x, y):
+                if fallback:
+                    raise AttributeError("old pywinauto")
+                raise error
+
+        monkeypatch.setitem(
+            sys.modules,
+            "pywinauto.uia_element_info",
+            _module("pywinauto.uia_element_info", UIAElementInfo=UIA),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "pywinauto.uia_defines",
+            _module(
+                "pywinauto.uia_defines",
+                IUIA=lambda: SimpleNamespace(iuia=SimpleNamespace(ElementFromPoint=raw_lookup)),
+            ),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "pywinauto.win32structures",
+            _module("pywinauto.win32structures", POINT=lambda x, y: (x, y)),
+        )
+        with pytest.raises(PermissionError, match="E_ACCESSDENIED") as caught:
+            _spy._element_info_from_point(1, 2)
+        assert caught.value.__cause__ is error
+        assert raw_lookup.call_count == int(fallback)
+
+    def test_permission_and_windows_codes_are_recognized(self):
+        windows_error = OSError("localized denial")
+        windows_error.winerror = 5
+        pywin_error = type("error", (Exception,), {"__module__": "pywintypes"})
+        for error in (PermissionError("denied"), windows_error, pywin_error(5, "UIA", "denied")):
+            with pytest.raises(PermissionError, match="0x80070005"):
+                _spy._raise_if_access_denied(error)
+
+    @pytest.mark.parametrize(
+        "error",
+        [OSError(5, "I/O error"), RuntimeError("element gone"), Exception(-2147220991, "gone")],
+    )
+    def test_unrelated_errors_remain_transient(self, error):
+        _spy._raise_if_access_denied(error)
+
+    @pytest.mark.parametrize("image", [False, True])
+    @pytest.mark.parametrize("stage", ["point", "after_hover", "rectangle", "rect_left"])
+    def test_denial_aborts_picker_and_clears_highlight(self, monkeypatch, tmp_path, image, stage):
+        tick = {"value": 0}
+        _install_input_modules(monkeypatch, tick=tick, escape_at=3)
+        highlighter = SimpleNamespace(update=Mock(), clear=Mock())
+        monkeypatch.setattr(_spy, "_Highlighter", lambda: highlighter)
+        monkeypatch.setattr(_spy, "_PICK_POLL", 0)
+        error = Exception(-2147024891, "localized denial")
+
+        class DeniedRectangle:
+            @property
+            def rectangle(self):
+                raise error
+
+        class DeniedRectLeft:
+            @property
+            def left(self):
+                raise error
+
+        def point(x, y):
+            tick["value"] += 1
+            if stage == "rectangle":
+                return DeniedRectangle()
+            if stage == "rect_left":
+                return _Info(rect=DeniedRectLeft())
+            if stage == "after_hover" and tick["value"] == 1:
+                return _Info()
+            raise error
+
+        monkeypatch.setattr(_spy, "_element_info_from_point", point)
+        with pytest.raises(PermissionError, match="E_ACCESSDENIED"):
+            if image:
+                _spy.image_pick(tmp_path)
+            else:
+                _spy.pick()
+        assert tick["value"] == (2 if stage == "after_hover" else 1)
+        assert highlighter.update.call_count == int(stage == "after_hover")
+        highlighter.clear.assert_called_once_with()
+
+
 class TestHighlighter:
     def test_init_and_ensure_strips_success_and_cached_path(self, monkeypatch):
         highlighter = _spy._Highlighter()

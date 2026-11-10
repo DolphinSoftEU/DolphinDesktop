@@ -109,7 +109,8 @@ def _bbox_from_rect(rect: Any) -> dict[str, int]:
             "width": int(rect.right - rect.left),
             "height": int(rect.bottom - rect.top),
         }
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return {"x": 0, "y": 0, "width": 0, "height": 0}
 
 
@@ -192,6 +193,23 @@ def _node_to_dict(node: _NodeInfo) -> dict[str, Any]:
 # Element-from-point (for pick mode)
 
 
+def _raise_if_access_denied(exc: Exception) -> None:
+    """Keep authorization failures distinct from disappearing UIA elements."""
+    hresult = getattr(exc, "hresult", None)
+    code = exc.args[0] if exc.args else None
+    if (
+        isinstance(exc, PermissionError)
+        or hresult in (-2147024891, 0x80070005)
+        or code in (-2147024891, 0x80070005)
+        or getattr(exc, "winerror", None) == 5
+        or (type(exc).__module__ == "pywintypes" and code == 5)
+    ):
+        raise PermissionError(
+            "UI Automation access denied (E_ACCESSDENIED, 0x80070005). "
+            "Check the target application's permissions and integrity level."
+        ) from exc
+
+
 def _element_info_from_point(x: int, y: int) -> Any | None:
     """Return ``UIAElementInfo`` for the UIA element at screen coordinates."""
     # Try the classmethod introduced in recent pywinauto
@@ -199,10 +217,10 @@ def _element_info_from_point(x: int, y: int) -> Any | None:
         from pywinauto.uia_element_info import UIAElementInfo
 
         return UIAElementInfo.from_point(x, y)
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         # Older pywinauto has no from_point classmethod (AttributeError); newer
-        # versions can still fail the underlying COM call.  Both fall through.
-        pass
+        # versions can still fail on a disappearing element. Both fall through.
 
     # Fallback: raw IUIAutomation COM call
     try:
@@ -214,8 +232,8 @@ def _element_info_from_point(x: int, y: int) -> Any | None:
         com_elem = IUIA().iuia.ElementFromPoint(pt)
         if com_elem:
             return UIAElementInfo(com_elem)
-    except Exception:
-        pass
+    except Exception as exc:
+        _raise_if_access_denied(exc)
 
     return None
 
@@ -232,7 +250,8 @@ def _element_owner_is_alive(info: Any) -> bool:
             candidate = top_level_parent() if callable(top_level_parent) else top_level_parent
             if candidate is not None:
                 owner = candidate
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         pass
 
     visited: set[int] = set()
@@ -247,14 +266,16 @@ def _element_owner_is_alive(info: Any) -> bool:
         # owner with the root just because the root itself is still alive.
         try:
             is_window = str(getattr(owner, "control_type", "") or "").casefold() == "window"
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             is_window = False
         if is_window:
             break
 
         try:
             parent = owner.parent
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             return False
         if parent is None:
             break
@@ -262,20 +283,23 @@ def _element_owner_is_alive(info: Any) -> bool:
 
     try:
         handle = int(owner.handle)
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         handle = 0
     if handle:
         try:
             import win32gui
 
             return bool(win32gui.IsWindow(handle))
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             # A diagnostic failure must not cancel a live picker.
             return True
 
     try:
         _ = owner.rectangle
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return False
     return True
 
@@ -673,19 +697,23 @@ def _selector_for_info(info: Any) -> dict[str, str]:
     """Extract a suggested_selector dict from a single UIAElementInfo."""
     try:
         name = info.name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         name = ""
     try:
         control_type = info.control_type or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         control_type = ""
     try:
         auto_id = info.automation_id or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         auto_id = ""
     try:
         cls = info.class_name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         cls = ""
     return _suggest_selector(auto_id, name, cls, control_type)
 
@@ -713,11 +741,13 @@ def _build_parent_chain(info: Any) -> tuple[Any, list[dict[str, Any]]]:
             break
         try:
             ctype = current.control_type or ""
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             ctype = ""
         try:
             parent = current.parent
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             parent = None
 
         # Stop at the top-level window — the caller already has it as `window`.
@@ -742,7 +772,8 @@ def _info_rect(info: Any) -> tuple[int, int, int, int] | None:
     try:
         r = info.rectangle
         return (int(r.left), int(r.top), int(r.right), int(r.bottom))
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
 
 
@@ -750,7 +781,8 @@ def _wrapper_rect(wrapper: Any) -> tuple[int, int, int, int] | None:
     try:
         r = wrapper.rectangle()
         return (int(r.left), int(r.top), int(r.right), int(r.bottom))
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
 
 
@@ -758,16 +790,19 @@ def _resolve_chain_to_wrapper(window_info: Any, chain: list[dict[str, Any]], bac
     """Resolve the chain through live pywinauto; return wrapper or ``None``."""
     try:
         import pywinauto as _pw
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
 
     try:
         win_cls = window_info.class_name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         win_cls = ""
     try:
         win_name = window_info.name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         win_name = ""
 
     kw: dict[str, Any] = {}
@@ -784,7 +819,8 @@ def _resolve_chain_to_wrapper(window_info: Any, chain: list[dict[str, Any]], bac
             spec = spec.child_window(**sel)
         spec.wait("exists", timeout=1.5)
         return spec.wrapper_object()
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
 
 
@@ -805,7 +841,8 @@ def _index_among_siblings(info: Any) -> int | None:
     """Index of *info* among siblings sharing its control_type and class_name."""
     try:
         parent = info.parent
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
     if parent is None:
         return None
@@ -814,22 +851,26 @@ def _index_among_siblings(info: Any) -> int | None:
         return None
     try:
         ct = info.control_type or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         ct = ""
     try:
         cls = info.class_name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         cls = ""
     try:
         children = parent.children()
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
     idx = 0
     for child in children:
         try:
             c_ct = child.control_type or ""
             c_cls = child.class_name or ""
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             continue
         if c_ct != ct or c_cls != cls:
             continue
@@ -854,13 +895,15 @@ def _find_info_by_selector(root_info: Any, sel: dict[str, Any]) -> Any | None:
             return None
         try:
             children = info.children()
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             return None
         for child in children:
             try:
                 child_name = (child.name or "").split("\t")[0]
                 child_ct = child.control_type or ""
-            except Exception:
+            except Exception as exc:
+                _raise_if_access_denied(exc)
                 continue
             if (not title or child_name == title) and (not ct or child_ct == ct):
                 return child
@@ -983,6 +1026,11 @@ def pick(backend: str = "uia") -> dict[str, Any]:
         one of ``"ok"``, ``"repaired"``, ``"repaired_flat"``, ``"unverified"``,
         ``"unreachable"`` or ``"cancelled"`` — anything but ``"ok"`` means the
         chain was not verified to resolve back to the element that was picked.
+
+    Raises
+    ------
+    PermissionError
+        UI Automation denied access to the target element.
     """
     try:
         import win32api
@@ -1023,10 +1071,10 @@ def pick(backend: str = "uia") -> dict[str, Any]:
                         bbox = _bbox_from_rect(info.rectangle)
                         if bbox["width"] > 0 and bbox["height"] > 0:
                             highlighter.update(bbox)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as exc:
+                        _raise_if_access_denied(exc)
+            except Exception as exc:
+                _raise_if_access_denied(exc)
 
             # Detect Ctrl+Click (rising edge: button was up, now down)
             lbutton_down = bool(win32api.GetAsyncKeyState(win32con.VK_LBUTTON) & 0x8000)
@@ -1112,10 +1160,10 @@ def image_pick(
                         if bbox["width"] > 0 and bbox["height"] > 0:
                             highlighter.update(bbox)
                             current_bbox = bbox
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as exc:
+                        _raise_if_access_denied(exc)
+            except Exception as exc:
+                _raise_if_access_denied(exc)
 
             lbutton_down = bool(win32api.GetAsyncKeyState(win32con.VK_LBUTTON) & 0x8000)
             ctrl_down = bool(win32api.GetAsyncKeyState(win32con.VK_CONTROL) & 0x8000)
@@ -1131,6 +1179,14 @@ def image_pick(
     if current_bbox is None:
         return None
 
+    try:
+        elem_name = (current_info.name or "").replace(" ", "_")[:30] or "element"
+        # strip chars that are invalid in filenames
+        elem_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in elem_name)
+    except Exception as exc:
+        _raise_if_access_denied(exc)
+        elem_name = "element"
+
     region = (
         current_bbox["x"],
         current_bbox["y"],
@@ -1143,13 +1199,6 @@ def image_pick(
 
     out = _Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-
-    try:
-        elem_name = (current_info.name or "").replace(" ", "_")[:30] or "element"
-        # strip chars that are invalid in filenames
-        elem_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in elem_name)
-    except Exception:
-        elem_name = "element"
 
     # usedforsecurity=False: this is a filename suffix, and md5 is unavailable on a
     # FIPS-mode host without it.

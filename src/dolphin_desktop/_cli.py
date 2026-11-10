@@ -1124,11 +1124,19 @@ def _spy_cmd(args: argparse.Namespace) -> None:
     if args.image_pick:
         from dolphin_desktop._spy import image_pick
 
-        image_pick(output_dir=args.output_dir, backend=backend)
+        try:
+            image_pick(output_dir=args.output_dir, backend=backend)
+        except PermissionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
         return
 
     if args.pick:
-        result = pick(backend=backend)
+        try:
+            result = pick(backend=backend)
+        except PermissionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
         chain = result["chain"]
         if result["message"]:
             print(f"  {result['message']}")
