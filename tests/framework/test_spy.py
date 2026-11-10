@@ -261,6 +261,63 @@ class TestSelectorAndNodeHelpers:
 
 
 class TestAccessDenied:
+    @pytest.mark.parametrize(
+        ("operation", "field"),
+        [
+            ("selector", "name"),
+            ("selector", "control_type"),
+            ("selector", "automation_id"),
+            ("selector", "class_name"),
+            ("chain", "control_type"),
+            ("chain", "parent"),
+            ("owner", "top_level_parent"),
+            ("owner", "control_type"),
+            ("owner", "parent"),
+            ("owner", "handle"),
+            ("owner", "rectangle"),
+            ("resolve", "class_name"),
+            ("resolve", "name"),
+            ("info_rect", "rectangle"),
+            ("wrapper_rect", "rectangle"),
+            ("siblings", "parent"),
+            ("siblings", "control_type"),
+            ("siblings", "class_name"),
+            ("tree", "children"),
+        ],
+    )
+    def test_selector_and_owner_properties_preserve_denial(self, operation, field):
+        denial = Exception(-2147024891, "localized provider denial")
+
+        class DeniedInfo:
+            name = "Save"
+            control_type = "Button"
+            automation_id = "save"
+            class_name = "Button"
+            rectangle = _Rect()
+            parent = _Info()
+
+            def __getattribute__(self, name):
+                if name == field:
+                    raise denial
+                return super().__getattribute__(name)
+
+        info = DeniedInfo()
+        operations = {
+            "selector": lambda: _spy._selector_for_info(info),
+            "chain": lambda: _spy._build_parent_chain(info),
+            "owner": lambda: _spy._element_owner_is_alive(info),
+            "resolve": lambda: _spy._resolve_chain_to_wrapper(info, [], "uia"),
+            "info_rect": lambda: _spy._info_rect(info),
+            "wrapper_rect": lambda: _spy._wrapper_rect(info),
+            "siblings": lambda: _spy._index_among_siblings(info),
+            "tree": lambda: _spy._find_info_by_selector(info, {"title": "Save"}),
+        }
+        # Keep the owner traversal on this object so each requested property is reached.
+        if operation == "owner":
+            DeniedInfo.parent = None
+        with pytest.raises(PermissionError, match="E_ACCESSDENIED"):
+            operations[operation]()
+
     @pytest.mark.parametrize("hresult", [-2147024891, 0x80070005])
     @pytest.mark.parametrize("fallback", [False, True])
     @pytest.mark.parametrize("representation", ["hresult", "args"])

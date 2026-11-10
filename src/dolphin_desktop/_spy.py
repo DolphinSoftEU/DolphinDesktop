@@ -249,7 +249,8 @@ def _element_owner_is_alive(info: Any) -> bool:
             candidate = top_level_parent() if callable(top_level_parent) else top_level_parent
             if candidate is not None:
                 owner = candidate
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         pass
 
     visited: set[int] = set()
@@ -264,14 +265,16 @@ def _element_owner_is_alive(info: Any) -> bool:
         # owner with the root just because the root itself is still alive.
         try:
             is_window = str(getattr(owner, "control_type", "") or "").casefold() == "window"
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             is_window = False
         if is_window:
             break
 
         try:
             parent = owner.parent
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             return False
         if parent is None:
             break
@@ -279,20 +282,23 @@ def _element_owner_is_alive(info: Any) -> bool:
 
     try:
         handle = int(owner.handle)
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         handle = 0
     if handle:
         try:
             import win32gui
 
             return bool(win32gui.IsWindow(handle))
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             # A diagnostic failure must not cancel a live picker.
             return True
 
     try:
         _ = owner.rectangle
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return False
     return True
 
@@ -690,19 +696,23 @@ def _selector_for_info(info: Any) -> dict[str, str]:
     """Extract a suggested_selector dict from a single UIAElementInfo."""
     try:
         name = info.name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         name = ""
     try:
         control_type = info.control_type or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         control_type = ""
     try:
         auto_id = info.automation_id or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         auto_id = ""
     try:
         cls = info.class_name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         cls = ""
     return _suggest_selector(auto_id, name, cls, control_type)
 
@@ -730,11 +740,13 @@ def _build_parent_chain(info: Any) -> tuple[Any, list[dict[str, Any]]]:
             break
         try:
             ctype = current.control_type or ""
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             ctype = ""
         try:
             parent = current.parent
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             parent = None
 
         # Stop at the top-level window — the caller already has it as `window`.
@@ -759,7 +771,8 @@ def _info_rect(info: Any) -> tuple[int, int, int, int] | None:
     try:
         r = info.rectangle
         return (int(r.left), int(r.top), int(r.right), int(r.bottom))
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
 
 
@@ -767,7 +780,8 @@ def _wrapper_rect(wrapper: Any) -> tuple[int, int, int, int] | None:
     try:
         r = wrapper.rectangle()
         return (int(r.left), int(r.top), int(r.right), int(r.bottom))
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
 
 
@@ -775,16 +789,19 @@ def _resolve_chain_to_wrapper(window_info: Any, chain: list[dict[str, Any]], bac
     """Resolve the chain through live pywinauto; return wrapper or ``None``."""
     try:
         import pywinauto as _pw
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
 
     try:
         win_cls = window_info.class_name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         win_cls = ""
     try:
         win_name = window_info.name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         win_name = ""
 
     kw: dict[str, Any] = {}
@@ -801,7 +818,8 @@ def _resolve_chain_to_wrapper(window_info: Any, chain: list[dict[str, Any]], bac
             spec = spec.child_window(**sel)
         spec.wait("exists", timeout=1.5)
         return spec.wrapper_object()
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
 
 
@@ -822,7 +840,8 @@ def _index_among_siblings(info: Any) -> int | None:
     """Index of *info* among siblings sharing its control_type and class_name."""
     try:
         parent = info.parent
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
     if parent is None:
         return None
@@ -831,22 +850,26 @@ def _index_among_siblings(info: Any) -> int | None:
         return None
     try:
         ct = info.control_type or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         ct = ""
     try:
         cls = info.class_name or ""
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         cls = ""
     try:
         children = parent.children()
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         return None
     idx = 0
     for child in children:
         try:
             c_ct = child.control_type or ""
             c_cls = child.class_name or ""
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             continue
         if c_ct != ct or c_cls != cls:
             continue
@@ -871,13 +894,15 @@ def _find_info_by_selector(root_info: Any, sel: dict[str, Any]) -> Any | None:
             return None
         try:
             children = info.children()
-        except Exception:
+        except Exception as exc:
+            _raise_if_access_denied(exc)
             return None
         for child in children:
             try:
                 child_name = (child.name or "").split("\t")[0]
                 child_ct = child.control_type or ""
-            except Exception:
+            except Exception as exc:
+                _raise_if_access_denied(exc)
                 continue
             if (not title or child_name == title) and (not ct or child_ct == ct):
                 return child

@@ -47,6 +47,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   (`E_ACCESSDENIED`) and exits with code 1 instead of silently waiting for
   cancellation. Both UIA lookup paths preserve the error, and the picker clears
   its highlight while continuing to tolerate transient element loss (KAN-760).
+  Permission errors also propagate during owner-liveness checks and selector
+  construction, verification and repair after Ctrl+Click.
 
 * Recorder native Edit regression now checks real pywin32 thread/process
   results on both the owning thread and a worker (KAN-759). The regression covers

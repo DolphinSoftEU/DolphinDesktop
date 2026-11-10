@@ -99,6 +99,9 @@ If UI Automation denies access during `--pick` or `--image-pick`, the picker rem
 prints an access-denied diagnostic to stderr and exits with code 1. Check the target
 application's permissions and integrity level. Transient element disappearance
 remains tolerated, and pressing Escape normally cancels the picker.
+For `--pick`, access denial also fails the command during owner checks and after selection,
+including selector construction and verification; it is not reported as cancellation
+or an unverified locator.
 
 ## `dolphin record`
 
