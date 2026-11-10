@@ -104,6 +104,33 @@ def test_owned_activation_timeout_remains_acceptance_failure(monkeypatch):
     keyboard.assert_not_called()
 
 
+def test_recorder_wait_services_controller_messages_before_observing_focus(monkeypatch):
+    state = {"focus": 0}
+    rec = Mock()
+    pump = Mock(side_effect=lambda: state.update(focus=789))
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    _recorder_window._wait_for_recorder_state(rec, lambda: state["focus"] == 789)
+    pump.assert_called_once_with()
+
+
+def test_recorder_wait_times_out_without_sending_input_or_skipping(monkeypatch):
+    rec = Mock(_hook_error=None)
+    rec._evt_queue.qsize.return_value = 0
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 3]))
+    monkeypatch.setattr(_recorder_window._recorder, "_capture_context", lambda: "no focus")
+    mouse = Mock()
+    keyboard = Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    with pytest.raises(AssertionError, match=r"no focus.*expected owned Edit"):
+        _recorder_window._wait_for_recorder_state(
+            rec, lambda: False, details=lambda: "expected owned Edit"
+        )
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
+
+
 def test_worker_query_pumps_same_process_window_messages():
     # No foreground activation or desktop input is needed for WM_GETTEXT.
     gui = _recorder_window.win32gui

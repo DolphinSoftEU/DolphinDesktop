@@ -52,6 +52,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Recorder process-isolation acceptance now pumps controller-thread messages
+  while waiting for cross-process focus and native input delivery. It checks
+  HWND, PID and focus together before sending keys, retains bounded failure
+  diagnostics, and does not turn missing focus into a skipped acceptance test.
+
 * `dolphin spy --pick` and `dolphin spy --image-pick` now report UI Automation access denial
   (`E_ACCESSDENIED`) and exits with code 1 instead of silently waiting for
   cancellation. Both UIA lookup paths preserve the error, and the picker clears

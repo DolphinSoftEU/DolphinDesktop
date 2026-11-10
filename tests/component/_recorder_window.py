@@ -374,6 +374,24 @@ def _owned_recorder_window(ready):
                 process.communicate(timeout=5)
 
 
+def _wait_for_recorder_state(rec, predicate, *, timeout=2, details=lambda: ""):
+    """Service controller messages while the owned AUT finishes native input."""
+    deadline = time.monotonic() + timeout
+    while True:
+        # Foreground activation and mouse focus changes cross input queues.
+        # The controller must service sent messages even after its foreground
+        # check succeeded; sleeping here can stall the remaining focus handoff.
+        win32gui.PumpWaitingMessages()
+        if predicate():
+            return
+        assert time.monotonic() < deadline, (
+            f"Timed out waiting for focus or queued events: "
+            f"context={_recorder._capture_context()!r}, "
+            f"hook_error={rec._hook_error!r}, queued_events={rec._evt_queue.qsize()}, {details()}"
+        )
+        time.sleep(0.005)
+
+
 def record_process_isolation(directory):
     """Queue real input from two processes and drain with the foreign window active."""
     from ._real_window import ID_EDIT
@@ -401,14 +419,7 @@ def record_process_isolation(directory):
         assert rec._hook_error is None
 
         def wait_until(predicate, details=lambda: ""):
-            deadline = time.monotonic() + 2
-            while not predicate():
-                assert time.monotonic() < deadline, (
-                    f"Timed out waiting for focus or queued events: "
-                    f"context={_recorder._capture_context()!r}, "
-                    f"hook_error={rec._hook_error!r}, queued_keys={len(key_events())}, {details()}"
-                )
-                time.sleep(0.005)
+            _wait_for_recorder_state(rec, predicate, details=details)
 
         def key_events():
             with rec._evt_queue.mutex:
@@ -436,7 +447,17 @@ def record_process_isolation(directory):
                 # per AUT exercises mouse isolation; activation restores focus.
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            wait_until(lambda edit=edit: _recorder._capture_context().focus == edit)
+
+            def focus_matches(root=root, pid=pid, edit=edit):
+                context = _recorder._capture_context()
+                return (context.hwnd, context.pid, context.focus) == (root, pid, edit)
+
+            wait_until(
+                focus_matches,
+                details=lambda root=root, pid=pid, edit=edit: (
+                    f"expected HWND/PID/focus={(root, pid, edit)!r}"
+                ),
+            )
             for _ in range(4):
                 context = _recorder._capture_context()
                 assert win32gui.GetForegroundWindow() == root, "Owned AUT lost foreground"
