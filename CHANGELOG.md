@@ -50,7 +50,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   Permission errors also propagate during owner-liveness checks and selector
   construction, verification and repair after Ctrl+Click.
   Image capture also preserves access denial when reading the selected element's
-  name, preventing a PNG save and successful exit after that error.
+  name before capturing the screen or creating the output directory, preventing
+  a PNG save and successful exit after that error.
 
 * Recorder native Edit regression now checks real pywin32 thread/process
   results on both the owning thread and a worker (KAN-759). The regression covers

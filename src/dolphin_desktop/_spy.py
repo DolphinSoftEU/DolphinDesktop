@@ -1178,6 +1178,14 @@ def image_pick(
     if current_bbox is None:
         return None
 
+    try:
+        elem_name = (current_info.name or "").replace(" ", "_")[:30] or "element"
+        # strip chars that are invalid in filenames
+        elem_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in elem_name)
+    except Exception as exc:
+        _raise_if_access_denied(exc)
+        elem_name = "element"
+
     region = (
         current_bbox["x"],
         current_bbox["y"],
@@ -1190,14 +1198,6 @@ def image_pick(
 
     out = _Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-
-    try:
-        elem_name = (current_info.name or "").replace(" ", "_")[:30] or "element"
-        # strip chars that are invalid in filenames
-        elem_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in elem_name)
-    except Exception as exc:
-        _raise_if_access_denied(exc)
-        elem_name = "element"
 
     # usedforsecurity=False: this is a filename suffix, and md5 is unavailable on a
     # FIPS-mode host without it.

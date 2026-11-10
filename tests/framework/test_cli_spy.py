@@ -69,7 +69,8 @@ class TestPickWiring:
         self, monkeypatch, capsys, tmp_path, stage
     ):
         mode = "--image-pick" if stage == "image_name" else "--pick"
-        monkeypatch.setattr("sys.argv", ["dolphin", "spy", mode, "--output-dir", str(tmp_path)])
+        output_dir = tmp_path / "templates"
+        monkeypatch.setattr("sys.argv", ["dolphin", "spy", mode, "--output-dir", str(output_dir)])
         state = {"selected": False, "polls": 0}
         denial = Exception(-2147024891, "localized provider denial")
         owner = SimpleNamespace(control_type="Window", parent=None, name="AUT", class_name="AUT")
@@ -131,10 +132,7 @@ class TestPickWiring:
         assert state["selected"] == (stage != "owner")
         assert highlight.call_count >= 1
         cleanup.assert_called_once_with()
-        if stage == "image_name":
-            grab.assert_called_once_with(bbox=(0, 0, 20, 20), all_screens=True)
-        else:
-            grab.assert_not_called()
+        grab.assert_not_called()
         grab.return_value.save.assert_not_called()
         output = capsys.readouterr()
         assert "error:" in output.err and "E_ACCESSDENIED" in output.err
@@ -143,6 +141,7 @@ class TestPickWiring:
         assert "Locator call" not in output.out
         assert "Template saved:" not in output.out
         assert "unverified" not in output.out and "unreachable" not in output.out
+        assert not output_dir.exists()
         assert list(tmp_path.iterdir()) == []
 
     @pytest.mark.parametrize("mode", ["--pick", "--image-pick"])
