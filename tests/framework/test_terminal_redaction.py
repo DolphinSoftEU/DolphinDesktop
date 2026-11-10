@@ -4,8 +4,36 @@ from __future__ import annotations
 
 import pytest
 
-from dolphin_desktop._terminal import _TerminalRedactor
+from dolphin_desktop import path_join
+from dolphin_desktop._terminal import _display_identifiers, _TerminalRedactor
 from tests._allure_redaction import terminal_session
+from tests._terminal_redaction import invocation_paths, run_terminal_case
+
+
+@pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
+@pytest.mark.parametrize("mode", ["success", "call", "teardown"])
+def test_real_plugin_collects_runs_and_redacts_from_subdirectory(tmp_path, workers, mode):
+    code, output = run_terminal_case(tmp_path, workers=workers, mode=mode)
+    assert code == (0 if mode == "success" else 1), output
+    assert "INTERNALERROR" not in output
+    assert "KAN763_CANARY_739184" not in output, output
+    assert "test_case.py::test_auth[case-***]" in output, output
+    assert "test_case.py::test_public" in output, output
+    assert ("2 passed" if mode != "call" else "1 passed") in output, output
+
+
+def test_real_plugin_redacts_collect_only_identifiers(tmp_path):
+    code, output = run_terminal_case(tmp_path, workers=False, mode="collection")
+    assert code == 0, output
+    assert "KAN763_CANARY_739184" not in output, output
+    assert "test_auth[case-***]" in output, output
+    assert "2 tests collected" in output, output
+
+
+def test_real_plugin_runs_minimal_test_without_a_backend_provider(tmp_path):
+    code, output = run_terminal_case(tmp_path, workers=False, mode="smoke")
+    assert code == 0, output
+    assert "1 passed" in output, output
 
 
 def test_terminal_masks_identifiers_without_masking_unrelated_words_or_changing_items():
@@ -78,9 +106,11 @@ def test_terminal_redactor_can_run_without_a_terminal_reporter():
         "test_login[SECRET123]",
     ],
 )
-def test_xdist_deferral_recognizes_all_display_forms_and_remains_scoped(display):
+def test_xdist_deferral_recognizes_all_display_forms_and_remains_scoped(display, tmp_path):
     session, writer, writes, cleanups = terminal_session(workers=True)
-    session.config.cwd_relative_nodeid = lambda nodeid: nodeid.removeprefix("tests/")
+    paths = invocation_paths(tmp_path, "tests")
+    session.config.rootpath = paths.rootpath
+    session.config.invocation_params = paths.invocation_params
     original = writer.write
     redactor = _TerminalRedactor(lambda item: set())
     redactor.pytest_configure(session.config)
@@ -110,3 +140,22 @@ def test_xdist_deferral_recognizes_all_display_forms_and_remains_scoped(display)
     assert report.nodeid == nodeid
     cleanups[0]()
     assert writer.write is original
+
+
+@pytest.mark.parametrize(
+    ("subdir", "expected_path"),
+    [
+        ("", "tests/nested/test_case.py"),
+        ("tests", path_join("nested", "test_case.py")),
+        ("tests/nested", "test_case.py"),
+        ("sibling", path_join("..", "tests", "nested", "test_case.py")),
+    ],
+)
+def test_display_identifiers_preserve_parameter_suffix(tmp_path, subdir, expected_path):
+    config = invocation_paths(tmp_path, subdir)
+    nodeid = "tests/nested/test_case.py::TestAuth::test_login[case-a::b/c]"
+    assert _display_identifiers(nodeid, config) == (
+        nodeid,
+        expected_path + "::TestAuth::test_login[case-a::b/c]",
+        "b/c]",
+    )

@@ -52,6 +52,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Fixed pytest 9.2 collection and terminal reporting when invoked outside the
+  root directory, preserving sensitive parameter redaction in serial and xdist
+  runs (KAN-763). The pytest extra now declares `pytest>=9.0.3,<10`; CI checks
+  installed wheels with 9.0.3, 9.2.0 and the latest 9.x on Python 3.11-3.13.
+
 * Native component AUT readiness is published by renaming a completed JSON
   file, preventing recorder replay and process-isolation tests from reading
   an empty or partially written HWND/PID identity.

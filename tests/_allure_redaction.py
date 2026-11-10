@@ -53,7 +53,8 @@ def terminal_session(*, enabled: bool = True, workers: bool = False) -> tuple[An
     writer = SimpleNamespace(write=lambda text, **kwargs: writes.append((text, kwargs)))
     reporter = SimpleNamespace(_tw=writer)
     config = SimpleNamespace(
-        cwd_relative_nodeid=lambda nodeid: nodeid,
+        rootpath=Path.cwd(),
+        invocation_params=SimpleNamespace(dir=Path.cwd()),
         getoption=lambda name, default=None: 2 if workers and name == "numprocesses" else default,
         pluginmanager=SimpleNamespace(getplugin=lambda name: reporter if enabled else None),
         add_cleanup=cleanups.append,

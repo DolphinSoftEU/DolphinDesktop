@@ -167,6 +167,61 @@ jobs:
           flags: windows-py${{ matrix.python-version }}
           fail_ci_if_error: false
 
+  pytest-compatibility:
+    name: "Pytest compatibility / Python ${{ matrix.python-version }} / pytest ${{ matrix.pytest }}"
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        pytest: ["==9.0.3", "==9.2.0", ">=9.0.3,<10"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+
+      - name: Build wheel with locked tools
+        run: |
+          uv sync --locked --only-group build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run --no-sync python -m build --no-isolation --wheel --outdir artifacts/pytest-compatibility/dist
+
+      - name: Install wheel with selected pytest in a clean environment
+        shell: pwsh
+        env:
+          PYTEST_SPEC: ${{ matrix.pytest }}
+        run: |
+          uv venv artifacts/pytest-compatibility/venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheel = (Get-ChildItem artifacts/pytest-compatibility/dist/*.whl).FullName
+          uv pip install --python artifacts/pytest-compatibility/venv/Scripts/python.exe "$wheel" "pytest$env:PYTEST_SPEC" pytest-xdist pytest-timeout
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip check --python artifacts/pytest-compatibility/venv/Scripts/python.exe
+
+      - name: Verify real plugin collection, reporting and terminal redaction
+        run: >-
+          artifacts/pytest-compatibility/venv/Scripts/python.exe -m pytest
+          tests/framework/test_terminal_redaction.py -q
+          --junitxml=artifacts/pytest-compatibility/results.xml
+
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pytest-compatibility-${{ matrix.python-version }}-${{ strategy.job-index }}
+          path: |
+            artifacts/pytest-compatibility/dist/
+            artifacts/pytest-compatibility/results.xml
+          if-no-files-found: error
+
   package-linux:
     name: "Linux package install and import"
     runs-on: ubuntu-latest
@@ -391,7 +446,7 @@ jobs:
   package:
     name: Build package
     runs-on: windows-latest
-    needs: [unit, runner-console, component-windows, package-linux, security, minimum-dependencies, qt-agent-reproducibility]
+    needs: [unit, runner-console, component-windows, package-linux, security, minimum-dependencies, qt-agent-reproducibility, pytest-compatibility]
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       version: ${{ steps.version.outputs.version }}

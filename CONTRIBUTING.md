@@ -84,6 +84,27 @@ After dependency/resolver changes, rerun this matrix and the full-lockfile
 security gate. The wheel and reports let a tester reproduce the installation
 without relying on metadata from an unrelated environment.
 
+## Pytest compatibility (KAN-763)
+
+The supported pytest range is `>=9.0.3,<10`. A separate Windows CI matrix
+installs the built wheel in clean environments on Python 3.11-3.13 with
+pytest 9.0.3, 9.2.0 and the latest 9.x release. It runs
+`tests/framework/test_terminal_redaction.py`, including production-plugin
+subprocesses without a backend provider, collection-only output, sensitive
+parameter IDs, call/teardown failures, subdirectory invocation and xdist.
+The regular unit suite continues to use the lockfile's pytest version.
+Support for pytest 10 requires separate verification before raising the cap.
+
+To reproduce against an installed wheel, install the chosen pytest version,
+`pytest-xdist` and `pytest-timeout` in a clean environment alongside the wheel,
+then run that environment's Python from the repository root:
+
+```powershell
+<venv>/Scripts/python.exe -m pytest tests/framework/test_terminal_redaction.py -q
+```
+
+CI uploads the wheel and JUnit compatibility results for each matrix entry.
+
 ## Recorder acceptance (KAN-576 / KAN-759)
 
 Run on a controlled interactive Windows desktop, without concurrent user input:
