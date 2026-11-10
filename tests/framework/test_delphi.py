@@ -316,6 +316,25 @@ def test_form_resolves_each_selector_and_reports_lookup_errors() -> None:
         form.component(name="Missing", cls="TEdit", timeout=0)
 
 
+def test_missing_names_explain_provider_requirement() -> None:
+    application = Mock()
+    application._app.window.return_value.wait.side_effect = RuntimeError("missing ID")
+    app = DelphiApp(application)
+    with pytest.raises(ElementNotFoundError) as form_error:
+        app.form(name="MainForm", timeout=0)
+    application._app.window.assert_called_once_with(auto_id="MainForm")
+    assert "TForm.Name is not automatically" in form_error.value.hint
+    assert "Delphi 12 VCL" in form_error.value.hint
+    assert "application-supplied UIA provider" in form_error.value.hint
+
+    form = DelphiForm(app, Mock(), name="MainForm")
+    with pytest.raises(ElementNotFoundError) as component_error:
+        form.component(name="EdtName", cls="TEdit", timeout=0)
+    assert "TComponent.Name is not automatically" in component_error.value.hint
+    assert "Dolphin supplies no VCL Name provider" in component_error.value.hint
+    assert "TLabel controls may be absent" in component_error.value.hint
+
+
 def test_form_helpers_cover_recursion_class_label_and_readiness() -> None:
     roleless = _Element(name="Field", class_name="", control_type="Pane")
     actual_label = _Element(name="Field", class_name="Static", control_type="Text")

@@ -688,11 +688,12 @@ class DelphiBackend(_MarkerBackend):
     Real automation runs through UIA — dolphin's Delphi surface
     (:class:`~dolphin_desktop.DelphiApp`, ``.launch_delphi``) sits on
     top of the UIA backend, adding a Delphi-aware
-    ``TComponent.Name → AutomationId`` locator. Registered as a marker
+    provider-published UIA ID / caption / index locator. Registered as a marker
     so ``list_backends()`` surfaces it.
 
-    Capability set matches UIA + Delphi component surface: locate /
-    read / input / programmatic — the full accessibility contract.
+    Capabilities describe available facade operations. Each target must
+    expose the required UIA elements and patterns; Delphi Name exposure
+    is not guaranteed by this marker.
     """
 
     id = "delphi"

@@ -964,11 +964,11 @@ class Desktop:
         """Launch a Delphi / VCL (or Lazarus / LCL) executable and
         return a :class:`~dolphin_desktop.DelphiApp` facade.
 
-        Delphi / VCL apps expose standard controls via Windows UIA
-        automatically. On Delphi 10.4+ the developer-assigned
-        ``TComponent.Name`` propagates to UIA ``AutomationId`` — the
-        preferred selector. On older Delphi / Lazarus the fallback is
-        (class_name, caption).
+        Standard windowed VCL / LCL controls can be exposed through UIA.
+        ``TComponent.Name`` is not automatically a UIA ``AutomationId``,
+        including on Delphi 12. Name lookup needs an application-supplied
+        provider publishing matching IDs; Dolphin supplies no such provider.
+        Use captions, indices or UIA-visible adjacent labels otherwise.
 
         Args:
             cmd: Full command line to the Delphi/Lazarus executable.

@@ -21,17 +21,12 @@ pytest fixture launches.
 
 ## Why LCL, not real Delphi
 
-Lazarus's LCL is Free Pascal's open-source implementation of the same
-VCL API. Class names (`TButton`, `TEdit`, …), the property model
-(`Text`, `Caption`, `Checked`), and the runtime message pump match
-real Delphi 1:1 for the standard controls dolphin cares about — the
-same `TComponent.Name → AutomationId` mapping applies to both.
-
-The one systemic difference: Delphi 10.4+ ships an
-`UIA property provider` that publishes AutomationId; Lazarus 4.x does
-not (yet). Dolphin's Delphi backend accounts for that — it tries
-AutomationId first, then falls back to `class_name + caption` which
-Lazarus does publish.
+Lazarus LCL shares many VCL control APIs, but its accessibility tree is
+not evidence for Delphi VCL behavior. These tests use UIA-visible captions,
+indices and adjacency. They do not prove `TComponent.Name` lookup.
+Neither a Delphi version nor an LCL component Name guarantees a matching
+UIA AutomationId. See `../test_real_vcl.py` for the separate official
+DelphiVCL runtime regression and `docs/guides/delphi.md` for prerequisites.
 
 ## What the sample proves
 

@@ -210,8 +210,9 @@ def test_delphi_app_launches():
         assert form.title()
 ```
 
-For component lookups by `TComponent.Name`, see the
-[Delphi guide](guides/delphi.md).
+For UIA selectors and the provider prerequisite for `TComponent.Name` lookup,
+see the [Delphi guide](guides/delphi.md). Stock VCL does not automatically
+publish component Names as AutomationIds, including on Delphi 12.
 
 ### PowerBuilder (Appeon 2019+)
 

@@ -80,6 +80,13 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
     return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
 
+def _publish_ready(ready_file: Path, hwnd: int, pid: int) -> None:
+    """Expose the readiness path only after its complete identity is closed."""
+    pending = ready_file.with_name(ready_file.name + ".tmp")
+    pending.write_text(json.dumps({"hwnd": hwnd, "pid": pid}), encoding="utf-8")
+    pending.replace(ready_file)
+
+
 def main(ready_file: Path | None = None, controller_pid: int | None = None) -> None:
     global _controller_pid
     _controller_pid = controller_pid
@@ -119,9 +126,7 @@ def main(ready_file: Path | None = None, controller_pid: int | None = None) -> N
     win32gui.ShowWindow(hwnd, win32con.SW_SHOWNORMAL)
     win32gui.UpdateWindow(hwnd)
     if ready_file is not None:
-        ready_file.write_text(
-            json.dumps({"hwnd": hwnd, "pid": win32api.GetCurrentProcessId()}), encoding="utf-8"
-        )
+        _publish_ready(ready_file, hwnd, win32api.GetCurrentProcessId())
     win32gui.PumpMessages()
 
 

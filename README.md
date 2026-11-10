@@ -25,6 +25,11 @@ Oracle Forms, `ws3270.exe` or a terminal emulator for the mainframe
 backends, and an `ffmpeg` binary for video recording. Each stack guide
 states what it needs.
 
+Delphi Name selectors require an application-supplied UIA provider publishing
+matching AutomationIds. Stock Delphi 12 / `delphivcl==1.0.7` does not provide
+that mapping, and Dolphin ships no VCL Name provider. See the
+[Delphi prerequisites and real VCL reference](docs/guides/delphi.md).
+
 ```bash
 pip install dolphin-desktop
 ```
@@ -116,7 +121,7 @@ Everything reproducible runs from `pytest tests/`.
 | PowerBuilder (Appeon runtime)    | Verified — real      | live PB 2025 demo: UIA + OCR fallback |
 | SAP GUI                          | Verified — real      | live ABAP system over GUI Scripting   |
 | Mainframe TN5250 (IBM i)         | Verified — real      | pub400, a public IBM i host           |
-| Delphi VCL (RAD Studio)          | Verified — real      | licensed RAD Studio app               |
+| Delphi VCL (RAD Studio)          | UIA controls only; Name requires provider | stock Delphi 12 / delphivcl 1.0.7 does not expose component names |
 | Oracle Forms 12c                 | Verified — real      | live Forms 12c client                 |
 | HLLAPI (emulator)                | Verified — real      | commercial emulator                   |
 | Mainframe TN3270                 | Verified — simulated | in-repo 3270 protocol server          |
