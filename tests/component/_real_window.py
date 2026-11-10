@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 from pathlib import Path
 
@@ -21,8 +22,13 @@ ID_STATUS = 1004
 STATUS_IDLE = "Status: idle"
 STATUS_CLICKED = "Status: clicked"
 EDIT_INITIAL_TEXT = "initial text"
+WM_ALLOW_CONTROLLER_FOREGROUND = win32con.WM_APP + 100
 
 _controls: dict[int, int] = {}
+_controller_pid: int | None = None
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_user32.AllowSetForegroundWindow.argtypes = [ctypes.c_ulong]
+_user32.AllowSetForegroundWindow.restype = ctypes.c_int
 
 
 def _create_control(
@@ -52,6 +58,15 @@ def _set_status(text: str) -> None:
 
 
 def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
+    if msg == WM_ALLOW_CONTROLLER_FOREGROUND:
+        # Only the explicit test controller may receive a grant, and only an
+        # AUT that actually owns the foreground may hand that permission back.
+        if _controller_pid != wparam or win32gui.GetForegroundWindow() != hwnd:
+            return 0
+        return _user32.AllowSetForegroundWindow(wparam)
+    if msg == win32con.WM_SETFOCUS and ID_EDIT in _controls:
+        win32gui.SetFocus(_controls[ID_EDIT])
+        return 0
     if msg == win32con.WM_COMMAND:
         ctrl_id = wparam & 0xFFFF
         if ctrl_id == ID_OK:
@@ -65,7 +80,9 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
     return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
 
 
-def main(ready_file: Path | None = None) -> None:
+def main(ready_file: Path | None = None, controller_pid: int | None = None) -> None:
+    global _controller_pid
+    _controller_pid = controller_pid
     wc = win32gui.WNDCLASS()
     wc.lpfnWndProc = _wnd_proc
     wc.lpszClassName = WINDOW_CLASS
@@ -111,4 +128,6 @@ def main(ready_file: Path | None = None) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ready-file", type=Path)
-    main(parser.parse_args().ready_file)
+    parser.add_argument("--controller-pid", type=int)
+    args = parser.parse_args()
+    main(args.ready_file, args.controller_pid)

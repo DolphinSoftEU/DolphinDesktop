@@ -219,6 +219,48 @@ jobs:
           print("Linux wheel import succeeded without Windows-only dependencies")
           PY
 
+  runner-console:
+    name: "dolphin-run console / Python ${{ matrix.python-version }}"
+    runs-on: windows-latest
+    needs: unit
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    env:
+      DOLPHIN_VIDEO: "off"
+      DOLPHIN_TRACE: "off"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+      - name: Install locked runner test dependencies
+        run: uv sync --locked --group dev --python ${{ matrix.python-version }}
+      - name: Verify real console events and process cleanup
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "runner-console.xml"
+          uv run --no-sync pytest tests/component/test_runner_console.py -q --junitxml $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$results = Get-Content -Raw -LiteralPath $report
+          foreach ($launcher in @("exe", "python", "nested")) {
+            $name = "test_runner_preserves_result_and_controls_its_tree[interrupt-$launcher]"
+            $cases = $results.SelectNodes("//testcase[@name='$name']")
+            if ($cases.Count -ne 1 -or $cases[0].SelectNodes("skipped|failure|error").Count -ne 0) {
+              throw "KAN-753 requires a real passing Ctrl+Break regression: $name"
+            }
+          }
+          if ($results.SelectNodes("//testcase/skipped").Count -ne 0) {
+            throw "Runner console acceptance cannot pass with skipped tests"
+          }
+
   component-windows:
     name: "Windows component tests"
     runs-on: windows-latest
@@ -280,7 +322,7 @@ jobs:
         shell: pwsh
         run: |
           $report = Join-Path $env:RUNNER_TEMP "component-results.xml"
-          uv run --locked pytest -m "(component or windows_component) and not qt_agent" -q --junitxml $report
+          uv run --locked pytest -m "(component or windows_component) and not qt_agent" -q --junitxml $report --basetemp "$env:RUNNER_TEMP/component-pytest"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
@@ -289,6 +331,16 @@ jobs:
           if ($cdp.Count -ne 1 -or $cdp[0].SelectNodes("skipped|failure|error").Count -ne 0) {
             throw "KAN-475 requires a passing real Chromium handshake and profile-isolation regression"
           }
+
+      - name: Upload component test and recorder replay evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-component-evidence
+          path: |
+            ${{ runner.temp }}/component-results.xml
+            ${{ runner.temp }}/component-pytest/**/test_real_record_generate_repl*/recorded*
+          if-no-files-found: warn
 
       - name: Install Qt agent test bindings
         run: uv sync --locked --group dev --group qt-tests --extra vision
@@ -339,7 +391,7 @@ jobs:
   package:
     name: Build package
     runs-on: windows-latest
-    needs: [unit, component-windows, package-linux, security, minimum-dependencies, qt-agent-reproducibility]
+    needs: [unit, runner-console, component-windows, package-linux, security, minimum-dependencies, qt-agent-reproducibility]
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       version: ${{ steps.version.outputs.version }}

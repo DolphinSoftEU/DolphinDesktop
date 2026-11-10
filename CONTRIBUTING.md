@@ -97,10 +97,37 @@ focus transitions, and record → generate → replay against an owned native AU
 The replay test verifies the generated selector's HWND, clears the Edit, executes
 the unmodified generated script and checks the resulting field text. The JUnit
 report is saved to `artifacts/recorder-acceptance.xml` (`--output` overrides it).
+For KAN-759, native classification uses the actual pywin32 TID/PID sequence on
+both the window-owning thread and a worker, checking ordinary Edit, ES_PASSWORD
+Edit and unknown controls. Unit coverage separately exercises list and tuple
+results, including changes to either TID or PID between stability checks.
 Missing tests, skips, failures and errors cannot pass the gate. Ordinary developer
 runs may skip when Windows refuses foreground activation; this is incomplete
 verification, and does not satisfy acceptance. The tests never send activation
 shortcuts or input to a foreign foreground window.
+
+Both transition tests wait for actual native Edit text before changing focus;
+hook callbacks alone do not prove target delivery. The process-isolation test
+checks cumulative text separately for each AUT while the recorder worker remains
+paused. Worker queries pump owner-thread messages and use a bounded wait.
+The controlled AUT restores focus to its Edit on activation. Before switching
+between AUTs, the foreground AUT explicitly allows its declared controller PID
+to activate the next window. This handoff is limited to the two owned AUTs;
+unrelated foreground windows never receive a request. Each AUT is clicked once
+so rapid return visits cannot select existing text through a double-click.
+
+Replay checks retain stage-specific native/UIA text, HWND/focus, modifier state
+and recorder progress in `recorded.diagnostics.json`. Native WM_GETTEXT reads
+have a 500 ms timeout and require a successful call status; zero characters on
+a successful read means an empty field. Probe errors retain partial evidence
+and earlier stages before the original exception is re-raised.
+
+CI uploads the generated script, diagnostics and JUnit report as
+`windows-component-evidence`, including on failure. Review the
+[PR checks](https://github.com/DolphinSoftEU/DolphinDesktop/pull/69/checks) and
+[CI runs](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml)
+for execution results. Keep run-specific findings in the PR or CI reports;
+merge requires passing current-commit CI and a fully passing interactive gate.
 
 ## Code Style
 

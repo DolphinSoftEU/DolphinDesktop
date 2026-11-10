@@ -240,6 +240,19 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
     return True  # signal that we handled the protocol
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config: pytest.Config) -> None:
+    """Validate after collection has imported nested conftest registrations."""
+    from ._backend import _validate_backend_id
+
+    backend_id = config.getoption("--dolphin-backend", default=None)
+    if backend_id is not None:
+        try:
+            _validate_backend_id(backend_id)
+        except ValueError as exc:
+            raise pytest.UsageError(f"--dolphin-backend: {exc}") from exc
+
+
 def pytest_configure(config: pytest.Config) -> None:
     from ._junit import _JUnitRedactor
     from ._terminal import _TerminalRedactor
@@ -277,8 +290,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--dolphin-backend",
         default="uia",
-        choices=["uia", "win32"],
-        help="pywinauto backend to use (default: uia)",
+        metavar="ID",
+        help="Registered backend ID (including installed plugins), or auto (default: uia)",
     )
     group.addoption(
         "--dolphin-timeout",

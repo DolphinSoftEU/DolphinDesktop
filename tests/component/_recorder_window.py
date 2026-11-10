@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import ctypes
 import json
 import os
 import queue
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import Future
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
@@ -29,13 +31,46 @@ def _desktop_unavailable(reason):
     pytest.skip(reason)
 
 
-def _activate_owned_window(root):
+def _activate_owned_window(root, timeout=2):
     try:
         win32gui.SetForegroundWindow(root)
+        status, _ = win32gui.SendMessageTimeout(
+            root, win32con.WM_NULL, 0, 0, win32con.SMTO_ABORTIFHUNG, int(timeout * 1000)
+        )
+        if not status:
+            _desktop_unavailable("Owned AUT did not acknowledge foreground activation")
     except win32gui.error as exc:
         _desktop_unavailable(f"Interactive desktop refused activation of owned AUT: {exc}")
-    if win32gui.GetForegroundWindow() != root:
-        _desktop_unavailable("Interactive desktop did not activate owned AUT")
+    # Cross-input-queue foreground activation is asynchronous. Keep servicing
+    # our own windows while the target processes its activation request.
+    deadline = time.monotonic() + timeout
+    while (foreground := win32gui.GetForegroundWindow()) != root:
+        if time.monotonic() >= deadline:
+            _desktop_unavailable(
+                f"Interactive desktop did not activate owned AUT {root} within {timeout}s; "
+                f"foreground HWND is {foreground}"
+            )
+        win32gui.PumpWaitingMessages()
+        time.sleep(0.005)
+
+
+def _handoff_owned_foreground(owners):
+    """Ask the foreground AUT to let this controller activate the next AUT."""
+    from ._real_window import WM_ALLOW_CONTROLLER_FOREGROUND
+
+    foreground = win32gui.GetForegroundWindow()
+    if foreground not in owners:
+        return
+    status, granted = win32gui.SendMessageTimeout(
+        foreground,
+        WM_ALLOW_CONTROLLER_FOREGROUND,
+        os.getpid(),
+        0,
+        win32con.SMTO_ABORTIFHUNG,
+        2000,
+    )
+    if not status or not granted:
+        _desktop_unavailable("Foreground AUT refused to hand activation back to its controller")
 
 
 def check_real_hook_lifecycle():
@@ -51,6 +86,117 @@ def check_real_hook_lifecycle():
             rec._hook_thread.join(3)
             assert not rec._hook_thread.is_alive()
     assert rec._hook_error is None
+
+
+def _query_on_worker(query, timeout=2):
+    """Pump owner-window messages while a daemon worker runs a bounded query.
+
+    Same-process GetWindowText sends synchronous WM_GETTEXT to the owner thread.
+    A blocking Future.result() here would prevent that thread from replying.
+    Do not join on timeout: even executor shutdown would wait indefinitely for
+    a stuck native call. Daemon workers cannot hold up test-process shutdown.
+    """
+    result = Future()
+
+    def run():
+        try:
+            result.set_result(query())
+        except BaseException as exc:
+            result.set_exception(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + timeout
+    while worker.is_alive():
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Timed out waiting for native context worker")
+        win32gui.PumpWaitingMessages()
+        worker.join(min(0.005, max(0, deadline - time.monotonic())))
+    return result.result(timeout=0)
+
+
+def _native_edit_text(edit):
+    """Read the owned Edit directly, with a bounded cross-process WM_GETTEXT."""
+    buffer = ctypes.create_unicode_buffer(256)
+    status, _copied = win32gui.SendMessageTimeout(
+        edit,
+        win32con.WM_GETTEXT,
+        len(buffer),
+        ctypes.addressof(buffer),
+        win32con.SMTO_ABORTIFHUNG,
+        500,
+    )
+    if not status:
+        raise OSError("WM_GETTEXT failed: SendMessageTimeout returned zero status")
+    return buffer.value
+
+
+def _wait_for_edit_text(field, root, edit, expected, stage, rec, output, timeout=5):
+    """Keep stage-specific native/UIA evidence before the owned AUT is closed."""
+    evidence = {}
+    errors = {}
+    failure = None
+
+    def probe(name, query):
+        nonlocal failure
+        try:
+            value = query()
+            evidence[name] = value
+            return value
+        except Exception as exc:
+            errors[name] = {"type": type(exc).__name__, "message": str(exc)}
+            if failure is None:
+                failure = (exc, exc.__traceback__)
+            return None
+
+    deadline = time.monotonic() + timeout
+    while True:
+        evidence = {
+            "stage": stage,
+            "expected": expected,
+            "root_hwnd": root,
+            "edit_hwnd": edit,
+            "processed_events": rec._processed,
+            "hook_error": repr(rec._hook_error),
+        }
+        uia_text = probe("uia_text", field.text)
+        native_text = probe("native_text", lambda: _native_edit_text(edit))
+        matched = not errors and uia_text == native_text == expected
+        if errors or matched or time.monotonic() >= deadline:
+            context = probe("context", _recorder._capture_context)
+            if context is not None:
+                evidence.pop("context")  # Flatten the non-JSON input-context object.
+                evidence.update(
+                    context_hwnd=context.hwnd,
+                    focus_hwnd=context.focus,
+                    context_pid=context.pid,
+                    password=context.password,
+                )
+            probe("resolved_hwnd", lambda: field._resolve().handle)
+            probe("foreground_hwnd", win32gui.GetForegroundWindow)
+            probe(
+                "modifiers",
+                lambda: {
+                    str(vk): win32api.GetAsyncKeyState(vk)
+                    for vk in (win32con.VK_SHIFT, win32con.VK_CONTROL, win32con.VK_MENU)
+                },
+            )
+            probe("caps_lock", lambda: win32api.GetKeyState(win32con.VK_CAPITAL))
+            if errors:
+                evidence["errors"] = errors
+            report = Path(output).with_suffix(".diagnostics.json")
+            try:
+                previous = json.loads(report.read_text(encoding="utf-8")) if report.exists() else []
+                report.write_text(json.dumps([*previous, evidence], indent=2), encoding="utf-8")
+            except Exception as write_error:
+                if failure is None:
+                    raise
+                failure[0].add_note(f"Could not save recorder diagnostics: {write_error}")
+            if failure is not None:
+                raise failure[0].with_traceback(failure[1])
+            assert matched, f"Native Edit text mismatch: {json.dumps(evidence, sort_keys=True)}"
+            return
+        time.sleep(0.01)
 
 
 def record_native_transitions():
@@ -114,18 +260,26 @@ def record_native_transitions():
     try:
         win32gui.ShowWindow(root, win32con.SW_SHOW)
         _activate_owned_window(root)
-        focus_control(controls[0])
-        assert _recorder._capture_context().password is False
-        focus_control(controls[1])
-        assert _recorder._capture_context().password is True
-        focus_control(controls[2])
-        assert _recorder._capture_context().password is None
+        # KAN-759: use the unmodified pywin32 result and query the real focus
+        # both on its owning thread and on a worker, as the hook does.
+        for control, password in zip(controls, (False, True, None), strict=True):
+            focus_control(control)
+            identity = win32process.GetWindowThreadProcessId(root)
+            assert tuple(identity) == (win32api.GetCurrentThreadId(), pid)
+            contexts = [
+                _recorder._capture_context(),
+                _query_on_worker(_recorder._capture_context),
+            ]
+            for context in contexts:
+                assert (context.hwnd, context.pid, context.focus) == (root, pid, control)
+                assert context.password is password
 
         sys.unraisablehook = failures.append
         hook.start()
         assert rec._hook_ready.wait(3), "Hooks did not initialize"
         assert rec._hook_error is None
         # No worker exists until all four runs and the final focus change finish.
+        native_text = {controls[0]: "", controls[1]: ""}
         for index, (control, letter) in enumerate(
             [(controls[1], "q"), (controls[0], "t"), (controls[1], "s"), (controls[2], "k")]
         ):
@@ -136,6 +290,15 @@ def record_native_transitions():
                 win32api.keybd_event(vk, 0, 0, 0)
                 win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
             pump_until(lambda count=(index + 1) * 4: rec._evt_queue.qsize() >= count)
+            if control in native_text:
+                native_text[control] += letter * 4
+                # A low-level callback runs before delivery to the target queue.
+                # Consume WM_KEYDOWN/WM_CHAR while this control still has focus,
+                # before moving focus or destroying HWNDs another test may reuse.
+                pump_until(
+                    lambda control=control: win32gui.GetWindowText(control) == native_text[control]
+                )
+            win32gui.PumpWaitingMessages()
         focus_control(controls[0])
         assert rec._processed == 0
         assert rec._evt_queue.qsize() == 16
@@ -154,6 +317,7 @@ def record_native_transitions():
             rec.stop()
             hook.join(3)
         sys.unraisablehook = previous
+        win32gui.PumpWaitingMessages()
         win32gui.DestroyWindow(root)
         # A bounded check also prevents an unnoticed leaked global hook thread.
         assert not hook.is_alive()
@@ -175,6 +339,8 @@ def _owned_recorder_window(ready):
             str(Path(__file__).with_name("_real_window.py")),
             "--ready-file",
             str(ready),
+            "--controller-pid",
+            str(os.getpid()),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -234,10 +400,14 @@ def record_process_isolation(directory):
         assert rec._hook_ready.wait(3), "Hooks did not initialize"
         assert rec._hook_error is None
 
-        def wait_until(predicate):
+        def wait_until(predicate, details=lambda: ""):
             deadline = time.monotonic() + 2
             while not predicate():
-                assert time.monotonic() < deadline, "Timed out waiting for focus or queued events"
+                assert time.monotonic() < deadline, (
+                    f"Timed out waiting for focus or queued events: "
+                    f"context={_recorder._capture_context()!r}, "
+                    f"hook_error={rec._hook_error!r}, queued_keys={len(key_events())}, {details()}"
+                )
                 time.sleep(0.005)
 
         def key_events():
@@ -245,17 +415,27 @@ def record_process_isolation(directory):
                 return [event for event in rec._evt_queue.queue if event and event[0] == "key"]
 
         expected = []
+        native_text = {owned[0]: "", foreign[0]: ""}
         for (root, pid), letter in ((owned, "t"), (foreign, "q"), (owned, "s"), (foreign, "z")):
             edit = win32gui.GetDlgItem(root, ID_EDIT)
+            _handoff_owned_foreground(native_text)
             _activate_owned_window(root)
             left, top, right, bottom = win32gui.GetWindowRect(edit)
             point = ((left + right) // 2, (top + bottom) // 2)
             win32api.SetCursorPos(point)
             assert win32gui.GetForegroundWindow() == root
             assert win32process.GetWindowThreadProcessId(root)[1] == pid
-            assert win32gui.WindowFromPoint(point) == edit, "Owned Edit is obscured"
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            under_pointer = win32gui.WindowFromPoint(point)
+            assert under_pointer == edit, (
+                f"Owned Edit is obscured: root={root}, edit={edit}, point={point}, "
+                f"hit={under_pointer}, hit_info={_recorder._get_window_info(under_pointer)!r}"
+            )
+            if not native_text[root]:
+                # Returning to the same Edit quickly can make a second click a
+                # double-click that selects its existing text. One real click
+                # per AUT exercises mouse isolation; activation restores focus.
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
             wait_until(lambda edit=edit: _recorder._capture_context().focus == edit)
             for _ in range(4):
                 context = _recorder._capture_context()
@@ -267,6 +447,15 @@ def record_process_isolation(directory):
                 win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
                 expected.append((vk, root, pid, edit))
             wait_until(lambda: len(key_events()) >= len(expected))
+            native_text[root] += letter * 4
+            # Hook callbacks precede target delivery. Keep focus on this AUT
+            # until its cumulative text proves that the keys were consumed.
+            wait_until(
+                lambda edit=edit, text=native_text[root]: _native_edit_text(edit) == text,
+                details=lambda edit=edit, text=native_text[root]: (
+                    f"native_text={_native_edit_text(edit)!r}, expected={text!r}"
+                ),
+            )
 
         # Prove that both processes were captured, in order, before any interpretation.
         assert rec._processed == 0
@@ -357,7 +546,7 @@ def record_generate_replay(output):
             win32api.keybd_event(ord("T"), 0, 0, 0)
             win32api.keybd_event(ord("T"), 0, win32con.KEYEVENTF_KEYUP, 0)
         wait_until(lambda: rec._processed >= 5)
-        wait_until(lambda: field.text() == "tttt")
+        _wait_for_edit_text(field, root, edit, "tttt", "recorded input", rec, output)
         rec.stop()
         assert rec.wait(2)
         rec._hook_thread.join(2)
@@ -375,10 +564,10 @@ def record_generate_replay(output):
         namespace = {}
         exec(compile(Path(output).read_text(encoding="utf-8"), str(output), "exec"), namespace)
         win32gui.SendMessage(edit, win32con.WM_SETTEXT, 0, "")
-        assert field.text() == ""
+        _wait_for_edit_text(field, root, edit, "", "cleared before replay", rec, output)
         guard()
         namespace["test_recorded"](process_id=pid)
-        wait_until(lambda: field.text() == "tttt")
+        _wait_for_edit_text(field, root, edit, "tttt", "generated script replay", rec, output)
         assert status_field._resolve().handle == status
         assert status_field.text() == STATUS_IDLE
     finally:

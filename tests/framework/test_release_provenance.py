@@ -454,6 +454,7 @@ def test_ci_artifact_is_built_only_after_required_checks_and_smoke_test():
     package = workflow["jobs"]["package"]
     assert set(package["needs"]) == {
         "unit",
+        "runner-console",
         "component-windows",
         "package-linux",
         "security",

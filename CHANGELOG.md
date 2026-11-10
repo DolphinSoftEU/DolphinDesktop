@@ -50,6 +50,90 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   open closed ancestors through the branch arrow and click the node. A path that
   does not exist raises `ElementNotFoundError` naming how far it got, and a column
   too narrow to read a level from raises `UnsupportedCapabilityError`.
+* `dolphin spy --pick` and `dolphin spy --image-pick` now report UI Automation access denial
+  (`E_ACCESSDENIED`) and exits with code 1 instead of silently waiting for
+  cancellation. Both UIA lookup paths preserve the error, and the picker clears
+  its highlight while continuing to tolerate transient element loss (KAN-760).
+  Permission errors also propagate during owner-liveness checks and selector
+  construction, verification and repair after Ctrl+Click.
+  Image capture also preserves access denial when reading the selected element's
+  name before capturing the screen or creating the output directory, preventing
+  a PNG save and successful exit after that error.
+  Rectangle coordinate reads also preserve permission errors instead of silently
+  returning a zero-sized bounding box.
+
+* Recorder native Edit regression now checks real pywin32 thread/process
+  results on both the owning thread and a worker (KAN-759). The regression covers
+  ordinary text, password and unknown controls, followed by delayed hook events;
+  the acceptance gate also requires generated selectors and record/replay to pass.
+  Sequence normalization was already included in the KAN-576 fix.
+  Worker queries pump the owner thread's window messages and use a bounded wait
+  without blocking executor shutdown, avoiding same-process WM_GETTEXT deadlocks.
+  Record/replay checks retain stage-specific native/UIA text and focus diagnostics;
+  CI preserves these with the generated script and JUnit report on failure.
+  Diagnostic probe exceptions retain partial evidence and earlier stages before
+  propagating the original error; independent probes still run after a failure.
+  Native transition tests now wait for text delivery before changing focus and
+  drain window messages before HWND cleanup, preventing queued test input from
+  crossing test boundaries. Concurrent runner tests seed pipe input before launch
+  and surface startup exceptions instead of masking them with pipe-write errors.
+  Process-isolation runs also verify cumulative native text in each AUT before
+  moving focus. WM_GETTEXT diagnostics distinguish a failed call from a successful
+  empty read. Contributor documentation keeps the acceptance procedure and CI links.
+  Owned-window activation waits for the AUT to acknowledge activation and for its
+  foreground HWND, rather than rejecting asynchronous cross-process activation
+  immediately. A bounded timeout remains an acceptance failure before input.
+  Process-isolation fixtures restore Edit focus and hand foreground permission
+  back to their explicit controller before switching AUTs. Repeated keyboard
+  runs no longer risk selecting prior text with a second physical click.
+
+* Recorder mouse and keyboard callbacks forward input even when context capture,
+  queueing, shutdown or a logging handler raises. Failures stop recording and are
+  reported by completion methods without logging captured input. The first callback
+  failure remains the cause when the message loop or hook cleanup subsequently
+  fails; secondary failures are attached as exception notes. Regression tests cover the
+  real ctypes callbacks with pointer-sized arguments and results on x64, alongside
+  the existing WinAPI signature fix. Logging handler failures during hook cleanup
+  cannot interrupt removal of remaining hooks or completion signaling (KAN-757).
+
+* The pytest `--dolphin-backend` option accepts registered and entry-point
+  backends, as well as `auto`, and reports unknown IDs with registry diagnostics
+  instead of restricting selection to UIA/Win32 (KAN-754).
+  Validation waits for nested `conftest.py` registrations during collection,
+  the repository bootstrap accepts the same IDs, and `Desktop(backend="auto")`
+  resolves the concrete backend before launching or connecting to native apps.
+* `dolphin-run` survives Ctrl+Break (and Ctrl+C when console Ctrl+C processing is
+  enabled) while the command handles the console event and preserves its exit
+  code. The inherited Ctrl+C ignore setting is preserved; use Ctrl+Break for
+  `CREATE_NEW_PROCESS_GROUP` launchers. Commands have ten seconds to finish after
+  interruption; a Windows Job Object then terminates an unresponsive command
+  tree with code 130. Venv redirectors and nested runners are covered, and owned
+  processes are cleaned up before the hidden desktop handle is closed (KAN-753).
+  Job cleanup now waits for zero active processes before releasing handles;
+  a failed query, termination failure or cleanup timeout is reported as an error.
+  After forced termination, waiting for the command process is also limited to
+  ten seconds; a stuck process raises a timeout instead of retrying indefinitely.
+  Cleanup after a failed job assignment or thread resume also uses a bounded
+  wait, validates its result, and releases process/thread handles on every path.
+  Console regressions run in the Windows component suite. Descendant cleanup
+  checks retain the original process handle before exit, avoiding PID reuse races.
+  Job cleanup also waits on retained process handles: zero active processes can
+  be reported before those handles become signalled, especially during startup.
+  A completion port retains additional handles during execution. Final cleanup
+  first blocks new job members with a zero active-process limit, then captures
+  the complete process set. Lost advisory birth notifications no longer cause
+  false cleanup timeouts or replace valid exit codes.
+  Monitoring now validates job membership before retaining a notified process,
+  tolerates advisory read/access failures, and releases completed process
+  handles during execution. PID reuse therefore cannot add foreign processes
+  to cleanup waits or grow a historical handle cache.
+  Incomplete successful PID-list responses are retried. A required CI matrix
+  verifies Ctrl+Break on Python 3.11 and 3.13, including installed and nested
+  launchers, without allowing skipped tests.
+  Concurrent `run_hidden()` calls now share one console handler that broadcasts
+  interrupts to all active callers, and use private child environment blocks.
+  Handler removal errors are checked; a module-held callback remains safe after
+  failed removal and the registration is reused until removal succeeds.
 
 * UIA wrapper searches verify uniqueness against the full TreeWalker tree,
   including when FindAll returns a single partial match (KAN-745).
