@@ -1195,7 +1195,8 @@ def image_pick(
         elem_name = (current_info.name or "").replace(" ", "_")[:30] or "element"
         # strip chars that are invalid in filenames
         elem_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in elem_name)
-    except Exception:
+    except Exception as exc:
+        _raise_if_access_denied(exc)
         elem_name = "element"
 
     # usedforsecurity=False: this is a filename suffix, and md5 is unavailable on a

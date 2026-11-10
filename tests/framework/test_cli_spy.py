@@ -64,11 +64,12 @@ class TestWindowArgument:
 
 
 class TestPickWiring:
-    @pytest.mark.parametrize("stage", ["selector", "parent", "validation", "owner"])
+    @pytest.mark.parametrize("stage", ["selector", "parent", "validation", "owner", "image_name"])
     def test_main_reports_denial_after_selection_or_during_owner_check(
         self, monkeypatch, capsys, tmp_path, stage
     ):
-        monkeypatch.setattr("sys.argv", ["dolphin", "spy", "--pick", "--output-dir", str(tmp_path)])
+        mode = "--image-pick" if stage == "image_name" else "--pick"
+        monkeypatch.setattr("sys.argv", ["dolphin", "spy", mode, "--output-dir", str(tmp_path)])
         state = {"selected": False, "polls": 0}
         denial = Exception(-2147024891, "localized provider denial")
         owner = SimpleNamespace(control_type="Window", parent=None, name="AUT", class_name="AUT")
@@ -81,7 +82,7 @@ class TestPickWiring:
 
             @property
             def name(self):
-                if state["selected"] and stage == "selector":
+                if state["selected"] and stage in ("selector", "image_name"):
                     raise denial
                 return "Save"
 
@@ -121,6 +122,7 @@ class TestPickWiring:
             patch("dolphin_desktop._spy._element_info_from_point", return_value=Info()),
             patch("dolphin_desktop._spy._Highlighter.update") as highlight,
             patch("dolphin_desktop._spy._Highlighter.clear") as cleanup,
+            patch("PIL.ImageGrab.grab") as grab,
             patch("dolphin_desktop._spy._PICK_POLL", 0),
             pytest.raises(SystemExit) as caught,
         ):
@@ -129,11 +131,17 @@ class TestPickWiring:
         assert state["selected"] == (stage != "owner")
         assert highlight.call_count >= 1
         cleanup.assert_called_once_with()
+        if stage == "image_name":
+            grab.assert_called_once_with(bbox=(0, 0, 20, 20), all_screens=True)
+        else:
+            grab.assert_not_called()
+        grab.return_value.save.assert_not_called()
         output = capsys.readouterr()
         assert "error:" in output.err and "E_ACCESSDENIED" in output.err
         assert "Traceback" not in output.err
         assert "Cancelled." not in output.out
         assert "Locator call" not in output.out
+        assert "Template saved:" not in output.out
         assert "unverified" not in output.out and "unreachable" not in output.out
         assert list(tmp_path.iterdir()) == []
 
