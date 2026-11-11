@@ -7,7 +7,12 @@ import pytest
 from dolphin_desktop import path_join
 from dolphin_desktop._terminal import _display_identifiers, _TerminalRedactor
 from tests._allure_redaction import terminal_session
-from tests._terminal_redaction import invocation_paths, run_terminal_case
+from tests._terminal_redaction import (
+    IS_WINDOWS,
+    invocation_paths,
+    run_terminal_case,
+    windows_drive_paths,
+)
 
 
 @pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
@@ -159,3 +164,20 @@ def test_display_identifiers_preserve_parameter_suffix(tmp_path, subdir, expecte
         expected_path + "::TestAuth::test_login[case-a::b/c]",
         "b/c]",
     )
+
+
+@pytest.mark.skipif(not IS_WINDOWS, reason="Different-drive paths require Windows path semantics")
+def test_terminal_redacts_absolute_display_path_when_invoked_from_another_drive():
+    config = windows_drive_paths()
+    nodeid = "tests/test_auth.py::test_login[SECRET123]"
+    absolute_display = str(config.rootpath / "tests/test_auth.py") + "::test_login[SECRET123]"
+    identifiers = _display_identifiers(nodeid, config)
+    assert identifiers == (nodeid, absolute_display, "test_login[SECRET123]")
+
+    redactor = _TerminalRedactor(lambda item: {"SECRET123"})
+    redactor._remember(nodeid, {"SECRET123"}, config)
+    for identifier in identifiers:
+        assert redactor.redact("PASSED " + identifier) == "PASSED " + identifier.replace(
+            "SECRET123", "***"
+        )
+    assert redactor.redact("PASSED test_public") == "PASSED test_public"

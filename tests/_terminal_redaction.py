@@ -8,6 +8,15 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+IS_WINDOWS = os.name == "nt"
+
+
+def windows_drive_paths() -> SimpleNamespace:
+    """Use lexical paths on distinct drives; neither drive needs to exist."""
+    return SimpleNamespace(
+        rootpath=Path("C:/project"), invocation_params=SimpleNamespace(dir=Path("D:/run"))
+    )
+
 
 def invocation_paths(root: Path, subdir: str = "") -> SimpleNamespace:
     return SimpleNamespace(rootpath=root, invocation_params=SimpleNamespace(dir=root / subdir))
