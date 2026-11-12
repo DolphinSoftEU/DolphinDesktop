@@ -631,16 +631,21 @@ class _UserObjectFlags(ctypes.Structure):
 
 # Desktop management
 
+_desktop_creation_lock = threading.Lock()
+
 
 def create_hidden_desktop(name: str = DESKTOP_NAME) -> int:
     """Create a named hidden desktop and return its handle.
 
     ``CreateDesktopW`` on an already-existing name returns a new handle to the
     same object — the caller must still call :func:`close_desktop` on it.
+    Creation is serialized within this process: concurrent native creation of
+    the same desktop can fail with ERROR_ACCESS_DENIED during initialization.
     """
-    h_desk = _user32.CreateDesktopW(name, None, None, 0, _DESKTOP_ACCESS, None)
-    if not h_desk:
-        raise OSError(f"CreateDesktopW({name!r}) failed: error {ctypes.get_last_error()}")
+    with _desktop_creation_lock:
+        h_desk = _user32.CreateDesktopW(name, None, None, 0, _DESKTOP_ACCESS, None)
+        if not h_desk:
+            raise OSError(f"CreateDesktopW({name!r}) failed: error {ctypes.get_last_error()}")
     return h_desk
 
 

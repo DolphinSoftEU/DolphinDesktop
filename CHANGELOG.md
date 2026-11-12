@@ -52,6 +52,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Serialized native desktop creation in concurrent `run_hidden()` calls to
+  prevent `CreateDesktopW` initialization races returning access denied.
+  Added a real two-thread desktop lifecycle regression; console acceptance
+  failures now include controller stderr, with CI retaining process evidence.
+
 * Terminal redaction now preserves complete parameter IDs containing `::`
   when deriving name-only displays, preventing sensitive values from leaking
   in verbose collection output. Regression coverage includes collection-only

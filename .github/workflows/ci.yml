@@ -301,8 +301,11 @@ jobs:
       - name: Verify real console events and process cleanup
         shell: pwsh
         run: |
-          $report = Join-Path $env:RUNNER_TEMP "runner-console.xml"
-          uv run --no-sync pytest tests/component/test_runner_console.py -q --junitxml $report
+          $evidence = Join-Path $env:RUNNER_TEMP "runner-console"
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $report = Join-Path $evidence "results.xml"
+          $cases = Join-Path $evidence "cases"
+          uv run --no-sync pytest tests/component/test_runner_console.py -q --junitxml $report --basetemp $cases
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           [xml]$results = Get-Content -Raw -LiteralPath $report
           foreach ($launcher in @("exe", "python", "nested")) {
@@ -315,6 +318,14 @@ jobs:
           if ($results.SelectNodes("//testcase/skipped").Count -ne 0) {
             throw "Runner console acceptance cannot pass with skipped tests"
           }
+
+      - name: Upload runner console evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-console-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/runner-console/
+          if-no-files-found: error
 
   component-windows:
     name: "Windows component tests"
