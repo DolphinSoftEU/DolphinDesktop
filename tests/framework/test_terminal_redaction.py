@@ -35,6 +35,27 @@ def test_real_plugin_redacts_collect_only_identifiers(tmp_path):
     assert "2 tests collected" in output, output
 
 
+@pytest.mark.parametrize("workers", [False, True], ids=["serial", "xdist"])
+@pytest.mark.parametrize("mode", ["collection", "success", "call", "teardown"])
+def test_real_plugin_redacts_parameter_ids_containing_node_separators(tmp_path, workers, mode):
+    code, output = run_terminal_case(
+        tmp_path,
+        workers=workers,
+        mode=mode,
+        parameter_id="case-KAN763_CANARY_739184::suffix",
+    )
+    assert code == (1 if mode in {"call", "teardown"} else 0), output
+    assert "KAN763_CANARY_739184" not in output, output
+    assert "test_auth[case-***::suffix]" in output, output
+    assert "test_public" in output, output
+    expected = (
+        "2 tests collected"
+        if mode == "collection"
+        else ("1 passed" if mode == "call" else "2 passed")
+    )
+    assert expected in output, output
+
+
 def test_real_plugin_runs_minimal_test_without_a_backend_provider(tmp_path):
     code, output = run_terminal_case(tmp_path, workers=False, mode="smoke")
     assert code == 0, output
@@ -162,8 +183,20 @@ def test_display_identifiers_preserve_parameter_suffix(tmp_path, subdir, expecte
     assert _display_identifiers(nodeid, config) == (
         nodeid,
         expected_path + "::TestAuth::test_login[case-a::b/c]",
-        "b/c]",
+        "test_login[case-a::b/c]",
     )
+
+
+@pytest.mark.parametrize(
+    ("nodeid", "expected_name"),
+    [
+        ("test_case.py", "test_case.py"),
+        ("test_case.py::TestAuth::test_login", "test_login"),
+        ("test_[auth].py::TestAuth::test_login[case-a::b[c::d]]", "test_login[case-a::b[c::d]]"),
+    ],
+)
+def test_display_name_separates_hierarchy_from_parameter_id(tmp_path, nodeid, expected_name):
+    assert _display_identifiers(nodeid, invocation_paths(tmp_path))[2] == expected_name
 
 
 @pytest.mark.skipif(not IS_WINDOWS, reason="Different-drive paths require Windows path semantics")

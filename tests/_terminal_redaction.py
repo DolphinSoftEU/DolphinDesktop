@@ -22,7 +22,9 @@ def invocation_paths(root: Path, subdir: str = "") -> SimpleNamespace:
     return SimpleNamespace(rootpath=root, invocation_params=SimpleNamespace(dir=root / subdir))
 
 
-def run_terminal_case(directory: Path, *, workers: bool, mode: str) -> tuple[int, str]:
+def run_terminal_case(
+    directory: Path, *, workers: bool, mode: str, parameter_id: str | None = None
+) -> tuple[int, str]:
     invocation = directory if mode == "smoke" else directory / "tests" / "nested"
     invocation.mkdir(parents=True, exist_ok=True)
     (directory / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
@@ -34,15 +36,17 @@ def cleanup(pin):
     if MODE == "teardown":
         raise RuntimeError("cleanup failed")
 
-@pytest.mark.parametrize("pin", ["KAN763_CANARY_739184"], ids=lambda value: "case-" + value)
+@pytest.mark.parametrize("pin", ["KAN763_CANARY_739184"], ids=[CASE_ID])
 def test_auth(pin, cleanup, request):
-    assert request.node.nodeid == "tests/nested/test_case.py::test_auth[case-" + pin + "]"
+    assert request.node.nodeid == "tests/nested/test_case.py::test_auth[" + CASE_ID + "]"
     if MODE == "call":
         raise RuntimeError("authentication failed")
 
 def test_public():
     assert True
-""".replace("MODE", repr(mode))
+""".replace("MODE", repr(mode)).replace(
+        "CASE_ID", repr(parameter_id if parameter_id is not None else "case-KAN763_CANARY_739184")
+    )
     (invocation / "test_case.py").write_text(
         "def test_smoke(): assert True\n" if mode == "smoke" else source,
         encoding="utf-8",

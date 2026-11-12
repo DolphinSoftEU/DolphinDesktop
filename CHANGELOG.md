@@ -52,6 +52,11 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Terminal redaction now preserves complete parameter IDs containing `::`
+  when deriving name-only displays, preventing sensitive values from leaking
+  in verbose collection output. Regression coverage includes collection-only
+  output and serial/xdist execution with call and teardown failures (KAN-763).
+
 * Fixed pytest 9.2 collection and terminal reporting when invoked outside the
   root directory, preserving sensitive parameter redaction in serial and xdist
   runs (KAN-763). The pytest extra now declares `pytest>=9.0.3,<10`; CI checks
