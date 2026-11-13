@@ -55,7 +55,7 @@ limitations, supported modes, out-of-scope decisions
 | **Mainframe 3270** (z/OS, CICS) | ws3270 subprocess + mock TN3270 server | [Mainframe](guides/mainframe.md) |
 | **Mainframe 5250** (IBM i, AS/400) | Pure-Python TN5250 (no NVT fallback) | [Mainframe](guides/mainframe.md) |
 | **HLLAPI** (PCOMM, Attachmate, Rocket) | ctypes binding to `EHLAPI32.DLL` | [Mainframe](guides/mainframe.md) |
-| **Delphi / VCL** (RAD Studio, Lazarus) | UIA + `TComponent.Name → AutomationId` locator | [Delphi](guides/delphi.md) |
+| **Delphi / VCL** (RAD Studio, Lazarus) | UIA + provider-published ID / caption / index locator | [Delphi](guides/delphi.md) |
 | **PowerBuilder** (2019+ Appeon) | UIA + OCR fallback for DataWindow | [PowerBuilder](guides/powerbuilder.md) |
 | Image fallback | Template matching + OCR with `dolphin-desktop[vision]` | [Image-based](guides/image-based.md) |
 | pytest | `desktop`/`launch` fixtures, CLI options, traces, screenshots, videos, retries | [FAQ](faq.md) |

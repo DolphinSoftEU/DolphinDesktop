@@ -460,6 +460,7 @@ def test_ci_artifact_is_built_only_after_required_checks_and_smoke_test():
         "security",
         "minimum-dependencies",
         "qt-agent-reproducibility",
+        "pytest-compatibility",
     }
     assert "if" not in package and "continue-on-error" not in package
     names = [step.get("name") for step in package["steps"]]

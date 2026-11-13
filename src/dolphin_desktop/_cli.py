@@ -30,7 +30,7 @@ version = "0.1.0"
 requires-python = ">={py_version}"
 dependencies = [
     "dolphin-desktop",
-    "pytest>=8.3",
+    "pytest>=9.0.3,<10",
 ]
 
 [tool.pytest.ini_options]
@@ -53,7 +53,7 @@ version = "0.1.0"
 requires-python = ">={py_version}"
 dependencies = [
     "dolphin-desktop",
-    "pytest>=8.3",
+    "pytest>=9.0.3,<10",
     "ruff>=0.8",
 ]
 
@@ -81,7 +81,7 @@ version = "0.1.0"
 requires-python = ">={py_version}"
 dependencies = [
     "dolphin-desktop",
-    "pytest>=8.3",
+    "pytest>=9.0.3,<10",
     "allure-pytest>=2.13",
     "ruff>=0.8",
 ]
@@ -409,13 +409,13 @@ def test_delphi_app_launches():
         assert form.title()  # any non-empty caption
 
 
-def test_lookup_by_component_name():
-    """Resolve a component by TComponent.Name from the Object Inspector."""
+def test_enumerate_visible_components():
+    """Enumerate components exposed by the target UIA provider."""
     with Desktop().launch_delphi(DELPHI_APP_PATH) as app:
         form = app.form(title_re=".*")
         form.wait_ready(timeout=10)
-        # Replace 'Button1' with the real Object Inspector name.
-        # btn = form.component(name="Button1", cls="TButton")
+        # Use name= only for IDs actually published by the UIA provider.
+        # btn = form.component(title="Save", cls="TButton")
         # btn.click()
         assert form.components()  # at least one child component visible
 '''
@@ -1040,8 +1040,8 @@ def _spy_delphi_cmd(args: argparse.Namespace) -> None:
     """Enumerate a Delphi / VCL app's forms and TComponent tree.
 
     Requires `--pid <delphi-pid>`. Walks the UIA tree via pywinauto,
-    printing each control's AutomationId (which maps to TComponent.Name
-    on Delphi 10.4+), class name, caption, and rectangle.
+    printing each control's provider-published AutomationId, class name,
+    caption, and rectangle. AutomationId need not equal TComponent.Name.
     """
     if not args.pid:
         print("Error: --delphi requires --pid <delphi-process-id>")

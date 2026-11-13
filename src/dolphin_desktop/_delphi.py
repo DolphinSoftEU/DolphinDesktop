@@ -1,22 +1,18 @@
 """Delphi / VCL (and Lazarus / LCL) native application automation.
 
 Delphi and its free counterpart Lazarus build Windows-native desktop
-apps using the VCL / LCL component library. Every window is a
-``TForm``; every widget descends from ``TWinControl`` and owns a real
-``HWND``. Standard controls (`TButton`, `TEdit`, `TMemo`,
-`TCheckBox`, `TComboBox`, `TListBox`, `TPageControl`, `TStringGrid`,
-`TListView`) are visible to Windows UIA out of the box.
+apps using the VCL / LCL component library. Forms and windowed widgets
+own real ``HWND`` handles. Standard windowed controls can be exposed
+through Windows UIA/MSAA, subject to the target's provider and patterns.
+Non-windowed controls such as ``TLabel`` may be absent from the UIA tree.
 
-On Delphi 10.4+ the VCL registers UIA property providers that surface
-the developer-assigned ``TComponent.Name`` (``Button1``,
-``EdtEmployee``, ``MemoLog``) as the UIA ``AutomationId``. This gives
-tests stable, developer-controlled selectors.
+``TComponent.Name`` is not automatically exposed as UIA ``AutomationId``,
+including on Delphi 12 (delphivcl 1.0.7). Name-based lookup requires an
+application-supplied UIA provider that explicitly publishes those IDs.
+Dolphin does not install such a provider or read Delphi RTTI. Without one,
+use the properties actually exposed by the target's UIA tree:
 
-Older Delphi and Lazarus (LCL) do **not** register the automation-id
-provider — for those the locator falls back to a multi-strategy
-resolver:
-
-1. ``auto_id == name`` (VCL 10.4+ / MSAA name pass)
+1. ``auto_id == name`` (provider-published ID)
 2. ``control_type == vcl→uia(cls) AND title == name`` — for buttons,
    check/radio, tabs, labels the caption is what LCL publishes.
 3. ``control_type == vcl→uia(cls) AND index == n`` — an ordinal
@@ -27,9 +23,8 @@ resolver:
    no caption.
 5. ``title_re=`` — regex on caption, for dynamic / templated captions.
 
-Third-party VCL frameworks (DevExpress, TMS, EhLib) draw their own
-canvases and are not reachable via UIA. Those need the injected Delphi
-RTTI agent DLL — deferred to v0.3+.
+Third-party and owner-drawn controls need their own accessibility support.
+Inspect their actual providers; Dolphin currently ships no Delphi RTTI agent.
 
 Public entry point::
 
@@ -39,8 +34,8 @@ Public entry point::
     form = app.form(title_re=r".*My VCL.*")
     form.wait_ready(timeout=10)
 
-    # Delphi 10.4+ — by TComponent.Name → AutomationId
-    form.component(name="EdtName", cls="TEdit").set_text("Alice")
+    # Standard VCL: explicit UIA-visible selectors, verified for this app
+    form.component(cls="TEdit", index=0).set_text("Alice")
 
     # Lazarus / LCL — by caption or adjacent label
     form.component(cls="TButton", title="Save").click()
@@ -251,7 +246,7 @@ class DelphiComponent:
     @property
     def name(self) -> str:
         """The identifier used to resolve this control (TComponent.Name
-        on VCL 10.4+, caption or ordinal on LCL)."""
+        when published by a provider, otherwise caption or ordinal)."""
         return self._name
 
     @property
@@ -287,9 +282,8 @@ class DelphiComponent:
         def _element_info_attrs() -> str:
             # Only read attributes that carry the CONTENT of the widget —
             # ``rich_text`` (TextPattern) and ``value`` (ValuePattern).
-            # Deliberately excludes ``name`` because on Delphi VCL 10.4+
-            # that is the developer-assigned TComponent.Name (a stable
-            # AutomationId, not the widget's text), and returning it as
+            # Deliberately excludes UIA ``name`` because it can be an
+            # accessible label rather than the widget's text. Returning it as
             # ``.text()`` when the widget is actually empty would fool
             # assertions like ``assert edit.text() == ""``.
             info = self._w.element_info
@@ -744,10 +738,9 @@ class DelphiForm:
     """A single Delphi ``TForm`` — the top-level window.
 
     Provides the primary lookup: :meth:`component` resolves a child by
-    ``TComponent.Name`` (the identifier the developer assigned in the
-    Object Inspector). Falls back to control-type + caption or adjacent
-    label for older Delphi / Lazarus builds that do not publish
-    AutomationId.
+    a provider-published UIA AutomationId. ``TComponent.Name`` is usable
+    only when the application's provider explicitly exposes it. Caption,
+    index and adjacent-label selectors work with UIA-visible controls.
     """
 
     def __init__(self, app: DelphiApp, window: Any, *, name: str | None = None) -> None:
@@ -805,10 +798,11 @@ class DelphiForm:
         """Resolve a child component.
 
         Args:
-            name: The component name assigned in the Delphi Object
-                Inspector (``Button1``, ``EdtEmployee``, ``MemoLog``).
-                On Delphi 10.4+ maps to UIA AutomationId. On LCL,
-                treated as a fallback caption match.
+            name: Provider-published UIA AutomationId, with a legacy
+                caption fallback. This is ``TComponent.Name`` only if the
+                application explicitly publishes that mapping; the Delphi
+                compiler version does not guarantee it. Prefer ``title``
+                for deliberate caption matching.
             cls: Optional Delphi class name (``"TButton"``,
                 ``"TEdit"``, ``"TMemo"``). Portable — resolves to the
                 UIA control_type + class-name aliases so the same lookup
@@ -829,7 +823,7 @@ class DelphiForm:
         if not any([name, title, title_re, index is not None, near_label]):
             raise DelphiError(
                 "component() requires at least one of name / title / title_re / index / near_label",
-                hint="pass name= for VCL 10.4+; title= or near_label= for LCL edits",
+                hint="pass a published UIA name=, title=, index= or a UIA-visible near_label=",
             )
 
         control_type = _uia_control_type(cls)
@@ -880,7 +874,9 @@ class DelphiForm:
             ):
                 try:
                     child = self._win.child_window(**criteria)
-                    if child.exists():
+                    # The outer loop owns the retry budget; pywinauto's
+                    # default exists timeout would multiply it per variant.
+                    if child.exists(timeout=0):
                         return DelphiComponent(child, name=marker, cls=cls)
                 except Exception as exc:
                     # TypeError → wrong backend (win32 rejects
@@ -896,9 +892,12 @@ class DelphiForm:
             + (f" (class {cls!r})" if cls else "")
             + f" not found on form {self._name!r} within {timeout}s",
             hint=(
-                "on Delphi 10.4+ verify TComponent.Name in the Object Inspector. "
-                "On Lazarus / LCL pass title= (caption) for buttons/checkboxes, "
-                "near_label= for edits, or index= for anonymous controls. "
+                "TComponent.Name is not automatically a UIA AutomationId, including "
+                "on Delphi 12 VCL. name= requires a provider-published ID "
+                "(or matches a caption through the legacy fallback). "
+                "Dolphin supplies no VCL Name provider or RTTI agent. "
+                "Use title=, index=, or near_label= only for UIA-visible controls; "
+                "non-windowed TLabel controls may be absent. "
                 "Use `dolphin spy --delphi --pid <pid>` to inspect the tree."
             ),
         ) from last_exc
@@ -1126,8 +1125,8 @@ class DelphiApp:
     Built by :meth:`Desktop.launch_delphi` /
     :meth:`Desktop.attach_delphi`. Wraps the underlying
     :class:`Application` and exposes VCL-native selectors — forms and
-    components resolved via ``TForm.Name`` / ``TComponent.Name`` on
-    Delphi 10.4+ or caption / adjacency heuristics on LCL.
+    components resolved via provider-published UIA IDs or explicit
+    caption / index / adjacency selectors on VCL and LCL.
 
     Fronts the ``delphi`` backend. Query supported operations via
     ``DelphiApp.backend_supports(Capability.INVOKE)`` etc.
@@ -1171,9 +1170,9 @@ class DelphiApp:
         """Resolve a top-level TForm.
 
         Args:
-            name: The Delphi ``TForm.Name`` (Object Inspector Name).
-                Preferred selector on Delphi 10.4+ where it maps to
-                UIA AutomationId.
+            name: UIA AutomationId. Resolves ``TForm.Name`` only when
+                the application's UIA provider explicitly publishes it.
+                Standard VCL, including Delphi 12, does not guarantee this.
             title: Exact window caption (TForm.Caption).
             title_re: Regex on the window caption.
             timeout: Seconds to wait for the form to appear.
@@ -1195,8 +1194,12 @@ class DelphiApp:
             raise ElementNotFoundError(
                 f"Delphi form not found (criteria={criteria!r})",
                 hint=(
-                    "check the Delphi Object Inspector for the TForm.Name, "
-                    "or use dolphin spy --delphi to enumerate top-level windows."
+                    "TForm.Name is not automatically a UIA AutomationId, including "
+                    "on Delphi 12 VCL. name= requires an application-supplied UIA "
+                    "provider publishing the matching ID; Dolphin supplies no VCL "
+                    "Name provider or RTTI agent. Inspect `dolphin spy --delphi "
+                    "--pid <pid>` and use title= or title_re= for visible captions. "
+                    "See docs/guides/delphi.md for the support boundary."
                 ),
             ) from exc
         return DelphiForm(self, win, name=name or "")
@@ -1252,10 +1255,9 @@ def _launch_delphi(
 ) -> DelphiApp:
     """Launch a Delphi / VCL executable and return a :class:`DelphiApp`.
 
-    Delphi apps do not need any environment variable prep — UIA
-    exposure is automatic on Delphi 10.4+. Older Delphi and Lazarus
-    still surface standard controls via UIA (with caption-based
-    identifiers) and MSAA.
+    Standard windowed Delphi and Lazarus controls can be exposed via
+    Windows UIA/MSAA. Exposure of TComponent.Name is application/provider
+    dependent and is not enabled by any Dolphin environment variable.
 
     The Delphi backend requires the UIA pywinauto backend because the
     component resolver uses ``automation_id`` / ``control_type`` filters

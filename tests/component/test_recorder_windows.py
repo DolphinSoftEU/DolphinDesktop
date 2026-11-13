@@ -17,6 +17,27 @@ from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
 pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(20)]
 
 
+def test_ready_identity_is_not_visible_during_partial_write(monkeypatch, tmp_path):
+    from tests.component import _real_window
+
+    ready = tmp_path / "owned.ready.json"
+    write_text = _real_window.Path.write_text
+    observed = []
+
+    def interrupted_write(path, data, *, encoding):
+        write_text(path, '{"hwnd":', encoding=encoding)
+        observed.append(ready.exists())
+        result = write_text(path, data, encoding=encoding)
+        observed.append(ready.exists())
+        return result
+
+    monkeypatch.setattr(_real_window.Path, "write_text", interrupted_write)
+    _real_window._publish_ready(ready, 123, 456)
+    assert observed == [False, False]
+    assert json.loads(ready.read_text(encoding="utf-8")) == {"hwnd": 123, "pid": 456}
+    assert list(tmp_path.iterdir()) == [ready]
+
+
 @pytest.mark.parametrize(
     "controller,requested_pid,foreground,granted",
     [
@@ -100,6 +121,33 @@ def test_owned_activation_timeout_remains_acceptance_failure(monkeypatch):
     monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
     with pytest.raises(pytest.fail.Exception, match="foreground HWND is 987"):
         _recorder_window._activate_owned_window(123)
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
+
+
+def test_recorder_wait_services_controller_messages_before_observing_focus(monkeypatch):
+    state = {"focus": 0}
+    rec = Mock()
+    pump = Mock(side_effect=lambda: state.update(focus=789))
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    _recorder_window._wait_for_recorder_state(rec, lambda: state["focus"] == 789)
+    pump.assert_called_once_with()
+
+
+def test_recorder_wait_times_out_without_sending_input_or_skipping(monkeypatch):
+    rec = Mock(_hook_error=None)
+    rec._evt_queue.qsize.return_value = 0
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 3]))
+    monkeypatch.setattr(_recorder_window._recorder, "_capture_context", lambda: "no focus")
+    mouse = Mock()
+    keyboard = Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    with pytest.raises(AssertionError, match=r"no focus.*expected owned Edit"):
+        _recorder_window._wait_for_recorder_state(
+            rec, lambda: False, details=lambda: "expected owned Edit"
+        )
     mouse.assert_not_called()
     keyboard.assert_not_called()
 

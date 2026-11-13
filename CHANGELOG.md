@@ -29,6 +29,15 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Breaking changes
 
+* Corrected the Delphi support contract: stock VCL (including Delphi 12 /
+  `delphivcl==1.0.7`) does not automatically expose `TForm.Name` or
+  `TComponent.Name` as UIA AutomationId. Name lookup requires an
+  application-supplied provider; Dolphin ships no VCL Name provider or RTTI
+  agent. Updated prerequisites, support matrix, examples and lookup failure
+  hints; added a real VCL reference regression separate from the Name-based
+  DESKTOP-161 acceptance scenario (KAN-761). Component lookup now probes
+  each criteria variant without pywinauto's extra default existence wait.
+
 * Java Access Bridge now requires an explicitly configured absolute `JAVA_HOME`
   and loads its DLL exclusively from `JAVA_HOME\bin`. HLLAPI requires an explicit
   absolute `hllapi_dll_path`; automatic DLL discovery has been removed (KAN-473).
@@ -50,6 +59,36 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   open closed ancestors through the branch arrow and click the node. A path that
   does not exist raises `ElementNotFoundError` naming how far it got, and a column
   too narrow to read a level from raises `UnsupportedCapabilityError`.
+* Native Qt build tooling now requires `soupsieve>=4.1` to address
+  CVE-2026-126190 in the `aqtinstall` dependency chain. The `native-build`
+  group requires Python 3.11.5+ so the lockfile cannot retain a vulnerable
+  Soup Sieve fallback for older Python patches. Library runtime requirements
+  are unchanged.
+
+* Serialized native desktop creation in concurrent `run_hidden()` calls to
+  prevent `CreateDesktopW` initialization races returning access denied.
+  Added a real two-thread desktop lifecycle regression; console acceptance
+  failures now include controller stderr, with CI retaining process evidence.
+
+* Terminal redaction now preserves complete parameter IDs containing `::`
+  when deriving name-only displays, preventing sensitive values from leaking
+  in verbose collection output. Regression coverage includes collection-only
+  output and serial/xdist execution with call and teardown failures (KAN-763).
+
+* Fixed pytest 9.2 collection and terminal reporting when invoked outside the
+  root directory, preserving sensitive parameter redaction in serial and xdist
+  runs (KAN-763). The pytest extra now declares `pytest>=9.0.3,<10`; CI checks
+  installed wheels with 9.0.3, 9.2.0 and the latest 9.x on Python 3.11-3.13.
+
+* Native component AUT readiness is published by renaming a completed JSON
+  file, preventing recorder replay and process-isolation tests from reading
+  an empty or partially written HWND/PID identity.
+
+* Recorder process-isolation acceptance now pumps controller-thread messages
+  while waiting for cross-process focus and native input delivery. It checks
+  HWND, PID and focus together before sending keys, retains bounded failure
+  diagnostics, and does not turn missing focus into a skipped acceptance test.
+
 * `dolphin spy --pick` and `dolphin spy --image-pick` now report UI Automation access denial
   (`E_ACCESSDENIED`) and exits with code 1 instead of silently waiting for
   cancellation. Both UIA lookup paths preserve the error, and the picker clears
