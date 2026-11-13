@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from os.path import relpath
 from typing import Any
 
 import pytest
@@ -13,7 +14,24 @@ from ._redaction import _redact_identifier
 
 def _display_identifiers(nodeid: str, config: pytest.Config) -> tuple[str, str, str]:
     """Use the same root-relative, invocation-relative and name-only display forms."""
-    return nodeid, config.cwd_relative_nodeid(nodeid), nodeid.rsplit("::", 1)[-1]
+    # Config.cwd_relative_nodeid is internal: pytest 9.2 changed its input
+    # from str to NodeId. Keep string IDs at our publication boundary and
+    # derive the display path using public configuration attributes instead.
+    path, separator, names = nodeid.partition("::")
+    relative_nodeid = nodeid
+    if config.invocation_params.dir != config.rootpath:
+        fullpath = config.rootpath / path
+        try:
+            relative_path = relpath(fullpath, config.invocation_params.dir)
+        except ValueError:  # Windows paths on different drives have no relative path.
+            relative_path = str(fullpath)
+        relative_nodeid = relative_path + separator + names
+    # A parameter ID may itself contain '::'. Only split the unparametrized
+    # hierarchy, then reattach the complete parameter suffix for collection's
+    # name-only display. Exclude the file path, which may contain '[' too.
+    name, bracket, parameters = (names if separator else path).partition("[")
+    display_name = name.rsplit("::", 1)[-1] + bracket + parameters
+    return nodeid, relative_nodeid, display_name
 
 
 class _TerminalRedactor:

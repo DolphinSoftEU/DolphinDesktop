@@ -30,7 +30,7 @@ version = "0.1.0"
 requires-python = ">={py_version}"
 dependencies = [
     "dolphin-desktop",
-    "pytest>=8.3",
+    "pytest>=9.0.3,<10",
 ]
 
 [tool.pytest.ini_options]
@@ -53,7 +53,7 @@ version = "0.1.0"
 requires-python = ">={py_version}"
 dependencies = [
     "dolphin-desktop",
-    "pytest>=8.3",
+    "pytest>=9.0.3,<10",
     "ruff>=0.8",
 ]
 
@@ -81,7 +81,7 @@ version = "0.1.0"
 requires-python = ">={py_version}"
 dependencies = [
     "dolphin-desktop",
-    "pytest>=8.3",
+    "pytest>=9.0.3,<10",
     "allure-pytest>=2.13",
     "ruff>=0.8",
 ]

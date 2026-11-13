@@ -10,7 +10,11 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Barrier
 
 
 def duplicate_process_handle(process: subprocess.Popen, parent_pid: int) -> int:
@@ -153,9 +157,37 @@ def harness(folder: Path, launcher: str, mode: str) -> None:
                 )
 
 
+@contextmanager
+def parallel_desktop_handles(name: str) -> Iterator[list[int]]:
+    """Own two handles acquired concurrently while a named desktop is first created."""
+    from dolphin_desktop import _runner
+
+    barrier = Barrier(2)
+    handles: list[int] = []
+
+    def create() -> int:
+        barrier.wait(timeout=5)
+        return _runner.create_hidden_desktop(name)
+
+    try:
+        failures: list[Exception] = []
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(create) for _ in range(2)]
+            for future in futures:
+                try:
+                    handles.append(future.result(timeout=10))
+                except Exception as error:
+                    failures.append(error)
+        if failures:
+            raise ExceptionGroup("concurrent desktop creation failed", failures)
+        yield handles
+    finally:
+        for handle in handles:
+            _runner.close_desktop(handle)
+
+
 def parallel_controller(folder: Path) -> None:
     """Two threads must both escalate a real ignored console interrupt."""
-    from concurrent.futures import ThreadPoolExecutor
 
     from dolphin_desktop import _runner
 
@@ -201,7 +233,16 @@ def parallel_harness(folder: Path) -> None:
             deadline = time.monotonic() + 15
             while not all((folder / str(index) / "ready.json").exists() for index in (0, 1)):
                 if process.poll() is not None or time.monotonic() >= deadline:
-                    raise RuntimeError("parallel commands did not become ready")
+                    ready = [(folder / str(index) / "ready.json").exists() for index in (0, 1)]
+                    details = (
+                        (folder / "parallel-stderr.bin")
+                        .read_bytes()[-16384:]
+                        .decode(errors="replace")
+                    )
+                    raise RuntimeError(
+                        "parallel commands did not become ready: "
+                        f"controller exit={process.poll()}, children ready={ready}\n{details}"
+                    )
                 time.sleep(0.05)
             process.send_signal(signal.CTRL_BREAK_EVENT)
             process.wait(timeout=20)

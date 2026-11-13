@@ -84,6 +84,44 @@ After dependency/resolver changes, rerun this matrix and the full-lockfile
 security gate. The wheel and reports let a tester reproduce the installation
 without relying on metadata from an unrelated environment.
 
+## Pytest compatibility (KAN-763)
+
+The supported pytest range is `>=9.0.3,<10`. A separate Windows CI matrix
+installs the built wheel in clean environments on Python 3.11-3.13 with
+pytest 9.0.3, 9.2.0 and the latest 9.x release. It runs
+`tests/framework/test_terminal_redaction.py`, including production-plugin
+subprocesses without a backend provider, collection-only output, sensitive
+parameter IDs, call/teardown failures, subdirectory invocation and xdist.
+The regular unit suite continues to use the lockfile's pytest version.
+Support for pytest 10 requires separate verification before raising the cap.
+
+To reproduce against an installed wheel, install the chosen pytest version,
+`pytest-xdist` and `pytest-timeout` in a clean environment alongside the wheel,
+then run that environment's Python from the repository root:
+
+```powershell
+<venv>/Scripts/python.exe -m pytest tests/framework/test_terminal_redaction.py -q
+```
+
+CI uploads the wheel and JUnit compatibility results for each matrix entry.
+
+## Runner console acceptance
+
+CI runs `tests/component/test_runner_console.py` on Python 3.11 and 3.13
+with real private Windows consoles, including concurrent `run_hidden()` calls
+and a 30-iteration regression creating the same new desktop from two threads.
+The regression checks independent ownership of desktop handles and destruction
+after both handles are closed. Native desktop creation is serialized; command
+execution and console interrupt handling remain concurrent.
+
+Each job uploads `runner-console-<python-version>` even on failure, containing
+the JUnit report and controlled process evidence. For a parallel startup failure,
+inspect `parallel-stderr.bin` alongside each child's `ready.json` and
+`grandchild.json`; the assertion also includes controller exit status, readiness
+flags and the end of its stderr. These distinguish native launch errors from
+readiness timeouts. Tests retain the existing startup deadlines and cannot pass
+through retries or skips.
+
 ## Recorder acceptance (KAN-576 / KAN-759)
 
 Run on a controlled interactive Windows desktop, without concurrent user input:

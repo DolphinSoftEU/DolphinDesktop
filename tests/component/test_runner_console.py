@@ -16,6 +16,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
+from tests._runner_console_probe import parallel_desktop_handles
 
 from dolphin_desktop import _runner
 
@@ -293,6 +294,25 @@ def test_stale_notification_cannot_add_a_real_foreign_process_to_cleanup():
             assert kernel32.WaitForSingleObject(handle, 0) == 258
         finally:
             _runner.close_process_handle(handle)
+
+
+def test_concurrent_desktop_creation_returns_independent_owned_handles():
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.OpenDesktopW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.BOOL, wt.DWORD]
+    user32.OpenDesktopW.restype = wt.HANDLE
+    user32.CloseDesktop.argtypes = [wt.HANDLE]
+    for _ in range(30):
+        name = "DolphinConcurrentDesktop_" + uuid.uuid4().hex
+        with parallel_desktop_handles(name) as handles:
+            assert len(handles) == len(set(handles)) == 2
+            assert all(handles)
+        # Each caller owns a separate handle, and no cached handle keeps the
+        # desktop alive once both callers release it.
+        desktop = user32.OpenDesktopW(name, 0, False, 1)  # DESKTOP_READOBJECTS
+        if desktop:
+            user32.CloseDesktop(desktop)
+            pytest.fail("concurrent callers left their desktop alive")
+        assert ctypes.get_last_error() == 2  # ERROR_FILE_NOT_FOUND
 
 
 @pytest.mark.timeout(80)
