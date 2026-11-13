@@ -34,16 +34,12 @@ def test_wheel_platform_rerun_uses_original_package_attempt() -> None:
     platform = jobs["package-platforms"]
     assert platform["needs"] == "package"
     assert package["outputs"]["build_attempt"] == "${{ github.run_attempt }}"
-    verify = next(
-        step
-        for step in platform["steps"]
-        if step.get("name") == "Verify distribution identity and hashes"
-    )
-    assert verify["env"]["CI_RUN_ATTEMPT"] == "${{ needs.package.outputs.build_attempt }}"
-    assert verify["env"]["CI_RUN_ID"] == "${{ github.run_id }}"
-    assert verify["env"]["MANIFEST_SHA256"] == (
-        "${{ needs.package.outputs.manifest_sha256 }}"
-    )
+    verify_name = "Verify distribution identity and hashes"
+    verify = next(step for step in platform["steps"] if step.get("name") == verify_name)
+    env = verify["env"]
+    assert env["CI_RUN_ATTEMPT"] == "${{ needs.package.outputs.build_attempt }}"
+    assert env["CI_RUN_ID"] == "${{ github.run_id }}"
+    assert env["MANIFEST_SHA256"] == "${{ needs.package.outputs.manifest_sha256 }}"
 
 
 def test_native_reproducibility_is_required_before_packaging() -> None:
