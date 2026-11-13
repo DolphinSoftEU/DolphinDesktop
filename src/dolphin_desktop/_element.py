@@ -26,6 +26,7 @@ import time
 from typing import Any
 
 from ._exceptions import ElementNotFoundError, UnsupportedPatternError, WaitTimeoutError
+from ._flat_tree import FlatTree, is_flat_tree
 from ._locator import Locator, _require_check_state, _wrapper_of
 from ._win32_criteria import backend_name
 
@@ -669,6 +670,23 @@ class Tree(Element):
                 ) from last_error
             time.sleep(0.1)
 
+    def _on_flat_tree(self, element: Any, action: str, path: tuple[str, ...]) -> bool:
+        """Run :class:`FlatTree` *action* on a tree UIA lists flat (Qt), if it is one.
+
+        Its rows are all siblings, so the nested ``TreeItem`` search cannot walk
+        them (KAN-756). Selecting and opening them takes pointer input.
+        """
+        wrapper = _wrapper_of(element)
+        if not is_flat_tree(wrapper):
+            return False
+        self._focus_for_input()
+        try:
+            getattr(FlatTree(wrapper, timeout=self._timeout), action)(path)
+        except Exception as exc:
+            self._raise_hidden_input_error(action, exc)
+            raise
+        return True
+
     def expand_item(self, *path: str) -> Tree:
         """Expand a tree node by its path of node titles."""
         element = self._resolve()
@@ -676,6 +694,8 @@ class Tree(Element):
         if win32_tree is not None:
             if path:
                 self._win32_tree_item(win32_tree, path).expand()
+            return self
+        if path and self._on_flat_tree(element, "expand_item", path):
             return self
         for name in path:
             item = element.child_window(title=name, control_type="TreeItem")
@@ -698,6 +718,8 @@ class Tree(Element):
             # TVM_SELECTITEM raises TVN_SELCHANGED, so the application sees
             # the same selection-changed event a click would fire.
             self._win32_tree_item(win32_tree, path).select()
+            return self
+        if self._on_flat_tree(element, "select_item_by_path", path):
             return self
         nodes = list(path)
         while len(nodes) > 1:
