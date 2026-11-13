@@ -462,6 +462,7 @@ jobs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       version: ${{ steps.version.outputs.version }}
       manifest_sha256: ${{ steps.manifest.outputs.manifest_sha256 }}
+      build_attempt: ${{ github.run_attempt }}
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -569,7 +570,7 @@ jobs:
         env:
           RELEASE_SHA: ${{ github.sha }}
           CI_RUN_ID: ${{ github.run_id }}
-          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+          CI_RUN_ATTEMPT: ${{ needs.package.outputs.build_attempt }}
           MANIFEST_SHA256: ${{ needs.package.outputs.manifest_sha256 }}
         run: python .github/scripts/distribution_manifest.py verify
 
