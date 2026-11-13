@@ -38,14 +38,14 @@ name = "aqtinstall"
 version = "3.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "bs4" },
-    { name = "defusedxml" },
-    { name = "humanize" },
-    { name = "patch-ng" },
-    { name = "py7zr" },
-    { name = "requests" },
-    { name = "semantic-version" },
-    { name = "texttable" },
+    { name = "bs4", marker = "python_full_version >= '3.11.5'" },
+    { name = "defusedxml", marker = "python_full_version >= '3.11.5'" },
+    { name = "humanize", marker = "python_full_version >= '3.11.5'" },
+    { name = "patch-ng", marker = "python_full_version >= '3.11.5'" },
+    { name = "py7zr", marker = "python_full_version >= '3.11.5'" },
+    { name = "requests", marker = "python_full_version >= '3.11.5'" },
+    { name = "semantic-version", marker = "python_full_version >= '3.11.5'" },
+    { name = "texttable", marker = "python_full_version >= '3.11.5'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/19/24a588de6c25d43169d172dab47e63a63cd0d8f90e98cf86487acbf00ac7/aqtinstall-3.3.0.tar.gz", hash = "sha256:9c7d85fbe7258be2d7d23fda33f8aff2e8b7536817255eaeaaf4226da8546a31", size = 374818, upload-time = "2025-06-02T11:10:53.913Z" }
 wheels = [
@@ -210,9 +210,8 @@ name = "beautifulsoup4"
 version = "4.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "soupsieve", version = "2.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11.5'" },
-    { name = "soupsieve", version = "3.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11.5'" },
-    { name = "typing-extensions" },
+    { name = "soupsieve", marker = "python_full_version >= '3.11.5'" },
+    { name = "typing-extensions", marker = "python_full_version >= '3.11.5'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/65/318323f98dbee45d42dff61d8f047181bc6f2268a9068cfad035a46be5af/beautifulsoup4-4.15.0.tar.gz", hash = "sha256:288e3ca7d54b06f2ac191970bc275c1939cb46d450b255bf6718b04aa37ab4f7", size = 632571, upload-time = "2026-06-07T16:44:20.453Z" }
 wheels = [
@@ -290,7 +289,7 @@ name = "brotlicffi"
 version = "1.2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi" },
+    { name = "cffi", marker = "python_full_version >= '3.11.5'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/92/8b/10c6c4bac3a7d292707c9b879b8b3bb7f6c8ca5db5e6dff559bd9d59d45e/brotlicffi-1.2.1.0.tar.gz", hash = "sha256:5d0b89e959f643aab4c58c15c06e1e87b6f6605e5e88c3c1c28f5ce1c58c4e5f", size = 479661, upload-time = "2026-10-22T16:19:33.199Z" }
 wheels = [
@@ -314,7 +313,7 @@ name = "bs4"
 version = "0.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "beautifulsoup4" },
+    { name = "beautifulsoup4", marker = "python_full_version >= '3.11.5'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c9/aa/4acaf814ff901145da37332e05bb510452ebed97bc9602695059dd46ef39/bs4-0.0.2.tar.gz", hash = "sha256:a48685c58f50fe127722417bae83fe6badf500d54b55f7e39ffe43b798653925", size = 698, upload-time = "2024-01-17T18:15:47.371Z" }
 wheels = [
@@ -762,9 +761,10 @@ dev = [
     { name = "twine" },
 ]
 native-build = [
-    { name = "aqtinstall" },
-    { name = "cmake" },
-    { name = "ninja" },
+    { name = "aqtinstall", marker = "python_full_version >= '3.11.5'" },
+    { name = "cmake", marker = "python_full_version >= '3.11.5'" },
+    { name = "ninja", marker = "python_full_version >= '3.11.5'" },
+    { name = "soupsieve", marker = "python_full_version >= '3.11.5'" },
 ]
 qt-tests = [
     { name = "pyqt5" },
@@ -820,9 +820,10 @@ dev = [
     { name = "twine", specifier = ">=7.0.0" },
 ]
 native-build = [
-    { name = "aqtinstall", specifier = "==3.3.0" },
-    { name = "cmake", specifier = "==3.31.10" },
-    { name = "ninja", specifier = "==1.11.1.4" },
+    { name = "aqtinstall", marker = "python_full_version >= '3.11.5'", specifier = "==3.3.0" },
+    { name = "cmake", marker = "python_full_version >= '3.11.5'", specifier = "==3.31.10" },
+    { name = "ninja", marker = "python_full_version >= '3.11.5'", specifier = "==1.11.1.4" },
+    { name = "soupsieve", marker = "python_full_version >= '3.11.5'", specifier = ">=4.1" },
 ]
 qt-tests = [
     { name = "pyqt5", specifier = "==5.15.11" },
@@ -1874,16 +1875,16 @@ name = "py7zr"
 version = "1.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "backports-zstd" },
-    { name = "brotli", marker = "platform_python_implementation == 'CPython'" },
-    { name = "brotlicffi", marker = "platform_python_implementation == 'PyPy'" },
-    { name = "inflate64" },
-    { name = "multivolumefile" },
-    { name = "psutil", marker = "sys_platform != 'cygwin'" },
-    { name = "pybcj" },
-    { name = "pycryptodomex" },
-    { name = "pyppmd" },
-    { name = "texttable" },
+    { name = "backports-zstd", marker = "python_full_version >= '3.11.5'" },
+    { name = "brotli", marker = "python_full_version >= '3.11.5' and platform_python_implementation == 'CPython'" },
+    { name = "brotlicffi", marker = "python_full_version >= '3.11.5' and platform_python_implementation == 'PyPy'" },
+    { name = "inflate64", marker = "python_full_version >= '3.11.5'" },
+    { name = "multivolumefile", marker = "python_full_version >= '3.11.5'" },
+    { name = "psutil", marker = "python_full_version >= '3.11.5' and sys_platform != 'cygwin'" },
+    { name = "pybcj", marker = "python_full_version >= '3.11.5'" },
+    { name = "pycryptodomex", marker = "python_full_version >= '3.11.5'" },
+    { name = "pyppmd", marker = "python_full_version >= '3.11.5'" },
+    { name = "texttable", marker = "python_full_version >= '3.11.5'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d6/31/d5469ec310b57c730785068c227caf2263391be846ae5e99488f69b394eb/py7zr-1.1.4.tar.gz", hash = "sha256:7674697559bd06b697bf6e8249985cee6dc704a4b07b8e11f24d0b1695707c3e", size = 76503, upload-time = "2026-10-12T11:31:18.36Z" }
 wheels = [
@@ -2507,27 +2508,11 @@ wheels = [
 
 [[package]]
 name = "soupsieve"
-version = "2.10"
+version = "4.1"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version < '3.11.5'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/71/c3/1b817965ac12dc002d7c9cd7dfffdd7d4fbf9b45763ef2ffe7b86ee94670/soupsieve-2.10.tar.gz", hash = "sha256:49e9380d7d2905463583bafe285e818c7366a9ed7b3aee221c1ac79c905d8bc0", size = 124337, upload-time = "2026-09-24T02:36:35.048Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/95/48/21a393ff731b8f928fa4f8176f9a7ceba2252ee60a5149f25b45c292aa5c/soupsieve-4.1.tar.gz", hash = "sha256:ca9abf7126667010d8f6e9b39bfc1bc3b23c8aed9bcb0f54a754dde969bb8aab", size = 161955, upload-time = "2026-11-10T01:59:50.399Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/66/87/5ed59e1d0290564e2027ed066c52b059892c4637741337fc0967183c8d4d/soupsieve-2.10-py3-none-any.whl", hash = "sha256:8596eb8967d744174820280fa62b4542a2e955bfaccca73ed8a13c6eb8e9b502", size = 38019, upload-time = "2026-09-24T02:36:33.709Z" },
-]
-
-[[package]]
-name = "soupsieve"
-version = "3.0.4"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.13'",
-    "python_full_version >= '3.11.5' and python_full_version < '3.13'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/19/63/0b6bae54546aed98d72f12d09df57b19a287f01c84d22047fa2e23772ab9/soupsieve-3.0.4.tar.gz", hash = "sha256:924fab84ae21604c19e175e1f39815eb6fa83ba23836e09e9de180925e5bc4c0", size = 119017, upload-time = "2026-10-22T00:45:26.362Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/66/473f7ca0be0b06e38ee8c85ee2db184e3981bd769fac2e7c19c8a8865211/soupsieve-3.0.4-py3-none-any.whl", hash = "sha256:8412826614f9c632227067d0985aeb9f584bd15efc852955430e097a9fe7afbf", size = 42458, upload-time = "2026-10-22T00:45:24.843Z" },
+    { url = "https://files.pythonhosted.org/packages/88/73/6a2087c72975cfc07394623bca8d17654342ea4055ae368deafe5a81a542/soupsieve-4.1-py3-none-any.whl", hash = "sha256:e4d667b3974ce6e038e7390486b8093369854a1d345ffdd4c121dfc4a782e809", size = 52302, upload-time = "2026-11-10T01:59:48.571Z" },
 ]
 
 [[package]]

@@ -8,6 +8,10 @@ Thank you for your interest in contributing!
 - Python 3.11-3.13
 - [uv](https://docs.astral.sh/uv/) package manager
 
+The optional `native-build` group requires Python 3.11.5+ because its patched
+Soup Sieve dependency (used by `aqtinstall`) does not support earlier patches.
+This tooling requirement does not change the library's Python requirement.
+
 ## Setup
 
 ```bash

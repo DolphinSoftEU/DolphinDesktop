@@ -52,6 +52,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Native Qt build tooling now requires `soupsieve>=4.1` to address
+  CVE-2026-126190 in the `aqtinstall` dependency chain. The `native-build`
+  group requires Python 3.11.5+ so the lockfile cannot retain a vulnerable
+  Soup Sieve fallback for older Python patches. Library runtime requirements
+  are unchanged.
+
 * Serialized native desktop creation in concurrent `run_hidden()` calls to
   prevent `CreateDesktopW` initialization races returning access denied.
   Added a real two-thread desktop lifecycle regression; console acceptance
