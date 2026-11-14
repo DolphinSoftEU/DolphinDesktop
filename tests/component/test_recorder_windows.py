@@ -152,6 +152,75 @@ def test_recorder_wait_times_out_without_sending_input_or_skipping(monkeypatch):
     keyboard.assert_not_called()
 
 
+def test_owned_focus_recovers_after_foreground_is_lost(monkeypatch):
+    context = _recorder_window._recorder._InputContext
+    state = {"requested": False, "activations": 0, "focus": context()}
+
+    def activate(root):
+        assert root == 123
+        state["activations"] += 1
+        state["requested"] = True
+
+    def pump():
+        if state["requested"]:
+            # The first activation is lost; only a retry reaches the AUT queue.
+            if state["activations"] >= 2:
+                state["focus"] = context(hwnd=123, pid=456, focus=789)
+            state["requested"] = False
+
+    monkeypatch.setattr(_recorder_window._recorder, "_capture_context", lambda: state["focus"])
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    monkeypatch.setattr(_recorder_window.win32gui, "IsWindow", lambda root: True)
+    monkeypatch.setattr(
+        _recorder_window.win32process, "GetWindowThreadProcessId", lambda root: (1, 456)
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", activate)
+    mouse, keyboard = Mock(), Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    _recorder_window._wait_for_owned_focus(Mock(), 123, 456, 789)
+    assert state["activations"] == 2
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
+
+
+@pytest.mark.parametrize("actual_pid", [456, 999])
+def test_owned_focus_timeout_reports_native_and_process_state(monkeypatch, actual_pid):
+    rec = Mock(_hook_error=None)
+    rec._evt_queue.qsize.return_value = 1
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 0, 3]))
+    monkeypatch.setattr(
+        _recorder_window._recorder, "_capture_context", lambda: Mock(hwnd=0, focus=0)
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 0)
+    monkeypatch.setattr(_recorder_window.win32gui, "IsWindow", lambda root: True)
+    monkeypatch.setattr(
+        _recorder_window.win32process, "GetWindowThreadProcessId", lambda root: (42, actual_pid)
+    )
+    monkeypatch.setattr(_recorder_window._recorder, "_native_focus", lambda thread: (0, 0))
+    activate = Mock(side_effect=_recorder_window.win32gui.error(5, "SetForegroundWindow", "denied"))
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", activate)
+    handle = Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "OpenProcess", Mock(return_value=handle))
+    monkeypatch.setattr(_recorder_window.win32process, "GetExitCodeProcess", lambda h: 259)
+    with pytest.raises(AssertionError) as failure:
+        _recorder_window._wait_for_owned_focus(rec, 123, 456, 789)
+    message = str(failure.value)
+    assert "'foreground_hwnd': 0" in message
+    assert "'window_exists': True" in message
+    assert f"'window_thread_pid': (42, {actual_pid})" in message
+    assert "'native_active_focus': (0, 0)" in message
+    assert "'process_exit_code': 259" in message
+    if actual_pid == 456:
+        assert "denied" in message
+        activate.assert_called_once_with(123)
+    else:
+        assert "changed process" in message
+        activate.assert_not_called()
+    handle.Close.assert_called_once_with()
+
+
 def test_worker_query_pumps_same_process_window_messages():
     # No foreground activation or desktop input is needed for WM_GETTEXT.
     gui = _recorder_window.win32gui
