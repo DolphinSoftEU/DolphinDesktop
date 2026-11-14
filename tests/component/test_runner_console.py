@@ -88,63 +88,16 @@ def _assert_exited(pid: int, timeout_ms: int = 5000) -> None:
 
 
 @pytest.mark.parametrize("leave_grandchild", [False, True])
-def test_runner_releases_process_job_and_desktop_handles(monkeypatch, tmp_path, leave_grandchild):
-    name = f"DolphinRunnerTest_{uuid.uuid4().hex}"
-    create_desktop = _runner.create_hidden_desktop
-    monkeypatch.setattr(_runner, "DESKTOP_NAME", name)
-    monkeypatch.setattr(_runner, "create_hidden_desktop", lambda: create_desktop(name))
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetCurrentProcess.restype = wt.HANDLE
-    kernel32.GetProcessHandleCount.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
-    kernel32.GetProcessHandleCount.restype = wt.BOOL
-    kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
-    kernel32.WaitForSingleObject.restype = wt.DWORD
-    kernel32.TerminateProcess.argtypes = [wt.HANDLE, wt.UINT]
-    kernel32.CloseHandle.argtypes = [wt.HANDLE]
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.OpenDesktopW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.BOOL, wt.DWORD]
-    user32.OpenDesktopW.restype = wt.HANDLE
-    user32.CloseDesktop.argtypes = [wt.HANDLE]
-
-    def handle_count():
-        count = wt.DWORD()
-        assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count))
-        return count.value
-
-    before = handle_count()
-    for iteration in range(3):
-        report = tmp_path / f"grandchild-{iteration}.json"
-        code = (
-            "import json, subprocess, sys; from pathlib import Path; "
-            "from tests._runner_console_probe import duplicate_process_handle; "
-            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
-            "handle = duplicate_process_handle(p, int(sys.argv[2])); "
-            "Path(sys.argv[1]).write_text(json.dumps({'pid': p.pid, 'handle': handle}))"
-            if leave_grandchild
-            else "pass"
-        )
-        try:
-            assert (
-                _runner.run_hidden([sys.executable, "-c", code, str(report), str(os.getpid())]) == 0
-            )
-            if leave_grandchild:
-                # The child duplicates its original handle before exiting.
-                # Reopening its PID here could observe an unrelated new process.
-                handle = json.loads(report.read_text())["handle"]
-                assert kernel32.WaitForSingleObject(handle, 0) == 0
-        finally:
-            if leave_grandchild and report.exists():
-                handle = json.loads(report.read_text())["handle"]
-                if kernel32.WaitForSingleObject(handle, 0) == _runner._WAIT_TIMEOUT:
-                    kernel32.TerminateProcess(handle, 1)
-                    kernel32.WaitForSingleObject(handle, 5000)
-                kernel32.CloseHandle(handle)
-        desktop = user32.OpenDesktopW(name, 0, False, 1)  # DESKTOP_READOBJECTS
-        if desktop:
-            user32.CloseDesktop(desktop)
-            pytest.fail("runner left its hidden desktop alive")
-        assert ctypes.get_last_error() == 2  # ERROR_FILE_NOT_FOUND
-    assert handle_count() == before
+def test_runner_releases_process_job_and_desktop_handles(tmp_path, leave_grandchild):
+    # Other component tests leave objects for cyclic GC and background cleanup.
+    # Measure in a fresh process so their handles cannot affect this baseline.
+    probe = Path(__file__).parents[1] / "_runner_console_probe.py"
+    result = subprocess.run(
+        [sys.executable, str(probe), "--handle-cleanup", str(tmp_path), str(int(leave_grandchild))],
+        capture_output=True,
+        timeout=45,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
 
 
 def test_process_creation_is_blocked_before_final_snapshot(monkeypatch, tmp_path):

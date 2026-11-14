@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import gc
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -261,8 +263,79 @@ def parallel_harness(folder: Path) -> None:
                     process.wait(timeout=3)
 
 
+def handle_cleanup(folder: Path, leave_grandchild: bool) -> None:
+    """Check exact handle balance without unrelated pytest process resources."""
+    from dolphin_desktop import _runner
+
+    tmp_path = folder
+    name = f"DolphinRunnerTest_{uuid.uuid4().hex}"
+    create_desktop = _runner.create_hidden_desktop
+    _runner.DESKTOP_NAME = name
+    _runner.create_hidden_desktop = lambda: create_desktop(name)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wt.HANDLE
+    kernel32.GetProcessHandleCount.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+    kernel32.GetProcessHandleCount.restype = wt.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    kernel32.WaitForSingleObject.restype = wt.DWORD
+    kernel32.TerminateProcess.argtypes = [wt.HANDLE, wt.UINT]
+    kernel32.CloseHandle.argtypes = [wt.HANDLE]
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.OpenDesktopW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.BOOL, wt.DWORD]
+    user32.OpenDesktopW.restype = wt.HANDLE
+    user32.CloseDesktop.argtypes = [wt.HANDLE]
+
+    def handle_count():
+        count = wt.DWORD()
+        assert kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count))
+        return count.value
+
+    before = None
+    # The first run initializes Python/Windows console machinery. Measure the
+    # next three runs against that warmed baseline, still requiring exact balance.
+    for iteration in range(4):
+        report = tmp_path / f"grandchild-{iteration}.json"
+        code = (
+            "import json, subprocess, sys; from pathlib import Path; "
+            "from tests._runner_console_probe import duplicate_process_handle; "
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+            "handle = duplicate_process_handle(p, int(sys.argv[2])); "
+            "Path(sys.argv[1]).write_text(json.dumps({'pid': p.pid, 'handle': handle}))"
+            if leave_grandchild
+            else "pass"
+        )
+        try:
+            assert (
+                _runner.run_hidden([sys.executable, "-c", code, str(report), str(os.getpid())]) == 0
+            )
+            if leave_grandchild:
+                # The child duplicates its original handle before exiting.
+                # Reopening its PID here could observe an unrelated new process.
+                handle = json.loads(report.read_text())["handle"]
+                assert kernel32.WaitForSingleObject(handle, 0) == 0
+        finally:
+            if leave_grandchild and report.exists():
+                handle = json.loads(report.read_text())["handle"]
+                if kernel32.WaitForSingleObject(handle, 0) == _runner._WAIT_TIMEOUT:
+                    kernel32.TerminateProcess(handle, 1)
+                    kernel32.WaitForSingleObject(handle, 5000)
+                kernel32.CloseHandle(handle)
+        desktop = user32.OpenDesktopW(name, 0, False, 1)  # DESKTOP_READOBJECTS
+        if desktop:
+            user32.CloseDesktop(desktop)
+            raise AssertionError("runner left its hidden desktop alive")
+        assert ctypes.get_last_error() == 2  # ERROR_FILE_NOT_FOUND
+        if iteration == 0:
+            gc.collect()
+            before = handle_count()
+    after = handle_count()
+    assert after == before, f"runner handle count changed: {before} -> {after}"
+
+
 if __name__ == "__main__":
-    if sys.argv[1] == "--child":
+    if sys.argv[1] == "--handle-cleanup":
+        handle_cleanup(Path(sys.argv[2]), bool(int(sys.argv[3])))
+    elif sys.argv[1] == "--child":
         child(Path(sys.argv[2]), sys.argv[3])
     elif sys.argv[1] == "--parallel-controller":
         parallel_controller(Path(sys.argv[2]))

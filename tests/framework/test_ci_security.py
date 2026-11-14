@@ -27,6 +27,21 @@ def load(name: str) -> dict:
     return yaml.load((WORKFLOWS / name).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
 
+def test_wheel_platform_rerun_uses_original_package_attempt() -> None:
+    """A failed-jobs rerun must validate the producer's provenance, not its own attempt."""
+    jobs = load("ci.yml")["jobs"]
+    package = jobs["package"]
+    platform = jobs["package-platforms"]
+    assert platform["needs"] == "package"
+    assert package["outputs"]["build_attempt"] == "${{ github.run_attempt }}"
+    verify_name = "Verify distribution identity and hashes"
+    verify = next(step for step in platform["steps"] if step.get("name") == verify_name)
+    env = verify["env"]
+    assert env["CI_RUN_ATTEMPT"] == "${{ needs.package.outputs.build_attempt }}"
+    assert env["CI_RUN_ID"] == "${{ github.run_id }}"
+    assert env["MANIFEST_SHA256"] == "${{ needs.package.outputs.manifest_sha256 }}"
+
+
 def test_native_reproducibility_is_required_before_packaging() -> None:
     jobs = load("ci.yml")["jobs"]
     assert "qt-agent-reproducibility" in jobs["package"]["needs"]
