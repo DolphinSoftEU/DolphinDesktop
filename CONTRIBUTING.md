@@ -111,6 +111,21 @@ CI uploads the wheel and JUnit compatibility results for each matrix entry.
 
 ## Runner console acceptance
 
+Hidden `Desktop.launch()` owner-death acceptance (KAN-768):
+
+```powershell
+uv run --locked pytest tests/component/test_hidden_lifecycle.py -q
+```
+
+The controlled Tk AUT and its descendant must exit after normal close, normal
+owner exit and hard owner termination, including a venv redirector. Two owners
+on the same desktop verify that killing one leaves the other alive. Tests retain
+original process handles for observations and emergency cleanup, and save
+handshakes, owner logs and `result.json` before cleanup. Desktop disappearance
+is required when no session existed before the test; pre-existing desktop use
+is recorded and never terminated. The Windows component CI gate requires all
+five scenarios to pass without skips and uploads their evidence.
+
 CI runs `tests/component/test_runner_console.py` on Python 3.11 and 3.13
 with real private Windows consoles, including concurrent `run_hidden()` calls
 and a 30-iteration regression creating the same new desktop from two threads.

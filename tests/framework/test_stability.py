@@ -869,6 +869,7 @@ class TestStackLauncherWiring:
     def test_launch_hidden_binds_desktop_and_default_timeout(self, monkeypatch):
         from dolphin_desktop import _application, _desktop, _runner
 
+        monkeypatch.setattr(_runner, "_hidden_launch_job", lambda: 999)
         launcher = MagicMock(return_value=(50505, 1))
         monkeypatch.setattr(
             _runner,
@@ -891,6 +892,7 @@ class TestStackLauncherWiring:
                 wait_for_idle=False,
                 work_dir=None,
                 env=None,
+                job_handle=999,
             )
             assert app.default_timeout_ms == 3300
             assert app._desktop is desktop

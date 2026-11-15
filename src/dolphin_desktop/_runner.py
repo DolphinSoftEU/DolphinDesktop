@@ -19,6 +19,7 @@ by CPython; a ctypes struct is required instead.
 
 from __future__ import annotations
 
+import atexit
 import ctypes
 import ctypes.wintypes
 import math
@@ -201,6 +202,7 @@ _WSF_VISIBLE = 0x0001
 _CREATE_SUSPENDED = 0x00000004
 _EXTENDED_STARTUPINFO_PRESENT = 0x00080000
 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
+_PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
 _INTERRUPT_GRACE_SECONDS = 10.0
 _PROCESS_TERMINATION_TIMEOUT_SECONDS = 10.0
 _JOB_CLEANUP_TIMEOUT_SECONDS = 10.0
@@ -433,9 +435,8 @@ def _terminate_and_wait_for_job(job: int) -> None:
             time.sleep(0.01)
 
 
-@contextmanager
-def _owned_job() -> Iterator[int]:
-    """Own the entire command tree, including venv redirectors and their children."""
+def _create_kill_on_close_job() -> int:
+    """Create a private, non-inheritable job with kernel-enforced cleanup."""
     job = _kernel32.CreateJobObjectW(None, None)
     if not job:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -446,6 +447,41 @@ def _owned_job() -> Iterator[int]:
             job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
         ):
             raise ctypes.WinError(ctypes.get_last_error())
+    except BaseException:
+        _kernel32.CloseHandle(job)
+        raise
+    return job
+
+
+_hidden_job_lock = threading.Lock()
+_hidden_job: int | None = None
+
+
+def _hidden_launch_job() -> int:
+    """Keep hidden AUT trees owned by this Python process until process exit.
+
+    No Desktop/Application finalizer owns this handle: collecting a facade must
+    not terminate another live application. Windows closes the handle even on
+    TerminateProcess; atexit also closes it on normal interpreter shutdown.
+    """
+    global _hidden_job
+    with _hidden_job_lock:
+        if _hidden_job is None:
+            job = _create_kill_on_close_job()
+            try:
+                atexit.register(_kernel32.CloseHandle, job)
+            except BaseException:
+                _kernel32.CloseHandle(job)
+                raise
+            _hidden_job = job
+        return _hidden_job
+
+
+@contextmanager
+def _owned_job() -> Iterator[int]:
+    """Own the entire command tree, including venv redirectors and their children."""
+    job = _create_kill_on_close_job()
+    try:
         try:
             notifications = _JobNotifications(job)
         except OSError:
@@ -603,6 +639,42 @@ def _startup_stdio(desktop_name: str, inherit_stdio: bool) -> Iterator[_StartupI
                 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                 handle_list,
                 ctypes.sizeof(handle_list),
+                None,
+                None,
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            si.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
+            si.cb = ctypes.sizeof(_StartupInfoExW)
+        yield si
+
+
+@contextmanager
+def _startup_job(desktop_name: str | None, job: int | None) -> Iterator[_StartupInfoExW]:
+    """Assign the child atomically at creation, without inheriting the job handle.
+
+    JOB_LIST (Windows 10+) avoids the owner-death gap between creating a suspended
+    process and AssignProcessToJobObject. Failure prevents the child from running.
+    """
+    si = _StartupInfoExW()
+    si.cb = ctypes.sizeof(_StartupInfoW)
+    si.lpDesktop = desktop_name
+    with ExitStack() as cleanup:
+        if job is not None:
+            size = ctypes.c_size_t()
+            _kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+            attributes = ctypes.create_string_buffer(size.value)
+            if not _kernel32.InitializeProcThreadAttributeList(
+                attributes, 1, 0, ctypes.byref(size)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            cleanup.callback(_kernel32.DeleteProcThreadAttributeList, attributes)
+            jobs = (_wt.HANDLE * 1)(job)
+            if not _kernel32.UpdateProcThreadAttribute(
+                attributes,
+                0,
+                _PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                jobs,
+                ctypes.sizeof(jobs),
                 None,
                 None,
             ):
@@ -826,6 +898,7 @@ def launch_cmd_on_desktop(
     wait_for_idle: bool = False,
     work_dir: str | None = None,
     env: Mapping[str, str] | None = None,
+    job_handle: int | None = None,
 ) -> tuple[int, int]:
     """Launch a command string on *desktop_name* without inheriting stdio.
 
@@ -839,32 +912,33 @@ def launch_cmd_on_desktop(
     When *env* is provided, it is merged with the parent's environment into a
     private Unicode environment block.  The parent ``os.environ`` is never
     modified.  Passing ``desktop_name=None`` launches on the caller's desktop.
+    With *job_handle*, Windows assigns the child to the job during creation,
+    before any child code runs. The job handle is never inherited.
     """
     if timeout < 0 or not math.isfinite(timeout):
         raise ValueError("timeout must be a finite non-negative number")
-    si = _StartupInfoW()
-    si.cb = ctypes.sizeof(_StartupInfoW)
-    si.lpDesktop = desktop_name
-
     pi = _ProcessInformation()
     environment = _build_environment_block(env)
     creation_flags = _CREATE_UNICODE_ENVIRONMENT if environment is not None else 0
     environment_ptr = ctypes.cast(environment, ctypes.c_void_p) if environment is not None else None
 
-    ok = _kernel32.CreateProcessW(
-        None,
-        cmd,
-        None,
-        None,
-        False,  # bInheritHandles
-        creation_flags,
-        environment_ptr,
-        work_dir,
-        ctypes.byref(si),
-        ctypes.byref(pi),
-    )
-    if not ok:
-        raise OSError(f"CreateProcessW({cmd!r}) failed: error {ctypes.get_last_error()}")
+    with _startup_job(desktop_name, job_handle) as si:
+        if si.lpAttributeList:
+            creation_flags |= _EXTENDED_STARTUPINFO_PRESENT
+        ok = _kernel32.CreateProcessW(
+            None,
+            cmd,
+            None,
+            None,
+            False,  # bInheritHandles, including the owner-only job handle
+            creation_flags,
+            environment_ptr,
+            work_dir,
+            ctypes.byref(si),
+            ctypes.byref(pi),
+        )
+        if not ok:
+            raise OSError(f"CreateProcessW({cmd!r}) failed: error {ctypes.get_last_error()}")
     _kernel32.CloseHandle(pi.hThread)
     if wait_for_idle:
         _wait_for_process_start(pi.hProcess, timeout)

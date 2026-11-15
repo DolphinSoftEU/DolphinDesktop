@@ -80,10 +80,12 @@ def test_auto_resolves_once_before_native_launch_or_connect(
     pywin_app = Mock(return_value=process_app)
     application = Mock(return_value="wrapped")
     launcher = Mock(return_value=(321, 987))
+    hidden_job = Mock(return_value=999)
     monkeypatch.setattr(desktop_module, "_PyWinApp", pywin_app)
     monkeypatch.setattr(desktop_module, "Application", application)
     monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
     monkeypatch.setattr(_runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(_runner, "_hidden_launch_job", hidden_job)
 
     desktop = Desktop(backend="auto", hidden=hidden)
     monkeypatch.setattr(desktop, "_ensure_hidden_mode", Mock())
@@ -95,6 +97,11 @@ def test_auto_resolves_once_before_native_launch_or_connect(
         process_app.connect.assert_called_once_with(timeout=10.0, process=321)
         launcher.assert_not_called()
     auto_detect.assert_called_once_with()
+    if hidden and operation == "launch":
+        hidden_job.assert_called_once_with()
+        assert launcher.call_args.kwargs["job_handle"] == 999
+    else:
+        hidden_job.assert_not_called()
     pywin_app.assert_called_once_with(backend=detected_backend)
     assert application.call_args.kwargs["backend"] == detected_backend
     assert desktop._backend == detected_backend
@@ -517,6 +524,7 @@ def test_build_attach_criteria_filters_selectors_and_uses_custom_error() -> None
 def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
     import dolphin_desktop._runner as runner
 
+    monkeypatch.setattr(runner, "_hidden_launch_job", lambda: 999)
     observed_environment: list[tuple[str | None, dict[str, str] | None]] = []
 
     def launch(
@@ -526,7 +534,9 @@ def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
         wait_for_idle: bool,
         work_dir: str | None = None,
         env: dict[str, str] | None = None,
+        job_handle: int | None = None,
     ) -> tuple[int, int]:
+        assert job_handle == 999
         observed_environment.append((os.environ.get("DOLPHIN_TEST_ENV"), env))
         return 333, 444
 
@@ -563,6 +573,7 @@ def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
         wait_for_idle=False,
         work_dir="wd",
         env={"DOLPHIN_TEST_ENV": "expected-value"},
+        job_handle=999,
     )
     close_handle.assert_not_called()
     assert observed_environment == [(None, {"DOLPHIN_TEST_ENV": "expected-value"})]

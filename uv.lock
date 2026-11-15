@@ -696,7 +696,7 @@ wheels = [
 
 [[package]]
 name = "dolphin-desktop"
-version = "0.2.0.dev8"
+version = "0.2.0.dev9"
 source = { editable = "." }
 dependencies = [
     { name = "comtypes", marker = "sys_platform == 'win32'" },

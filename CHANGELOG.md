@@ -52,6 +52,12 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ### Fixed
 
+* Hidden `Desktop.launch()` applications and their descendants now belong to an
+  owner-process Job Object with `KILL_ON_JOB_CLOSE`, including venv redirectors.
+  Creation-time assignment prevents an orphan if the owner is killed during
+  launch. Normal owner exit and hard termination clean up the owned tree without
+  touching connected applications or other sessions on `DolphinHidden` (KAN-768).
+
 * `Tree.select_item_by_path()` and `expand_item()` now work on Qt 5 and Qt 6 trees
   through UIA (KAN-756). Before, they timed out on the second level, because Qt
   lists all rows as siblings, and on Qt 5 they also clicked the ancestors on the
