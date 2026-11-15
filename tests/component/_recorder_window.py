@@ -392,6 +392,61 @@ def _wait_for_recorder_state(rec, predicate, *, timeout=2, details=lambda: ""):
         time.sleep(0.005)
 
 
+def _wait_for_owned_focus(rec, root, pid, edit):
+    """Recover a lost foreground without injecting more mouse or keyboard input."""
+    next_activation = 0
+    activation_error = None
+
+    def focus_matches():
+        nonlocal next_activation, activation_error
+        context = _recorder._capture_context()
+        if (context.hwnd, context.pid, context.focus) == (root, pid, edit):
+            return True
+        now = time.monotonic()
+        if now >= next_activation:
+            next_activation = now + 0.1
+            try:
+                if (
+                    not win32gui.IsWindow(root)
+                    or win32process.GetWindowThreadProcessId(root)[1] != pid
+                ):
+                    activation_error = "Owned HWND disappeared or changed process"
+                    return False
+                win32gui.SetForegroundWindow(root)
+                activation_error = None
+            except win32gui.error as exc:
+                activation_error = repr(exc)
+        return False
+
+    def details():
+        # Probe independently so a destroyed HWND does not hide the other evidence.
+        state = {"expected HWND/PID/focus": (root, pid, edit), "activation_error": activation_error}
+        probes = {
+            "foreground_hwnd": win32gui.GetForegroundWindow,
+            "window_exists": lambda: win32gui.IsWindow(root),
+            "window_thread_pid": lambda: win32process.GetWindowThreadProcessId(root),
+            "native_active_focus": lambda: _recorder._native_focus(
+                win32process.GetWindowThreadProcessId(root)[0]
+            ),
+        }
+        for name, probe in probes.items():
+            try:
+                state[name] = probe()
+            except Exception as exc:
+                state[name] = repr(exc)
+        try:
+            handle = win32api.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+            try:
+                state["process_exit_code"] = win32process.GetExitCodeProcess(handle)
+            finally:
+                handle.Close()
+        except Exception as exc:
+            state["process_exit_code"] = repr(exc)
+        return repr(state)
+
+    _wait_for_recorder_state(rec, focus_matches, details=details)
+
+
 def record_process_isolation(directory):
     """Queue real input from two processes and drain with the foreign window active."""
     from ._real_window import ID_EDIT
@@ -448,16 +503,7 @@ def record_process_isolation(directory):
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
-            def focus_matches(root=root, pid=pid, edit=edit):
-                context = _recorder._capture_context()
-                return (context.hwnd, context.pid, context.focus) == (root, pid, edit)
-
-            wait_until(
-                focus_matches,
-                details=lambda root=root, pid=pid, edit=edit: (
-                    f"expected HWND/PID/focus={(root, pid, edit)!r}"
-                ),
-            )
+            _wait_for_owned_focus(rec, root, pid, edit)
             for _ in range(4):
                 context = _recorder._capture_context()
                 assert win32gui.GetForegroundWindow() == root, "Owned AUT lost foreground"
