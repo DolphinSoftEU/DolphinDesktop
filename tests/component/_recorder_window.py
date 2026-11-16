@@ -328,6 +328,23 @@ def record_native_transitions():
                 break
 
 
+def _wait_for_ready_identity(ready, process, *, timeout=5):
+    """Wait for a readable publication, including transient Windows file locks."""
+    deadline = time.monotonic() + timeout
+    while True:
+        return_code = process.poll()
+        assert return_code is None, f"Owned AUT exited before becoming ready (code {return_code})"
+        try:
+            return json.loads(ready.read_text(encoding="utf-8"))
+        except (FileNotFoundError, PermissionError) as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(
+                    f"Owned AUT identity {ready} was not readable within {timeout}s"
+                ) from exc
+            time.sleep(min(0.01, remaining))
+
+
 @contextmanager
 def _owned_recorder_window(ready):
     """Keep a process identity handle and close the owned AUT even on test failure."""
@@ -347,12 +364,7 @@ def _owned_recorder_window(ready):
     )
     handle = None
     try:
-        deadline = time.monotonic() + 5
-        while not ready.exists():
-            assert process.poll() is None, "Owned AUT exited before becoming ready"
-            assert time.monotonic() < deadline, "Owned AUT did not become ready"
-            time.sleep(0.01)
-        identity = json.loads(ready.read_text(encoding="utf-8"))
+        identity = _wait_for_ready_identity(ready, process)
         root, pid = identity["hwnd"], identity["pid"]
         assert pid in {process.pid} | _enumerate_descendant_pids(process.pid)
         assert win32process.GetWindowThreadProcessId(root)[1] == pid
@@ -707,8 +719,7 @@ def record_generate_replay(output):
             time.sleep(0.01)
 
     try:
-        wait_until(ready.exists)
-        identity = json.loads(ready.read_text(encoding="utf-8"))
+        identity = _wait_for_ready_identity(ready, process)
         root, pid = identity["hwnd"], identity["pid"]
         # Windows venv redirectors may put the AUT in a child of Popen.pid.
         from dolphin_desktop._application import _enumerate_descendant_pids

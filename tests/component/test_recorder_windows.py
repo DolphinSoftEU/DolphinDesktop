@@ -4,6 +4,7 @@ import json
 from unittest.mock import Mock
 
 import pytest
+import win32file
 from tests.component import _recorder_window
 from tests.component._recorder_window import (
     check_real_hook_lifecycle,
@@ -37,6 +38,98 @@ def test_ready_identity_is_not_visible_during_partial_write(monkeypatch, tmp_pat
     assert observed == [False, False]
     assert json.loads(ready.read_text(encoding="utf-8")) == {"hwnd": 123, "pid": 456}
     assert list(tmp_path.iterdir()) == [ready]
+
+
+def _locked_ready_identity(ready):
+    # Acquire the exclusive handle at creation, without an unlocked setup gap.
+    lock = win32file.CreateFile(
+        str(ready),
+        win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+        0,
+        None,
+        win32file.CREATE_NEW,
+        0,
+        None,
+    )
+    try:
+        win32file.WriteFile(lock, json.dumps({"hwnd": 123, "pid": 456}).encode("utf-8"))
+    except Exception:
+        lock.Close()
+        raise
+    return lock
+
+
+def test_ready_identity_waits_for_real_windows_read_lock(monkeypatch, tmp_path):
+    ready = tmp_path / "owned.ready.json"
+    locks = [_locked_ready_identity(ready)]
+    waits = []
+
+    def unlock(delay):
+        waits.append(delay)
+        locks.pop().Close()
+
+    try:
+        with pytest.raises(PermissionError):
+            ready.read_text(encoding="utf-8")
+        monkeypatch.setattr(_recorder_window.time, "sleep", unlock)
+        identity = _recorder_window._wait_for_ready_identity(
+            ready, Mock(poll=Mock(return_value=None))
+        )
+        assert identity == {"hwnd": 123, "pid": 456}
+        assert len(waits) == 1
+        assert 0 < waits[0] <= 0.01
+    finally:
+        for lock in locks:
+            lock.Close()
+
+
+def test_ready_identity_permanent_lock_fails_at_deadline(monkeypatch, tmp_path):
+    ready = tmp_path / "owned.ready.json"
+    lock = _locked_ready_identity(ready)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(_recorder_window.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        _recorder_window.time, "sleep", lambda delay: clock.update(now=clock["now"] + delay)
+    )
+    try:
+        with pytest.raises(AssertionError, match="not readable within") as caught:
+            _recorder_window._wait_for_ready_identity(
+                ready, Mock(poll=Mock(return_value=None)), timeout=0.025
+            )
+        assert isinstance(caught.value.__cause__, PermissionError)
+        assert clock["now"] == pytest.approx(0.025)
+    finally:
+        lock.Close()
+
+
+def test_ready_identity_waits_for_atomic_publication(monkeypatch, tmp_path):
+    from tests.component import _real_window
+
+    ready = tmp_path / "owned.ready.json"
+    monkeypatch.setattr(
+        _recorder_window.time, "sleep", lambda _: _real_window._publish_ready(ready, 123, 456)
+    )
+    assert _recorder_window._wait_for_ready_identity(ready, Mock(poll=Mock(return_value=None))) == {
+        "hwnd": 123,
+        "pid": 456,
+    }
+
+
+def test_ready_identity_does_not_retry_invalid_published_json(monkeypatch, tmp_path):
+    ready = tmp_path / "owned.ready.json"
+    ready.write_text('{"hwnd":', encoding="utf-8")
+    sleep = Mock()
+    monkeypatch.setattr(_recorder_window.time, "sleep", sleep)
+    with pytest.raises(json.JSONDecodeError):
+        _recorder_window._wait_for_ready_identity(ready, Mock(poll=Mock(return_value=None)))
+    sleep.assert_not_called()
+
+
+def test_ready_identity_does_not_wait_for_dead_process(tmp_path):
+    with pytest.raises(AssertionError, match="code 17"):
+        _recorder_window._wait_for_ready_identity(
+            tmp_path / "owned.ready.json", Mock(poll=Mock(return_value=17))
+        )
 
 
 @pytest.mark.parametrize(

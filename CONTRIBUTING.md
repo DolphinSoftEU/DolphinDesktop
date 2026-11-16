@@ -239,6 +239,12 @@ the expected and hit HWND/PID/root/class, geometry and transition samples,
 without reading the obscuring field's contents. CI requires all real recorder
 scenarios to pass without skips and uploads these diagnostics on failure.
 
+The AUT publishes its ready identity atomically. Readers retry missing files
+and Windows read-sharing failures within the existing five-second startup
+budget, checking that the AUT is still alive. Malformed published JSON fails
+immediately; a persistent lock fails at the deadline with the original error.
+Native exclusive-handle regressions cover lock release and permanent blocking.
+
 Replay checks retain stage-specific native/UIA text, HWND/focus, modifier state
 and recorder progress in `recorded.diagnostics.json`. Native WM_GETTEXT reads
 have a 500 ms timeout and require a successful call status; zero characters on
