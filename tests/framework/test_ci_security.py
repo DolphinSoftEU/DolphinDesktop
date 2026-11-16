@@ -27,6 +27,18 @@ def load(name: str) -> dict:
     return yaml.load((WORKFLOWS / name).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
 
+def test_unit_evidence_keeps_child_pytest_runs_outside_repository_config() -> None:
+    job = load("ci.yml")["jobs"]["unit"]
+    unit = next(step for step in job["steps"] if step.get("name") == "Unit tests")
+    # Subprocess autoload tests intentionally discover their own pytest config.
+    # A basetemp under the checkout inherits its -p no:dolphin-desktop option.
+    assert '--basetemp="${{ runner.temp }}/unit-cases"' in unit["run"]
+    upload = next(
+        step for step in job["steps"] if "reporter subprocess diagnostics" in step.get("name", "")
+    )
+    assert "${{ runner.temp }}/unit-cases/**/terminal.txt" in upload["with"]["path"]
+
+
 def test_wheel_platform_rerun_uses_original_package_attempt() -> None:
     """A failed-jobs rerun must validate the producer's provenance, not its own attempt."""
     jobs = load("ci.yml")["jobs"]
