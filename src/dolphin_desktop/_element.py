@@ -177,21 +177,32 @@ class _Win32MenuEntry:
         self._item.ctrl.verify_actionable()
         if not self.is_enabled():
             raise MenuItemNotEnabled(f"MenuItem {self._item.text()} is disabled")
-        if not self.is_visible() and self._item.menu.owner_item is not None:
+        rect = self._item.rectangle()
+        if (
+            rect.right <= rect.left or rect.bottom <= rect.top
+        ) and self._item.menu.owner_item is not None:
             _Win32MenuEntry(
                 self._item.menu.owner_item, timeout=max(0.0, deadline - time.monotonic())
             ).click_input()
-        rect = self.rectangle()
         # Input delivery and GUI-idle do not guarantee that the popup has been
-        # laid out yet. Wait for it without repeating the parent click.
-        while rect.right <= rect.left or rect.bottom <= rect.top:
+        # laid out yet. API reads can fail transiently during that transition.
+        # Retry only reads, including when an already-open popup loses a read;
+        # repeating its parent's click would toggle the menu shut.
+        last_error: OSError | None = None
+        while True:
+            try:
+                rect = self.rectangle()
+            except OSError as exc:
+                last_error = exc
+            else:
+                if rect.right > rect.left and rect.bottom > rect.top:
+                    break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ElementNotFoundError(
                     f"Win32 menu item {self.window_text()!r} is not on screen"
-                )
+                ) from last_error
             time.sleep(min(0.05, remaining))
-            rect = self.rectangle()
         mouse.click(coords=(int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)))
         win32functions.WaitGuiThreadIdle(self._item.ctrl.handle)
         time.sleep(Timings.after_menu_wait)

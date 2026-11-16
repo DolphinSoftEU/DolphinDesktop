@@ -157,7 +157,19 @@ jobs:
           --cov=dolphin_desktop
           --cov-report=xml
           --cov-report=term-missing
+          --junitxml=artifacts/unit-results.xml
+          --basetemp=artifacts/unit-cases
           -q
+
+      - name: Upload unit reports and reporter subprocess diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unit-evidence-${{ matrix.python-version }}
+          path: |
+            artifacts/unit-results.xml
+            artifacts/unit-cases/**/terminal.txt
+          if-no-files-found: warn
 
       - name: Upload coverage
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
@@ -327,6 +339,32 @@ jobs:
           path: ${{ runner.temp }}/runner-console/
           if-no-files-found: error
 
+  win32-scaled:
+    name: "Win32 physical menus / verified 125% scaling"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+      - name: Install locked test dependencies
+        run: uv sync --locked --group dev
+      - name: Configure and verify 125% scaling and run real menu clicks
+        run: uv run --no-sync python -m tests._win32_scaled_acceptance
+      - name: Upload measured DPI, JUnit and screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: win32-scaled-125
+          path: artifacts/win32-scaled/
+          if-no-files-found: error
+
   component-windows:
     name: "Windows component tests"
     runs-on: windows-latest
@@ -466,7 +504,7 @@ jobs:
   package:
     name: Build package
     runs-on: windows-latest
-    needs: [unit, runner-console, component-windows, package-linux, security, minimum-dependencies, qt-agent-reproducibility, pytest-compatibility]
+    needs: [unit, runner-console, component-windows, win32-scaled, package-linux, security, minimum-dependencies, qt-agent-reproducibility, pytest-compatibility]
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       version: ${{ steps.version.outputs.version }}

@@ -19,6 +19,7 @@ import win32con
 import win32gui
 import win32process
 from pywinauto.controls.menuwrapper import MenuItemNotEnabled
+from tests._display_scale import record_window_scale
 from tests.component._win32_controls_window import (
     COMBO_ITEMS,
     ID_BUTTON_TABS,
@@ -50,13 +51,16 @@ _HELPER = path_join(dirname(__file__), "_win32_controls_window.py")
 
 
 @pytest.fixture
-def window():
+def window(tmp_path):
     app = Desktop.for_legacy_apps(hidden=False).launch(
         f'"{python_executable()}" "{_HELPER}"', startup_delay=0.5
     )
     try:
         win = app.window(title=WINDOW_TITLE, timeout=20)
         win.wait_until_ready(timeout=20)
+        record_window_scale(
+            win._get_spec().wrapper_object().handle, tmp_path / "display-scale.json"
+        )
         yield win
     finally:
         app.kill()
@@ -147,6 +151,9 @@ def test_winforms_launch_controls_menu_dialog_and_attach(tmp_path, dpi_aware) ->
     try:
         win = app.window(title="Dolphin Win32 Legacy Fixture", timeout=20)
         win.wait_until_ready(timeout=10)
+        record_window_scale(
+            win._get_spec().wrapper_object().handle, tmp_path / "display-scale.json"
+        )
         edit = win.edit()
         edit.wait_for(state="visible", timeout=10)
         assert "edit" in edit.get_attribute("class_name").casefold()

@@ -161,6 +161,24 @@ rectangles. `invoke()`/`select()` cannot substitute for a successful `click()`.
 CI includes these tests in the Windows component gate and uploads the WinForms
 screenshots with its JUnit report as `windows-component-evidence`.
 
+The independent `win32-scaled` CI job additionally provisions 125% scaling on
+its disposable GitHub-hosted Windows runner and runs the three physical-menu
+scenarios. It verifies the effective monitor scale before starting pytest and
+on each AUT's actual monitor, rejects skips/incomplete reports, and restores the
+original scale in `finally`. The job gates packaging and runs even when unit
+jobs fail. Its `win32-scaled-125` artifact contains measured scale JSON, JUnit
+and screenshots. The CI-only setter uses Windows Settings' undocumented DPI
+device-info packets (-3/-4); unsupported runners fail this gate rather than
+reporting a 100% run as 125% coverage. This code is outside the runtime package.
+
+To run the same strict gate locally on a display already configured at 125%:
+
+```powershell
+uv run --locked python -m tests._win32_scaled_acceptance
+```
+
+Local runs only verify the display and never change its scaling.
+
 ## Recorder acceptance (KAN-576 / KAN-759)
 
 Run on a controlled interactive Windows desktop, without concurrent user input:

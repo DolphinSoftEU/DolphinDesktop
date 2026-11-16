@@ -585,16 +585,37 @@ class TestNativeWin32Menu:
                 Menu(native_menu.window, title="File").item("Show dialog").timeout(0).click()
             mouse_click.assert_called_once_with(coords=(60, 30))
 
-    def test_click_waits_for_popup_layout_without_clicking_parent_twice(self, native_menu):
+    @pytest.mark.parametrize("already_open", [False, True])
+    def test_click_waits_for_popup_layout_without_clicking_parent_twice(
+        self, native_menu, already_open
+    ):
+        native_menu.show.on_main_menu = False
         native_menu.show.menu.owner_item = native_menu.file
-        native_menu.show.rectangle.side_effect = [CLOSED_RECT, CLOSED_RECT, OPEN_RECT]
+        native_menu.show.rectangle.side_effect = (
+            [OPEN_RECT] * 3 if already_open else [CLOSED_RECT, CLOSED_RECT, OPEN_RECT, OPEN_RECT]
+        )
+        reads = []
+
+        def read_popup(owner, menu, index, target):
+            assert owner == native_menu.show.ctrl.handle
+            assert menu.value == native_menu.show.menu.handle
+            reads.append(owner)
+            if len(reads) == 1:
+                return 0
+            rect = target._obj
+            rect.left, rect.top, rect.right, rect.bottom = 200, 300, 400, 340
+            return 1
+
         with (
             patch("pywinauto.mouse.click") as mouse_click,
+            patch("pywinauto.win32functions.GetMenuItemRect", side_effect=read_popup),
             patch("pywinauto.win32functions.WaitGuiThreadIdle"),
             patch.object(element_module.time, "sleep"),
         ):
             Menu(native_menu.window, title="File").item("Show dialog").click()
-            assert mouse_click.call_count == 2
+            expected = [(300, 320)] if already_open else [(60, 30), (300, 320)]
+            assert [call.kwargs["coords"] for call in mouse_click.call_args_list] == expected
+            assert len(reads) == 2
             native_menu.show.select.assert_not_called()
 
     def test_disabled_item_does_not_open_its_parent(self, native_menu):
@@ -618,11 +639,17 @@ class TestNativeWin32Menu:
         native_menu.show.on_main_menu = False
         native_menu.show.rectangle.return_value = OPEN_RECT
         with (
-            patch("pywinauto.win32functions.GetMenuItemRect", return_value=0),
+            patch("pywinauto.win32functions.GetMenuItemRect", return_value=0) as get_rect,
             patch("pywinauto.mouse.click") as mouse_click,
+            patch.object(element_module.time, "monotonic", side_effect=[0, 0.01, 0.1]),
+            patch.object(element_module.time, "sleep") as sleep,
         ):
-            with pytest.raises(OSError):
-                Menu(native_menu.window, title="File").item("Show dialog").click()
+            entry = element_module._Win32MenuEntry(native_menu.show, timeout=0.1)
+            with pytest.raises(ElementNotFoundError, match="not on screen") as caught:
+                entry.click_input()
+            assert isinstance(caught.value.__cause__, OSError)
+            assert get_rect.call_count == 2
+            sleep.assert_called_once_with(0.05)
             mouse_click.assert_not_called()
 
     def test_state_reads_come_from_the_menu_handle(self, native_menu):
