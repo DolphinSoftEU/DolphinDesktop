@@ -158,6 +158,14 @@ above 100% (for example 125%): popup coordinates obtained without the owner HWND
 can otherwise look correct at 100% while sending clicks outside the menu on a
 scaled display. Unit tests independently simulate different logical and screen
 rectangles. `invoke()`/`select()` cannot substitute for a successful `click()`.
+
+The native nested-menu case also covers a real non-activating `WS_EX_TOPMOST`
+window from the controller process above the AUT popup. It checks both an
+initially covered point and a window appearing after the first positive
+hit-test. Neither case may dispatch a SendInput batch or deliver a button
+message to the overlay; removing it must allow the same menu command to work.
+`menu-overlay-layout.json` and `menu-overlay-dispatch.json` retain HWND/PID,
+screen point and event counts without reading the obscuring window's contents.
 CI includes these tests in the Windows component gate and uploads the WinForms
 screenshots with its JUnit report as `windows-component-evidence`.
 

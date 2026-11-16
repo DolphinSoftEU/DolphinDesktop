@@ -18,9 +18,10 @@ import pytest
 import win32con
 import win32gui
 import win32process
-from pywinauto import mouse, win32structures
+from pywinauto import win32functions, win32structures
 from pywinauto.controls.menuwrapper import MenuItemNotEnabled
 from tests._display_scale import record_window_scale
+from tests.component._menu_overlay import MenuOverlay
 from tests.component._win32_controls_window import (
     COMBO_ITEMS,
     ID_BUTTON_TABS,
@@ -124,7 +125,9 @@ def test_native_menu_items_are_found_read_and_invoked(window) -> None:
     _wait_status(window, "menu=mark")
 
 
-def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch) -> None:
+def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch, tmp_path) -> None:
+    for late in [False, True]:
+        _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, tmp_path, late=late)
     file_menu = window.menu("File")
     for caption, status in [("Nested mark", "menu=nested"), ("R&D report", "menu=rnd")]:
         item = (
@@ -147,7 +150,7 @@ def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch) 
     mark = file_menu.item("Mark")
     mark.wait_for(state="visible", timeout=10)
     find_item = element_module._find_native_menu_item
-    physical_click = mouse.click
+    physical_click = element_module._native_menu_click
     clicks = []
     empty_reads = []
 
@@ -165,16 +168,91 @@ def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch) 
             native_item.rectangle = rectangle
         return native_item
 
-    def click(**kwargs):
+    def click(item, **kwargs):
         clicks.append(kwargs)
-        return physical_click(**kwargs)
+        return physical_click(item, **kwargs)
 
     monkeypatch.setattr(element_module, "_find_native_menu_item", transient_layout)
-    monkeypatch.setattr(mouse, "click", click)
+    monkeypatch.setattr(element_module, "_native_menu_click", click)
     mark.click()
     _wait_status(window, "menu=mark")
     assert len(empty_reads) == 1
     assert len(clicks) == 1, "the already-open popup's parent must not be clicked"
+
+
+def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, late):
+    hwnd = window._get_spec().wrapper_object().handle
+    win32gui.PostMessage(hwnd, WM_OPEN_FILE_MENU, 0, 0)
+    mark = window.menu("File").item("Mark")
+    mark.wait_for(state="visible", timeout=10)
+    rect = mark._resolve().rectangle()
+    point = (int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2))
+    before = _status(window)
+    clicks = []
+    batches = []
+    overlays = []
+    physical_click = element_module._native_menu_click
+    native_owns_point = element_module._native_menu_owns_point
+    send_input = win32functions.SendInput
+
+    def click(item, **kwargs):
+        clicks.append(kwargs)
+        return physical_click(item, **kwargs)
+
+    def owns_point(item, target):
+        owned = native_owns_point(item, target)
+        if owned and not overlays:
+            # Return a genuine positive read, then cover that point before the
+            # dispatcher's final read. WindowFromPoint itself stays unmodified.
+            overlays.append(MenuOverlay(rect))
+        return owned
+
+    def send(count, pointer, size):
+        batches.append(count)
+        return send_input(count, pointer, size)
+
+    try:
+        with monkeypatch.context() as scope:
+            if late:
+                scope.setattr(element_module, "_native_menu_owns_point", owns_point)
+            else:
+                overlays.append(MenuOverlay(rect))
+            scope.setattr(element_module, "_native_menu_click", click)
+            scope.setattr(win32functions, "SendInput", send)
+            with pytest.raises(ElementNotFoundError, match="obscured"):
+                mark.timeout(0.2).click()
+            overlay = overlays[0]
+            win32gui.PumpWaitingMessages()
+            assert (
+                win32gui.GetWindowLong(overlay.hwnd, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST
+            )
+            assert (
+                win32process.GetWindowThreadProcessId(overlay.hwnd)[1]
+                != win32process.GetWindowThreadProcessId(hwnd)[1]
+            )
+            assert win32gui.WindowFromPoint(point) == overlay.hwnd
+            assert len(clicks) == int(late)
+            assert not batches, "no physical input may be dispatched to the obstructing process"
+            assert not overlay.button_events
+            assert _status(window) == before
+            assert mark.is_visible(), "the blocked action must not toggle the parent closed"
+    finally:
+        for overlay in overlays:
+            try:
+                overlay.evidence(
+                    output / f"menu-overlay-{'dispatch' if late else 'layout'}.json",
+                    owner_hwnd=hwnd,
+                    owner_pid=win32process.GetWindowThreadProcessId(hwnd)[1],
+                    point=point,
+                    hit_hwnd=win32gui.WindowFromPoint(point),
+                    dispatch_attempts=len(clicks),
+                    input_batches=batches,
+                )
+            finally:
+                overlay.close()
+
+    mark.click()
+    _wait_status(window, "menu=mark")
 
 
 @pytest.mark.parametrize("dpi_aware", [False, True], ids=["dpi-unaware", "dpi-aware"])

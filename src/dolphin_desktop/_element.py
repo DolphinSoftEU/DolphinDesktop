@@ -192,6 +192,87 @@ def _native_popup_is_open(item: Any) -> bool:
     return found
 
 
+def _native_menu_owns_point(item: Any, point: tuple[int, int]) -> bool:
+    """Check the actual hit window, not just the menu's potentially stale layout."""
+    import ctypes
+
+    import pywintypes
+    import win32con
+    import win32gui
+    import win32process
+    from pywinauto import win32functions, win32structures
+
+    try:
+        hit = win32gui.WindowFromPoint(point)
+        if not hit or win32process.GetWindowThreadProcessId(
+            hit
+        ) != win32process.GetWindowThreadProcessId(item.ctrl.handle):
+            return False
+        if item.on_main_menu:
+            if hit != item.ctrl.handle or win32gui.GetMenu(hit) != item.menu.handle:
+                return False
+        else:
+            if win32gui.GetClassName(hit) != "#32768":
+                return False
+            info = win32structures.MENUBARINFO()
+            info.cbSize = ctypes.sizeof(info)
+            if not win32functions.GetMenuBarInfo(hit, win32con.OBJID_CLIENT, 0, ctypes.byref(info)):
+                raise ctypes.WinError()
+            if info.hMenu != item.menu.handle:
+                return False
+        # Recheck after the identity queries in case another HWND appeared meanwhile.
+        return bool(win32gui.WindowFromPoint(point) == hit)
+    except pywintypes.error as exc:
+        raise OSError(*exc.args) from exc
+
+
+def _native_menu_click(
+    item: Any, *, coords: tuple[int, int], deadline: float | None = None
+) -> None:
+    """Validate ownership immediately before submitting physical mouse events."""
+    import ctypes
+
+    import win32api
+    import win32con
+    from pywinauto import win32functions, win32structures
+
+    left = win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN)
+    top = win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN)
+    width = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
+    height = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
+    if width <= 0 or height <= 0:
+        raise RuntimeError("Cannot determine virtual desktop size for native menu input")
+    swapped = win32api.GetSystemMetrics(win32con.SM_SWAPBUTTON)
+    inputs = (win32structures.INPUT * 3)()
+    # Normalized coordinates address pixel centers on the whole virtual desktop,
+    # including monitors with negative screen coordinates.
+    inputs[0].mi.dx = (coords[0] - left) * 65536 // width + 32768 // width
+    inputs[0].mi.dy = (coords[1] - top) * 65536 // height + 32768 // height
+    inputs[0].mi.dwFlags = (
+        win32con.MOUSEEVENTF_MOVE | win32con.MOUSEEVENTF_ABSOLUTE | win32con.MOUSEEVENTF_VIRTUALDESK
+    )
+    inputs[1].mi.dwFlags = (
+        win32con.MOUSEEVENTF_RIGHTDOWN if swapped else win32con.MOUSEEVENTF_LEFTDOWN
+    )
+    inputs[2].mi.dwFlags = win32con.MOUSEEVENTF_RIGHTUP if swapped else win32con.MOUSEEVENTF_LEFTUP
+    if not _native_menu_owns_point(item, coords):
+        raise ElementNotFoundError("Native menu click point changed or is obscured before input")
+    if deadline is not None and time.monotonic() >= deadline:
+        raise ElementNotFoundError("Native menu click deadline expired before input")
+    # No cursor-settling or double-click delay between this guard and SendInput.
+    # Windows inserts this move/down/up batch without interleaving other input.
+    inserted = win32functions.SendInput(
+        3, ctypes.byref(inputs), ctypes.sizeof(win32structures.INPUT)
+    )
+    if inserted != 3:
+        if inserted == 2:
+            # A partial batch may have pressed the button; release it, never retry the click.
+            win32api.mouse_event(inputs[2].mi.dwFlags, 0, 0, 0, 0)
+        raise RuntimeError(
+            f"Native menu SendInput inserted {inserted} of 3 events"
+        ) from ctypes.WinError()
+
+
 class _Win32MenuEntry:
     """Locator-facing view of one item of a native Win32 menu (``HMENU``).
 
@@ -209,7 +290,7 @@ class _Win32MenuEntry:
 
     def click_input(self) -> None:
         """Open closed parents, then click in the owner's screen coordinates."""
-        from pywinauto import mouse, win32functions
+        from pywinauto import win32functions
         from pywinauto.controls.menuwrapper import MenuItemNotEnabled
         from pywinauto.timings import Timings
 
@@ -225,16 +306,21 @@ class _Win32MenuEntry:
         # repeating its parent's click would toggle the menu shut.
         last_error: OSError | None = None
         parent_clicked = False
+        obscured = False
         while True:
             if self._timeout > 0 and time.monotonic() >= deadline:
                 raise ElementNotFoundError(
-                    f"Win32 menu item {self.window_text()!r} is not on screen before timeout"
+                    f"Win32 menu item {self.window_text()!r} is not on screen or its "
+                    "click point remains obscured before timeout"
                 ) from last_error
             try:
                 rect = self.rectangle()
                 if rect.right > rect.left and rect.bottom > rect.top:
-                    break
-                if (
+                    point = (int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2))
+                    if _native_menu_owns_point(self._item, point):
+                        break
+                    obscured = True
+                elif (
                     not parent_clicked
                     and self._item.menu.owner_item is not None
                     and not _native_popup_is_open(self._item)
@@ -249,15 +335,22 @@ class _Win32MenuEntry:
                 last_error = exc
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                reason = (
+                    "click point is obscured or belongs to another window"
+                    if obscured
+                    else "is not on screen"
+                )
                 raise ElementNotFoundError(
-                    f"Win32 menu item {self.window_text()!r} is not on screen"
+                    f"Win32 menu item {self.window_text()!r} {reason}"
                 ) from last_error
             time.sleep(min(0.05, remaining))
         if self._timeout > 0 and time.monotonic() >= deadline:
             raise ElementNotFoundError(
                 f"Win32 menu item {self.window_text()!r} is not on screen before timeout"
             ) from last_error
-        mouse.click(coords=(int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)))
+        _native_menu_click(
+            self._item, coords=point, deadline=deadline if self._timeout > 0 else None
+        )
         win32functions.WaitGuiThreadIdle(self._item.ctrl.handle)
         time.sleep(min(Timings.after_menu_wait, max(0.0, deadline - time.monotonic())))
 

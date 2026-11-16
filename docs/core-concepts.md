@@ -37,6 +37,13 @@ uses the remaining time. `timeout(0)` makes immediate probes without polling.
 The timeout does not interrupt focus changes, native API calls, or mouse input
 already being delivered; their execution time can extend the action's wall time.
 
+Native menu clicks also wait until the screen point belongs to the expected
+owner/menu, checking window, process, GUI thread and popup HMENU. A final hit-test
+runs immediately before a physical `SendInput` batch, without a cursor-settling
+delay. If ownership changes at that point, the action fails without dispatching
+the click. Hit-testing and window stacking are not an atomic Windows operation;
+another window can still change after the final check.
+
 ## Backends
 
 | Backend | Use for | Notes |
