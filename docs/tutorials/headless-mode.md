@@ -100,6 +100,28 @@ from dolphin_desktop import Desktop
 desktop = Desktop(hidden=True)
 ```
 
+Applications started through a hidden `Desktop.launch()` (including the typed
+launch helpers) belong to a private Windows Job Object owned by the calling
+Python process. Windows terminates those applications and their descendants
+when that owner exits, including a crash or `TerminateProcess` / `taskkill /F`
+without `/T`. The job handle is not inherited. Assignment happens during process
+creation using `PROC_THREAD_ATTRIBUTE_JOB_LIST`, so there is no unprotected
+interval between process creation and job assignment. See Microsoft's
+[creation-time job assignment explanation](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812/).
+
+All hidden `Desktop` instances in the same Python process share this ownership.
+Discarding a `Desktop` facade does not terminate its applications. Continue using
+`Application.close()` for normal application shutdown; the job is the fallback
+for remaining processes at owner exit. Processes attached through `connect()`
+and applications owned by other Python processes are not added to this job.
+Brokered launches outside the owned process tree are outside this guarantee.
+An incompatible existing CI job causes launch to fail before application code
+runs; configure it to allow nested jobs. There is no unprotected launch fallback.
+
+`DolphinHidden` is shared by sessions in the same window station. It disappears
+after the last process/thread and desktop handle using it are released. Exiting
+one owner leaves other active sessions running on that desktop.
+
 Use visible mode even when `DOLPHIN_HEADLESS` is set:
 
 ```python

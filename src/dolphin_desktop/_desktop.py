@@ -475,7 +475,12 @@ class Desktop:
         wait_for_idle: bool = False,
     ) -> Application:
         """Launch *cmd* on the hidden desktop and connect pywinauto by PID."""
-        from ._runner import close_process_handle, launch_cmd_on_desktop, terminate_process_handle
+        from ._runner import (
+            _hidden_launch_job,
+            close_process_handle,
+            launch_cmd_on_desktop,
+            terminate_process_handle,
+        )
 
         self._ensure_hidden_mode()
         try:
@@ -485,6 +490,7 @@ class Desktop:
                 wait_for_idle=wait_for_idle,
                 work_dir=work_dir,
                 env=env,
+                job_handle=_hidden_launch_job(),
             )
         except OSError as exc:
             raise ApplicationError(f"Failed to launch {cmd!r} on hidden desktop: {exc}") from exc
