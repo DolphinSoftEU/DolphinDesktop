@@ -65,6 +65,8 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   requires measured 125% monitor scaling for the real physical-menu regressions.
   Physical clicks now validate the hit window and menu identity, including a final
   check immediately before SendInput, refusing input to an obscuring window.
+  The final check also verifies the menu index, command identity and fresh item
+  geometry. Popup enabled state is read after WM_INITMENUPOPUP and before input.
 
 * Hidden `Desktop.launch()` applications and their descendants now belong to an
   owner-process Job Object with `KILL_ON_JOB_CLOSE`, including venv redirectors.

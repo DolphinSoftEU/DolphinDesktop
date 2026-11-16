@@ -7,6 +7,10 @@ import win32con
 import win32gui
 
 
+def write_menu_evidence(output, **values):
+    output.write_text(json.dumps(values, indent=2), encoding="utf-8")
+
+
 class MenuOverlay:
     def __init__(self, rect):
         self.button_events = []
@@ -71,7 +75,7 @@ class MenuOverlay:
             overlay_pid=win32api.GetCurrentProcessId(),
             button_messages=self.button_events,
         )
-        output.write_text(json.dumps(values, indent=2), encoding="utf-8")
+        write_menu_evidence(output, **values)
 
     def __exit__(self, *_):
         self.close()

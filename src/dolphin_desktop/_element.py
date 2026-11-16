@@ -192,7 +192,44 @@ def _native_popup_is_open(item: Any) -> bool:
     return found
 
 
-def _native_menu_owns_point(item: Any, point: tuple[int, int]) -> bool:
+def _native_menu_identity(item: Any) -> tuple[int, int, str]:
+    info = item._read_item()
+    return int(info.wID), int(info.hSubMenu or 0), str(info.text)
+
+
+def _native_menu_index_at_point(item: Any, point: tuple[int, int]) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    # POINT is passed by value. pywinauto's binding declares a pointer instead.
+    hit_test = ctypes.WinDLL("user32", use_last_error=True).MenuItemFromPoint
+    hit_test.argtypes = [wintypes.HWND, wintypes.HMENU, wintypes.POINT]
+    hit_test.restype = ctypes.c_int
+    # NULL HWND can apply the popup owner's DPI virtualization at 125%.
+    return int(hit_test(item.ctrl.handle, item.menu.handle, wintypes.POINT(*point)))
+
+
+def _native_menu_rectangle(item: Any) -> Any:
+    import ctypes
+    from ctypes import wintypes
+
+    from pywinauto import win32functions, win32structures
+
+    rect = item.rectangle()
+    # NULL-HWND layout detects closed popups; the owner HWND corrects screen DPI.
+    if item.on_main_menu or rect.right <= rect.left or rect.bottom <= rect.top:
+        return rect
+    screen_rect = win32structures.RECT()
+    if not win32functions.GetMenuItemRect(
+        item.ctrl.handle, wintypes.HMENU(item.menu.handle), item.index(), ctypes.byref(screen_rect)
+    ):
+        raise ctypes.WinError()
+    return screen_rect
+
+
+def _native_menu_owns_point(
+    item: Any, point: tuple[int, int], identity: tuple[int, int, str] | None = None
+) -> bool:
     """Check the actual hit window, not just the menu's potentially stale layout."""
     import ctypes
 
@@ -203,6 +240,8 @@ def _native_menu_owns_point(item: Any, point: tuple[int, int]) -> bool:
     from pywinauto import win32functions, win32structures
 
     try:
+        if identity is None:
+            identity = _native_menu_identity(item)
         hit = win32gui.WindowFromPoint(point)
         if not hit or win32process.GetWindowThreadProcessId(
             hit
@@ -220,6 +259,19 @@ def _native_menu_owns_point(item: Any, point: tuple[int, int]) -> bool:
                 raise ctypes.WinError()
             if info.hMenu != item.menu.handle:
                 return False
+        if (
+            _native_menu_identity(item) != identity
+            or _native_menu_index_at_point(item, point) != item.index()
+        ):
+            return False
+        rect = _native_menu_rectangle(item)
+        if not (rect.left <= point[0] < rect.right and rect.top <= point[1] < rect.bottom):
+            return False
+        if (
+            _native_menu_identity(item) != identity
+            or _native_menu_index_at_point(item, point) != item.index()
+        ):
+            return False
         # Recheck after the identity queries in case another HWND appeared meanwhile.
         return bool(win32gui.WindowFromPoint(point) == hit)
     except pywintypes.error as exc:
@@ -227,7 +279,11 @@ def _native_menu_owns_point(item: Any, point: tuple[int, int]) -> bool:
 
 
 def _native_menu_click(
-    item: Any, *, coords: tuple[int, int], deadline: float | None = None
+    item: Any,
+    *,
+    coords: tuple[int, int],
+    deadline: float | None = None,
+    identity: tuple[int, int, str] | None = None,
 ) -> None:
     """Validate ownership immediately before submitting physical mouse events."""
     import ctypes
@@ -235,6 +291,7 @@ def _native_menu_click(
     import win32api
     import win32con
     from pywinauto import win32functions, win32structures
+    from pywinauto.controls.menuwrapper import MenuItemNotEnabled
 
     left = win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN)
     top = win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN)
@@ -255,8 +312,12 @@ def _native_menu_click(
         win32con.MOUSEEVENTF_RIGHTDOWN if swapped else win32con.MOUSEEVENTF_LEFTDOWN
     )
     inputs[2].mi.dwFlags = win32con.MOUSEEVENTF_RIGHTUP if swapped else win32con.MOUSEEVENTF_LEFTUP
-    if not _native_menu_owns_point(item, coords):
-        raise ElementNotFoundError("Native menu click point changed or is obscured before input")
+    if not _native_menu_owns_point(item, coords, identity):
+        raise ElementNotFoundError(
+            "Native menu click point changed, identifies another item, or is obscured before input"
+        )
+    if not item.is_enabled():
+        raise MenuItemNotEnabled(f"MenuItem {item.text()} is disabled")
     if deadline is not None and time.monotonic() >= deadline:
         raise ElementNotFoundError("Native menu click deadline expired before input")
     # No cursor-settling or double-click delay between this guard and SendInput.
@@ -287,6 +348,7 @@ class _Win32MenuEntry:
         self._item = item
         self._timeout = timeout
         self._deadline = deadline
+        self._identity = _native_menu_identity(item)
 
     def click_input(self) -> None:
         """Open closed parents, then click in the owner's screen coordinates."""
@@ -298,8 +360,6 @@ class _Win32MenuEntry:
         if deadline is None:
             deadline = time.monotonic() + self._timeout
         self._item.ctrl.verify_actionable()
-        if not self.is_enabled():
-            raise MenuItemNotEnabled(f"MenuItem {self._item.text()} is disabled")
         # Input delivery and GUI-idle do not guarantee that the popup has been
         # laid out yet. API reads can fail transiently during that transition.
         # Retry only reads, including when an already-open popup loses a read;
@@ -316,8 +376,10 @@ class _Win32MenuEntry:
             try:
                 rect = self.rectangle()
                 if rect.right > rect.left and rect.bottom > rect.top:
+                    if not self.is_enabled():
+                        raise MenuItemNotEnabled(f"MenuItem {self._item.text()} is disabled")
                     point = (int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2))
-                    if _native_menu_owns_point(self._item, point):
+                    if _native_menu_owns_point(self._item, point, self._identity):
                         break
                     obscured = True
                 elif (
@@ -349,7 +411,10 @@ class _Win32MenuEntry:
                 f"Win32 menu item {self.window_text()!r} is not on screen before timeout"
             ) from last_error
         _native_menu_click(
-            self._item, coords=point, deadline=deadline if self._timeout > 0 else None
+            self._item,
+            coords=point,
+            deadline=deadline if self._timeout > 0 else None,
+            identity=self._identity,
         )
         win32functions.WaitGuiThreadIdle(self._item.ctrl.handle)
         time.sleep(min(Timings.after_menu_wait, max(0.0, deadline - time.monotonic())))
@@ -389,28 +454,7 @@ class _Win32MenuEntry:
         return _menu_text_key(self._item.text())
 
     def rectangle(self) -> Any:
-        import ctypes
-        from ctypes import wintypes
-
-        from pywinauto import win32functions, win32structures
-
-        rect = self._item.rectangle()
-        # With NULL HWND, GetMenuItemRect can return popup coordinates in the
-        # DPI-unaware owner's logical space. Supplying the owner HWND returns
-        # the caller's screen coordinates, as used by mouse.click(). Keep the
-        # NULL-HWND visibility probe: an explicit owner can return stale layout
-        # even after the popup closes.
-        if self._item.on_main_menu or rect.right <= rect.left or rect.bottom <= rect.top:
-            return rect
-        screen_rect = win32structures.RECT()
-        if not win32functions.GetMenuItemRect(
-            self._item.ctrl.handle,
-            wintypes.HMENU(self._item.menu.handle),
-            self._item.index(),
-            ctypes.byref(screen_rect),
-        ):
-            raise ctypes.WinError()
-        return screen_rect
+        return _native_menu_rectangle(self._item)
 
 
 def _native_menu_root(locator: Locator) -> tuple[Any, list[str]] | None:

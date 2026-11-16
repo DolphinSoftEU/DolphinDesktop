@@ -166,6 +166,14 @@ hit-test. Neither case may dispatch a SendInput batch or deliver a button
 message to the overlay; removing it must allow the same menu command to work.
 `menu-overlay-layout.json` and `menu-overlay-dispatch.json` retain HWND/PID,
 screen point and event counts without reading the obscuring window's contents.
+The same required case swaps two commands inside an open HMENU after the first
+positive hit-test. It requires zero input for the stale command, then resolves
+and clicks the requested caption at its new index. `menu-reordered.json` retains
+the unchanged popup HWND, expected/current command IDs and input counts.
+The AUT also enables and disables commands during real `WM_INITMENUPOPUP`
+handling. `menu-dynamic-state.json` records parent/target input counts: the newly
+enabled command must execute; the newly disabled command permits only opening
+its parent. Synthetic INIT messages issued by lookup do not update this AUT.
 CI includes these tests in the Windows component gate and uploads the WinForms
 screenshots with its JUnit report as `windows-component-evidence`.
 

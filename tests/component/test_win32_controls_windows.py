@@ -21,19 +21,24 @@ import win32process
 from pywinauto import win32functions, win32structures
 from pywinauto.controls.menuwrapper import MenuItemNotEnabled
 from tests._display_scale import record_window_scale
-from tests.component._menu_overlay import MenuOverlay
+from tests.component._menu_overlay import MenuOverlay, write_menu_evidence
 from tests.component._win32_controls_window import (
     COMBO_ITEMS,
     ID_BUTTON_TABS,
     ID_EDIT,
     ID_EMPTY_EDIT,
     ID_EMPTY_LABEL,
+    ID_MENU_DYNAMIC_DISABLE,
+    ID_MENU_DYNAMIC_ENABLE,
+    ID_MENU_LITERAL_AMPERSAND,
     ID_STATUS,
     ID_TABS,
     LIST_ITEMS,
     STATUS_READY,
     WINDOW_TITLE,
+    WM_ARM_DYNAMIC_MENU,
     WM_OPEN_FILE_MENU,
+    WM_REORDER_FILE_MENU,
 )
 
 import dolphin_desktop._element as element_module
@@ -128,6 +133,8 @@ def test_native_menu_items_are_found_read_and_invoked(window) -> None:
 def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch, tmp_path) -> None:
     for late in [False, True]:
         _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, tmp_path, late=late)
+    _assert_menu_reorder_blocks_input(window, monkeypatch, tmp_path)
+    _assert_dynamic_menu_state_is_read_after_opening(window, monkeypatch, tmp_path)
     file_menu = window.menu("File")
     for caption, status in [("Nested mark", "menu=nested"), ("R&D report", "menu=rnd")]:
         item = (
@@ -142,6 +149,8 @@ def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch, 
     _wait_status(window, "menu=nested")
     with pytest.raises(MenuItemNotEnabled):
         file_menu.item("Disabled item").click()
+    win32gui.SendMessage(window._get_spec().wrapper_object().handle, win32con.WM_CANCELMODE, 0, 0)
+    file_menu.item("Disabled item").wait_until_hidden(timeout=10)
 
     # An open native popup can briefly return empty item geometry. Check the
     # real popup's HMENU before deciding whether to click its parent again.
@@ -180,6 +189,114 @@ def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch, 
     assert len(clicks) == 1, "the already-open popup's parent must not be clicked"
 
 
+def _assert_menu_reorder_blocks_input(window, monkeypatch, output):
+    hwnd = window._get_spec().wrapper_object().handle
+    window.button(name="Save").click()
+    win32gui.PostMessage(hwnd, WM_OPEN_FILE_MENU, 0, 0)
+    mark = window.menu("File").item("Mark")
+    mark.wait_for(state="visible", timeout=10)
+    entry = mark._resolve()
+    rect = entry.rectangle()
+    point = ((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
+    popup = win32gui.WindowFromPoint(point)
+    observed_hit = popup
+    before = _status(window)
+    reordered = []
+    batches = []
+    native_owns_point = element_module._native_menu_owns_point
+    send_input = win32functions.SendInput
+
+    def owns_point(item, target, identity=None):
+        owned = native_owns_point(item, target, identity)
+        if owned and not reordered:
+            win32gui.SendMessage(hwnd, WM_REORDER_FILE_MENU, 1, 0)
+            reordered.append(True)
+        return owned
+
+    def send(count, pointer, size):
+        batches.append(count)
+        return send_input(count, pointer, size)
+
+    try:
+        with monkeypatch.context() as scope:
+            scope.setattr(element_module, "_native_menu_owns_point", owns_point)
+            scope.setattr(win32functions, "SendInput", send)
+            with pytest.raises(ElementNotFoundError, match="another item"):
+                mark.click()
+            assert reordered == [True]
+            assert win32gui.WindowFromPoint(point) == popup
+            assert (
+                win32gui.GetMenuItemID(entry._item.menu.handle, entry._item.index())
+                == ID_MENU_LITERAL_AMPERSAND
+            )
+            assert not batches, "a changed command at the same menu index must receive no input"
+            assert _status(window) == before
+            observed_hit = win32gui.WindowFromPoint(point)
+        # Fresh resolution must follow Mark to its new index in the still-open
+        # reordered menu, rather than relying on restoration of the old order.
+        mark.click()
+        _wait_status(window, "menu=mark")
+    finally:
+        write_menu_evidence(
+            output / "menu-reordered.json",
+            owner_hwnd=hwnd,
+            popup_hwnd=popup,
+            hit_hwnd=observed_hit,
+            menu_handle=entry._item.menu.handle,
+            expected_command=entry._identity[0],
+            current_command=win32gui.GetMenuItemID(entry._item.menu.handle, entry._item.index()),
+            point=point,
+            input_batches=batches,
+        )
+        win32gui.SendMessage(hwnd, WM_REORDER_FILE_MENU, 0, 0)
+
+
+def _assert_dynamic_menu_state_is_read_after_opening(window, monkeypatch, output):
+    hwnd = window._get_spec().wrapper_object().handle
+    file_menu = window.menu("File")
+    enable = file_menu.item("Enable on open")
+    disable = file_menu.item("Disable on open")
+    send_input = win32functions.SendInput
+    batches = []
+
+    def send(count, pointer, size):
+        batches.append(count)
+        return send_input(count, pointer, size)
+
+    with monkeypatch.context() as scope:
+        scope.setattr(win32functions, "SendInput", send)
+        win32gui.SendMessage(hwnd, WM_ARM_DYNAMIC_MENU, 0, 0)
+        assert not enable.is_enabled()
+        enable.click()
+        _wait_status(window, "menu=dynamic-enabled")
+        assert len(batches) == 2, "the disabled-in-closed-menu command must be opened, then clicked"
+        enabled_batches = list(batches)
+        batches.clear()
+        win32gui.SendMessage(hwnd, WM_ARM_DYNAMIC_MENU, 0, 0)
+        assert disable.is_enabled()
+        before = _status(window)
+        try:
+            with pytest.raises(MenuItemNotEnabled):
+                disable.click()
+            assert len(batches) == 1, (
+                "only the parent may be clicked before the command disables itself"
+            )
+            assert not disable.is_enabled()
+            assert disable.is_visible()
+            assert _status(window) == before
+        finally:
+            write_menu_evidence(
+                output / "menu-dynamic-state.json",
+                owner_hwnd=hwnd,
+                enable_command=ID_MENU_DYNAMIC_ENABLE,
+                disable_command=ID_MENU_DYNAMIC_DISABLE,
+                enabled_input_batches=enabled_batches,
+                disabled_input_batches=batches,
+            )
+            win32gui.SendMessage(hwnd, win32con.WM_CANCELMODE, 0, 0)
+    disable.wait_until_hidden(timeout=10)
+
+
 def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, late):
     hwnd = window._get_spec().wrapper_object().handle
     win32gui.PostMessage(hwnd, WM_OPEN_FILE_MENU, 0, 0)
@@ -199,8 +316,8 @@ def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, la
         clicks.append(kwargs)
         return physical_click(item, **kwargs)
 
-    def owns_point(item, target):
-        owned = native_owns_point(item, target)
+    def owns_point(item, target, identity=None):
+        owned = native_owns_point(item, target, identity)
         if owned and not overlays:
             # Return a genuine positive read, then cover that point before the
             # dispatcher's final read. WindowFromPoint itself stays unmodified.
