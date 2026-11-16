@@ -59,7 +59,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
   nested-menu and full WinForms launch/controls/dialog/attach regressions,
   including repeated dialog opening with DPI-aware and unaware owners (KAN-747).
   Transient popup rectangle API failures now retry reads within the action
-  deadline without clicking the parent again. An independent packaging gate
+  deadline without clicking the parent again. Visibility uses a separate layout
+  probe; open popups are identified by HMENU even when item geometry is empty.
+  Lookup and all parent/layout waits share one deadline. An independent packaging gate
   requires measured 125% monitor scaling for the real physical-menu regressions.
 
 * Hidden `Desktop.launch()` applications and their descendants now belong to an

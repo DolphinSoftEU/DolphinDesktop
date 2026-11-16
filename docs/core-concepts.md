@@ -31,6 +31,12 @@ config(timeout=20)
 button = win.get_by_title("Save").timeout(5)
 ```
 
+For native Win32 menu clicks, the timeout is one waiting budget shared by
+item lookup, opening parent menus, and waiting for popup geometry. Each phase
+uses the remaining time. `timeout(0)` makes immediate probes without polling.
+The timeout does not interrupt focus changes, native API calls, or mouse input
+already being delivered; their execution time can extend the action's wall time.
+
 ## Backends
 
 | Backend | Use for | Notes |

@@ -153,6 +153,45 @@ def _caption_matches(caption: str, wanted: str) -> bool:
     return wanted in (_menu_text_key(caption), str(caption).split("\t", 1)[0].strip())
 
 
+def _native_popup_is_open(item: Any) -> bool:
+    """Identify an open popup by HMENU, independently of its item layout."""
+    import ctypes
+
+    import pywintypes
+    import win32con
+    import win32gui
+    import win32process
+    from pywinauto import win32functions, win32structures
+
+    found = False
+    errors: list[OSError] = []
+
+    def inspect(hwnd: int, _: Any) -> None:
+        nonlocal found
+        try:
+            if win32gui.GetClassName(hwnd) != "#32768" or not win32gui.IsWindowVisible(hwnd):
+                return
+        except pywintypes.error as exc:
+            errors.append(OSError(*exc.args))
+            return
+        info = win32structures.MENUBARINFO()
+        info.cbSize = ctypes.sizeof(info)
+        if not win32functions.GetMenuBarInfo(hwnd, win32con.OBJID_CLIENT, 0, ctypes.byref(info)):
+            errors.append(ctypes.WinError())
+        elif info.hMenu == item.menu.handle:
+            found = True
+
+    try:
+        thread_id, _ = win32process.GetWindowThreadProcessId(item.ctrl.handle)
+        win32gui.EnumThreadWindows(thread_id, inspect, None)
+    except pywintypes.error as exc:
+        raise OSError(*exc.args) from exc
+    if not found and errors:
+        # An unreadable popup is not evidence that the target menu is closed.
+        raise errors[0]
+    return found
+
+
 class _Win32MenuEntry:
     """Locator-facing view of one item of a native Win32 menu (``HMENU``).
 
@@ -163,9 +202,10 @@ class _Win32MenuEntry:
     element.
     """
 
-    def __init__(self, item: Any, timeout: float = 10.0) -> None:
+    def __init__(self, item: Any, timeout: float = 10.0, *, deadline: float | None = None) -> None:
         self._item = item
         self._timeout = timeout
+        self._deadline = deadline
 
     def click_input(self) -> None:
         """Open closed parents, then click in the owner's screen coordinates."""
@@ -173,39 +213,53 @@ class _Win32MenuEntry:
         from pywinauto.controls.menuwrapper import MenuItemNotEnabled
         from pywinauto.timings import Timings
 
-        deadline = time.monotonic() + self._timeout
+        deadline = self._deadline
+        if deadline is None:
+            deadline = time.monotonic() + self._timeout
         self._item.ctrl.verify_actionable()
         if not self.is_enabled():
             raise MenuItemNotEnabled(f"MenuItem {self._item.text()} is disabled")
-        rect = self._item.rectangle()
-        if (
-            rect.right <= rect.left or rect.bottom <= rect.top
-        ) and self._item.menu.owner_item is not None:
-            _Win32MenuEntry(
-                self._item.menu.owner_item, timeout=max(0.0, deadline - time.monotonic())
-            ).click_input()
         # Input delivery and GUI-idle do not guarantee that the popup has been
         # laid out yet. API reads can fail transiently during that transition.
         # Retry only reads, including when an already-open popup loses a read;
         # repeating its parent's click would toggle the menu shut.
         last_error: OSError | None = None
+        parent_clicked = False
         while True:
+            if self._timeout > 0 and time.monotonic() >= deadline:
+                raise ElementNotFoundError(
+                    f"Win32 menu item {self.window_text()!r} is not on screen before timeout"
+                ) from last_error
             try:
                 rect = self.rectangle()
-            except OSError as exc:
-                last_error = exc
-            else:
                 if rect.right > rect.left and rect.bottom > rect.top:
                     break
+                if (
+                    not parent_clicked
+                    and self._item.menu.owner_item is not None
+                    and not _native_popup_is_open(self._item)
+                ):
+                    parent_clicked = True
+                    _Win32MenuEntry(
+                        self._item.menu.owner_item, timeout=self._timeout, deadline=deadline
+                    ).click_input()
+                    # Even timeout(0) permits an immediate layout probe after input.
+                    continue
+            except OSError as exc:
+                last_error = exc
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ElementNotFoundError(
                     f"Win32 menu item {self.window_text()!r} is not on screen"
                 ) from last_error
             time.sleep(min(0.05, remaining))
+        if self._timeout > 0 and time.monotonic() >= deadline:
+            raise ElementNotFoundError(
+                f"Win32 menu item {self.window_text()!r} is not on screen before timeout"
+            ) from last_error
         mouse.click(coords=(int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)))
         win32functions.WaitGuiThreadIdle(self._item.ctrl.handle)
-        time.sleep(Timings.after_menu_wait)
+        time.sleep(min(Timings.after_menu_wait, max(0.0, deadline - time.monotonic())))
 
     def invoke(self) -> None:
         """Programmatic selection: ``WM_COMMAND`` to the owner, no mouse input."""
@@ -234,7 +288,7 @@ class _Win32MenuEntry:
         is closed. A menu-bar item has a rectangle for as long as the owner has
         its menu bar, so the owner window has to be visible as well.
         """
-        rect = self.rectangle()
+        rect = self._item.rectangle()
         on_screen = rect.right > rect.left and rect.bottom > rect.top
         return on_screen and bool(self._item.ctrl.is_visible())
 
@@ -354,17 +408,20 @@ def _resolve_native_menu(
         deadline = time.monotonic() + locator._timeout
     while True:
         try:
-            return _Win32MenuEntry(_find_native_menu_item(spec, titles), timeout=locator._timeout)
+            return _Win32MenuEntry(
+                _find_native_menu_item(spec, titles), timeout=locator._timeout, deadline=deadline
+            )
         except ElementNotFoundError:
             raise
         except Exception as exc:
             last_error: Exception = exc
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise ElementNotFoundError(
                 f"Win32 menu item {' -> '.join(titles)!r} not found after "
                 f"{locator._timeout}s: {last_error}"
             ) from last_error
-        time.sleep(0.1)
+        time.sleep(min(0.1, remaining))
 
 
 class MenuItem(Locator):

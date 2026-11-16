@@ -18,6 +18,7 @@ import pytest
 import win32con
 import win32gui
 import win32process
+from pywinauto import mouse, win32structures
 from pywinauto.controls.menuwrapper import MenuItemNotEnabled
 from tests._display_scale import record_window_scale
 from tests.component._win32_controls_window import (
@@ -34,6 +35,7 @@ from tests.component._win32_controls_window import (
     WM_OPEN_FILE_MENU,
 )
 
+import dolphin_desktop._element as element_module
 import dolphin_desktop._locator as locator_module
 from dolphin_desktop import (
     Desktop,
@@ -122,7 +124,7 @@ def test_native_menu_items_are_found_read_and_invoked(window) -> None:
     _wait_status(window, "menu=mark")
 
 
-def test_native_menu_click_opens_and_reopens_nested_popups(window) -> None:
+def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch) -> None:
     file_menu = window.menu("File")
     for caption, status in [("Nested mark", "menu=nested"), ("R&D report", "menu=rnd")]:
         item = (
@@ -137,6 +139,42 @@ def test_native_menu_click_opens_and_reopens_nested_popups(window) -> None:
     _wait_status(window, "menu=nested")
     with pytest.raises(MenuItemNotEnabled):
         file_menu.item("Disabled item").click()
+
+    # An open native popup can briefly return empty item geometry. Check the
+    # real popup's HMENU before deciding whether to click its parent again.
+    hwnd = window._get_spec().wrapper_object().handle
+    win32gui.PostMessage(hwnd, WM_OPEN_FILE_MENU, 0, 0)
+    mark = file_menu.item("Mark")
+    mark.wait_for(state="visible", timeout=10)
+    find_item = element_module._find_native_menu_item
+    physical_click = mouse.click
+    clicks = []
+    empty_reads = []
+
+    def transient_layout(spec, titles):
+        native_item = find_item(spec, titles)
+        if titles == ["File", "Mark"]:
+            read_rectangle = native_item.rectangle
+
+            def rectangle():
+                if not empty_reads:
+                    empty_reads.append(True)
+                    return win32structures.RECT()
+                return read_rectangle()
+
+            native_item.rectangle = rectangle
+        return native_item
+
+    def click(**kwargs):
+        clicks.append(kwargs)
+        return physical_click(**kwargs)
+
+    monkeypatch.setattr(element_module, "_find_native_menu_item", transient_layout)
+    monkeypatch.setattr(mouse, "click", click)
+    mark.click()
+    _wait_status(window, "menu=mark")
+    assert len(empty_reads) == 1
+    assert len(clicks) == 1, "the already-open popup's parent must not be clicked"
 
 
 @pytest.mark.parametrize("dpi_aware", [False, True], ids=["dpi-unaware", "dpi-aware"])
