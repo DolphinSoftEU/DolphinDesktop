@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+import pywintypes
 
 import dolphin_desktop._element as element_module
 import dolphin_desktop._locator as locator_module
@@ -576,6 +577,54 @@ def test_popup_query_failure_is_unknown_rather_than_closed():
             element_module._native_popup_is_open(_NativeItem("Mark"))
 
 
+@pytest.mark.parametrize("matching_popup", [False, True])
+@pytest.mark.parametrize("failed_api", ["GetClassName", "IsWindowVisible"])
+def test_unreadable_popup_does_not_hide_a_later_matching_popup(failed_api, matching_popup):
+    native_error = pywintypes.error(1400, failed_api, "Invalid window handle")
+
+    def enumerate_windows(thread_id, callback, param):
+        callback(101, param)
+        if matching_popup:
+            callback(102, param)
+
+    def menu_info(hwnd, object_id, item_id, target):
+        assert hwnd == 102
+        target._obj.hMenu = 456
+        return 1
+
+    with (
+        patch("win32process.GetWindowThreadProcessId", return_value=(42, 77)),
+        patch("win32gui.EnumThreadWindows", side_effect=enumerate_windows),
+        patch("win32gui.GetClassName", return_value="#32768"),
+        patch("win32gui.IsWindowVisible", return_value=True),
+        patch("pywinauto.win32functions.GetMenuBarInfo", side_effect=menu_info),
+        patch(
+            f"win32gui.{failed_api}",
+            side_effect=[native_error, "#32768" if failed_api == "GetClassName" else True],
+        ),
+    ):
+        if matching_popup:
+            assert element_module._native_popup_is_open(_NativeItem("Mark"))
+        else:
+            with pytest.raises(OSError, match="Invalid window handle"):
+                element_module._native_popup_is_open(_NativeItem("Mark"))
+
+
+@pytest.mark.parametrize(
+    "failed_api", ["win32process.GetWindowThreadProcessId", "win32gui.EnumThreadWindows"]
+)
+def test_popup_enumeration_error_preserves_native_cause(failed_api):
+    native_error = pywintypes.error(5, failed_api, "Access is denied")
+    with (
+        patch("win32process.GetWindowThreadProcessId", return_value=(42, 77)),
+        patch("win32gui.EnumThreadWindows"),
+        patch(failed_api, side_effect=native_error),
+    ):
+        with pytest.raises(OSError, match="Access is denied") as caught:
+            element_module._native_popup_is_open(_NativeItem("Mark"))
+        assert caught.value.__cause__ is native_error
+
+
 class TestNativeWin32Menu:
     def test_invoke_selects_the_item_without_mouse_input(self, native_menu):
         item = Menu(native_menu.window, title="File", control_type="MenuItem").item("Show dialog")
@@ -733,6 +782,43 @@ class TestNativeWin32Menu:
             assert clock.now == pytest.approx(0.2)
             mouse_click.assert_not_called()
 
+    @pytest.mark.parametrize("timeout", [0.05, 0.2])
+    def test_transient_lookup_uses_only_remaining_wait_budget(
+        self, native_menu, monkeypatch, timeout
+    ):
+        clock = SimpleNamespace(now=0.0)
+        waits = []
+        monkeypatch.setattr(element_module.time, "monotonic", lambda: clock.now)
+
+        def sleep(delay):
+            waits.append(delay)
+            clock.now += delay
+
+        def first_lookup(*_):
+            clock.now += 0.02
+            raise LookupError("menu is being rebuilt")
+
+        monkeypatch.setattr(element_module.time, "sleep", sleep)
+        monkeypatch.setattr(
+            element_module,
+            "_find_native_menu_item",
+            Mock(side_effect=lambda *_: first_lookup() if clock.now == 0 else native_menu.file),
+        )
+        with (
+            patch("pywinauto.mouse.click") as mouse_click,
+            patch("pywinauto.win32functions.WaitGuiThreadIdle"),
+        ):
+            menu = Menu(native_menu.window, title="File").timeout(timeout)
+            if timeout == 0.05:
+                with pytest.raises(ElementNotFoundError, match="before timeout"):
+                    menu.click()
+                mouse_click.assert_not_called()
+            else:
+                menu.click()
+                mouse_click.assert_called_once_with(coords=(60, 30))
+            assert waits[0] == pytest.approx(min(0.1, timeout - 0.02))
+            assert clock.now <= timeout
+
     def test_lookup_exhausting_timeout_prevents_input_even_with_valid_layout(
         self, native_menu, monkeypatch
     ):
@@ -768,6 +854,21 @@ class TestNativeWin32Menu:
                 Menu(native_menu.window, title="File").item("Show dialog").timeout(0.2).click()
             assert clock.now == pytest.approx(0.2)
             mouse_click.assert_called_once_with(coords=(60, 30))
+
+    def test_layout_read_exhausting_deadline_does_not_send_input(self, native_menu, monkeypatch):
+        clock = SimpleNamespace(now=0.0)
+        monkeypatch.setattr(element_module.time, "monotonic", lambda: clock.now)
+
+        def slow_rectangle():
+            clock.now = 0.21
+            return OPEN_RECT
+
+        native_menu.file.rectangle.side_effect = slow_rectangle
+        with patch("pywinauto.mouse.click") as mouse_click:
+            with pytest.raises(ElementNotFoundError, match="before timeout"):
+                Menu(native_menu.window, title="File").timeout(0.2).click()
+            mouse_click.assert_not_called()
+            native_menu.file.select.assert_not_called()
 
     def test_state_reads_come_from_the_menu_handle(self, native_menu):
         menu = Menu(native_menu.window, title="File")
