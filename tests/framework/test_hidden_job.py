@@ -42,6 +42,30 @@ def test_job_configuration_failure_closes_handle_and_can_retry(monkeypatch):
     create.assert_called_with(None, None)  # unnamed, no inheritable security attributes
 
 
+def test_exit_registration_failure_releases_job_and_retries_with_a_new_handle(monkeypatch):
+    create = Mock(side_effect=[123, 456])
+    close = Mock()
+    failure = RuntimeError("exit registration failed")
+    register = Mock(side_effect=[failure, None])
+    monkeypatch.setattr(_runner, "_hidden_job", None)
+    monkeypatch.setattr(_runner, "_create_kill_on_close_job", create)
+    monkeypatch.setattr(_runner._kernel32, "CloseHandle", close)
+    monkeypatch.setattr(_runner.atexit, "register", register)
+
+    with pytest.raises(RuntimeError) as raised:
+        _runner._hidden_launch_job()
+    assert raised.value is failure
+    close.assert_called_once_with(123)
+    assert _runner._hidden_job is None
+
+    assert _runner._hidden_launch_job() == 456
+    assert _runner._hidden_launch_job() == 456
+    assert create.call_count == 2
+    assert register.call_count == 2
+    register.assert_called_with(close, 456)
+    close.assert_called_once_with(123)  # the successfully registered job stays open
+
+
 @pytest.mark.parametrize("failure", [None, "initialize", "attribute", "create"])
 def test_hidden_job_is_applied_at_creation_without_handle_inheritance(monkeypatch, failure):
     kernel = _FakeLauncher(create_result=failure != "create")
