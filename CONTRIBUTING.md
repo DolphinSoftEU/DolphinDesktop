@@ -211,6 +211,18 @@ to activate the next window. This handoff is limited to the two owned AUTs;
 unrelated foreground windows never receive a request. Each AUT is clicked once
 so rapid return visits cannot select existing text through a double-click.
 
+Before pointer input, the isolation test additionally waits for actual native
+hit-testing to identify the expected Edit, checking both its owning PID and
+root HWND. Foreground activation alone is insufficient during asynchronous
+layout/z-order changes. The wait pumps controller messages, recomputes the
+point, and sends no input. A real non-activating overlay regression holds a
+different Edit above the active AUT until the controller processes its close
+message. Persistent obstruction or changed ownership still fails the test;
+an immediate guard remains before the mouse event. `input-target.json` records
+the expected and hit HWND/PID/root/class, geometry and transition samples,
+without reading the obscuring field's contents. CI requires all real recorder
+scenarios to pass without skips and uploads these diagnostics on failure.
+
 Replay checks retain stage-specific native/UIA text, HWND/focus, modifier state
 and recorder progress in `recorded.diagnostics.json`. Native WM_GETTEXT reads
 have a 500 ms timeout and require a successful call status; zero characters on

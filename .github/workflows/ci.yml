@@ -374,6 +374,7 @@ jobs:
     needs: unit
     env:
       DOLPHIN_COMPONENT_PREFLIGHT: "1"
+      DOLPHIN_RECORDER_ACCEPTANCE: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -445,6 +446,12 @@ jobs:
               throw "KAN-768 requires a real passing hidden-owner lifecycle regression: $name"
             }
           }
+          foreach ($name in @("test_real_hook_installation_and_cleanup", "test_real_hook_delayed_password_text_transitions", "test_real_record_generate_replay_targets_native_edit", "test_real_hook_delayed_events_stay_in_target_process", "test_real_pointer_readiness_waits_for_native_hit_testing")) {
+            $cases = $results.SelectNodes("//testcase[@name='$name']")
+            if ($cases.Count -ne 1 -or $cases[0].SelectNodes("skipped|failure|error").Count -ne 0) {
+              throw "Recorder acceptance requires a real passing scenario: $name"
+            }
+          }
 
       - name: Upload component test and recorder replay evidence
         if: always()
@@ -456,6 +463,9 @@ jobs:
             ${{ runner.temp }}/component-pytest/**/test_real_record_generate_repl*/recorded*
             ${{ runner.temp }}/component-pytest/**/test_hidden_owner_lifecycle*/**
             ${{ runner.temp }}/component-pytest/**/test_winforms_launch_controls_*/winforms.png
+            ${{ runner.temp }}/component-pytest/**/test_real_hook_delayed_events_*/**
+            ${{ runner.temp }}/component-pytest/**/test_real_pointer_readiness_*/**
+            ${{ runner.temp }}/component-pytest/**/test_real_pointer_guard_*/**
           if-no-files-found: warn
 
       - name: Install Qt agent test bindings

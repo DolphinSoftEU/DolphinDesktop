@@ -10,6 +10,7 @@ from tests.component._recorder_window import (
     record_generate_replay,
     record_native_transitions,
     record_process_isolation,
+    record_process_isolation_with_delayed_hit_testing,
 )
 
 from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
@@ -150,6 +151,76 @@ def test_recorder_wait_times_out_without_sending_input_or_skipping(monkeypatch):
         )
     mouse.assert_not_called()
     keyboard.assert_not_called()
+
+
+def _mock_pointer_windows(monkeypatch):
+    state = {"hit": 987, "rect": (0, 0, 20, 20), "pid": 456}
+    gui = _recorder_window.win32gui
+    monkeypatch.setattr(gui, "GetForegroundWindow", lambda: 123)
+    monkeypatch.setattr(gui, "GetWindowRect", lambda hwnd: state["rect"])
+    monkeypatch.setattr(gui, "GetAncestor", lambda hwnd, flag: 123 if hwnd == 789 else 654)
+    monkeypatch.setattr(gui, "WindowFromPoint", lambda point: state["hit"])
+    monkeypatch.setattr(gui, "GetClassName", lambda hwnd: "Edit" if hwnd in (789, 987) else "Root")
+    monkeypatch.setattr(
+        _recorder_window.win32process,
+        "GetWindowThreadProcessId",
+        lambda hwnd: (42, state["pid"] if hwnd in (123, 789) else 999),
+    )
+    # Waiting must not send input or manipulate an obscuring window.
+    forbidden = Mock(side_effect=AssertionError("input during pointer readiness wait"))
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", forbidden)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", forbidden)
+    monkeypatch.setattr(_recorder_window.win32api, "SetCursorPos", forbidden)
+    monkeypatch.setattr(gui, "SetForegroundWindow", forbidden)
+    monkeypatch.setattr(gui, "GetWindowText", forbidden)
+    return state
+
+
+def test_pointer_wait_checks_hit_testing_after_foreground_is_already_correct(monkeypatch, tmp_path):
+    state = _mock_pointer_windows(monkeypatch)
+    pumps = []
+
+    def pump():
+        pumps.append(1)
+        if len(pumps) == 2:
+            state.update(hit=789, rect=(100, 200, 120, 240))
+
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    monkeypatch.setattr(_recorder_window.time, "sleep", Mock())
+    report = tmp_path / "input-target.json"
+    point = _recorder_window._wait_for_owned_pointer_target(Mock(), 123, 456, 789, report)
+    assert point == (110, 220)  # Recomputed after layout changed, not the stale (10, 10).
+    assert len(pumps) == 2
+    samples = json.loads(report.read_text(encoding="utf-8"))[0]["samples"]
+    assert [item["hit"] for item in samples] == [987, 789]
+    assert all(item["foreground"] == 123 for item in samples)
+
+
+@pytest.mark.parametrize("obstruction", ["other-window", "reused-owner"])
+def test_pointer_wait_fails_without_input_and_retains_obscurer_identity(
+    monkeypatch, tmp_path, obstruction
+):
+    state = _mock_pointer_windows(monkeypatch)
+    if obstruction == "reused-owner":
+        state.update(hit=789, pid=999)
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 3]))
+    monkeypatch.setattr(
+        _recorder_window._recorder, "_capture_context", lambda: "controlled context"
+    )
+    report = tmp_path / "input-target.json"
+    with pytest.raises(AssertionError, match="owned pointer target"):
+        _recorder_window._wait_for_owned_pointer_target(Mock(), 123, 456, 789, report)
+    evidence = json.loads(report.read_text(encoding="utf-8"))[0]
+    assert evidence["stage"] == "target not ready"
+    snapshot = evidence["samples"][-1]
+    assert snapshot["ready"] is False
+    assert snapshot["hit_pid"] == 999
+    if obstruction == "other-window":
+        assert snapshot["hit_root"] == 654
+        assert snapshot["hit_class"] == "Edit"
+    else:
+        assert snapshot["root_pid"] == 999
 
 
 def test_owned_focus_recovers_after_foreground_is_lost(monkeypatch):
@@ -436,6 +507,31 @@ def test_real_hook_delayed_events_stay_in_target_process(tmp_path):
     assert "ssss" in code
     for foreign_text in ("qqqq", "zzzz", "KAN-576 foreign"):
         assert foreign_text not in code
+
+
+def test_real_pointer_readiness_waits_for_native_hit_testing(tmp_path, monkeypatch):
+    actions, code = record_process_isolation_with_delayed_hit_testing(tmp_path, monkeypatch)
+    assert [action.data for action in actions if action.kind == "type_text"] == ["tttt", "ssss"]
+    assert all(action.window_title == "KAN-576 owned" for action in actions)
+    for foreign_text in ("qqqq", "zzzz", "KAN-576 foreign", "initial text"):
+        assert foreign_text not in code
+
+
+def test_real_pointer_guard_rejects_input_without_the_readiness_wait(tmp_path, monkeypatch):
+    def immediate(rec, root, pid, edit, output):
+        left, top, right, bottom = _recorder_window.win32gui.GetWindowRect(edit)
+        return ((left + right) // 2, (top + bottom) // 2)
+
+    monkeypatch.setattr(_recorder_window, "_wait_for_owned_pointer_target", immediate)
+    mouse, keyboard = Mock(), Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    # Negative control: the real overlay deterministically reproduces the old
+    # immediate hit-test failure; removing the input guard cannot make it pass.
+    with pytest.raises(AssertionError, match="Owned Edit is obscured"):
+        record_process_isolation_with_delayed_hit_testing(tmp_path, monkeypatch)
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
 
 
 def test_replay_cleanup_closes_aut_when_recorder_stop_fails(monkeypatch, tmp_path):
