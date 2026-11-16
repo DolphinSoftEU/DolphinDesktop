@@ -5,10 +5,9 @@
 STATIC windows and a native HMENU) through the same ``Window.edit()`` /
 ``combo_box()`` / ``tree()`` / ``list_box()`` / ``tab()`` / ``button()`` /
 ``check_box()`` / ``menu()`` calls a UIA test would use.
-Every action is message-based (no mouse or keyboard input), and each one is
-verified through the status label the AUT updates from its own event
-handlers. The WinForms flavour of the same contract is DESKTOP-145 in the
-UAT repository.
+Actions are verified through the status label the AUT updates from its own
+event handlers. Physical menu clicks cover nested popups and the DESKTOP-145
+WinForms launch, controls, dialog, screenshot and attach contract as well.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ import time
 import pytest
 import win32con
 import win32gui
+import win32process
 from pywinauto.controls.menuwrapper import MenuItemNotEnabled
 from tests.component._win32_controls_window import (
     COMBO_ITEMS,
@@ -116,6 +116,80 @@ def test_native_menu_items_are_found_read_and_invoked(window) -> None:
 
     mark.invoke()
     _wait_status(window, "menu=mark")
+
+
+def test_native_menu_click_opens_and_reopens_nested_popups(window) -> None:
+    file_menu = window.menu("File")
+    for caption, status in [("Nested mark", "menu=nested"), ("R&D report", "menu=rnd")]:
+        item = (
+            file_menu.item("More").item(caption)
+            if caption == "Nested mark"
+            else file_menu.item(caption)
+        )
+        item.click()
+        _wait_status(window, status)
+        assert not item.is_visible()
+    file_menu.item("More").item("Nested mark").click()
+    _wait_status(window, "menu=nested")
+    with pytest.raises(MenuItemNotEnabled):
+        file_menu.item("Disabled item").click()
+
+
+@pytest.mark.parametrize("dpi_aware", [False, True], ids=["dpi-unaware", "dpi-aware"])
+def test_winforms_launch_controls_menu_dialog_and_attach(tmp_path, dpi_aware) -> None:
+    script = path_join(dirname(__file__), "_winforms_controls_window.ps1")
+    command = (
+        f'powershell.exe -NoProfile -NonInteractive -Sta -ExecutionPolicy Bypass -File "{script}"'
+    )
+    if dpi_aware:
+        command += " -DpiAware"
+    app = Desktop.for_legacy_apps(hidden=False).launch(command, startup_delay=0)
+    try:
+        win = app.window(title="Dolphin Win32 Legacy Fixture", timeout=20)
+        win.wait_until_ready(timeout=10)
+        edit = win.edit()
+        edit.wait_for(state="visible", timeout=10)
+        assert "edit" in edit.get_attribute("class_name").casefold()
+        edit.type_text("Dolphin")
+        assert edit.value() == "Dolphin"
+        edit.set_text("")
+        assert edit.value() == ""
+        combo = win.combo_box()
+        combo.wait_for(state="visible", timeout=10)
+        for plan in ("Premium", "Standard"):
+            combo.select_item(plan)
+            assert combo.selected_item() == plan
+        tree = win.tree()
+        tree.wait_for(state="visible", timeout=10)
+        tree.select_item_by_path("Root", "Child")
+        win.locator(title="tree=Child", control_type="Static").wait_for(timeout=10)
+
+        # Reopening must not use the popup's stale layout after it was closed.
+        item = win.menu("File").item("Show dialog")
+        for _ in range(2):
+            assert not item.is_visible()
+            item.click()
+            dialog = app.window(title="Dolphin Win32 dialog", class_name="#32770", timeout=10)
+            dialog.wait_until_ready(timeout=10)
+            hwnd = dialog._get_spec().wrapper_object().handle
+            assert win32gui.IsWindowVisible(hwnd)
+            assert win32gui.GetClassName(hwnd) == "#32770"
+            assert win32process.GetWindowThreadProcessId(hwnd)[1] == app.process_id
+            dialog.button(name="OK").click()
+            dialog.wait_for_close(timeout=10)
+            win.locator(title="dialog_closed=1", control_type="Static").wait_for(timeout=10)
+
+        screenshot = tmp_path / "winforms.png"
+        win.screenshot(screenshot)
+        assert screenshot.is_file()
+        attached = Desktop.for_legacy_apps(hidden=False).connect(process=app.process_id)
+        try:
+            attached.window(title=win.title()).wait_until_ready(timeout=10)
+        finally:
+            attached.close()
+        win.wait_until_ready(timeout=10)
+    finally:
+        app.kill()
 
 
 def test_type_without_a_win32_class_fails_at_once(window) -> None:

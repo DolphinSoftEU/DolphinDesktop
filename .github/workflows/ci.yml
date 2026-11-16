@@ -414,6 +414,7 @@ jobs:
             ${{ runner.temp }}/component-results.xml
             ${{ runner.temp }}/component-pytest/**/test_real_record_generate_repl*/recorded*
             ${{ runner.temp }}/component-pytest/**/test_hidden_owner_lifecycle*/**
+            ${{ runner.temp }}/component-pytest/**/test_winforms_launch_controls_*/winforms.png
           if-no-files-found: warn
 
       - name: Install Qt agent test bindings

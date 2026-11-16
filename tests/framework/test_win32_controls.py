@@ -491,7 +491,12 @@ class _NativeItem:
         self.click_input = Mock()
         # GetMenuItemRect answers an empty rectangle while the popup is closed.
         self.rectangle = Mock(return_value=CLOSED_RECT)
-        self.ctrl = SimpleNamespace(is_visible=Mock(return_value=True))
+        self.ctrl = SimpleNamespace(
+            is_visible=Mock(return_value=True), verify_actionable=Mock(), handle=123
+        )
+        self.on_main_menu = True
+        self.menu = SimpleNamespace(owner_item=None, handle=456)
+        self.index = Mock(return_value=0)
 
     def text(self) -> str:
         return self._text
@@ -537,10 +542,88 @@ class TestNativeWin32Menu:
         native_menu.show.click_input.assert_not_called()
 
     def test_click_is_a_physical_click_on_the_native_item(self, native_menu):
-        Menu(native_menu.window, title="File").item("Show dialog").click()
-        native_menu.show.click_input.assert_called_once_with()
-        Menu(native_menu.window, title="File").click()
-        native_menu.file.click_input.assert_called_once_with()
+        native_menu.show.on_main_menu = False
+        native_menu.show.menu.owner_item = native_menu.file
+
+        def physical_click(*, coords):
+            if coords == (60, 30):
+                native_menu.show.rectangle.return_value = OPEN_RECT
+
+        def screen_rectangle(owner, menu, index, target):
+            assert owner == 123
+            assert menu.value == 456
+            rect = target._obj
+            rect.left, rect.top, rect.right, rect.bottom = 200, 300, 400, 340
+            return 1
+
+        with (
+            patch("pywinauto.mouse.click", side_effect=physical_click) as mouse_click,
+            patch("pywinauto.win32functions.GetMenuItemRect", side_effect=screen_rectangle),
+            patch("pywinauto.win32functions.WaitGuiThreadIdle"),
+            patch.object(element_module.time, "sleep"),
+        ):
+            Menu(native_menu.window, title="File").item("Show dialog").click()
+            assert [call.kwargs["coords"] for call in mouse_click.call_args_list] == [
+                (60, 30),
+                (300, 320),
+            ]
+            # An already open parent must not be clicked again and toggled shut.
+            mouse_click.reset_mock()
+            Menu(native_menu.window, title="File").item("Show dialog").click()
+            mouse_click.assert_called_once_with(coords=(300, 320))
+        native_menu.show.select.assert_not_called()
+        native_menu.file.select.assert_not_called()
+
+    def test_click_does_not_send_input_when_parent_fails_to_open(self, native_menu):
+        native_menu.show.menu.owner_item = native_menu.file
+        with (
+            patch("pywinauto.mouse.click") as mouse_click,
+            patch("pywinauto.win32functions.WaitGuiThreadIdle"),
+            patch.object(element_module.time, "sleep"),
+        ):
+            with pytest.raises(ElementNotFoundError, match="not on screen"):
+                Menu(native_menu.window, title="File").item("Show dialog").timeout(0).click()
+            mouse_click.assert_called_once_with(coords=(60, 30))
+
+    def test_click_waits_for_popup_layout_without_clicking_parent_twice(self, native_menu):
+        native_menu.show.menu.owner_item = native_menu.file
+        native_menu.show.rectangle.side_effect = [CLOSED_RECT, CLOSED_RECT, OPEN_RECT]
+        with (
+            patch("pywinauto.mouse.click") as mouse_click,
+            patch("pywinauto.win32functions.WaitGuiThreadIdle"),
+            patch.object(element_module.time, "sleep"),
+        ):
+            Menu(native_menu.window, title="File").item("Show dialog").click()
+            assert mouse_click.call_count == 2
+            native_menu.show.select.assert_not_called()
+
+    def test_disabled_item_does_not_open_its_parent(self, native_menu):
+        from pywinauto.controls.menuwrapper import MenuItemNotEnabled
+
+        native_menu.disabled.menu.owner_item = native_menu.file
+        with patch("pywinauto.mouse.click") as mouse_click:
+            with pytest.raises(MenuItemNotEnabled, match="is disabled"):
+                Menu(native_menu.window, title="File").item("Export").click()
+            mouse_click.assert_not_called()
+
+    def test_closed_popup_does_not_use_stale_owner_rectangle(self, native_menu):
+        native_menu.show.on_main_menu = False
+        with patch("pywinauto.win32functions.GetMenuItemRect") as get_rect:
+            entry = element_module._Win32MenuEntry(native_menu.show)
+            assert entry.rectangle() is CLOSED_RECT
+            assert not entry.is_visible()
+            get_rect.assert_not_called()
+
+    def test_failed_screen_rectangle_query_prevents_input(self, native_menu):
+        native_menu.show.on_main_menu = False
+        native_menu.show.rectangle.return_value = OPEN_RECT
+        with (
+            patch("pywinauto.win32functions.GetMenuItemRect", return_value=0),
+            patch("pywinauto.mouse.click") as mouse_click,
+        ):
+            with pytest.raises(OSError):
+                Menu(native_menu.window, title="File").item("Show dialog").click()
+            mouse_click.assert_not_called()
 
     def test_state_reads_come_from_the_menu_handle(self, native_menu):
         menu = Menu(native_menu.window, title="File")

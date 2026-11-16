@@ -38,6 +38,7 @@ ID_MENU_MARK = 2101
 ID_MENU_DISABLED = 2102
 ID_MENU_LITERAL_AMPERSAND = 2103
 ID_MENU_GRID = 2104
+ID_MENU_NESTED_MARK = 2105
 
 # Posted by a test: the AUT opens its File menu itself, so no mouse input is needed.
 WM_OPEN_FILE_MENU = win32con.WM_APP + 1
@@ -216,6 +217,8 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             _set_status("menu=mark")
         elif ctrl_id == ID_MENU_LITERAL_AMPERSAND:
             _set_status("menu=rnd")
+        elif ctrl_id == ID_MENU_NESTED_MARK:
+            _set_status("menu=nested")
         elif ctrl_id == ID_MENU_GRID:
             state = win32gui.GetMenuState(_file_menu, ID_MENU_GRID, win32con.MF_BYCOMMAND)
             checked = bool(state & win32con.MF_CHECKED)
@@ -248,6 +251,9 @@ def _build_menu(hwnd: int) -> None:
     # "&&" is a literal ampersand in a menu caption, not a mnemonic marker.
     win32gui.AppendMenu(file_menu, win32con.MF_STRING, ID_MENU_LITERAL_AMPERSAND, "R&&D report")
     win32gui.AppendMenu(file_menu, win32con.MF_STRING, ID_MENU_GRID, "Show &grid")
+    nested_menu = win32gui.CreatePopupMenu()
+    win32gui.AppendMenu(nested_menu, win32con.MF_STRING, ID_MENU_NESTED_MARK, "Nested &mark")
+    win32gui.AppendMenu(file_menu, win32con.MF_POPUP, nested_menu, "&More")
     win32gui.AppendMenu(file_menu, win32con.MF_SEPARATOR, 0, "")
     win32gui.AppendMenu(
         file_menu, win32con.MF_STRING | win32con.MF_GRAYED, ID_MENU_DISABLED, "Disabled item"

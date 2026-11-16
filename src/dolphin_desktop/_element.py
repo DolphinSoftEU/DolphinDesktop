@@ -163,12 +163,38 @@ class _Win32MenuEntry:
     element.
     """
 
-    def __init__(self, item: Any) -> None:
+    def __init__(self, item: Any, timeout: float = 10.0) -> None:
         self._item = item
+        self._timeout = timeout
 
     def click_input(self) -> None:
-        """Physical click; pywinauto opens each parent menu on the way."""
-        self._item.click_input()
+        """Open closed parents, then click in the owner's screen coordinates."""
+        from pywinauto import mouse, win32functions
+        from pywinauto.controls.menuwrapper import MenuItemNotEnabled
+        from pywinauto.timings import Timings
+
+        deadline = time.monotonic() + self._timeout
+        self._item.ctrl.verify_actionable()
+        if not self.is_enabled():
+            raise MenuItemNotEnabled(f"MenuItem {self._item.text()} is disabled")
+        if not self.is_visible() and self._item.menu.owner_item is not None:
+            _Win32MenuEntry(
+                self._item.menu.owner_item, timeout=max(0.0, deadline - time.monotonic())
+            ).click_input()
+        rect = self.rectangle()
+        # Input delivery and GUI-idle do not guarantee that the popup has been
+        # laid out yet. Wait for it without repeating the parent click.
+        while rect.right <= rect.left or rect.bottom <= rect.top:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ElementNotFoundError(
+                    f"Win32 menu item {self.window_text()!r} is not on screen"
+                )
+            time.sleep(min(0.05, remaining))
+            rect = self.rectangle()
+        mouse.click(coords=(int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)))
+        win32functions.WaitGuiThreadIdle(self._item.ctrl.handle)
+        time.sleep(Timings.after_menu_wait)
 
     def invoke(self) -> None:
         """Programmatic selection: ``WM_COMMAND`` to the owner, no mouse input."""
@@ -197,7 +223,7 @@ class _Win32MenuEntry:
         is closed. A menu-bar item has a rectangle for as long as the owner has
         its menu bar, so the owner window has to be visible as well.
         """
-        rect = self._item.rectangle()
+        rect = self.rectangle()
         on_screen = rect.right > rect.left and rect.bottom > rect.top
         return on_screen and bool(self._item.ctrl.is_visible())
 
@@ -205,7 +231,28 @@ class _Win32MenuEntry:
         return _menu_text_key(self._item.text())
 
     def rectangle(self) -> Any:
-        return self._item.rectangle()
+        import ctypes
+        from ctypes import wintypes
+
+        from pywinauto import win32functions, win32structures
+
+        rect = self._item.rectangle()
+        # With NULL HWND, GetMenuItemRect can return popup coordinates in the
+        # DPI-unaware owner's logical space. Supplying the owner HWND returns
+        # the caller's screen coordinates, as used by mouse.click(). Keep the
+        # NULL-HWND visibility probe: an explicit owner can return stale layout
+        # even after the popup closes.
+        if self._item.on_main_menu or rect.right <= rect.left or rect.bottom <= rect.top:
+            return rect
+        screen_rect = win32structures.RECT()
+        if not win32functions.GetMenuItemRect(
+            self._item.ctrl.handle,
+            wintypes.HMENU(self._item.menu.handle),
+            self._item.index(),
+            ctypes.byref(screen_rect),
+        ):
+            raise ctypes.WinError()
+        return screen_rect
 
 
 def _native_menu_root(locator: Locator) -> tuple[Any, list[str]] | None:
@@ -296,7 +343,7 @@ def _resolve_native_menu(
         deadline = time.monotonic() + locator._timeout
     while True:
         try:
-            return _Win32MenuEntry(_find_native_menu_item(spec, titles))
+            return _Win32MenuEntry(_find_native_menu_item(spec, titles), timeout=locator._timeout)
         except ElementNotFoundError:
             raise
         except Exception as exc:

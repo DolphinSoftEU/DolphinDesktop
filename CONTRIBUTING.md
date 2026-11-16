@@ -141,6 +141,26 @@ flags and the end of its stderr. These distinguish native launch errors from
 readiness timeouts. Tests retain the existing startup deadlines and cannot pass
 through retries or skips.
 
+## Win32 controls and physical menu acceptance (KAN-747)
+
+Run on an interactive Windows desktop without concurrent user input:
+
+```powershell
+uv run --locked pytest tests/framework/test_win32_controls.py tests/component/test_win32_controls_windows.py -q --junitxml=artifacts/win32-controls.xml
+```
+
+The component tests exercise physical `menu.item().click()` on classic nested
+menus and a controlled WinForms `MainMenu`, verifying application-side results.
+The WinForms scenario covers launch, Edit/ComboBox/Tree operations, opening and
+closing a native dialog twice, screenshots and attaching to the launched process.
+It runs with both DPI-unaware and DPI-aware owners. Also run on a display scaled
+above 100% (for example 125%): popup coordinates obtained without the owner HWND
+can otherwise look correct at 100% while sending clicks outside the menu on a
+scaled display. Unit tests independently simulate different logical and screen
+rectangles. `invoke()`/`select()` cannot substitute for a successful `click()`.
+CI includes these tests in the Windows component gate and uploads the WinForms
+screenshots with its JUnit report as `windows-component-evidence`.
+
 ## Recorder acceptance (KAN-576 / KAN-759)
 
 Run on a controlled interactive Windows desktop, without concurrent user input:
