@@ -161,10 +161,11 @@ rectangles. `invoke()`/`select()` cannot substitute for a successful `click()`.
 
 The native nested-menu case also covers a real non-activating `WS_EX_TOPMOST`
 window from the controller process above the AUT popup. It checks both an
-initially covered point and a window appearing after the first positive
-hit-test. Neither case may dispatch a SendInput batch or deliver a button
-message to the overlay; removing it must allow the same menu command to work.
-`menu-overlay-layout.json` and `menu-overlay-dispatch.json` retain HWND/PID,
+initially covered point, a window appearing after the first positive
+hit-test, and one appearing during the final enabled-state read. None may
+dispatch a SendInput batch or deliver a button message to the overlay; removing
+it must allow the same menu command to work. `menu-overlay-layout.json`,
+`menu-overlay-dispatch.json` and `menu-overlay-enabled.json` retain HWND/PID,
 screen point and event counts without reading the obscuring window's contents.
 The same required case swaps two commands inside an open HMENU after the first
 positive hit-test. It requires zero input for the stale command, then resolves

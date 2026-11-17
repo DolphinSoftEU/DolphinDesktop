@@ -785,8 +785,9 @@ def test_menu_dispatch_guards_then_sends_physical_batch_on_virtual_desktop(menu_
     menu_dispatch.guard.side_effect = lambda *_: order.append("guard") or True
     menu_dispatch.send.side_effect = lambda *_: order.append("input") or 3
     item = _NativeItem("Mark")
+    item.is_enabled = Mock(side_effect=lambda: order.append("enabled") or True)
     element_module._native_menu_click(item, coords=(-960, -540))
-    assert order == ["guard", "input"]
+    assert order == ["enabled", "guard", "input"]
     menu_dispatch.guard.assert_called_once_with(item, (-960, -540), None)
     count, pointer, size = menu_dispatch.send.call_args.args
     assert count == 3 and size > 0
@@ -835,19 +836,30 @@ def test_menu_dispatch_accepts_remaining_deadline(menu_dispatch, monkeypatch):
     menu_dispatch.send.assert_called_once()
 
 
-def test_menu_dispatch_rechecks_enabled_state_after_final_hit_test(menu_dispatch):
+def test_menu_dispatch_checks_disabled_state_before_final_hit_test(menu_dispatch):
     from pywinauto.controls.menuwrapper import MenuItemNotEnabled
 
-    item = _NativeItem("Mark")
-
-    def disable(*_):
-        item._enabled = False
-        return True
-
-    menu_dispatch.guard.side_effect = disable
+    item = _NativeItem("Mark", enabled=False)
     with pytest.raises(MenuItemNotEnabled):
         element_module._native_menu_click(item, coords=(60, 30))
     menu_dispatch.send.assert_not_called()
+    menu_dispatch.guard.assert_not_called()
+
+
+def test_menu_dispatch_rejects_obstruction_appearing_during_enabled_read(menu_dispatch):
+    item = _NativeItem("Mark")
+    state = {"obscured": False}
+
+    def enabled():
+        state["obscured"] = True
+        return True
+
+    item.is_enabled = enabled
+    menu_dispatch.guard.side_effect = lambda *_: not state["obscured"]
+    with pytest.raises(ElementNotFoundError, match="obscured"):
+        element_module._native_menu_click(item, coords=(60, 30))
+    menu_dispatch.send.assert_not_called()
+    menu_dispatch.release.assert_not_called()
 
 
 @pytest.mark.parametrize("dimension", [win32con.SM_CXVIRTUALSCREEN, win32con.SM_CYVIRTUALSCREEN])

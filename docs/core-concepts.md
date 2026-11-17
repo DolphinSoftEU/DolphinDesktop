@@ -49,6 +49,7 @@ another window can still change after the final check.
 
 For popup items, enabled state is evaluated after opening the parent so that
 the application can update it in `WM_INITMENUPOPUP`, and checked again before
+the final hit-test. No further menu-state query runs between that hit-test and
 input. A command that becomes disabled receives no target click; its parent may
 already have been opened. If the menu is reordered during an action, the action
 fails safely; a fresh action resolves the requested caption at its new index.

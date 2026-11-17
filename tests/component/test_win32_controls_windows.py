@@ -131,8 +131,8 @@ def test_native_menu_items_are_found_read_and_invoked(window) -> None:
 
 
 def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch, tmp_path) -> None:
-    for late in [False, True]:
-        _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, tmp_path, late=late)
+    for stage in ["layout", "dispatch", "enabled"]:
+        _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, tmp_path, stage=stage)
     _assert_menu_reorder_blocks_input(window, monkeypatch, tmp_path)
     _assert_dynamic_menu_state_is_read_after_opening(window, monkeypatch, tmp_path)
     file_menu = window.menu("File")
@@ -297,7 +297,7 @@ def _assert_dynamic_menu_state_is_read_after_opening(window, monkeypatch, output
     disable.wait_until_hidden(timeout=10)
 
 
-def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, late):
+def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, stage):
     hwnd = window._get_spec().wrapper_object().handle
     win32gui.PostMessage(hwnd, WM_OPEN_FILE_MENU, 0, 0)
     mark = window.menu("File").item("Mark")
@@ -308,12 +308,25 @@ def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, la
     clicks = []
     batches = []
     overlays = []
+    enabled_reads = []
     physical_click = element_module._native_menu_click
     native_owns_point = element_module._native_menu_owns_point
     send_input = win32functions.SendInput
 
     def click(item, **kwargs):
         clicks.append(kwargs)
+        if stage == "enabled":
+            native_enabled = item.is_enabled
+
+            def enabled():
+                result = native_enabled()
+                enabled_reads.append(result)
+                overlays.append(MenuOverlay(rect))
+                return result
+
+            with monkeypatch.context() as state_scope:
+                state_scope.setattr(item, "is_enabled", enabled)
+                return physical_click(item, **kwargs)
         return physical_click(item, **kwargs)
 
     def owns_point(item, target, identity=None):
@@ -330,9 +343,9 @@ def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, la
 
     try:
         with monkeypatch.context() as scope:
-            if late:
+            if stage == "dispatch":
                 scope.setattr(element_module, "_native_menu_owns_point", owns_point)
-            else:
+            elif stage == "layout":
                 overlays.append(MenuOverlay(rect))
             scope.setattr(element_module, "_native_menu_click", click)
             scope.setattr(win32functions, "SendInput", send)
@@ -348,7 +361,9 @@ def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, la
                 != win32process.GetWindowThreadProcessId(hwnd)[1]
             )
             assert win32gui.WindowFromPoint(point) == overlay.hwnd
-            assert len(clicks) == int(late)
+            assert len(clicks) == int(stage != "layout")
+            if stage == "enabled":
+                assert enabled_reads == [True]
             assert not batches, "no physical input may be dispatched to the obstructing process"
             assert not overlay.button_events
             assert _status(window) == before
@@ -357,12 +372,13 @@ def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, la
         for overlay in overlays:
             try:
                 overlay.evidence(
-                    output / f"menu-overlay-{'dispatch' if late else 'layout'}.json",
+                    output / f"menu-overlay-{stage}.json",
                     owner_hwnd=hwnd,
                     owner_pid=win32process.GetWindowThreadProcessId(hwnd)[1],
                     point=point,
                     hit_hwnd=win32gui.WindowFromPoint(point),
                     dispatch_attempts=len(clicks),
+                    enabled_reads=enabled_reads,
                     input_batches=batches,
                 )
             finally:

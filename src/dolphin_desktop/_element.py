@@ -312,12 +312,12 @@ def _native_menu_click(
         win32con.MOUSEEVENTF_RIGHTDOWN if swapped else win32con.MOUSEEVENTF_LEFTDOWN
     )
     inputs[2].mi.dwFlags = win32con.MOUSEEVENTF_RIGHTUP if swapped else win32con.MOUSEEVENTF_LEFTUP
+    if not item.is_enabled():
+        raise MenuItemNotEnabled(f"MenuItem {item.text()} is disabled")
     if not _native_menu_owns_point(item, coords, identity):
         raise ElementNotFoundError(
             "Native menu click point changed, identifies another item, or is obscured before input"
         )
-    if not item.is_enabled():
-        raise MenuItemNotEnabled(f"MenuItem {item.text()} is disabled")
     if deadline is not None and time.monotonic() >= deadline:
         raise ElementNotFoundError("Native menu click deadline expired before input")
     # No cursor-settling or double-click delay between this guard and SendInput.
