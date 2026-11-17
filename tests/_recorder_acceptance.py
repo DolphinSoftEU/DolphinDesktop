@@ -16,6 +16,7 @@ REQUIRED_TESTS = {
     "test_real_hook_installation_and_cleanup",
     "test_real_hook_delayed_password_text_transitions",
     "test_real_hook_delayed_events_stay_in_target_process",
+    "test_real_pointer_readiness_waits_for_native_hit_testing",
     "test_real_record_generate_replay_targets_native_edit",
 }
 

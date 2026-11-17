@@ -5,10 +5,9 @@
 STATIC windows and a native HMENU) through the same ``Window.edit()`` /
 ``combo_box()`` / ``tree()`` / ``list_box()`` / ``tab()`` / ``button()`` /
 ``check_box()`` / ``menu()`` calls a UIA test would use.
-Every action is message-based (no mouse or keyboard input), and each one is
-verified through the status label the AUT updates from its own event
-handlers. The WinForms flavour of the same contract is DESKTOP-145 in the
-UAT repository.
+Actions are verified through the status label the AUT updates from its own
+event handlers. Physical menu clicks cover nested popups and the DESKTOP-145
+WinForms launch, controls, dialog, screenshot and attach contract as well.
 """
 
 from __future__ import annotations
@@ -18,21 +17,31 @@ import time
 import pytest
 import win32con
 import win32gui
+import win32process
+from pywinauto import win32functions, win32structures
 from pywinauto.controls.menuwrapper import MenuItemNotEnabled
+from tests._display_scale import record_window_scale
+from tests.component._menu_overlay import MenuOverlay, write_menu_evidence
 from tests.component._win32_controls_window import (
     COMBO_ITEMS,
     ID_BUTTON_TABS,
     ID_EDIT,
     ID_EMPTY_EDIT,
     ID_EMPTY_LABEL,
+    ID_MENU_DYNAMIC_DISABLE,
+    ID_MENU_DYNAMIC_ENABLE,
+    ID_MENU_LITERAL_AMPERSAND,
     ID_STATUS,
     ID_TABS,
     LIST_ITEMS,
     STATUS_READY,
     WINDOW_TITLE,
+    WM_ARM_DYNAMIC_MENU,
     WM_OPEN_FILE_MENU,
+    WM_REORDER_FILE_MENU,
 )
 
+import dolphin_desktop._element as element_module
 import dolphin_desktop._locator as locator_module
 from dolphin_desktop import (
     Desktop,
@@ -50,13 +59,16 @@ _HELPER = path_join(dirname(__file__), "_win32_controls_window.py")
 
 
 @pytest.fixture
-def window():
+def window(tmp_path):
     app = Desktop.for_legacy_apps(hidden=False).launch(
         f'"{python_executable()}" "{_HELPER}"', startup_delay=0.5
     )
     try:
         win = app.window(title=WINDOW_TITLE, timeout=20)
         win.wait_until_ready(timeout=20)
+        record_window_scale(
+            win._get_spec().wrapper_object().handle, tmp_path / "display-scale.json"
+        )
         yield win
     finally:
         app.kill()
@@ -116,6 +128,324 @@ def test_native_menu_items_are_found_read_and_invoked(window) -> None:
 
     mark.invoke()
     _wait_status(window, "menu=mark")
+
+
+def test_native_menu_click_opens_and_reopens_nested_popups(window, monkeypatch, tmp_path) -> None:
+    for stage in ["layout", "dispatch", "enabled"]:
+        _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, tmp_path, stage=stage)
+    _assert_menu_reorder_blocks_input(window, monkeypatch, tmp_path)
+    _assert_dynamic_menu_state_is_read_after_opening(window, monkeypatch, tmp_path)
+    file_menu = window.menu("File")
+    for caption, status in [("Nested mark", "menu=nested"), ("R&D report", "menu=rnd")]:
+        item = (
+            file_menu.item("More").item(caption)
+            if caption == "Nested mark"
+            else file_menu.item(caption)
+        )
+        item.click()
+        _wait_status(window, status)
+        assert not item.is_visible()
+    file_menu.item("More").item("Nested mark").click()
+    _wait_status(window, "menu=nested")
+    with pytest.raises(MenuItemNotEnabled):
+        file_menu.item("Disabled item").click()
+    win32gui.SendMessage(window._get_spec().wrapper_object().handle, win32con.WM_CANCELMODE, 0, 0)
+    file_menu.item("Disabled item").wait_until_hidden(timeout=10)
+
+    # An open native popup can briefly return empty item geometry. Check the
+    # real popup's HMENU before deciding whether to click its parent again.
+    hwnd = window._get_spec().wrapper_object().handle
+    win32gui.PostMessage(hwnd, WM_OPEN_FILE_MENU, 0, 0)
+    mark = file_menu.item("Mark")
+    mark.wait_for(state="visible", timeout=10)
+    find_item = element_module._find_native_menu_item
+    physical_click = element_module._native_menu_click
+    clicks = []
+    empty_reads = []
+
+    def transient_layout(spec, titles):
+        native_item = find_item(spec, titles)
+        if titles == ["File", "Mark"]:
+            read_rectangle = native_item.rectangle
+
+            def rectangle():
+                if not empty_reads:
+                    empty_reads.append(True)
+                    return win32structures.RECT()
+                return read_rectangle()
+
+            native_item.rectangle = rectangle
+        return native_item
+
+    def click(item, **kwargs):
+        clicks.append(kwargs)
+        return physical_click(item, **kwargs)
+
+    monkeypatch.setattr(element_module, "_find_native_menu_item", transient_layout)
+    monkeypatch.setattr(element_module, "_native_menu_click", click)
+    mark.click()
+    _wait_status(window, "menu=mark")
+    assert len(empty_reads) == 1
+    assert len(clicks) == 1, "the already-open popup's parent must not be clicked"
+
+
+def _assert_menu_reorder_blocks_input(window, monkeypatch, output):
+    hwnd = window._get_spec().wrapper_object().handle
+    window.button(name="Save").click()
+    win32gui.PostMessage(hwnd, WM_OPEN_FILE_MENU, 0, 0)
+    mark = window.menu("File").item("Mark")
+    mark.wait_for(state="visible", timeout=10)
+    entry = mark._resolve()
+    rect = entry.rectangle()
+    point = ((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
+    popup = win32gui.WindowFromPoint(point)
+    observed_hit = popup
+    before = _status(window)
+    reordered = []
+    batches = []
+    native_owns_point = element_module._native_menu_owns_point
+    send_input = win32functions.SendInput
+
+    def owns_point(item, target, identity=None):
+        owned = native_owns_point(item, target, identity)
+        if owned and not reordered:
+            win32gui.SendMessage(hwnd, WM_REORDER_FILE_MENU, 1, 0)
+            reordered.append(True)
+        return owned
+
+    def send(count, pointer, size):
+        batches.append(count)
+        return send_input(count, pointer, size)
+
+    try:
+        with monkeypatch.context() as scope:
+            scope.setattr(element_module, "_native_menu_owns_point", owns_point)
+            scope.setattr(win32functions, "SendInput", send)
+            with pytest.raises(ElementNotFoundError, match="another item"):
+                mark.click()
+            assert reordered == [True]
+            assert win32gui.WindowFromPoint(point) == popup
+            assert (
+                win32gui.GetMenuItemID(entry._item.menu.handle, entry._item.index())
+                == ID_MENU_LITERAL_AMPERSAND
+            )
+            assert not batches, "a changed command at the same menu index must receive no input"
+            assert _status(window) == before
+            observed_hit = win32gui.WindowFromPoint(point)
+        # Fresh resolution must follow Mark to its new index in the still-open
+        # reordered menu, rather than relying on restoration of the old order.
+        mark.click()
+        _wait_status(window, "menu=mark")
+    finally:
+        write_menu_evidence(
+            output / "menu-reordered.json",
+            owner_hwnd=hwnd,
+            popup_hwnd=popup,
+            hit_hwnd=observed_hit,
+            menu_handle=entry._item.menu.handle,
+            expected_command=entry._identity[0],
+            current_command=win32gui.GetMenuItemID(entry._item.menu.handle, entry._item.index()),
+            point=point,
+            input_batches=batches,
+        )
+        win32gui.SendMessage(hwnd, WM_REORDER_FILE_MENU, 0, 0)
+
+
+def _assert_dynamic_menu_state_is_read_after_opening(window, monkeypatch, output):
+    hwnd = window._get_spec().wrapper_object().handle
+    file_menu = window.menu("File")
+    enable = file_menu.item("Enable on open")
+    disable = file_menu.item("Disable on open")
+    send_input = win32functions.SendInput
+    batches = []
+
+    def send(count, pointer, size):
+        batches.append(count)
+        return send_input(count, pointer, size)
+
+    with monkeypatch.context() as scope:
+        scope.setattr(win32functions, "SendInput", send)
+        win32gui.SendMessage(hwnd, WM_ARM_DYNAMIC_MENU, 0, 0)
+        assert not enable.is_enabled()
+        enable.click()
+        _wait_status(window, "menu=dynamic-enabled")
+        assert len(batches) == 2, "the disabled-in-closed-menu command must be opened, then clicked"
+        enabled_batches = list(batches)
+        batches.clear()
+        win32gui.SendMessage(hwnd, WM_ARM_DYNAMIC_MENU, 0, 0)
+        assert disable.is_enabled()
+        before = _status(window)
+        try:
+            with pytest.raises(MenuItemNotEnabled):
+                disable.click()
+            assert len(batches) == 1, (
+                "only the parent may be clicked before the command disables itself"
+            )
+            assert not disable.is_enabled()
+            assert disable.is_visible()
+            assert _status(window) == before
+        finally:
+            write_menu_evidence(
+                output / "menu-dynamic-state.json",
+                owner_hwnd=hwnd,
+                enable_command=ID_MENU_DYNAMIC_ENABLE,
+                disable_command=ID_MENU_DYNAMIC_DISABLE,
+                enabled_input_batches=enabled_batches,
+                disabled_input_batches=batches,
+            )
+            win32gui.SendMessage(hwnd, win32con.WM_CANCELMODE, 0, 0)
+    disable.wait_until_hidden(timeout=10)
+
+
+def _assert_topmost_overlay_blocks_menu_input(window, monkeypatch, output, *, stage):
+    hwnd = window._get_spec().wrapper_object().handle
+    win32gui.PostMessage(hwnd, WM_OPEN_FILE_MENU, 0, 0)
+    mark = window.menu("File").item("Mark")
+    mark.wait_for(state="visible", timeout=10)
+    rect = mark._resolve().rectangle()
+    point = (int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2))
+    before = _status(window)
+    clicks = []
+    batches = []
+    overlays = []
+    enabled_reads = []
+    physical_click = element_module._native_menu_click
+    native_owns_point = element_module._native_menu_owns_point
+    send_input = win32functions.SendInput
+
+    def click(item, **kwargs):
+        clicks.append(kwargs)
+        if stage == "enabled":
+            native_enabled = item.is_enabled
+
+            def enabled():
+                result = native_enabled()
+                enabled_reads.append(result)
+                overlays.append(MenuOverlay(rect))
+                return result
+
+            with monkeypatch.context() as state_scope:
+                state_scope.setattr(item, "is_enabled", enabled)
+                return physical_click(item, **kwargs)
+        return physical_click(item, **kwargs)
+
+    def owns_point(item, target, identity=None):
+        owned = native_owns_point(item, target, identity)
+        if owned and not overlays:
+            # Return a genuine positive read, then cover that point before the
+            # dispatcher's final read. WindowFromPoint itself stays unmodified.
+            overlays.append(MenuOverlay(rect))
+        return owned
+
+    def send(count, pointer, size):
+        batches.append(count)
+        return send_input(count, pointer, size)
+
+    try:
+        with monkeypatch.context() as scope:
+            if stage == "dispatch":
+                scope.setattr(element_module, "_native_menu_owns_point", owns_point)
+            elif stage == "layout":
+                overlays.append(MenuOverlay(rect))
+            scope.setattr(element_module, "_native_menu_click", click)
+            scope.setattr(win32functions, "SendInput", send)
+            with pytest.raises(ElementNotFoundError, match="obscured"):
+                mark.timeout(0.2).click()
+            overlay = overlays[0]
+            win32gui.PumpWaitingMessages()
+            assert (
+                win32gui.GetWindowLong(overlay.hwnd, win32con.GWL_EXSTYLE) & win32con.WS_EX_TOPMOST
+            )
+            assert (
+                win32process.GetWindowThreadProcessId(overlay.hwnd)[1]
+                != win32process.GetWindowThreadProcessId(hwnd)[1]
+            )
+            assert win32gui.WindowFromPoint(point) == overlay.hwnd
+            assert len(clicks) == int(stage != "layout")
+            if stage == "enabled":
+                assert enabled_reads == [True]
+            assert not batches, "no physical input may be dispatched to the obstructing process"
+            assert not overlay.button_events
+            assert _status(window) == before
+            assert mark.is_visible(), "the blocked action must not toggle the parent closed"
+    finally:
+        for overlay in overlays:
+            try:
+                overlay.evidence(
+                    output / f"menu-overlay-{stage}.json",
+                    owner_hwnd=hwnd,
+                    owner_pid=win32process.GetWindowThreadProcessId(hwnd)[1],
+                    point=point,
+                    hit_hwnd=win32gui.WindowFromPoint(point),
+                    dispatch_attempts=len(clicks),
+                    enabled_reads=enabled_reads,
+                    input_batches=batches,
+                )
+            finally:
+                overlay.close()
+
+    mark.click()
+    _wait_status(window, "menu=mark")
+
+
+@pytest.mark.parametrize("dpi_aware", [False, True], ids=["dpi-unaware", "dpi-aware"])
+def test_winforms_launch_controls_menu_dialog_and_attach(tmp_path, dpi_aware) -> None:
+    script = path_join(dirname(__file__), "_winforms_controls_window.ps1")
+    command = (
+        f'powershell.exe -NoProfile -NonInteractive -Sta -ExecutionPolicy Bypass -File "{script}"'
+    )
+    if dpi_aware:
+        command += " -DpiAware"
+    app = Desktop.for_legacy_apps(hidden=False).launch(command, startup_delay=0)
+    try:
+        win = app.window(title="Dolphin Win32 Legacy Fixture", timeout=20)
+        win.wait_until_ready(timeout=10)
+        record_window_scale(
+            win._get_spec().wrapper_object().handle, tmp_path / "display-scale.json"
+        )
+        edit = win.edit()
+        edit.wait_for(state="visible", timeout=10)
+        assert "edit" in edit.get_attribute("class_name").casefold()
+        edit.type_text("Dolphin")
+        assert edit.value() == "Dolphin"
+        edit.set_text("")
+        assert edit.value() == ""
+        combo = win.combo_box()
+        combo.wait_for(state="visible", timeout=10)
+        for plan in ("Premium", "Standard"):
+            combo.select_item(plan)
+            assert combo.selected_item() == plan
+        tree = win.tree()
+        tree.wait_for(state="visible", timeout=10)
+        tree.select_item_by_path("Root", "Child")
+        win.locator(title="tree=Child", control_type="Static").wait_for(timeout=10)
+
+        # Reopening must not use the popup's stale layout after it was closed.
+        item = win.menu("File").item("Show dialog")
+        for _ in range(2):
+            assert not item.is_visible()
+            item.click()
+            dialog = app.window(title="Dolphin Win32 dialog", class_name="#32770", timeout=10)
+            dialog.wait_until_ready(timeout=10)
+            hwnd = dialog._get_spec().wrapper_object().handle
+            assert win32gui.IsWindowVisible(hwnd)
+            assert win32gui.GetClassName(hwnd) == "#32770"
+            assert win32process.GetWindowThreadProcessId(hwnd)[1] == app.process_id
+            dialog.button(name="OK").click()
+            dialog.wait_for_close(timeout=10)
+            win.locator(title="dialog_closed=1", control_type="Static").wait_for(timeout=10)
+
+        screenshot = tmp_path / "winforms.png"
+        win.screenshot(screenshot)
+        assert screenshot.is_file()
+        attached = Desktop.for_legacy_apps(hidden=False).connect(process=app.process_id)
+        try:
+            attached.window(title=win.title()).wait_until_ready(timeout=10)
+        finally:
+            attached.close()
+        win.wait_until_ready(timeout=10)
+    finally:
+        app.kill()
 
 
 def test_type_without_a_win32_class_fails_at_once(window) -> None:

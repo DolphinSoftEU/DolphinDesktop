@@ -456,6 +456,7 @@ def test_ci_artifact_is_built_only_after_required_checks_and_smoke_test():
         "unit",
         "runner-console",
         "component-windows",
+        "win32-scaled",
         "package-linux",
         "security",
         "minimum-dependencies",

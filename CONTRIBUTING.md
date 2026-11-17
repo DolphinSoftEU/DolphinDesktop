@@ -141,6 +141,61 @@ flags and the end of its stderr. These distinguish native launch errors from
 readiness timeouts. Tests retain the existing startup deadlines and cannot pass
 through retries or skips.
 
+## Win32 controls and physical menu acceptance (KAN-747)
+
+Run on an interactive Windows desktop without concurrent user input:
+
+```powershell
+uv run --locked pytest tests/framework/test_win32_controls.py tests/component/test_win32_controls_windows.py -q --junitxml=artifacts/win32-controls.xml
+```
+
+The component tests exercise physical `menu.item().click()` on classic nested
+menus and a controlled WinForms `MainMenu`, verifying application-side results.
+The WinForms scenario covers launch, Edit/ComboBox/Tree operations, opening and
+closing a native dialog twice, screenshots and attaching to the launched process.
+It runs with both DPI-unaware and DPI-aware owners. Also run on a display scaled
+above 100% (for example 125%): popup coordinates obtained without the owner HWND
+can otherwise look correct at 100% while sending clicks outside the menu on a
+scaled display. Unit tests independently simulate different logical and screen
+rectangles. `invoke()`/`select()` cannot substitute for a successful `click()`.
+
+The native nested-menu case also covers a real non-activating `WS_EX_TOPMOST`
+window from the controller process above the AUT popup. It checks both an
+initially covered point, a window appearing after the first positive
+hit-test, and one appearing during the final enabled-state read. None may
+dispatch a SendInput batch or deliver a button message to the overlay; removing
+it must allow the same menu command to work. `menu-overlay-layout.json`,
+`menu-overlay-dispatch.json` and `menu-overlay-enabled.json` retain HWND/PID,
+screen point and event counts without reading the obscuring window's contents.
+The same required case swaps two commands inside an open HMENU after the first
+positive hit-test. It requires zero input for the stale command, then resolves
+and clicks the requested caption at its new index. `menu-reordered.json` retains
+the unchanged popup HWND, expected/current command IDs and input counts.
+The AUT also enables and disables commands during real `WM_INITMENUPOPUP`
+handling. `menu-dynamic-state.json` records parent/target input counts: the newly
+enabled command must execute; the newly disabled command permits only opening
+its parent. Synthetic INIT messages issued by lookup do not update this AUT.
+CI includes these tests in the Windows component gate and uploads the WinForms
+screenshots with its JUnit report as `windows-component-evidence`.
+
+The independent `win32-scaled` CI job additionally provisions 125% scaling on
+its disposable GitHub-hosted Windows runner and runs the three physical-menu
+scenarios. It verifies the effective monitor scale before starting pytest and
+on each AUT's actual monitor, rejects skips/incomplete reports, and restores the
+original scale in `finally`. The job gates packaging and runs even when unit
+jobs fail. Its `win32-scaled-125` artifact contains measured scale JSON, JUnit
+and screenshots. The CI-only setter uses Windows Settings' undocumented DPI
+device-info packets (-3/-4); unsupported runners fail this gate rather than
+reporting a 100% run as 125% coverage. This code is outside the runtime package.
+
+To run the same strict gate locally on a display already configured at 125%:
+
+```powershell
+uv run --locked python -m tests._win32_scaled_acceptance
+```
+
+Local runs only verify the display and never change its scaling.
+
 ## Recorder acceptance (KAN-576 / KAN-759)
 
 Run on a controlled interactive Windows desktop, without concurrent user input:
@@ -172,6 +227,24 @@ between AUTs, the foreground AUT explicitly allows its declared controller PID
 to activate the next window. This handoff is limited to the two owned AUTs;
 unrelated foreground windows never receive a request. Each AUT is clicked once
 so rapid return visits cannot select existing text through a double-click.
+
+Before pointer input, the isolation test additionally waits for actual native
+hit-testing to identify the expected Edit, checking both its owning PID and
+root HWND. Foreground activation alone is insufficient during asynchronous
+layout/z-order changes. The wait pumps controller messages, recomputes the
+point, and sends no input. A real non-activating overlay regression holds a
+different Edit above the active AUT until the controller processes its close
+message. Persistent obstruction or changed ownership still fails the test;
+an immediate guard remains before the mouse event. `input-target.json` records
+the expected and hit HWND/PID/root/class, geometry and transition samples,
+without reading the obscuring field's contents. CI requires all real recorder
+scenarios to pass without skips and uploads these diagnostics on failure.
+
+The AUT publishes its ready identity atomically. Readers retry missing files
+and Windows read-sharing failures within the existing five-second startup
+budget, checking that the AUT is still alive. Malformed published JSON fails
+immediately; a persistent lock fails at the deadline with the original error.
+Native exclusive-handle regressions cover lock release and permanent blocking.
 
 Replay checks retain stage-specific native/UIA text, HWND/focus, modifier state
 and recorder progress in `recorded.diagnostics.json`. Native WM_GETTEXT reads

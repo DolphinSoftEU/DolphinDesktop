@@ -16,6 +16,10 @@ from pluggy import PluginManager
 from dolphin_desktop._allure import _PLUGIN_NAME, _AllureRedactor, _redact_item
 from tests._allure_redaction import inspect_dolphin_artifacts, run_allure_case
 
+# Each real reporter subprocess has its own 45 s deadline. Let that deadline
+# report a failure and retain output before pytest-timeout terminates the host.
+pytestmark = pytest.mark.timeout(90)
+
 
 @pytest.mark.parametrize("invocation_subdir", ["tests", "tests/nested"])
 @pytest.mark.parametrize("phase", ["success", "call", "teardown"])

@@ -171,42 +171,44 @@ def run_allure_case(
             names.reverse()
         plugins = [argument for name in names for argument in ("-p", name)]
     report_dir = directory / "allure"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            *plugins,
-            str(child),
-            "-q",
-            "-c",
-            os.devnull,
-            "--rootdir",
-            str(directory),
-            "--confcutdir",
-            str(directory),
-            "--dolphin-video=off",
-            "--dolphin-trace=off",
-            "--alluredir",
-            str(report_dir),
-            "--junitxml",
-            str(directory / "junit.xml"),
-            "-o",
-            "junit_logging=all",
-            *pytest_args,
-        ],
-        cwd=invocation_dir,
-        env=environment,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="backslashreplace",
-        timeout=45,
-        check=False,
-    )
+    terminal_path = directory / "terminal.txt"
+    # Windows pipe readers can outlive the pytest controller when xdist workers
+    # inherit stdout/stderr. A file retains live diagnostics without making
+    # communicate() wait for every inherited pipe handle to close.
+    with terminal_path.open("w", encoding="utf-8") as terminal_file:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                *plugins,
+                str(child),
+                "-q",
+                "-c",
+                os.devnull,
+                "--rootdir",
+                str(directory),
+                "--confcutdir",
+                str(directory),
+                "--dolphin-video=off",
+                "--dolphin-trace=off",
+                "--alluredir",
+                str(report_dir),
+                "--junitxml",
+                str(directory / "junit.xml"),
+                "-o",
+                "junit_logging=all",
+                *pytest_args,
+            ],
+            cwd=invocation_dir,
+            env=environment,
+            stdout=terminal_file,
+            stderr=subprocess.STDOUT,
+            timeout=45,
+            check=False,
+        )
     files = {path.name: path.read_bytes() for path in report_dir.iterdir()}
-    terminal = result.stdout + result.stderr
-    (directory / "terminal.txt").write_text(terminal, encoding="utf-8")
+    terminal = terminal_path.read_text(encoding="utf-8", errors="backslashreplace")
     return {
         "exit_code": result.returncode,
         "terminal": terminal,

@@ -38,9 +38,14 @@ ID_MENU_MARK = 2101
 ID_MENU_DISABLED = 2102
 ID_MENU_LITERAL_AMPERSAND = 2103
 ID_MENU_GRID = 2104
+ID_MENU_NESTED_MARK = 2105
+ID_MENU_DYNAMIC_ENABLE = 2106
+ID_MENU_DYNAMIC_DISABLE = 2107
 
 # Posted by a test: the AUT opens its File menu itself, so no mouse input is needed.
 WM_OPEN_FILE_MENU = win32con.WM_APP + 1
+WM_ARM_DYNAMIC_MENU = win32con.WM_APP + 2
+WM_REORDER_FILE_MENU = win32con.WM_APP + 3
 
 STATUS_READY = "ready"
 COMBO_ITEMS = ("Standard", "Premium")
@@ -119,6 +124,8 @@ _send_message_w.restype = ctypes.c_ssize_t
 
 _controls: dict[int, int] = {}
 _file_menu = 0
+_in_menu_loop = False
+_dynamic_menu = False
 
 
 def _create_control(parent: int, class_name: str, text: str, style: int, rect, ctrl_id: int) -> int:
@@ -203,6 +210,44 @@ def _selected_list_text(list_box: int) -> str:
 
 
 def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
+    global _in_menu_loop, _dynamic_menu
+    if msg in (win32con.WM_ENTERMENULOOP, win32con.WM_EXITMENULOOP):
+        _in_menu_loop = msg == win32con.WM_ENTERMENULOOP
+        return 0
+    if msg == WM_ARM_DYNAMIC_MENU:
+        _dynamic_menu = True
+        win32gui.EnableMenuItem(
+            _file_menu, ID_MENU_DYNAMIC_ENABLE, win32con.MF_BYCOMMAND | win32con.MF_GRAYED
+        )
+        win32gui.EnableMenuItem(
+            _file_menu, ID_MENU_DYNAMIC_DISABLE, win32con.MF_BYCOMMAND | win32con.MF_ENABLED
+        )
+        return 0
+    if (
+        msg == win32con.WM_INITMENUPOPUP
+        and wparam == _file_menu
+        and _dynamic_menu
+        and _in_menu_loop
+    ):
+        # Ignore pywinauto's synthetic INIT message during lookup: this AUT
+        # updates commands only when the native menu loop actually opens.
+        win32gui.EnableMenuItem(
+            _file_menu, ID_MENU_DYNAMIC_ENABLE, win32con.MF_BYCOMMAND | win32con.MF_ENABLED
+        )
+        win32gui.EnableMenuItem(
+            _file_menu, ID_MENU_DYNAMIC_DISABLE, win32con.MF_BYCOMMAND | win32con.MF_GRAYED
+        )
+        return 0
+    if msg == WM_REORDER_FILE_MENU:
+        entries = [(ID_MENU_MARK, "&Mark\tCtrl+M"), (ID_MENU_LITERAL_AMPERSAND, "R&&D report")]
+        if wparam:
+            entries.reverse()
+        for index, (command, caption) in enumerate(entries):
+            win32gui.ModifyMenu(
+                _file_menu, index, win32con.MF_BYPOSITION | win32con.MF_STRING, command, caption
+            )
+        win32gui.DrawMenuBar(hwnd)
+        return 0
     if msg == win32con.WM_COMMAND:
         ctrl_id = wparam & 0xFFFF
         notification = (wparam >> 16) & 0xFFFF
@@ -216,6 +261,12 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             _set_status("menu=mark")
         elif ctrl_id == ID_MENU_LITERAL_AMPERSAND:
             _set_status("menu=rnd")
+        elif ctrl_id == ID_MENU_NESTED_MARK:
+            _set_status("menu=nested")
+        elif ctrl_id == ID_MENU_DYNAMIC_ENABLE:
+            _set_status("menu=dynamic-enabled")
+        elif ctrl_id == ID_MENU_DYNAMIC_DISABLE:
+            _set_status("menu=dynamic-disabled")
         elif ctrl_id == ID_MENU_GRID:
             state = win32gui.GetMenuState(_file_menu, ID_MENU_GRID, win32con.MF_BYCOMMAND)
             checked = bool(state & win32con.MF_CHECKED)
@@ -248,10 +299,17 @@ def _build_menu(hwnd: int) -> None:
     # "&&" is a literal ampersand in a menu caption, not a mnemonic marker.
     win32gui.AppendMenu(file_menu, win32con.MF_STRING, ID_MENU_LITERAL_AMPERSAND, "R&&D report")
     win32gui.AppendMenu(file_menu, win32con.MF_STRING, ID_MENU_GRID, "Show &grid")
+    nested_menu = win32gui.CreatePopupMenu()
+    win32gui.AppendMenu(nested_menu, win32con.MF_STRING, ID_MENU_NESTED_MARK, "Nested &mark")
+    win32gui.AppendMenu(file_menu, win32con.MF_POPUP, nested_menu, "&More")
     win32gui.AppendMenu(file_menu, win32con.MF_SEPARATOR, 0, "")
     win32gui.AppendMenu(
         file_menu, win32con.MF_STRING | win32con.MF_GRAYED, ID_MENU_DISABLED, "Disabled item"
     )
+    win32gui.AppendMenu(
+        file_menu, win32con.MF_STRING | win32con.MF_GRAYED, ID_MENU_DYNAMIC_ENABLE, "Enable on open"
+    )
+    win32gui.AppendMenu(file_menu, win32con.MF_STRING, ID_MENU_DYNAMIC_DISABLE, "Disable on open")
     menu_bar = win32gui.CreateMenu()
     win32gui.AppendMenu(menu_bar, win32con.MF_POPUP, file_menu, "&File")
     win32gui.SetMenu(hwnd, menu_bar)

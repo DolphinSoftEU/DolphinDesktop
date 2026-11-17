@@ -150,6 +150,9 @@ jobs:
       - name: Type check
         run: uv run --locked mypy src/
 
+      - name: Prepare unit evidence directory
+        run: New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+
       - name: Unit tests
         run: >
           uv run --locked pytest
@@ -157,7 +160,19 @@ jobs:
           --cov=dolphin_desktop
           --cov-report=xml
           --cov-report=term-missing
+          --junitxml=artifacts/unit-results.xml
+          --basetemp="${{ runner.temp }}/unit-cases"
           -q
+
+      - name: Upload unit reports and reporter subprocess diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unit-evidence-${{ matrix.python-version }}
+          path: |
+            artifacts/unit-results.xml
+            ${{ runner.temp }}/unit-cases/**/terminal.txt
+          if-no-files-found: warn
 
       - name: Upload coverage
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
@@ -327,12 +342,39 @@ jobs:
           path: ${{ runner.temp }}/runner-console/
           if-no-files-found: error
 
+  win32-scaled:
+    name: "Win32 physical menus / verified 125% scaling"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+      - name: Install locked test dependencies
+        run: uv sync --locked --group dev
+      - name: Configure and verify 125% scaling and run real menu clicks
+        run: uv run --no-sync python -m tests._win32_scaled_acceptance
+      - name: Upload measured DPI, JUnit and screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: win32-scaled-125
+          path: artifacts/win32-scaled/
+          if-no-files-found: error
+
   component-windows:
     name: "Windows component tests"
     runs-on: windows-latest
     needs: unit
     env:
       DOLPHIN_COMPONENT_PREFLIGHT: "1"
+      DOLPHIN_RECORDER_ACCEPTANCE: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -404,6 +446,12 @@ jobs:
               throw "KAN-768 requires a real passing hidden-owner lifecycle regression: $name"
             }
           }
+          foreach ($name in @("test_real_hook_installation_and_cleanup", "test_real_hook_delayed_password_text_transitions", "test_real_record_generate_replay_targets_native_edit", "test_real_hook_delayed_events_stay_in_target_process", "test_real_pointer_readiness_waits_for_native_hit_testing")) {
+            $cases = $results.SelectNodes("//testcase[@name='$name']")
+            if ($cases.Count -ne 1 -or $cases[0].SelectNodes("skipped|failure|error").Count -ne 0) {
+              throw "Recorder acceptance requires a real passing scenario: $name"
+            }
+          }
 
       - name: Upload component test and recorder replay evidence
         if: always()
@@ -414,6 +462,10 @@ jobs:
             ${{ runner.temp }}/component-results.xml
             ${{ runner.temp }}/component-pytest/**/test_real_record_generate_repl*/recorded*
             ${{ runner.temp }}/component-pytest/**/test_hidden_owner_lifecycle*/**
+            ${{ runner.temp }}/component-pytest/**/test_winforms_launch_controls_*/winforms.png
+            ${{ runner.temp }}/component-pytest/**/test_real_hook_delayed_events_*/**
+            ${{ runner.temp }}/component-pytest/**/test_real_pointer_readiness_*/**
+            ${{ runner.temp }}/component-pytest/**/test_real_pointer_guard_*/**
           if-no-files-found: warn
 
       - name: Install Qt agent test bindings
@@ -465,7 +517,7 @@ jobs:
   package:
     name: Build package
     runs-on: windows-latest
-    needs: [unit, runner-console, component-windows, package-linux, security, minimum-dependencies, qt-agent-reproducibility, pytest-compatibility]
+    needs: [unit, runner-console, component-windows, win32-scaled, package-linux, security, minimum-dependencies, qt-agent-reproducibility, pytest-compatibility]
     outputs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       version: ${{ steps.version.outputs.version }}
