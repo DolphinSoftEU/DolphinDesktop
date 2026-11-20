@@ -49,8 +49,8 @@ administrator bypass on `pypi` returned **HTTP 403: Must have admin rights to
 Repository**. No settings were changed by that request. Continuing the remaining
 administration requests with this credential cannot complete the configuration.
 
-An administrator must apply the exact rulesets/environment configuration in
-[RELEASING.md](../RELEASING.md), verify owner/repository/workflow/environment
+An administrator must apply the rulesets/environment configuration checked by
+[release_policy.py](../.github/scripts/release_policy.py), verify owner/repository/workflow/environment
 bindings in the PyPI and TestPyPI Trusted Publisher accounts, and record evidence.
 No index administrator session is available to verify those bindings here.
 

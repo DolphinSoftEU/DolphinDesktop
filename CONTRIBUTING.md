@@ -1,8 +1,8 @@
 # Contributing to Dolphin
 
 This guide covers local development and pull requests. See
-[Architecture](docs/architecture.md) for the library design and
-[RELEASING.md](RELEASING.md) for publication and branch protection policies.
+[Architecture](docs/architecture.md) for the library design. Releases are
+published by designated project maintainers.
 
 ## Prerequisites
 
@@ -232,8 +232,8 @@ into this guide.
 3. Run the unit, lint, format and type checks, plus affected component/application
    checks. State prerequisites, results and any skips in the PR.
 4. Target the branch for the intended release: `testpypi-preview` for the preview
-   line or `master` for production-bound changes; follow
-   [RELEASING.md](RELEASING.md) for review and merge policy.
+   line or `master` for production-bound changes; follow the target branch's
+   required checks and review policy.
 5. Complete the [PR template](.github/pull_request_template.md) and wait for
    current-commit CI to pass before merging.
 

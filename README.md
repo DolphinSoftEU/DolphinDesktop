@@ -171,8 +171,8 @@ for test categories, setup and desktop acceptance commands.
   for the development branch; hosted documentation may lag these changes.
 - [Contributing](https://github.com/DolphinSoftEU/DolphinDesktop/blob/testpypi-preview/CONTRIBUTING.md)
   for repository setup, checks and local documentation builds.
-- [Releasing](https://github.com/DolphinSoftEU/DolphinDesktop/blob/testpypi-preview/RELEASING.md)
-  for TestPyPI previews and the production release checklist.
+
+Package releases are published by designated project maintainers.
 
 ## Security
 

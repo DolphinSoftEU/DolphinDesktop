@@ -2,7 +2,7 @@ name: Release preflight
 
 # First deploy this workflow and its script dependencies to the default branch
 # (master) through a reviewed PR before hosted dispatch acceptance tests.
-# A preview-only merge is insufficient. See RELEASING.md, First deployment.
+# A preview-only merge is insufficient for initial manual dispatch availability.
 on:
   workflow_dispatch:
     inputs:

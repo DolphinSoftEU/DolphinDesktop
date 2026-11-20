@@ -219,11 +219,12 @@ credentials. PRs run on hosted runners using `pull_request`, without a write
 token or OIDC. Only the master documentation deploy persists a token to push
 gh-pages. Production validation allows only a final `X.Y.Z` version from
 a matching final tag whose commit is already in `origin/master`.
-TestPyPI allows `master`, `testpypi-preview` and matching final/RC tags. Full
+TestPyPI allows manual dispatch from `master` or `testpypi-preview`, not tags. Full
 checkout history supports the production ancestry check; validation fails
 before build outputs are written if the source, target, ref or version is
-invalid. Configure matching environment rules and independent approval as
-described in [RELEASING.md](RELEASING.md); these settings are outside the repository.
+invalid. Expected branch, tag and environment settings are checked by
+[release_policy.py](.github/scripts/release_policy.py); hosted settings are
+configured outside the repository.
 
 uv itself is pinned to 0.11.9. Dependency installation and export use `--locked`,
 which rejects stale project metadata without rewriting the lock. Security and
@@ -280,8 +281,8 @@ The follow-up attempted to enable selected branches/tags and Prevent
 self-review in both environments, preserving their current required reviewer.
 Both environment update requests were rejected with HTTP 403 (`Must have admin
 rights to Repository`), so those settings remain unchanged. Administrator
-action is required; the exact desired settings and the implications of the
-single existing reviewer are documented in [RELEASING.md](RELEASING.md).
+action is required; the current expected settings are checked by
+[release_policy.py](.github/scripts/release_policy.py).
 
 Local follow-up validation: 47 CI policy tests passed, including rejected
 manual production deployments from preview/feature branches, non-final versions,
@@ -341,22 +342,21 @@ The 2026-10-13 GitHub inspection still found insufficient server-side protection
 The available push credential cannot administer this repository; an attempted
 `pypi` environment update returned HTTP 403. Full acceptance requires an
 administrator to configure rulesets/environments and verify Trusted Publishers
-on both indexes, then record hosted positive/negative run evidence. See
-[RELEASING.md](RELEASING.md) for the exact configuration and release procedure.
+on both indexes, then record hosted positive/negative run evidence. The current
+expected settings are checked by [release_policy.py](.github/scripts/release_policy.py).
 The new validator blocks publication under the observed settings. Local mocked
 API and artifact tests establish rejection behavior, not completed deployment
 configuration or a successful hosted release.
 
 Read-only GitHub ruleset responses can hide `bypass_actors`. An omitted/null
-field is rejected unless signed administrative evidence matches the current
-policy and update timestamp. Evidence has a maximum 24-hour lifetime, is bound
-to this repository, and is verified against a public key committed through
-review to the protected source. The independent workstation audit alone receives
-an administrator credential; the release `GITHUB_TOKEN` remains read-only.
+field produces an `unknown` policy status, allowing remaining checks to run
+without claiming that authorization settings were verified. GitHub enforces
+the native policies; administrators verify hidden settings separately. Release
+does not require signed administrative evidence, private keys or an elevated
+token.
 Tag tests model separate creation and immutability rulesets. CI and release
 artifact names include their run attempt; selection never falls back to a
-package built in an earlier attempt. See the administrative attestation procedure
-in [RELEASING.md](RELEASING.md).
+package built in an earlier attempt.
 
 ## Security regression mapping
 
