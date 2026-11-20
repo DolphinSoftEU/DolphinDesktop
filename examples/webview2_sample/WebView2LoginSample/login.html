@@ -49,6 +49,7 @@
 
       var msg = 'Logged in as ' + email;
       respEl.textContent = msg;
+      respEl.setAttribute('aria-label', msg);
 
       if (window.chrome && window.chrome.webview) {
         window.chrome.webview.postMessage(msg);

@@ -9,4 +9,4 @@ if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed. Ensure .NET SDK is installed: https://dot.net/download"
     exit 1
 }
-Write-Host "Build OK — run the tests with: pytest examples\legacy_ie\ -v"
+Write-Host 'Build OK — run: uv run --no-sync pytest examples/legacy_ie/ -v'

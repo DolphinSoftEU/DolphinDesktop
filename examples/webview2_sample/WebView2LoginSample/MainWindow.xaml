@@ -19,6 +19,7 @@
 
         <!-- Native status bar — updated via JS postMessage interop -->
         <TextBlock x:Name="StatusBar"
+                   AutomationProperties.AutomationId="StatusBar"
                    Grid.Row="1"
                    Text="Status: waiting"
                    Padding="8,6"

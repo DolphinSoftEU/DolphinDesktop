@@ -13,10 +13,12 @@ and under ``dolphin-run`` on a hidden desktop.
 To run:
 
     # Visible mode (dev box)
-    pytest examples/java_swing/test_java_swing_headless.py -v
+    uv run --no-sync pytest examples/java_swing/test_java_swing_headless.py -v
 
     # Headless mode
-    dolphin-run pytest examples/java_swing/test_java_swing_headless.py -v
+    # From the repository root:
+    uv run --no-sync dolphin-run pytest \\
+        examples/java_swing/test_java_swing_headless.py -v
 
 Skips cleanly when ``SwingDemo.class`` is not present. Rebuild with:
 
@@ -29,7 +31,6 @@ from __future__ import annotations
 import pytest
 
 from dolphin_desktop import (
-    Desktop,
     JavaAccessBridge,
     UnsupportedPatternError,
     dirname,
@@ -47,40 +48,18 @@ def _demo_compiled() -> bool:
     return path_exists(path_join(_HERE, "SwingDemo.class"))
 
 
-@pytest.fixture(scope="module")
-def swing_demo():
-    """Module-scoped Swing demo — launched once for the whole suite.
-
-    Uses ``Desktop().launch_java`` directly (not the ``launch`` fixture,
-    which is function-scoped and would restart the JVM per test).
-    Cleans up at module teardown.
-    """
+@pytest.fixture
+def swing_demo(desktop):
+    """A fresh JVM per test, using the same JAVA_HOME as the JAB client."""
     if not _demo_compiled():
-        pytest.skip(
-            "SwingDemo.class not built — run `javac SwingDemo.java` "
-            "inside examples/java_swing/ first"
-        )
-    if JavaAccessBridge.java_home() is None:
-        pytest.skip("Java not found — install a JDK 8+ to run the Swing demo")
-
-    JavaAccessBridge.ensure_enabled()
-
-    desktop = Desktop()
-    cmd = f'java -Djava.accessibility=true -cp "{_HERE}" SwingDemo'
-    app = desktop.launch_java(cmd, timeout=20, startup_delay=2.0)
+        pytest.skip("Compile SwingDemo.java first; see examples/README.md")
     try:
-        # Opt out of dolphin's per-test PID reaping — module scope needs it.
-        try:
-            app.detach()
-        except Exception:
-            pass
-        win = app.window(title="Java Swing Demo", timeout=15)
-        yield app, win
-    finally:
-        try:
-            app.kill()
-        except Exception:
-            pass
+        home = JavaAccessBridge.validate_configuration()
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+    java = path_join(home, "bin", "java.exe")
+    with desktop.launch_java(f'"{java}" -cp "{_HERE}" SwingDemo', timeout=20) as app:
+        yield app, app.window(title="Java Swing Demo", timeout=15)
 
 
 def test_set_value_writes_username_without_keystrokes(swing_demo):
