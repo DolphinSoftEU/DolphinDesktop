@@ -71,9 +71,6 @@ sap = "dolphin_desktop._backend:SapBackend"
 [tool.hatch.build.targets.wheel]
 packages = ["src/dolphin_desktop"]
 
-[tool.hatch.build.targets.sdist]
-exclude = ["/SecurityTasks"]
-
 [project.optional-dependencies]
 fast = ["mss>=9.0"]
 vision = [

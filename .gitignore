@@ -23,6 +23,9 @@ dolphin-videos/
 dolphin-report.html
 dolphin-report-gw*.html
 
+# Private audit records
+/SecurityTasks/
+
 # MkDocs build output
 site/
 

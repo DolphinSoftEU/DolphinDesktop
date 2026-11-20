@@ -122,7 +122,7 @@ run the tests.
 The mandatory CI unit job runs the COM stand-in tests with `pytest -m unit`.
 It does not run this `system` / `integration` suite or verify the real Office
 macro engine. Record a separate Windows/Office run, listing passed, failed and
-skipped cases; see the [KAN-574 retest record](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/SecurityTasks/KAN-574-retest.md).
+skipped cases and the Office versions and policies used for the run.
 
 For a real Office retest, use an isolated Windows account with reviewed `.xlsm`
 and `.docm` fixtures whose `Workbook_Open` / `Document_Open` handlers only write
