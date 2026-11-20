@@ -6,1439 +6,257 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ## [Unreleased]
 
-### Added
-
-* PowerPoint facade: text formatting (`bold`, `italic`, `underline`,
-  `font_name`, `font_size`, `font_color`) on shapes and on 1-based character
-  ranges via `PowerPointTextRange` / `characters()`, with `None` reported for
-  mixed formatting; `paragraphs`, `has_text` and shape geometry
-  (`left`/`top`/`width`/`height`); `PowerPointSlide.shapes`, `shape_names` and
-  `add_picture()` (embedded, never linked); `PowerPointPresentation.slides`,
-  `slide_size` and `move_slide()`. `PowerPointApp.open()` raises
-  `FileNotFoundError` before starting PowerPoint, and `slide()` / `shape()`
-  raise `LookupError` naming what exists. Tables (`add_table()`, `PowerPointTable`
-  with cell ranges, `values`, row/column add and delete), charts
-  (`add_chart()` writing literal series arrays, no Excel needed; `PowerPointChart`
-  with type, title, categories and series values), speaker `notes`, layout
-  `title`, text `hyperlink` (sets the click action to `ppActionHyperlink` so the
-  link works in a slide show; `""` removes it) and
-  `PowerPointPresentation.has_window`.
-  Live PowerPoint tests under
-  `tests/office/test_powerpoint_live.py` (marker `integration`) exercise the
-  whole facade against an installed PowerPoint and skip when it is absent.
-
-### Breaking changes
-
-* Corrected the Delphi support contract: stock VCL (including Delphi 12 /
-  `delphivcl==1.0.7`) does not automatically expose `TForm.Name` or
-  `TComponent.Name` as UIA AutomationId. Name lookup requires an
-  application-supplied provider; Dolphin ships no VCL Name provider or RTTI
-  agent. Updated prerequisites, support matrix, examples and lookup failure
-  hints; added a real VCL reference regression separate from the Name-based
-  DESKTOP-161 acceptance scenario (KAN-761). Component lookup now probes
-  each criteria variant without pywinauto's extra default existence wait.
-
-* Java Access Bridge now requires an explicitly configured absolute `JAVA_HOME`
-  and loads its DLL exclusively from `JAVA_HOME\bin`. HLLAPI requires an explicit
-  absolute `hllapi_dll_path`; automatic DLL discovery has been removed (KAN-473).
-
-* `Desktop.mainframe()` now refuses plaintext connections to remote hosts
-  unless `allow_plaintext=True` is set. The former `tls_ca_file` argument is
-  now `tls_cafile`; `server_hostname` and `insecure_tls` have been removed.
-  Use the verified TCP host name in `host`, and use `tls=True` with
-  `tls_cafile` or `tls_context` for private CAs. Unverified TLS is no longer
-  supported. To retain an intentional cleartext connection, pass
-  `allow_plaintext=True`. Port 992 does not select TLS automatically.
-
-### Fixed
-
-* Native Win32 menu `click()` now uses the owner HWND when reading popup
-  rectangles, keeping mouse coordinates correct for DPI-unaware WinForms
-  applications on scaled displays. Closed parents are opened before clicking;
-  closed or disabled items cannot send input to an unrelated point. Added real
-  nested-menu and full WinForms launch/controls/dialog/attach regressions,
-  including repeated dialog opening with DPI-aware and unaware owners (KAN-747).
-  Transient popup rectangle API failures now retry reads within the action
-  deadline without clicking the parent again. Visibility uses a separate layout
-  probe; open popups are identified by HMENU even when item geometry is empty.
-  Lookup and all parent/layout waits share one deadline. An independent packaging gate
-  requires measured 125% monitor scaling for the real physical-menu regressions.
-  Physical clicks now validate the hit window and menu identity, including a final
-  check immediately before SendInput, refusing input to an obscuring window.
-  The final check also verifies the menu index, command identity and fresh item
-  geometry. Popup enabled state is read after WM_INITMENUPOPUP and before input.
-
-* Hidden `Desktop.launch()` applications and their descendants now belong to an
-  owner-process Job Object with `KILL_ON_JOB_CLOSE`, including venv redirectors.
-  Creation-time assignment prevents an orphan if the owner is killed during
-  launch. Normal owner exit and hard termination clean up the owned tree without
-  touching connected applications or other sessions on `DolphinHidden` (KAN-768).
-
-* `Tree.select_item_by_path()` and `expand_item()` now work on Qt 5 and Qt 6 trees
-  through UIA (KAN-756). Before, they timed out on the second level, because Qt
-  lists all rows as siblings, and on Qt 5 they also clicked the ancestors on the
-  way. They now walk the rows by indentation, scroll to rows outside the viewport,
-  open closed ancestors through the branch arrow and click the node. A path that
-  does not exist raises `ElementNotFoundError` naming how far it got, and a column
-  too narrow to read a level from raises `UnsupportedCapabilityError`.
-* Native Qt build tooling now requires `soupsieve>=4.1` to address
-  CVE-2026-126190 in the `aqtinstall` dependency chain. The `native-build`
-  group requires Python 3.11.5+ so the lockfile cannot retain a vulnerable
-  Soup Sieve fallback for older Python patches. Library runtime requirements
-  are unchanged.
-
-* Serialized native desktop creation in concurrent `run_hidden()` calls to
-  prevent `CreateDesktopW` initialization races returning access denied.
-  Added a real two-thread desktop lifecycle regression; console acceptance
-  failures now include controller stderr, with CI retaining process evidence.
-
-* Terminal redaction now preserves complete parameter IDs containing `::`
-  when deriving name-only displays, preventing sensitive values from leaking
-  in verbose collection output. Regression coverage includes collection-only
-  output and serial/xdist execution with call and teardown failures (KAN-763).
-
-* Fixed pytest 9.2 collection and terminal reporting when invoked outside the
-  root directory, preserving sensitive parameter redaction in serial and xdist
-  runs (KAN-763). The pytest extra now declares `pytest>=9.0.3,<10`; CI checks
-  installed wheels with 9.0.3, 9.2.0 and the latest 9.x on Python 3.11-3.13.
-
-* Native component AUT readiness is published by renaming a completed JSON
-  file, preventing recorder replay and process-isolation tests from reading
-  an empty or partially written HWND/PID identity.
-
-* Recorder process-isolation acceptance now pumps controller-thread messages
-  while waiting for cross-process focus and native input delivery. It checks
-  HWND, PID and focus together before sending keys, retains bounded failure
-  diagnostics, and does not turn missing focus into a skipped acceptance test.
-
-* `dolphin spy --pick` and `dolphin spy --image-pick` now report UI Automation access denial
-  (`E_ACCESSDENIED`) and exits with code 1 instead of silently waiting for
-  cancellation. Both UIA lookup paths preserve the error, and the picker clears
-  its highlight while continuing to tolerate transient element loss (KAN-760).
-  Permission errors also propagate during owner-liveness checks and selector
-  construction, verification and repair after Ctrl+Click.
-  Image capture also preserves access denial when reading the selected element's
-  name before capturing the screen or creating the output directory, preventing
-  a PNG save and successful exit after that error.
-  Rectangle coordinate reads also preserve permission errors instead of silently
-  returning a zero-sized bounding box.
-
-* Recorder native Edit regression now checks real pywin32 thread/process
-  results on both the owning thread and a worker (KAN-759). The regression covers
-  ordinary text, password and unknown controls, followed by delayed hook events;
-  the acceptance gate also requires generated selectors and record/replay to pass.
-  Sequence normalization was already included in the KAN-576 fix.
-  Worker queries pump the owner thread's window messages and use a bounded wait
-  without blocking executor shutdown, avoiding same-process WM_GETTEXT deadlocks.
-  Record/replay checks retain stage-specific native/UIA text and focus diagnostics;
-  CI preserves these with the generated script and JUnit report on failure.
-  Diagnostic probe exceptions retain partial evidence and earlier stages before
-  propagating the original error; independent probes still run after a failure.
-  Native transition tests now wait for text delivery before changing focus and
-  drain window messages before HWND cleanup, preventing queued test input from
-  crossing test boundaries. Concurrent runner tests seed pipe input before launch
-  and surface startup exceptions instead of masking them with pipe-write errors.
-  Process-isolation runs also verify cumulative native text in each AUT before
-  moving focus. WM_GETTEXT diagnostics distinguish a failed call from a successful
-  empty read. Contributor documentation keeps the acceptance procedure and CI links.
-  Owned-window activation waits for the AUT to acknowledge activation and for its
-  foreground HWND, rather than rejecting asynchronous cross-process activation
-  immediately. A bounded timeout remains an acceptance failure before input.
-  Process-isolation fixtures restore Edit focus and hand foreground permission
-  back to their explicit controller before switching AUTs. Repeated keyboard
-  runs no longer risk selecting prior text with a second physical click.
-
-* Recorder mouse and keyboard callbacks forward input even when context capture,
-  queueing, shutdown or a logging handler raises. Failures stop recording and are
-  reported by completion methods without logging captured input. The first callback
-  failure remains the cause when the message loop or hook cleanup subsequently
-  fails; secondary failures are attached as exception notes. Regression tests cover the
-  real ctypes callbacks with pointer-sized arguments and results on x64, alongside
-  the existing WinAPI signature fix. Logging handler failures during hook cleanup
-  cannot interrupt removal of remaining hooks or completion signaling (KAN-757).
-
-* The pytest `--dolphin-backend` option accepts registered and entry-point
-  backends, as well as `auto`, and reports unknown IDs with registry diagnostics
-  instead of restricting selection to UIA/Win32 (KAN-754).
-  Validation waits for nested `conftest.py` registrations during collection,
-  the repository bootstrap accepts the same IDs, and `Desktop(backend="auto")`
-  resolves the concrete backend before launching or connecting to native apps.
-* `dolphin-run` survives Ctrl+Break (and Ctrl+C when console Ctrl+C processing is
-  enabled) while the command handles the console event and preserves its exit
-  code. The inherited Ctrl+C ignore setting is preserved; use Ctrl+Break for
-  `CREATE_NEW_PROCESS_GROUP` launchers. Commands have ten seconds to finish after
-  interruption; a Windows Job Object then terminates an unresponsive command
-  tree with code 130. Venv redirectors and nested runners are covered, and owned
-  processes are cleaned up before the hidden desktop handle is closed (KAN-753).
-  Job cleanup now waits for zero active processes before releasing handles;
-  a failed query, termination failure or cleanup timeout is reported as an error.
-  After forced termination, waiting for the command process is also limited to
-  ten seconds; a stuck process raises a timeout instead of retrying indefinitely.
-  Cleanup after a failed job assignment or thread resume also uses a bounded
-  wait, validates its result, and releases process/thread handles on every path.
-  Console regressions run in the Windows component suite. Descendant cleanup
-  checks retain the original process handle before exit, avoiding PID reuse races.
-  Job cleanup also waits on retained process handles: zero active processes can
-  be reported before those handles become signalled, especially during startup.
-  A completion port retains additional handles during execution. Final cleanup
-  first blocks new job members with a zero active-process limit, then captures
-  the complete process set. Lost advisory birth notifications no longer cause
-  false cleanup timeouts or replace valid exit codes.
-  Monitoring now validates job membership before retaining a notified process,
-  tolerates advisory read/access failures, and releases completed process
-  handles during execution. PID reuse therefore cannot add foreign processes
-  to cleanup waits or grow a historical handle cache.
-  Incomplete successful PID-list responses are retried. A required CI matrix
-  verifies Ctrl+Break on Python 3.11 and 3.13, including installed and nested
-  launchers, without allowing skipped tests.
-  Concurrent `run_hidden()` calls now share one console handler that broadcasts
-  interrupts to all active callers, and use private child environment blocks.
-  Handler removal errors are checked; a module-held callback remains safe after
-  failed removal and the registration is reused until removal succeeds.
-
-* UIA wrapper searches verify uniqueness against the full TreeWalker tree,
-  including when FindAll returns a single partial match (KAN-745).
-
-* TreeWalker-only locator matches now report ambiguity unless `found_index` is
-  explicit, and reject incomplete uniqueness scans (KAN-745).
-
-* Locators under resolved wrappers now try ordered selector and image fallbacks
-  within the shared deadline, record self-healing on success, and report
-  ambiguous matches for both visible and presence searches (KAN-745).
-
-* `Window.edit()`, `combo_box()`, `tree()`, `button()`, `check_box()`,
-  `list_box()`, `tab()` and the other typed shortcuts now find their controls
-  on the `win32` backend (`Desktop.for_legacy_apps()`), as does any
-  `locator(control_type=...)` there (KAN-747). Before, they always timed out
-  with `ElementNotFoundError`. The UIA control type they send was compared
-  with the .NET type of a WinForms control, and with an empty string on
-  classic HWND controls.
-  - On `win32`, a UIA control type now matches pywinauto's friendly class
-    name. That covers classic, WinForms, VB6 and VCL class spellings and
-    tells check boxes and radio buttons from push buttons by style.
-  - Win32 friendly names (`Static`, `TreeView`, …) and dotted .NET types are
-    accepted as given.
-  - `Tree.select_item_by_path` / `expand_item` drive `SysTreeView32` nodes
-    through tree-view messages.
-  - `ListBox.items()` / `selected_items()` read `LISTBOX` and `SysListView32`
-    entries, and `Tab.select_tab()` selects a `SysTabControl32` tab by exact
-    text.
-  - `menu().item()` resolves native `HMENU` menu bars: `click()` clicks the
-    item, `invoke()` sends its `WM_COMMAND`, and `is_checked()` / `check()` /
-    `uncheck()` work on checkable items.
-  - `Locator.all()` and `count()` on `win32` apply every criterion. Before,
-    `control_id`, `title_re`, `class_name_re` and `nth()` were ignored, so
-    `locator(control_id=7).count()` counted every control.
-  - A negative `nth()` on `win32` counts the same matches as the lookup that
-    follows, so it no longer reports a control as missing when other criteria
-    narrow the match or a matching control is hidden.
-  - A UIA type with no Win32 window class (`TreeItem`, `ListItem`,
-    `Hyperlink`, …) raises `UnsupportedCapabilityError` immediately, also
-    from `exists()`, instead of waiting out the timeout.
-  - `Locator.text()` and `scroll_into_view()` no longer stall for about 5 s
-    per call on `win32`. They probed a UIA pattern on the unresolved
-    `WindowSpecification`, which pywinauto answered with a child-window wait.
-  - `Locator.text()` on an empty plain `Edit` or `Static` returns `""` at once.
-    It used to take focus, send Ctrl+A / Ctrl+C and clear the user's clipboard.
-    RichEdit controls keep that fallback.
-* JUnit XML now retains screenshot, trace and video paths through test teardown,
-  including retained videos for passing tests. Retried attempts still suppress
-  artifacts, and capture failures preserve the original test failure (KAN-748).
-
-* `playwright_compat.sync_playwright().chromium.connect_over_cdp()` no longer
-  fails with Playwright's "Sync API inside the asyncio loop" error when a
-  `CDPSession` (for example from `Desktop.launch_electron_cdp`) is already open
-  on the same thread (KAN-746). Every `CDPSession.connect` used to start its own
-  sync Playwright driver, and Playwright allows only one per thread. Sessions
-  on one thread now share that driver, each over its own CDP connection:
-  closing one session disconnects only that session, and the driver stops when
-  the last session on the thread closes. `CDPSession.close()` called on a
-  thread other than the one that opened the session now raises `DolphinError`
-  and leaves the session open. Before, it swallowed Playwright's
-  `greenlet.error` and reported success while the driver kept running.
-* `CDPSession.pages()`, and with it `playwright_compat`'s `context.pages`,
-  now lists windows the application opened since the last call, even when
-  the caller polls it between plain `time.sleep` calls (KAN-762). Playwright's
-  sync API delivers protocol events only while one of its own calls runs, so
-  a popup from `window.open` (with or without `noopener`) never showed up in
-  such a loop. Each `pages()` call now first makes one zero-length round trip
-  to the Playwright driver, the same technique `_pick_stable_page` already
-  used. The current page is not changed.
-* PR #57 re-review follow-ups on Outlook:
-  - `delete(permanent=True)` now confirms removal by COM status code: only an
-    unambiguous `MAPI_E_NOT_FOUND` from the re-fetch counts as deleted; any
-    other failure (store, session or permission error, or a different code)
-    raises `RuntimeError` as an unknown outcome instead of a false success.
-  - the live-test cleanup helper fails the test when it cannot purge a draft it
-    created (a passing test can no longer leave items behind), while preserving
-    an already-failing test's original error.
-
-* PR #57 review follow-ups on the Office facades:
-  - Outlook `delete(permanent=True)` no longer reads a failed verification
-    lookup as success. A `GetItemFromID` failure is treated as "gone" only when
-    a liveness probe on the same MAPI namespace still answers; otherwise it
-    raises, so a store/session/permission failure is reported as an unknown
-    outcome rather than a completed delete.
-  - `PowerPointTextRange.characters()` validates the range against the text
-    length before calling COM: `start` must be within the text, the run must
-    not reach past the end, and a length below 1 is rejected, each with a
-    `ValueError` instead of a bare COM error.
-  - `PowerPointSlide.add_chart(..., title=None)` now explicitly turns the chart
-    title off instead of leaving the layout's default, so an untitled chart has
-    no title after creation and after reopen.
-  - The live Outlook tests are opt-in via `DOLPHIN_OUTLOOK_UAT` and verify the
-    target store is a dedicated local PST before any create/move/delete, so a
-    personal or work mailbox is never touched; their cleanup now reports
-    failures instead of swallowing them.
-
-* Outlook `OutlookMail.delete(permanent=True)` now really removes the draft.
-  On PST stores Outlook silently ignores `Delete()` on the item proxy that
-  `Move()` returns, so after each move the facade re-fetches the item by EntryID
-  and after a permanent delete it verifies the item is gone, raising
-  `RuntimeError` when Outlook kept it. Found by the new live suite
-  `tests/office/test_outlook_live.py` (DESKTOP-241: drafts, folders, move and
-  delete effects, MSG round trip with attachments, appointments, `connect()` to
-  a running Outlook, exclusive process exit, controlled errors), which runs
-  against a disposable PST-only MAPI profile created by
-  `tests/fixtures/office/make_outlook_profile.py` and skips without one.
-
-* `tests/sap/test_keyboard_login_live.py` runs the documented SAP GUI 800
-  validation of `SapGui.keyboard_login()` (KAN-577) against a real logon
-  screen: UIA inventory of the login fields, safe rejection when the client
-  exposes none, and, where it does, literal typing of SendKeys metacharacters
-  plus abort on focus starting on Client/Language or moving mid-login.
-  Recorded on SAP GUI 800 (8000.1.15, with and without accessibility mode):
-  the logon fields are not UIA controls, `keyboard_login()` refuses without changing any field or
-  submitting, and the Scripting login remains the supported path (see
-  `docs/guides/sap.md`).
-
-* Office macro security tests (KAN-574) now ship pre-built benign macro
-  documents (`tests/fixtures/office/benign.xlsm`, `benign.docm`, each with one
-  macro that only rewrites a marker inside the document) instead of generating
-  them through the VBA project object model, which Office refuses unless the
-  operator trusts VBA project access. The negative test (default `open()` does
-  not run the macro) and its positive control therefore run with Office's
-  default security settings. `tests/fixtures/office/make_macro_fixtures.py`
-  documents how the files were produced. The Word OLE-link fixture inserts the
-  LINK field as an empty field with its full code, because asking Word for a
-  LINK field directly builds the OLE object inside `Fields.Add`, which can take
-  a minute or never return; the two link tests allow 300 s for OLE activation.
-
-* Calling Recorder `stop()` before the first start attempt is now a no-op and
-  cannot leave a sentinel for the future worker. `actions()` and `generate_code()`
-  reject active recordings before flushing text. Lifecycle locking serializes
-  initialization, stop requests and final reads to avoid concurrent buffer
-  mutation and startup cancellation races (KAN-576 lifecycle edge cases).
-
-* Recorder instances now permit only one `start()` attempt, including failed
-  attempts. A retry requires a new Recorder, preventing stale queue sentinels,
-  buffered text or failures from affecting another session. Double start and
-  restart after completion are rejected without changing the original recording
-  (KAN-576 restart review).
-
-* Recorder completion now checks hook failures in the shared drain path.
-  `stop()`, `wait()`, `actions()` and `generate_code()` consistently reject
-  recordings affected by hook errors, after both threads finish, and preserve
-  existing output files on failure (KAN-576 completion review).
-
-* Recorder event processor failures now request hook shutdown, preserve the
-  original exception and raise through `wait()`, `stop()` and readers. A dead
-  worker can no longer be mistaken for a completed drain or generate an
-  incomplete script; handler exception payloads are kept out of recorder logs
-  (KAN-576 processor failure review).
-
-* Recorder shutdown now waits for the hook producer before draining its final
-  event marker, preserving callbacks already in progress. Failed hook removal
-  is retained as a WinAPI exception and reported by `wait()` after cleanup;
-  secondary cleanup errors preserve the original failure. Stalled hook shutdown
-  or event draining raises `TimeoutError` instead of reporting completion or
-  generating a partial script (KAN-576 shutdown review).
-
-* Recorder `wait()` now propagates hook failures that occur after startup,
-  preserving the original exception after draining queued events. Recorder
-  acceptance includes execution of the generated script against an owned native
-  Edit and rejects missing or skipped real-desktop checks (KAN-576 / KAN-759).
-
-* Recorder now classifies stable native Edit fields correctly when pywin32
-  returns thread/process IDs as a list. Hook signatures preserve pointer-sized
-  arguments and results on x86/x64; installation failures are reported and
-  partially installed hooks are removed. Regressions cover real native focus
-  transitions with a delayed queue and a readable ordinary-text control (KAN-576).
-
-* Qt agents now watch the authenticated controller's process object and expire
-  their pipe when the controller is forcibly terminated. Qt5/Qt6 regressions
-  cover connected, disconnected and partial-frame states and recovery by a
-  new owner without terminating the AUT (KAN-470 lifecycle review).
-
-* Qt agent builds now use hash-pinned Windows SDK 10.0.26100.7705 packages,
-  including headers, import libraries and tools. The manifest records the
-  SDK servicing version separately from its 10.0.26100.0 directory name,
-  fixing the reproduced CI hash mismatch caused by SDK 10.0.26100.9457
-  (KAN-470 SDK review).
-
-* Qt native build and verification cleanup now share Windows path
-  normalization, including trailing separators. Secondary cleanup or log-write
-  errors preserve the original build failure instead of hiding it
-  (KAN-470 CI cleanup review).
-
-* Qt agent CI now downloads hash-pinned MSVC 19.50.35726 compiler and CRT
-  payloads independently of Visual Studio component servicing, preventing
-  compiler 19.50.35739 from being selected for the shipped DLL rebuild
-  (KAN-470 toolchain review).
-
-* Qt agent builds and reproducibility checks now remove temporary directories
-  on success and failure while retaining diagnostics. Native request-size
-  tests verify limit−1, limit and limit+1 against an explicit
-  `request_too_large` response. The secret scanner baseline records the
-  reviewed native artifact hashes as non-secrets (KAN-470 review).
-
-* Qt agent DLLs now reproduce across checkout and Qt SDK paths. Native build
-  inputs are pinned, and CI compares clean Qt5/Qt6 rebuilds with the shipped
-  binaries and manifest before packaging or release (KAN-470). Real-agent
-  regressions also cover repeated oversized requests and retained memory.
-
-* xdist verbose start lines now recognize invocation-relative and name-only
-  test IDs as well as root-relative IDs, preventing sensitive parameter IDs
-  from leaking when pytest runs from a subdirectory (KAN-469 review).
-
-* Sensitive parameter IDs are now masked in fallback HTML, trace SQLite and
-  verbose pytest/collection output without changing execution identities.
-  Artifact filenames use opaque random names. Trace text keeps its owning
-  parameter context for threaded actions; xdist defers start lines until a safe
-  display ID is known (KAN-469 review).
-
-* Sensitive JUnit properties now mask their complete value by property name.
-  Sensitive dictionary keys are detected beneath public pytest/Allure parameter
-  names, protecting custom IDs and captured output while retaining public sibling
-  values (KAN-469 review).
-
-* JUnit parameter redaction is now scoped to each testcase, including custom
-  XML attributes, so one test's sensitive values cannot alter unrelated test
-  names or diagnostics. Temporary opaque properties preserve the association
-  across xdist workers and are removed from the final XML (KAN-469 review).
-
-* Sensitive parameter snapshots now include `Path`, `UUID`, `Decimal` and
-  `Enum` leaves. Completed JUnit XML is sanitized at session finish, including
-  xdist results, without changing pytest execution IDs. Short parameter values
-  (1–3 characters) use token masking to retain readable diagnostics; concatenated
-  short secrets require explicit sanitization (KAN-469 review).
-
-* Sensitive pytest parameter values now also mask bare values in captured
-  stdout/stderr. A shared collector handles nested containers and Allure reprs,
-  so custom IDs extracting a dictionary value are masked too. Values are
-  snapshotted before fixtures mutate them and scoped to the individual test;
-  technical Allure IDs remain unchanged (KAN-469 review).
-
-* Allure redaction now also removes sensitive parameter values repeated in
-  test display names, including default and custom pytest IDs, while preserving
-  technical identifiers and attachment references. Documentation explicitly
-  limits automatic attachment redaction to captured streams; native
-  `allure.attach()` / `allure.attach.file()` payloads must be sanitized by their
-  caller (KAN-469 review).
-
-* Allure results and fixture containers now redact exception messages, traces,
-  nested steps and sensitive parameters before serialization. Captured streams
-  are sanitized before reporters attach them, independently of plugin order;
-  statuses and attachment references remain intact (KAN-469).
-
-* Raise the minimum Pillow version to 13.0.0 and refresh the audited lockfile
-  to certifi 2026.10.19, filelock 4.2.1 and virtualenv 21.14.13. These releases
-  support Python 3.11–3.13. Minimum-dependency failures now retain their original
-  audit/timeout exception when Windows tools emit mixed-encoding logs, including
-  when the console cannot represent the diagnostic text.
-
-* Pytest reaps leftover AUT processes after fixture finalizers, including when
-  teardown fails. Releasing an anchored process handle also invalidates live
-  Application wrappers, so repeated cleanup is safe without reopening a reused
-  PID (KAN-742).
-
-* Release no longer requires signed administrative ruleset evidence. Native
-  preview and production policies are audited separately from exact CI artifact
-  provenance, a nonpublishing preflight validates the wheel, and both indexes
-  verify the downloaded wheel bytes before smoke testing (KAN-741).
-
-* Qt `get_by_object_name(...).exists()` now uses the same objectName lookup
-  as actions, instead of forwarding an internal selector to pywinauto.
-  Presence checks preserve timeout and index handling and resolve nested
-  parents without requiring visibility (KAN-663).
-
-* Trace now records failed actions with empty exception messages as errors,
-  including screenshots and UIA trees in `on-failure` mode. Unsupported UIA
-  pattern actions store the same diagnostic raised to the caller (KAN-662).
-
-* Pytest skip reports retain their `(path, line, reason)` representation while
-  redacting sensitive text, so `-rs` and JUnit reporting can display skip reasons.
-  Regression coverage checks call, setup, teardown and marker skips with explicit
-  plugin loading and automatic entry-point discovery (KAN-661).
-
-* `Desktop.launch()` now binds the new Windows 11 Notepad MSIX window even
-  when Windows redirects startup to another process. `windows()`, `top_window()`
-  and owned cleanup use that process only after verifying a new descendant
-  against the pre-launch process snapshot and anchored process identity.
-  The snapshot is taken only for potential Notepad commands, so other
-  applications do not pay for process-table enumeration.
-  Existing, independent and unverified broker processes remain unowned.
-  Ownership failures raise `WindowNotFoundError` from `app.window()`.
-  Discovery has its own `handoff_timeout` (default 2 seconds) and stops early
-  for existing instances; cleanup retains a handle to prevent PID reuse (KAN-660).
-
-* Exclusive Office startup now retries delayed process visibility for up to five
-  seconds without repeating COM activation. Ambiguous or unverified processes
-  are never claimed or quit. Failed startup reports observed PIDs and possible
-  orphaned processes, preserving these diagnostics through the Outlook facade.
-
-* Outlook drafts created by a facade now support owned move/delete, keeping the
-  returned COM identity after moves and checking source/destination folder
-  effects. Profile checks fail before first-run setup and validate active MAPI
-  stores; missing folders/items have controlled lookup errors. PowerPoint and
-  Outlook support explicit exclusive UAT process ownership, COM-reference
-  release and graceful exit verification while preserving shared sessions.
-  PDF export uses `ExportAsFixedFormat`; real UAT lives in `dolphin-desktop.ta`
-  and checks parsed PDF content and process cleanup (KAN-659 / KAN-658).
-
-* Added public `PowerPointApp` and `OutlookApp` COM facades to match the Office
-  Support Matrix: presentations, slides, editable text, PDF export; classic
-  Outlook mail, recipients, attachments, folders, appointments and local MSG
-  persistence. Shared sessions and existing documents/items remain untouched
-  on context exit. Added unit tests for the COM contract (KAN-659).
-
-* Bounding-box consumer tests now use the established `{x, y, width, height}`
-  contract, including the DESKTOP-054 retest and related window, screenshot,
-  movement and mouse scenarios in `dolphin-desktop.ta`. Locator documentation
-  explains how to derive the former edge keys; regression tests cover negative
-  screen coordinates, read-only queries and real UIA bounds (KAN-637).
-
-* s3270 rejects host control characters before whitespace normalization and
-  process creation, including a trailing CR and the `L:` TLS prefix. KAN-631
-  regression coverage checks immediate/deferred public connections, rejected
-  text without stdin writes, and one escaped record per printable text input.
-  `TerminalField.type_text()` validates s3270 text before moving the cursor or
-  clearing the field, so invalid input leaves the terminal untouched.
-  KAN-632 / DESKTOP-199 retest coverage also verifies trailing CR and
-  `Quit()`/`Script(...)` host payloads before process creation or stdin writes
-  through direct backend, immediate public and deferred public connections.
-
-* `Locator.all()` and `count()` propagate backend `TypeError` for unsupported
-  search criteria instead of returning an empty result, including errors during
-  the local `auto_id` filtering fallback (KAN-621).
-
-* Release wheel installation is checked with normal pip dependency resolution
-  on Linux, macOS and Windows for Python 3.11–3.13. All jobs consume the exact
-  CI artifact and verify its manifest before installing. Wheel metadata must
-  exclude `pywin32` and `comtypes` outside Windows and retain both on Windows;
-  import checks verify the non-Windows `RuntimeWarning`. Installation reports,
-  metadata and wheel hashes are retained for DESKTOP-008 retests (KAN-586).
-
-* Release requires a successful Windows smoke on the exact local wheel before
-  publishing. CI and TestPyPI smoke install runtime dependencies from PyPI using
-  `uv.lock` hashes and install DolphinDesktop separately without index resolution.
-  TestPyPI downloads clear inherited pip settings and disable configuration files,
-  preventing extra indexes or find-links from supplying the package.
-  Development previews receive unique CI run/attempt versions; reusing an
-  existing publication remains a hard failure (KAN-580).
-
-* Trace HTML generation validates v1 tables, column types, NOT NULL and primary
-  key constraints, foreign key targets, and stored values
-  before rendering, reports invalid databases with a controlled error, rejects
-  nonfinite sequence/timestamp values, confines screenshots to their directory,
-  and adds a CSP allowing only the viewer script (KAN-578).
-  Validation uses fixed SQL queries compatible with Bandit B608, and UIA tree
-  rendering validates depth types and limits indentation to 32 levels.
-
-* SAP `keyboard_login()` writes literal credentials through verified UIA Value
-  patterns, identifies User by its SAP automation ID, and checks focus before
-  and after each single credential write. It aborts without submitting after
-  focus loss. Passwords never enter the global SendKeys stream. Control
-  characters are rejected before any input; screens without a unique password
-  Edit control and writable UIA patterns now fail closed. Provider exceptions
-  are discarded before raising a safe error without a chained context (KAN-577).
-
-* Recorder events carry window/PID/native focus and password classification from
-  capture time, preventing delayed keys from being classified using later UIA
-  focus. Unknown and password controls are masked without retaining secret text.
-  `--app` is pinned to a unique process; `--pid` selects one directly. Global
-  capture now requires `--global` / `global_recording=True`. Plaintext capture
-  is limited to stable native Windows Edit controls (KAN-576).
-  Generated tests reconnect by title for `--app` and accept a runtime `process_id`
-  for `--pid`, avoiding recorded PIDs that become stale after an application
-  restart. Click selectors survive focus changes caused by the click, and typing
-  reuses them only for the same verified native child control, window and process.
-
-* Invalid `@pytest.mark.dolphin(video_mode=...)` values now raise `ValueError`
-  with the rejected value, including explicit `None`. Video recording explicitly
-  depends on marker validation, so it cannot start before validation (KAN-572).
-
-* Skipped pytest reports retain their structured representation while secrets
-  are redacted, preventing terminal/JUnit reporting errors during CDP retests.
-  The required Windows component suite now verifies a real Chromium handshake,
-  parallel profile isolation, session shutdown and debug-port reuse (KAN-475).
-
-* Java discovery no longer runs `where.exe` by name. JAB configuration can be
-  checked separately with `JavaAccessBridge.validate_configuration()`, and
-  `ensure_enabled()` validates it before accepting the Windows activation state.
-
-* Hidden-desktop `Locator.press_key()` now focuses the element after activating
-  `DolphinHidden`, reports a clear `DolphinError` instead of using system-wide
-  modifier events when activation fails, and `Locator.text()` preserves the
-  exact text returned by UIA `TextPattern`.
-* `config(video_fps=…)` and `config(retry_count=…)` now raise `TypeError`
-  for a non-`int` value (e.g. `10.5`) instead of silently truncating it.
-* `Locator.exists()` / `Locator.wait_for(state="exists")` now find a real,
-  hidden-but-live UIA element on the common `window.locator(...)` path —
-  the presence resolution was only passing `visible_only=False` through
-  for chained/resolved locators, so pywinauto's own default filtering was
-  still excluding a hidden control before dolphin's own logic ran.
-* A `Locator` obtained from a prior `.all()` call (e.g. `rows[0].all()` to
-  read a row's own children) no longer crashes with `AttributeError`.
-* `CDPLocator`'s `CDPStalePageError` now propagates unwrapped from every
-  action/query method, not only `click()` — callers can reliably tell "the
-  selected page closed" apart from "element not found" everywhere.
-* `OracleFormsBlock.item()` now includes the block and item name in the
-  error it raises when no top-level window is found, matching
-  `OracleFormsApp.item()`; `OracleFormsWindow.wait_ready()` no longer
-  swallows a `title_re` mismatch into a generic, misleadingly
-  JAB-focused timeout.
-
-### Security
-
-Addresses further findings from a follow-up security review
-(KAN-574, KAN-575, KAN-577, KAN-578, KAN-580, KAN-581, KAN-630, KAN-636).
-
-* **Office automation force-disables macros.** `ExcelApp.open()` /
-  `WordApp.open()` default to `allow_macros=False` and force-disable VBA macros
-  before opening a document. The explicitly risky `allow_macros=True` opt-in
-  permits macros subject to Office policies. Both restore the previous
-  `AutomationSecurity` after opening, including on error; Excel keeps
-  `UpdateLinks=0` even with the opt-in. Word disables `Options.UpdateLinksAtOpen`
-  during opening and restores it even on error. Real macro tests require a
-  passing opt-in control before testing the default block. Regression tests
-  cover the COM contract, errors and simulated policy/XLM limitations, with
-  a separate Windows/Office retest record. ForceDisable does not block
-  Excel 4.0/XLM macros or all active content (KAN-574).
-* **TN5250 parser limits completed (KAN-575).** Records must match their
-  two-byte GDS length and fit the 65,535-byte protocol limit. Receive backlog
-  and escaped frames are bounded; invalid input closes the connection and
-  clears buffered data. Reads check their deadline while scanning and between
-  records, cap work and record count, and retain pending data for later polls.
-  Negotiation exceeding its time or byte budget now raises `MainframeError`
-  and closes the connection. Telnet NOP and other two-byte commands are
-  removed before GDS validation; escaped IAC at the start of the first record
-  survives negotiation, including the 65,535-byte record. Negotiation send
-  failures consistently close the connection and raise `MainframeError`.
-  A maximum-size escaped frame also accepts an EOR terminator split between
-  TCP reads without treating its pending IAC byte as excess GDS data.
-
-* **SAP `keyboard_login()` types credentials literally.** `user`/`password`
-  are escaped the same way every other typed-text path in the library is,
-  so a credential containing SendKeys metacharacters (`{`, `}`, `%`, …) is
-  typed as literal text instead of being interpreted as control keys.
-* **`trace.db` → HTML report is no longer an injection path.** The `seq`
-  column is coerced to a safe value before being interpolated into the
-  generated HTML, closing a route for a crafted/corrupted `trace.db` to
-  inject markup.
-* **TestPyPI release workflow hardened.** The smoke-test step no longer
-  mixes `--index-url`/`--extra-index-url` on one `pip` invocation (which
-  let a dependency resolve from either index); a version collision on
-  publish now fails instead of silently reusing the existing upload; the
-  downloaded wheel's SHA-256 is verified against the artifact built in the
-  same workflow run before it is installed.
-* **Dependency floors raised** to their audited-safe minimums: Pillow
-  `>=12.3.0`, `mkdocs-material>=9.7.7`, `sentry-sdk>=2.8.0`,
-  `pytest>=9.0.3`.
-  Minimum installations are now checked from built wheel metadata on Windows
-  with Python 3.11–3.13, for the base package and all extras, separately from
-  the full lockfile audit. CI and release retain the wheel, hashed resolutions,
-  installation/smoke logs and audit JSON for retesting (KAN-581).
-  The compatibility check also raises `comtypes` to `>=1.4.8` for Python 3.13
-  support and `opencv-python` to `>=4.10.0.84` for NumPy 2 support.
-  Each extra, including aggregate `all`, is also resolved and audited
-  independently. Smoke checks verify the installed CLI and pytest entry-point
-  registration; wheel parsing has unit coverage for platform/Python markers,
-  extra selection and recursive self-references.
-* **Secret redaction gap closed for `login`/`username`/`connection_string`/
-  `clipboard`.** These keys were not masked when they appeared in a
-  dict-repr shape (e.g. inside an `ElementNotFoundError` message built from
-  `{criteria!r}`), and `selfheal.jsonl` wrote a selector dict keyed by a
-  sensitive name with a bare value to disk completely unredacted.
-* **`dolphin init` rejects a target outside the working directory** — an
-  absolute path, `..` traversal, and a symlinked intermediate directory are
-  all caught by one containment check before anything is written.
-
-* **Mainframe command injection blocked (KAN-467).** A single
-  `MainframeTerminal` call now produces exactly one s3270 protocol
-  action. `CR`, `LF` and `NUL` in typed text or in a host name are
-  rejected rather than escaped, so user data can no longer open a second
-  action line (e.g. a smuggled `Quit()`). Host names are validated to a
-  name / IPv4 / bracketed-IPv6 grammar, ports to `1..65535`, and every
-  s3270 argument is serialised through one shared quoting function.
-* **TLS for TN3270 / TN5250 (KAN-468).** `Desktop.mainframe(tls=True)`
-  negotiates TLS with certificate *and* host-name verification —
-  `ssl.create_default_context()` for the native TN5250 backend, the
-  emulator's `L:` tunnel with explicit `-verifycert` for s3270. There is no
-  silent fallback to plaintext: a failed handshake raises. A plaintext
-  session to a non-loopback host is refused unless `allow_plaintext=True` is passed,
-  and a port number (992 included) is never treated as a substitute for
-  TLS. New `tls`, `tls_cafile`, `tls_context` and `allow_plaintext`
-  parameters on `Desktop.mainframe()`. `tls_cafile` is passed to s3270
-  only on builds that support `-cafile` (OpenSSL); on a Windows Schannel
-  build, which trusts the Windows certificate store instead, the backend
-  raises a clear error rather than silently ignoring the CA.
-* **Secret redaction at every write boundary (KAN-469).** Trace steps
-  (`trace.db` / `trace.html`), crash-dump ZIPs, Allure stdout/stderr
-  attachments and UIA tree dumps are now redacted structurally before
-  they are stored, so a credential no longer survives on a path that
-  skipped the logging filter. New `Secret` wrapper: wrap a password
-  before typing it (`type_text(Secret("…"))`) and its literal value is
-  masked everywhere, independent of any variable name. The s3270,
-  TN5250 and HLLAPI trace paths no longer log typed text or raw frame
-  bytes — only the action name and payload size.
-* **Qt agent IPC partial mitigation (KAN-470 remains open).** The agent's named pipe now
-  carries an unguessable per-attach random token instead of the
-  predictable `dolphin_qt_<pid>`, so a local process can no longer
-  pre-create the pipe and impersonate the agent. `reattach()` refuses a
-  PID whose creation time changed since attach (PID reuse). Bundled
-  agent DLLs are hash-verified against a committed `agent_manifest.json`
-  before injection. The client also caps the size of a single outgoing
-  request (`MAX_REQUEST_BYTES`), refusing to flood the in-process agent.
-  The remaining server-side items (an explicit pipe ACL,
-  `PIPE_REJECT_REMOTE_CLIENTS`, an in-band session secret, and a
-  reproducible build of the DLL) live in the agent's C++ source, which is
-  not part of this repository. The follow-up must provide the C++ source,
-  reproducible DLL build, a server-side ACL restricted to the expected
-  logon/session, `PIPE_REJECT_REMOTE_CLIENTS`, a per-attach session secret,
-  and tests that reject unauthorized local, other-session and remote clients.
-* **Dependency updates (KAN-471).** Pillow `>=12.3.0` (EPS decode DoS),
-  `mkdocs-material 9.7.7`, `cryptography 50.0.1`, `pymdown-extensions
-  11.0.2`. `CDPSession.screenshot()` now accepts only PNG / JPEG
-  payloads (checked by magic bytes, decoded with the format pinned) and
-  bounds the payload size, closing the untrusted-decoder path.
-* **Security audit lockfile refreshed.** The locked `urllib3` and
-  `virtualenv` versions were upgraded past the advisories reported by
-  `pip-audit` on this PR; the full exported lockfile now audits cleanly.
-* **PID-reuse-safe process termination (KAN-472).** Launched processes
-  are pinned by `(PID, creation-time)`. The pytest teardown reaper and
-  the session-end cleanup verify that identity before calling
-  `TerminateProcess`, and skip a PID whose creation time no longer
-  matches or cannot be read, as well as any PID with no recorded identity.
-* **DLL search-order hijacking removed (KAN-473).** The Java Access
-  Bridge and HLLAPI DLLs load only from absolute, trusted locations
-  (`JAVA_HOME\bin` for JAB, explicit `hllapi_dll_path` for HLLAPI) via
-  `LoadLibraryEx` with `LOAD_LIBRARY_SEARCH_*` flags. The working
-  directory and `PATH` are never searched.
-* **CI least privilege and supply chain (KAN-474).** All GitHub Actions
-  are pinned to commit SHAs; `contents: write` and `id-token: write` are
-  granted only to the jobs that need them; a required security gate runs
-  `pip-audit`, `bandit` and `detect-secrets`, and the release build
-  audits the exact locked dependencies before publishing. Added a
-  Dependabot configuration.
-* **CDP endpoint identity (KAN-475).** `launch_electron_cdp()` /
-  `launch_cef_cdp()` refuse to start when the debug port is already in
-  use, and after the port answers they confirm its loopback listener is
-  the launched process or a verified descendant before connecting — a
-  200 from a foreign or unidentifiable listener is rejected; the launched
-  application is cleaned up in either case.
-* **`launch_qt` no longer mutates the global environment (KAN-476).**
-  Qt variables were already passed through a private per-child
-  environment block; a concurrency regression test now locks that in.
-* **`http_ok` scheme restriction (KAN-477).** The helper accepts only
-  `http` / `https` URLs with a host; `file://`, `ftp://` and hostless
-  URLs return `False` without opening anything. Every redirect target is
-  re-validated the same way before it is followed, and the request is
-  further guarded against NaN/Infinity payloads.
-
-## [0.2.0] — 2026-08-05
+Planned release: **0.2.0**. Changes are relative to the public 0.1.0 release.
 
 ### Added
 
-* **Programmatic action API + auto-waiting waiters**:
-  `Locator.invoke()`, `toggle()`, `expand()`, `collapse()`, `select()`,
-  `set_value()` route through UIA patterns instead of mouse/keyboard
-  events — headless-safe under `dolphin-run`. Same surface on
-  `JABLocator` (Java Swing) via `doAccessibleActions` and
-  `setTextContents`, plus on `DelphiComponent` for VCL/LCL. Every
-  method raises `UnsupportedPatternError` cleanly instead of silently
-  falling back to a physical click. Auto-waiting
-  `Locator.wait_for_text()`, `wait_for_checked()` (and JAB / Delphi
-  counterparts) replace the `sleep(N); assert ... in .text()`
-  antipattern. See `docs/tutorials/headless-mode.md`.
-
-* **Delphi / VCL + PowerBuilder**: `Desktop.launch_delphi()`
-  / `attach_delphi()` return a `DelphiApp` facade with `DelphiForm` +
-  `DelphiComponent` — Delphi-aware locator maps `TComponent.Name` to
-  UIA `AutomationId` on Delphi 10.4+ and falls back to
-  `(class_name, caption)` on Lazarus / LCL. Standard controls covered:
-  `TButton`, `TEdit`, `TMemo`, `TCheckBox`, `TRadioButton`,
-  `TComboBox`, `TListBox`, `TPageControl`, `TStringGrid`, `TListView`,
-  `TLabel`. `Desktop.launch_powerbuilder()` semantic wrapper for
-  Appeon PB 2019+. Sample Lazarus project + round-trip suite
-  in `tests/delphi/`. Third-party VCL libraries
-  (DevExpress, TMS) and classic PowerBuilder DataWindow introspection
-  deferred to v0.3+.
-* **Electron / CDP**: `Desktop.launch_electron_cdp()` +
-  `Desktop.launch_cef_cdp()` (Steam, Spotify), `CDPSession`,
-  `CDPLocator`, `CDPFrameLocator`, `CDPRoute`,
-  `CDPRequest`, `CDPDownload`. Shadow-DOM piercing, network route
-  interception, download / popup capture, expose_function bridge.
-  Full parity with the native UIA Locator surface.
-* **Mainframe**: `Desktop.mainframe()` with three backends
-  under one `MainframeTerminal` API — `s3270` (subprocess wrap of
-  ws3270), `tn5250` (pure-Python native TN5250 client, no NVT
-  fallback), `hllapi` (ctypes binding to `EHLAPI32.DLL` for PCOMM /
-  Attachmate / Rocket). Auto field detection via `MainframeTerminal.fields()`,
-  rich waits (`wait_for_cursor`, `wait_for_field`, `wait_for_text`,
-  generic `wait_for`), trace mode, codepage parameter, multi-session
-  isolation.
-* **Oracle Forms**: `Desktop.launch_oracle_forms()` /
-  `attach_oracle_forms()`, `OracleFormsApp` with block / item / menu /
-  LOV navigation, function-key shortcuts (`enter_query`,
-  `execute_query`, `save`, `next_block`, `previous_block`
-  …), `wait_for_status()` for status-line assertions. Uses direct JAB
-  API (setTextContents, getAccessibleTextRange, doAccessibleActions,
-  requestFocus) — works from background test runs, RDP sessions, and
-  CI hosts where SetForegroundWindow is blocked.
-* **Public helpers** for the autonomous-library contract: `which`,
-  `tcp_reachable`, `http_ok`, `sleep`, `monotonic`, `dirname`,
-  `path_join`, `path_exists`, `path_basename`, `remove_file`,
-  `temp_file`, `tempdir`, `env_var`, `b64encode`, `b64decode`,
-  `counter`, `start_thread`, `add_import_path`, `find_pid_by_image_name`,
-  `is_cdp_available`, `cdp_install_hint`.
-* **Getting Started** guide (`docs/getting-started.md`) — the shortest
-  path from clean venv to a green test for every stack.
-* **Native TN5250** WriteToDisplay parser now aligns pixel-perfect on
-  pub400.com sign-on: inline attribute bytes (0x20-0x3F) and SF
-  attribute bytes each correctly consume one screen cell.
-* **`AmbiguousMatchError`** — locator criteria matching more than one
-  element now raise a dedicated error naming the fix (`found_index=N`
-  or tighter criteria) instead of falling through fallbacks and
-  misreporting "not found". `exists()` answers `True` for an ambiguous
-  match — the element is there, at least twice. Found live on a
-  PowerBuilder window hosting two same-class DataWindow panes.
-* **`Screen.find_text` retries upscaled** — when OCR finds nothing at
-  native resolution the capture is re-run at 2× and 3× magnification
-  (coordinates mapped back to screen space), because the small fonts of
-  combo lists and grid cells sit below Tesseract's reliable glyph size.
-  Opt out with `scales=(1,)`.
-* **Locator criteria aliases** — `automation_id=`, `role=` and `name=`
-  are accepted everywhere criteria are (constructor, chained
-  `locator()`, `fallback=` lists) and normalize to `auto_id` /
-  `control_type` / `title`, matching the YAML Object Repository
-  dialect. Previously the natural spellings travelled into pywinauto
-  as unknown kwargs and dissolved into a silent "not found".
-  Conflicting alias + canonical values raise `ValueError`.
+* **Programmatic actions and waiters:** `Locator.invoke()`, `toggle()`,
+  `expand()`, `collapse()`, `select()` and `set_value()` use accessibility
+  patterns without physical mouse or keyboard input. Unsupported patterns raise
+  `UnsupportedPatternError`. Corresponding actions are available on Java and
+  Delphi controls. `wait_for_text()` and `wait_for_checked()` support waiting
+  for control state without fixed sleeps.
+* **Qt 5 / Qt 6 agent and selectors:** Qt detection, objectName selectors and
+  an injected x64 agent extend existing UIA support with QObject properties
+  and methods, QML scene graphs and QGraphicsView items. Public `WidgetElement`,
+  `QmlElement` and `GraphicsViewElement` wrappers expose the agent API.
+  UIA tree paths support nested Qt rows, including scrolling and expansion.
+  Agent calls are serialized across threads; `QtAgentTimeoutError`,
+  `QtAgentClient.reattach()` and `Application.reset_qt_agent()` provide recovery.
+* **SAP GUI Scripting:** `SapGui`, `SapConnection`, `SapSession` and
+  `SapLocator` provide COM-based session discovery, transactions, control
+  interaction, grid access, status checks and waits. SAP-specific spy helpers
+  inspect controls and generate selectors. `keyboard_login()` requires verified
+  writable UIA login fields and aborts on focus loss; SAP GUI 800 screens that
+  do not expose those fields require Scripting login.
+* **Delphi / VCL and Lazarus / LCL:** `Desktop.launch_delphi()` /
+  `attach_delphi()`, `DelphiApp`, `DelphiForm` and `DelphiComponent` wrap controls
+  exposed through UIA/MSAA. Name selectors require an application-supplied UIA
+  provider publishing component names as AutomationIds; stock VCL does not
+  supply that mapping, and Dolphin includes no VCL Name provider or RTTI agent.
+  **PowerBuilder:** `Desktop.launch_powerbuilder()` supports Appeon applications
+  through UIA, with OCR fallback for DataWindow content.
+* **Electron / CEF over CDP:** `Desktop.launch_electron_cdp()`,
+  `launch_cef_cdp()` and `CDPSession` provide DOM locators, shadow-DOM and frame
+  access, network routing, downloads, popups, dialogs and console capture.
+  `playwright_compat` provides a synchronous Playwright-style adapter with
+  millisecond timeouts and `first` / `last` properties. Sessions on one thread
+  share a Playwright driver while retaining independent connections; closing a
+  page affects only that page. Explicitly selected closed pages raise
+  `CDPStalePageError`, while a self-closing captured popup returns to its opener.
+* **Mainframe terminals:** `Desktop.mainframe()` exposes s3270, native TN5250
+  and HLLAPI through `MainframeTerminal`, with field detection, code pages,
+  cursor/field/text waits, tracing and independent sessions. TN3270/TN5250
+  support verified TLS via `tls=True`, with `tls_cafile` / `tls_context` where
+  supported. Remote plaintext requires `allow_plaintext=True`; port 992 alone
+  does not enable TLS. HLLAPI requires an absolute `hllapi_dll_path`.
+  The native TN5250 write/submit path remains unverified against live IBM i
+  hosts; use an enterprise emulator with HLLAPI for write-critical flows.
+* **Oracle Forms:** `Desktop.launch_oracle_forms()` / `attach_oracle_forms()`
+  and the `OracleFormsApp` facade provide block, item, menu and LOV navigation,
+  status waits and PC-style `fmrpcweb.res` key bindings. Direct Java Access
+  Bridge operations are preferred; modifier shortcuts require foreground focus.
+* **PowerPoint COM:** `PowerPointApp` supports presentations, slide ordering
+  and size, shapes, embedded pictures, text and character-range formatting,
+  paragraphs, tables, charts, notes, hyperlinks and PDF export. Mixed text
+  formatting returns `None`; text ranges use validated 1-based indices.
+* **Classic Outlook COM:** `OutlookApp` supports mail, recipients, attachments,
+  folders, appointments and local MSG persistence using an existing MAPI
+  profile. Owned drafts support move/delete with verified outcomes; ambiguous
+  permanent-delete outcomes raise an error. Shared sessions and existing items
+  are preserved on context exit. PowerPoint and Outlook also support explicit
+  exclusive process ownership and graceful exit verification.
+* **Locator aliases and ambiguity reporting:** `automation_id`, `role` and
+  `name` normalize to `auto_id`, `control_type` and `title`, including in chained
+  selectors and fallbacks. Conflicting values raise `ValueError`.
+  `AmbiguousMatchError` reports non-unique matches; use tighter criteria or
+  `found_index`. `exists()` returns `True` for an ambiguous match.
+* **Backend capabilities:** public capability descriptions and
+  `UnsupportedCapabilityError` distinguish unsupported backend operations from
+  missing elements or unsupported patterns. Pytest's `--dolphin-backend` accepts
+  registered and entry-point backends, including registrations in nested
+  `conftest.py`, as well as `auto`.
+* **OCR and helpers:** `Screen.find_text()` retries at 2× and 3× scale, mapping
+  results back to screen coordinates (`scales=(1,)` disables retries).
+  Public helpers cover paths, temporary files, environment variables, process
+  discovery, HTTP/TCP checks, base64, timing and threads. A Getting Started
+  guide and stack-specific guides document installation and prerequisites.
 
 ### Changed — breaking
 
-These change the behavior of existing calls; read them before upgrading.
-
-* **`Locator.bounding_box()`, `Window.bounding_box()`, Delphi, and JAB bounds
-  now consistently return `{x, y, width, height}`.** The legacy
-  `left`/`top`/`right`/`bottom` keys were removed.
-
-* **`get_attribute()` raises `AttributeError` for a name the element does
-  not publish**, instead of returning `None`. This affects the UIA
-  `Locator`, `SapLocator` and `JABLocator`. A misspelled name — including
-  the PascalCase UIA spelling `"AutomationId"` where pywinauto publishes
-  `automation_id` — used to be indistinguishable from an attribute that
-  was genuinely empty, so an assertion against it passed without ever
-  reading the UI. The message lists the names that *are* available. Pass a
-  second argument to opt back into the old behavior:
-  `get_attribute("AutomationId", None)`.
-
-* **`spy.pick()` and `spy.sap_pick()` return a versioned dict** instead of
-  a bare `list[dict]` / selector dict, and no longer print the locator's
-  verification status (the interactive banner still goes to stdout).
-  `{"schema_version", "status", "chain"|"selector", "message"}` — `status`
-  is `ok` / `repaired` / `repaired_flat` / `unverified` / `unreachable` /
-  `cancelled` (`no_session` for SAP). Previously a caller could not tell a
-  verified locator from one flagged "chain does NOT resolve to the picked
-  element", because that warning only went to stdout.
-* **`spy.inspect()` and `spy.sap_inspect()` are bounded by default**
-  (`depth=12`, `max_children=200`); pass `None` for either to restore the
-  old unlimited walk. Unbounded introspection of a Chromium accessibility
-  tree took minutes and could end in `RecursionError`. The result gained a
-  `"limits"` key so a consumer can tell a complete tree from a capped one.
-* **`Application.close()` no longer terminates a process dolphin did not
-  start.** It now honors `_owns_process` like `kill()` already did, and
-  both log a warning naming the PID instead of silently doing nothing.
-* **`check()` / `uncheck()` / `is_checked()` raise `UnsupportedPatternError`**
-  when the toggle state cannot be read, instead of assuming "unchecked" —
-  which made `uncheck()` a silent no-op and could invert `check()`.
-* **A desktop-wide window match in an unrelated process now raises**
-  `WindowNotFoundError` instead of returning that window bound to this
-  `Application`. Binding a stranger's window meant every later click,
-  keystroke and Qt-agent call was aimed at the wrong program.
-* **Java windows reject criteria the Access Bridge cannot express.**
-  `window.locator(auto_id=...)` on a `SunAwtFrame` used to drop every
-  unsupported criterion and match the first node in the tree; it now
-  raises, as do `get_by_automation_id` / `get_by_class` /
-  `get_by_object_name` on a Java window.
-* **JAB role names are no longer shadowed by the UIA alias table.**
-  `role="text"` now reaches a `JTextField` (it used to search for labels)
-  and `role="window"` a `JWindow` (used to mean `JFrame`); use
-  `role="label"` / `role="frame"` for the old meanings.
-* **`Keyboard.hotkey()` validates its arguments.** No arguments, a
-  modifier with no key, or more than one non-modifier key now raise
-  `ValueError` rather than silently sending nothing or sending the extra
-  keys unmodified.
-* **`config()` rejects out-of-range values** (`timeout`, `poll_interval`,
-  `retry_count` must be non-negative; `video_fps` must be 1–30), and a
-  malformed `DOLPHIN_*` environment variable now warns and falls back to
-  the default instead of making `import dolphin_desktop` raise.
-* **The recorder emits Tab and Enter as `press_key(...)`** instead of
-  folding `{TAB}`/`{ENTER}` into the surrounding `type_text`, and redacts
-  any field UI Automation cannot classify. Generated code now quotes
-  values with `repr()` and escapes `title_re` patterns.
-* **Screenshot and video filenames carry a pid and uuid suffix.** Two
-  parametrized tests sharing their first 80 nodeid characters used to
-  overwrite each other's artifacts.
-* **`CDPSession` raises `DolphinError` after `close()`** from the fourteen
-  methods that reach the browser or context, instead of leaking
-  Playwright's `TargetClosedError`.
-* **`switch_to_page()` raises `DolphinError` when a registered route
-  cannot be re-armed** on the incoming context, rather than silently
-  leaving the session with no interception while `unroute()` still
-  reports success.
-* **Delphi `set_text()` raises `DelphiError`** when its last-resort
-  keystroke path fails, matching `click()` / `double_click()` /
-  `right_click()`, instead of surfacing the raw pywinauto exception.
-* **`ExcelApp.quit(save_changes=True)` / `WordApp.quit(save_changes=True)`
-  raise** when a workbook or document could not be saved. The instance is
-  still shut down first — the failure is simply no longer silent.
-* **`playwright_compat` timeouts are now milliseconds**, matching
-  Playwright, across every `timeout=` parameter in the module
-  (including ones forwarded through `**kwargs` by `click`, `dblclick`,
-  `hover`, `screenshot`). They were previously interpreted as seconds,
-  so ported code passing Playwright's `timeout=5000` waited ~83 minutes
-  instead of 5 seconds. Effective default durations are unchanged.
-* **`playwright_compat`: `Locator.first` and `.last` are properties**,
-  not methods, matching Playwright's sync API. `page.locator("li").first`
-  no longer returns a bound method. `nth()` remains a method.
-* **`playwright_compat`: `Page.close()` closes only its own page**
-  instead of tearing down the whole `CDPSession` and browser. Use
-  `browser.close()` for session teardown.
-* **`Keyboard.type()` and `Locator.type_text()` escape literal text**
-  by default: `+ ^ % ~ ( ) { }` are now typed as characters instead of
-  being interpreted as pywinauto modifiers. `type("100% done")` no
-  longer sends Alt+Space and opens the window's system menu. Pass
-  `escape=False` for the old key-sequence behavior (`Keyboard.press`
-  and `Locator.press_key` remain key-sequence APIs and are unaffected).
-* **`OracleFormsKey` now follows one key-binding family end to end**
-  (PC-style, `fmrpcweb.res`). The previous table mixed two families and
-  contained a destructive collision: `DUPLICATE_RECORD` was `Shift+F6`,
-  the *Delete Record* key, so asking to duplicate a record deleted it.
-  The clear block was also shifted by one row, making `CLEAR_BLOCK` send
-  Clear Form. Changed: `CLEAR_RECORD` `Shift+F5`→`Shift+F4`,
-  `CLEAR_BLOCK` `Shift+F7`→`Shift+F5`, `CLEAR_FORM` `Shift+F8`→
-  `Shift+F7`, `DUPLICATE_RECORD` `Shift+F6`→`F4`, `NEXT_RECORD` /
-  `PREVIOUS_RECORD` `Down`/`Up`→`Shift+Down`/`Shift+Up` (bare arrows are
-  the *other* family's convention), `NEXT_BLOCK`/`PREVIOUS_BLOCK`
-  `Ctrl+`→`Shift+Page_Down`/`Up`, `EXIT`/`CANCEL_QUERY`→`Ctrl+Q`. Added
-  `COUNT_QUERY`. **Adopt the table as a whole** — a single entry borrowed
-  from the other family maps to a different Forms function. See
-  `OracleFormsKey` for how to check yours with Ctrl+K.
-* **Removed `OracleFormsKey.FIRST_RECORD` / `LAST_RECORD` and
-  `OracleFormsApp.first_record()` / `last_record()`** — the Forms key
-  table has no such functions. They were bound to F11/F12, which on a
-  stock-file host is *Enter Query*, so `first_record()` could silently
-  put the block into query mode.
-* **Mainframe HLLAPI PF keys corrected.** The mnemonic table was off by
-  nine: `PF1` emitted `@a` (PF10) and `PF3` — the near-universal Exit
-  key — emitted `@c` (PF12). Every PF key now sends the correct AID.
-  `PF13`-`PF24` were emitting mnemonics that do not exist; out-of-range
-  keys now raise `MainframeError`.
-* **Logger hierarchy is `dolphin_desktop`, not `dolphin`.** All emitters
-  already logged under `dolphin_desktop.*`, so `DOLPHIN_LOG_LEVEL`,
-  `--dolphin-desktop-log-level` and `config(log_level=…)` configured a
-  logger nothing wrote to, and the advertised secret redaction never
-  applied to a single line the library emitted. Both work now.
-  `get_logger()` returns the `dolphin_desktop` logger.
-* **`Tab.select_tab()` raises `ElementNotFoundError`** when no tab
-  matches, instead of silently doing nothing and returning success.
-* **Delphi `click()` / `double_click()` / `right_click()` raise**
-  `DelphiError` when every strategy failed, instead of reporting
-  success for a click that never happened.
-* **`JABLocator.do_action()` no longer substitutes** the component's
-  first available action for the requested one, so `expand()` on a
-  button raises `UnsupportedPatternError` instead of clicking it.
-* **SAP session-loss is no longer swallowed.** `is_busy()`,
-  `status_message()`, `title()`, `current_transaction()` and
-  `system_info()` raise `ApplicationError` when the session is gone
-  rather than returning `False` / empty values — so `wait_until_ready()`
-  and `assert_no_error()` fail instead of green-lighting a dead session.
-* **Qt agent refuses cross-architecture injection.** Only 64-bit Qt
-  targets are supported (the bundled agent DLLs are x64-only); a 32-bit
-  target now raises instead of crashing the application under test.
-* **`CDPSession` raises `CDPStalePageError`** when a page you explicitly
-  selected via `switch_to_page()` or `expect_popup()` has closed, rather
-  than silently retargeting to a different window. Auto-selection is
-  unchanged when no explicit selection was made.
-* **Oracle Forms modifier shortcuts require foreground focus.**
-  `Shift+F7` and friends were delivered via `PostMessage`, which does
-  not set the target thread's keyboard state, so they arrived as the
-  unmodified key (`CLEAR_BLOCK` acted as `ENTER_QUERY`). They now fall
-  through to the foreground input path.
+* **Bounds:** `Locator.bounding_box()`, `Window.bounding_box()` and JAB bounds
+  return `{x, y, width, height}`. Replace `left` / `top` with `x` / `y` and
+  derive `right` / `bottom` by adding width / height. Delphi uses the same shape.
+* **Missing attributes:** `get_attribute()` raises `AttributeError` for unknown
+  names. Pass a default, such as `get_attribute("optional_name", None)`, to
+  retain the previous behavior.
+* **Spy results:** `spy.pick()` returns a versioned dictionary containing
+  `schema_version`, `status`, `chain` and `message` instead of a bare list.
+  `spy.inspect()` defaults to `depth=12` and `max_children=200` and reports
+  traversal limits; pass `None` to remove either limit.
+* **Process ownership:** `Application.close()` leaves connected, unowned
+  processes running. Window discovery rejects unrelated processes with
+  `WindowNotFoundError` instead of adopting a matching foreign window.
+* **Java configuration and selectors:** set an absolute `JAVA_HOME`; JAB loads
+  only from its `bin` directory. Unsupported Java selector criteria raise
+  instead of being ignored. JAB `role="text"` means a text field and
+  `role="window"` means a window; use `label` / `frame` for those roles.
+* **Text input:** `Keyboard.type()` and `Locator.type_text()` escape literal
+  SendKeys metacharacters by default. Pass `escape=False` for key sequences,
+  or use `Keyboard.press()` / `Locator.press_key()`.
+* **Validation and state errors:** `Keyboard.hotkey()` rejects missing keys,
+  modifier-only calls and multiple non-modifier keys. `check()`, `uncheck()` and
+  `is_checked()` raise `UnsupportedPatternError` when state cannot be read.
+  `Tab.select_tab()` raises `ElementNotFoundError` for a missing tab.
+* **Configuration:** `config()` validates ranges; `video_fps` must be an integer
+  from 1 to 30, `retry_count` a non-negative integer, and timeout / poll interval
+  finite and non-negative. Invalid marker
+  `video_mode` values raise `ValueError` before recording starts. Malformed
+  `DOLPHIN_*` environment values warn and fall back to defaults.
+* **Recorder scope and lifecycle:** choose `--app`, `--pid`, or explicitly
+  `--global` (`global_recording=True` in Python). Application filters bind to one
+  process. Each `Recorder` permits one start attempt; create a new instance to
+  record again. Stop recording before calling `actions()` or `generate_code()`.
+  Unknown and password controls are masked; plaintext capture is limited to
+  stable native Windows Edit controls. Navigation and shortcuts are emitted as
+  separate key actions rather than embedded in typed text.
+* **Office ownership and macros:** `ExcelApp.open()` and `WordApp.open()` start
+  private instances; `connect()` leaves existing documents and applications
+  untouched on exit. Macros are disabled by default; trusted VBA requires
+  explicit `allow_macros=True`. `quit(save_changes=True)` reports save errors
+  after shutting down the owned instance.
+* **Pytest plugin name:** the entry point is `dolphin-desktop`; update explicit
+  plugin loading to `-p dolphin-desktop`.
 
 ### Changed
 
-* Python 3.11+ required (was 3.10+).
-* JABLocator.text / .value / .click / .set_text now prefer direct JAB
-  APIs (getAccessibleTextRange, doAccessibleActions, setTextContents)
-  over pywinauto mouse+keyboard replay. The keyboard fallback path is
-  retained but only fires when the direct API is missing.
-* `wait_change` on the mainframe API tolerates disconnect during wait
-  — a host closing the socket after an AID key (PF3=Exit) no longer
-  raises MainframeError.
-* **Element resolution is roughly 4× faster** (measured 3.0 s → 0.75 s per
-  `Locator` resolve against a small window). Resolution used to cost seven
-  full UIA tree scans: `Window.locator()` spent one deciding whether the
-  window was a Java Swing frame — an answer fixed for the lifetime of an
-  HWND, now cached — and pywinauto's `wait("exists visible")` spent three
-  more per poll, one for `exists`, one to re-resolve for `is_visible()`,
-  and one for a wrapper the caller discarded. A single scan answers both
-  questions, leaving two per resolve.
-
-### Deprecated
-
-None.
+* Supported Python versions are 3.11–3.13 (`>=3.11,<3.14`). Windows remains the
+  supported automation platform. Wheel metadata restricts `pywin32` and
+  `comtypes` to Windows; importing elsewhere emits a `RuntimeWarning`.
+* Dependency minimums include Pillow 13.0.0, comtypes 1.4.8,
+  opencv-python 4.10.0.84, mkdocs-material 9.7.7 and sentry-sdk 2.8.0.
+  The pytest extra requires `pytest>=9.0.3,<10`.
+* Java text, value and action operations prefer direct Access Bridge APIs over
+  clipboard and physical input, retaining fallbacks where the API is unavailable.
+* Locator resolution reduces repeated UIA scans and caches Java-window
+  detection. Ordered selector and image fallbacks share the action deadline and
+  record successful self-healing, including beneath resolved wrappers.
+* Screenshot, video and trace paths use opaque names to avoid collisions and
+  exposing sensitive parameter values. JUnit properties retain screenshot,
+  trace and video paths through teardown, including retained passing videos.
 
 ### Removed
 
-* **The `video` extra.** It installed `mss`, which speeds up the per-step
-  trace screenshots and has nothing to do with MP4 recording — that is done
-  by an external `ffmpeg` binary no wheel can provide. The name promised
-  something it never delivered. `mss` is still available under `fast`.
-  Upgrading with `dolphin-desktop[video]` pinned does not fail: pip warns
-  that the extra is unknown and installs the base package, after which
-  screenshots fall back to `PIL.ImageGrab` — correct, just slower.
-* **The `dev` extra.** The development toolchain lives in
-  `[dependency-groups]`, which is what CI and `CONTRIBUTING.md` use
-  (`uv sync --group dev`). The extra was a second copy that nothing
-  referenced and that had already fallen two packages behind.
+* The `video` extra; MP4 recording requires an external `ffmpeg` executable.
+  Install the `fast` extra for accelerated screenshots with `mss`.
+* The `dev` extra; use `uv sync --group dev` for the development toolchain.
 
 ### Fixed
 
-* **`_trace.list_runs()` leaked a sqlite connection** for every trace
-  directory whose `trace.db` failed to open or query. The `except` that
-  keeps the scan going past a corrupt or locked database skipped the
-  `close()` on the line below it, so the connection survived until
-  garbage collection.
-* **DelphiComponent.is_checked**: LCL exposes MSAA `State` as an
-  **integer bitfield** (STATE_SYSTEM_CHECKED = 0x10), not a
-  comma-separated word list. Now reads the bit directly; the
-  cascade to `is_selected()` (which LCL reports for focused rows)
-  is removed — that cascade silently made `uncheck()` idempotent-
-  toggle back on.
-* **JABLocator.is_visible / is_enabled / is_checked**: substring
-  matching against `states_en_US` replaced with word-boundary set
-  membership. Latent — Java's built-in AccessibleState constants
-  happen not to include "unchecked"/"disabled"/"invisible", but any
-  future L&F publishing a state containing our substring would have
-  silently flipped every predicate.
-* **DelphiComponent.text() cascade**: fallback to `element_info.name`
-  removed. On Delphi VCL 10.4+ that attribute is the developer-
-  assigned `TComponent.Name` (a stable AutomationId), not the
-  widget's actual text. Latent under LCL (info.name is empty), would
-  have exploded on real Delphi VCL.
-* **Empty-substring wait guards** across every `wait_for_*` /
-  `assert_*` that took a substring argument:
-  - `Locator.wait_for_text("", contains=True)` → ValueError
-    (was: immediate false-positive match)
-  - `JABLocator.wait_for_text("", contains=True)` → ValueError
-  - `DelphiComponent.wait_for_text("", contains=True)` → ValueError
-  - `MainframeTerminal.wait_for_text("")` → ValueError
-  - `CDPSession.wait_for_text("")` → ValueError (whitespace-only
-    text too, since it would otherwise build a match-everything selector)
-  - `OracleFormsApp.wait_for_status("")` → ValueError
-  - `SapSession.wait_for_title("", exact=False)` → ValueError
-  - `SapSession.assert_field_value("", partial=True)` → ValueError
+* **UIA locators:** tree-walk fallbacks honor supported criteria and indices,
+  verify uniqueness even when the initial search returns a partial match, and
+  reject incomplete scans. Hidden-but-live elements resolve through `exists()`
+  and presence waits. `is_visible()` uses the same fallback coverage as actions.
+  Cloning via `timeout()` / `nth()` preserves specialized locator state, and
+  locators returned by `all()` support further child searches. Unsupported
+  search criteria propagate errors instead of becoming empty results.
+* **Win32 controls:** typed shortcuts and `control_type` selectors match classic,
+  WinForms, VB6 and VCL classes. Tree paths, list contents, tab selection and
+  native menus use Win32 controls directly. `all()`, `count()` and negative
+  indices apply the same criteria as individual lookup. Unsupported UIA-only
+  types raise `UnsupportedCapabilityError`; text and scroll queries avoid
+  pywinauto's extra child-window waits. Empty Edit/Static text reads preserve
+  focus and clipboard contents.
+* **Menus and focus:** native menu clicks use correct coordinates on scaled
+  displays, open closed ancestors within one deadline, and validate item identity,
+  enabled state and hit window before sending input. Nested menus stay open;
+  already-active windows are not refocused in ways that dismiss owned popups.
+  Read-only locator queries do not open menus or send input.
+* **Control input:** radio buttons use selection patterns; literal typing
+  preserves spaces, newlines, tabs and punctuation, including file-dialog paths.
+  Hotkeys use virtual-key codes, support Win-key combinations and release held
+  modifiers on errors. Drag operations release the mouse button on failure,
+  and `Mouse.click()` rejects unknown buttons before moving the cursor.
+* **Processes and hidden desktops:** teardown continues after individual cleanup
+  failures, reaps owned applications after fixture finalizers and preserves
+  connected applications. Hidden launches clean up owned descendants on normal
+  owner exit or hard termination. Windows 11 Notepad launch handoff binds only
+  verified new descendants. Concurrent hidden runners avoid desktop-creation
+  races and share console interrupt handling. `dolphin-run` preserves command
+  exit codes and caller environment, quotes Windows arguments correctly, and
+  bounds interrupt/termination cleanup before releasing desktop handles.
+  `launch_qt()` passes Qt environment variables only to the child process.
+* **Recorder:** generated code quotes selectors and text safely, preserves
+  double-clicks, AltGr text and modifier combinations, and assigns typing to
+  the control that had focus at capture time. Shutdown drains queued events;
+  hook, worker and cleanup failures are reported before output is generated.
+  Callback failures still forward input and cannot interrupt remaining cleanup.
+* **Java resources:** Access Bridge contexts are released exactly once,
+  including for enumerated locators and failed tree walks. `exists(timeout=...)`
+  accepts an explicit timeout, state checks use complete state names, and
+  `focus()` requests focus when supported instead of activating the control.
+* **Reports and traces:** capture errors preserve the original test failure.
+  Setup and teardown failures produce accurate trace/HTML outcomes, including
+  under xdist. SQLite handles close on failure; unavailable tracing disables
+  itself or reports degradation instead of failing a successful UI action.
+  Trace discovery is deterministic and viewing a missing database reports an
+  error without creating a new file. Skipped reports preserve their structured
+  representation and display their reasons.
+* **Clipboard and images:** clipboard access retries contention and releases
+  handles after failures; failed writes restore prior text. DIB conversion uses
+  the actual header layout. Screenshots cover all monitors, image matches use
+  virtual-desktop coordinates, and templates load from non-ASCII paths.
+  `find_all()` suppresses overlapping matches and avoids flat-background stalls.
+  Image waits raise `WaitTimeoutError` consistently.
+* **Spy and artifacts:** picker access-denied errors propagate to the CLI with
+  exit code 1, including during selector verification and image capture.
+  Crash dumps include attached applications. Failed video finalization is
+  reported instead of returning a successful artifact. Object-repository YAML
+  deletion does not block other lookups, and invalid `parent:` entries fail at
+  load with the source file identified.
+* **Logging:** `DOLPHIN_LOG_LEVEL`, the pytest log-level option and
+  `config(log_level=...)` configure the `dolphin_desktop` logger hierarchy used
+  by library emitters. `get_logger()` returns that logger.
 
-  Exact-empty match (`contains=False`) stays supported for
-  wait-until-field-is-cleared scenarios.
-* **`text()` None-safety**: `Locator.wait_for_text` and
-  `DelphiComponent.wait_for_text` now coerce `.text() → None` to
-  `""` so `text in None` cannot raise `TypeError` on transient
-  wrapper edge cases.
-* **`ImageLocator.wait_for`**: raised `RuntimeError` instead of
-  `WaitTimeoutError`. Callers catching `WaitTimeoutError` uniformly
-  silently missed image-locator misses. Now consistent with every
-  other `wait_for_*` in the library.
-* **pytest `launch` fixture leaked processes**: teardown loop
-  aborted after one failed `app.kill()`, leaking every
-  subsequently-launched AUT in the same test. Now wraps each kill
-  in try/except.
-* **Application.kill / close order-of-operations**: PIDs were
-  discarded from the session reaper BEFORE `_app.kill()`. If
-  pywinauto kill raised, the process leaked as an unreachable zombie
-  — the reaper no longer knew about it. Kill now runs first; PIDs
-  are discarded only after the attempt.
+### Security
 
-
-* Qt Creator (and any other pre-existing user process the tests connect
-  to) is no longer killed by dolphin's per-test PID reaping — call
-  `app.detach(session=True)` in the fixture.
-* Steam CEF sessions no longer die between tests in a module-scoped
-  fixture — call `app.detach()`.
-* Non-Windows import no longer fails silently — emits a RuntimeWarning
-  pointing at the supported-platform table.
-
-*Processes and windows*
-
-* `attach_delphi()` (and every other `attach_*` factory) no longer
-  registers the target PID for the pytest teardown reaper, which was
-  force-terminating already-running applications dolphin never
-  launched — taking unsaved user data with them.
-* `Application`'s desktop-wide window fallback no longer adopts an
-  unrelated process that happens to match the window criteria, and no
-  longer registers it for killing. Adoption now requires the same
-  executable image or a child process.
-* The SAP scripting-security auto-dismiss worker no longer clicks
-  OK/Allow in *every* application's dialogs. It now requires the SAP
-  product name in the caption, the `#32770` dialog class and an
-  SAP-owned process.
-
-*Selectors and actions*
-
-* The last-resort tree-walk fallback refuses to match when the selector
-  carries criteria it cannot evaluate (`auto_id`, `title_re`, `class_name`,
-  …). It previously matched on control type alone, so a stale `auto_id`
-  clicked the first button of that type in the window. `found_index` is
-  honoured by the walk rather than disqualifying it, so `.nth(n)` keeps the
-  same fallbacks as the locator it was derived from.
-* `Locator.timeout()` and `.nth()` preserve the locator subclass and all
-  locator state, so `menu(...).item(...).click(timeout_ms=…)` no longer
-  loses the menu-opening resolver.
-* `RadioButton.select()` uses SelectionItemPattern instead of a toggle,
-  which raised on standard WPF/WinForms/Qt radio buttons; `is_checked()`
-  now reports selection state instead of always `False`.
-* `Keyboard.hotkey()` emits real virtual-key codes rather than Unicode
-  packet events, so `hotkey("ctrl", "c")` actually triggers Copy. Added
-  Win-key support.
-* File-dialog path entry escapes the typed path, so
-  `C:\Program Files (x86)\…` no longer loses its parentheses.
-
-*Enterprise adapters*
-
-* SAP `get_selected_rows()` expands range syntax (`"3,5-8,14"`), which
-  it previously discarded, returning an empty list for contiguous
-  selections.
-* Java Access Bridge contexts are released instead of leaked — a
-  polling `wait_for_*` was leaking thousands of JNI global references
-  per minute inside the target JVM.
-* `JABLocator.exists()` accepts `timeout=` like every sibling adapter;
-  `OracleFormsLov.is_open()` raised `TypeError` on every call because
-  of the mismatch.
-* Oracle Forms role lookups resolve JAB role names, so `status_line()`
-  and `wait_for_status()` work on forms whose status bar is not named
-  `StatusLine`. An unmappable role now raises instead of being silently
-  dropped from the match.
-* Mainframe s3270: stopped sending the `L:` TLS-tunnel prefix for 5250
-  sessions; ReadBuffer parsing handles multi-attribute `SF(...)` tokens
-  (emitted by the default color model) and no longer counts zero-width
-  `SA(...)` tokens as screen cells.
-* Mainframe EHLLAPI: presentation-space position is passed in the
-  4th parameter as the API requires, screen size is parsed as binary
-  16-bit fields (a 27×132 session was silently read as 24×80), and
-  literal `@` in typed text is escaped so it cannot inject key
-  mnemonics.
-* Mainframe TN5250 field attributes decode against the actual bit
-  layout — every field previously reported itself as unprotected, and
-  password fields were not flagged hidden.
-
-*Test artifacts and tracing*
-
-* Failure-artifact capture can no longer escape the pytest hookwrapper
-  as an INTERNALERROR that masks the original test failure, and long
-  parametrized node ids no longer overflow MAX_PATH.
-* Traces are finalized for setup errors, not only for the call phase —
-  previously the sqlite handle leaked and the artifact was missing for
-  exactly the failures that need it most.
-* Trace run directories are collision-free under retries and
-  pytest-xdist; run lookups are deterministic instead of `LIMIT 1` over
-  an ambiguous set.
-* Tracing failures (locked database, cross-thread use, disk full) are
-  logged rather than raised — a trace write can no longer fail a test
-  whose UI action succeeded.
-* Under pytest-xdist each worker writes `dolphin-report-<id>.html`
-  instead of all workers racing on one file that ended up holding a
-  single worker's subset.
-* The recorder synthesizes double-clicks from consecutive button-down
-  events; low-level hooks never receive `WM_LBUTTONDBLCLK`, so the
-  upgrade path was dead code and every double-click replayed as two
-  clicks.
-
-*Clipboard and images*
-
-* `Clipboard` retries `OpenClipboard` with backoff instead of failing
-  immediately when another process holds it — the common case right
-  after the application under test finishes its own copy.
-* CF_DIB→BMP conversion computes the pixel offset from the DIB header
-  instead of hardcoding 54, which returned shifted or garbage images
-  for `BI_BITFIELDS`, palettized and V4/V5 bitmaps.
-* Image-fallback typing honors `with_spaces`, so a self-healed
-  `type_text("hello world")` no longer types `helloworld`.
-
-*Security and privacy*
-
-* Qt agent: bounded RPC read timeout (a wedged Qt event loop hung the
-  test process forever), response-id validation (a desynchronized
-  stream silently returned the previous call's data), buffered reads
-  with a size cap, and verification that the named pipe is served by
-  the injected process. Remote memory is no longer freed while the
-  remote thread may still be reading it — that freeing was itself a way
-  to crash the application under test.
-* Telemetry is hardened before a DSN is ever configured: Sentry default
-  integrations are off, local variables are not collected, and events
-  that do not originate in dolphin are dropped. Previously any
-  `logging.error()` anywhere in the host process would have been
-  uploaded once telemetry was enabled.
-* `dolphin record` states up front that it captures every keystroke on
-  the desktop when no `--app` filter is given, filters out-of-scope
-  windows before converting keystrokes to text, and redacts password
-  fields on a best-effort basis.
-
-* **Excel and Word no longer close the operator's own documents.**
-  `ExcelApp.open()` / `WordApp.open()` attached to an already-running
-  Office instance via the running-object table, and `quit()` then called
-  `Quit()` on it with `DisplayAlerts` suppressed — silently discarding
-  every unsaved edit the user had open. They now start a private instance
-  and close only what they opened; `connect()` never quits anything.
-* **`Keyboard.hotkey()` with the Win key is exception-safe.** The key was
-  pressed and released inside one pywinauto sequence with no `finally`, so
-  a `KeyboardInterrupt` or a blocked `SendInput` between the two left the
-  Windows key logically held down for the rest of the desktop session.
-* **`Keyboard.hotkey()` sends real virtual-key codes for punctuation.**
-  Only letters and digits were fixed in the first pass; `Ctrl+-`,
-  `Ctrl+=`, `Ctrl+,` and `Win+.` still went out as Unicode packets that no
-  application matches against its accelerators.
-* **`playwright_compat` locators follow their own page.** Page adapters
-  were rebound correctly, but the locators they returned resolved lazily
-  against whichever page was selected last, so a locator from page 0 acted
-  on page 1. The test fake hid this by capturing the page eagerly.
-* **The recorder's password redaction survives a Tab.** The password flag
-  was sampled once per typing run and `Tab` did not end a run, so the
-  canonical username-Tab-password login flow recorded the password in
-  plain text. Focus is now sampled per keystroke and an unclassifiable
-  field is redacted rather than recorded.
-* **A wedged Qt agent is recoverable.** An RPC timeout marked the client
-  permanently broken and `Application` cached it forever, so a Qt event
-  loop blocked behind a modal dialog cost you the agent until the app was
-  killed. Timeouts now raise `QtAgentTimeoutError` and leave the
-  connection usable. `QtAgentClient.reattach()` rebuilds a genuinely failed
-  connection in place; `Application.reset_qt_agent()` drops the cached
-  client so the next `qt_agent` access builds a fresh one.
-* **A self-closing popup no longer bricks the CDP session.** After
-  `expect_popup()` the session pinned that page; when the popup closed
-  itself — the normal OAuth flow — every later `page` access raised. It
-  now falls back to the opener, and `reset_page_selection()` clears a pin
-  explicitly.
-* **`unroute()` removes every handler for a pattern**, and routes move
-  with the active context instead of staying armed on the old one.
-* **Console and dialog handlers follow page switches**, so
-  `console_messages()` keeps recording and `accept_dialogs()` keeps
-  working after a switch — previously Playwright auto-dismissed dialogs on
-  the unlistened page despite the configured policy.
-* **A shared `QtAgentClient` is thread-safe**; the round trip is now
-  locked instead of the invariant being pushed onto callers.
-* **Clipboard, drag and JAB resource fixes.** `Locator.clear()` could
-  leave the Windows clipboard open for the whole process, blocking every
-  other application on the machine; `drag_to()` could leave the mouse
-  button latched down desktop-wide; and locators from `JABLocator.all()`
-  never released their Java contexts.
-* **`get_by_object_name(...).exists()` works.** A zero timeout made the
-  poll loop skip its body entirely, so it always answered `False`; four
-  other `wait_*` loops had the same shape.
-* **Screenshots span every monitor.** All seven capture paths passed
-  `all_screens=False`, so anything on a secondary display came back wrong
-  or black.
-* **Image templates load from non-ASCII paths**, and `find_all()`
-  suppresses overlapping matches instead of returning hundreds of hits per
-  occurrence.
-* **`dolphin-run` reports a real exit code** rather than 259 when waiting
-  on the child fails, and quotes arguments by the Windows rule.
-* **Tracing distinguishes degraded from failed.** A lost sqlite write left
-  a passing test rendered as a red FAIL; swallowed errors are now logged
-  at warning level and surface as a distinct badge.
-* **Generated code is syntactically valid.** The spy and the recorder
-  interpolated element text into Python source unescaped, so an element
-  named `C:\Users\foo` produced a `SyntaxError`.
-* **`sap_pick()` no longer stalls SAP GUI** — the hit-test rebuilt the
-  whole component tree over COM on every 50 ms poll.
-
-* **`Keyboard.hotkey("win", …)` reaches the shell again.** Splitting the
-  Win-key hold into three calls left the payload a bare character, which
-  pywinauto injects as a Unicode packet no accelerator table matches — so
-  `Win+E` opened the Start menu instead of Explorer.
-* **The Qt agent survives a timeout that lands mid-reply.** The consumed
-  prefix of a half-arrived response was discarded, so the tail parsed as a
-  malformed line and permanently broke a connection `QtAgentTimeoutError`
-  exists to keep usable. `reattach()` also pins the target pid now, so it
-  cannot reconnect to a recycled process.
-* **Recovery preempts a wedged Qt agent.** `close()` and `reattach()` no
-  longer queue behind a `_send` blocked writing to a full pipe buffer.
-* **The recorder types into the control that actually had focus.** After a
-  bare Tab, Enter or shortcut the pending selector was never cleared, so
-  the next typed run was attributed to the previous field — the generated
-  script put the password in the username box.
-* **Image matching returns true screen coordinates** on a multi-monitor
-  desktop whose virtual origin is not `(0, 0)`; the round-two
-  `all_screens=True` fix had made full-desktop grabs report coordinates
-  offset by the virtual origin. `find_all()` on a flat background no
-  longer takes minutes.
-* **Crash dumps cover attached applications.** The UIA capture was scoped
-  to processes dolphin launched, so the SAP / mainframe / Oracle Forms
-  workflows — which attach — got an empty tree.
-* **Secret redaction cannot be bypassed** by a module that builds its
-  logger with the stdlib `getLogger` directly.
-* **Java Access Bridge contexts are released exactly once.** A walk that
-  raised while descending a matched node released the same context twice,
-  which the JVM reports as `DeleteGlobalRef on invalid reference`.
-* **Excel and Word no longer leave an orphaned instance** when the
-  document fails to open, and a failed save during
-  `quit(save_changes=True)` is reported instead of swallowed.
-* **TN5250 `SF` orders without a field format word no longer appear as
-  writable fields,** and an implausible field length is clamped to the
-  screen.
-* **`OracleFormsWindow.title()` returns the title** instead of always `""`.
-* **`dolphin trace view` on a directory without a database** reports it
-  instead of creating an empty `trace.db` and dying on a raw sqlite error.
-* **A deleted object-repository YAML no longer wedges its whole level,**
-  and `parent:` is rejected at load with the file named rather than
-  failing deep inside a locator call.
-* **`dolphin init --template sap` and `--template qt` generate code that runs.**
-  Both scaffolds referenced methods that do not exist, so a new project's
-  first test failed with `AttributeError`.
-* **`dolphin-run` restores a caller-set `DOLPHIN_HEADLESS`** instead of
-  unconditionally removing it.
-* **`Mouse.click(..., button=…)` rejects an unknown button** instead of
-  moving the cursor and silently clicking nothing, and `Clipboard.set_text`
-  restores the previous contents if the write fails.
-* **A video that ffmpeg could not finalise is no longer reported as a
-  successful artifact,** and the reason ffmpeg refused to start is logged
-  instead of discarded.
-
-* **Java Access Bridge text is no longer silently truncated or holed.**
-  `get_text_range` asked for more than the 10 240-byte wire packet holds,
-  and advanced its cursor by the requested length rather than the length
-  returned — a short read left a gap mid-string with nothing to signal it.
-  `set_text_contents` now rejects input above the 1 023-character limit
-  instead of writing a truncated value, the action buffer is sized to the
-  32 the bridge accepts, and `get_value()` calls the export that exists.
-* **Multi-level menus stay open.** `window.menu("View").item("Zoom")
-  .item("100%")` focused its immediate parent before clicking, which
-  re-ran the parent's own opening click and toggled the menu shut. Focus
-  now goes to the root window, which is what physical input needs anyway.
-* **`Locator.is_visible()` agrees with `click()`.** Dropping the
-  TreeWalker fallback for speed made elements only that walk can see
-  report invisible, so `wait_until_hidden()` returned immediately on a
-  control that was plainly on screen.
-* **A CDP page that auto-heals rebinds its handlers in the right order,**
-  matching the initial selection path; `expect_popup()` no longer swallows
-  the error raised when routes cannot be re-armed on the new page.
-* **Oracle Forms ships one key family, not a blend of two.** The map mixed
-  PC-style and terminal-style bindings, so `duplicate_record` sent the
-  same key as `delete_record` and the PF keys were off by nine. Entries
-  that could not be verified against `fmrpcweb.res` are marked as such,
-  and a failure to foreground the Forms window is logged rather than
-  swallowed — every modifier shortcut otherwise lands on whatever window
-  has focus.
-* **The recorder emits runnable scripts.** An action recorded without a
-  usable selector produced `win.locator()  # no selector found.click()`,
-  commenting out the line it was appended to. AltGr characters (Polish
-  `ą`, German `€`, French `@`) are recorded as text rather than as the
-  Ctrl+Alt shortcut Windows reports them to be.
-* **TN5250 rejects `PF25` and above** instead of running off the end of
-  the PF block onto `Clear`.
-
-* **The TN5250 command table uses the real 5250 command codes.** Clear
-  Format Table is `0x50`, not `0x41`, and it was being swallowed as a read
-  command — so nothing but Clear Unit ever retired a panel's fields. A
-  repaint left the previous screen's fields in place, `field_after()`
-  matched a stale entry, and the typed value went to coordinates that
-  belonged to the old panel. Read Immediate (`0x72`) and Read Screen
-  Immediate (`0x62`) are also recognised now, and correctly as commands
-  that carry no control characters — a Write-To-Display sharing the record
-  with one of them used to be lost.
-* **The TN5250 input record sends the cursor before the AID,** as the
-  reference client does. Emitting the AID first made byte 0 of every
-  record the AID code where the host expects a row — `0xF1` for Enter
-  reads as row 241 — so IBM i never answered. The write path remains
-  unverified against a live host, and `send_aid()` now says so rather
-  than attributing the silence to a missing WSF handshake.
-* **`press("PA1")` on a 5250 session raises** instead of silently sending
-  PF1, which on IBM i is Help. There is no nearest equivalent to
-  substitute: PA1–PA3 are 3270 keys.
-* **The recorder replays what was recorded.** Only Tab and Enter ended a
-  run of typed text, so Backspace, Delete, the arrows, Home/End, PgUp/PgDn
-  and F1–F12 were folded into it — and `type_text` escapes braces, so one
-  corrected typo replayed as the literal characters `{BACKSPACE}`.
-  `Ctrl+Alt+Q` no longer records as `Ctrl+Q` (Quit in most editors), plain
-  `Alt+F` is no longer dropped entirely, and Shift now survives in
-  shortcuts like `Ctrl+Shift+Home`. AltGr is distinguished from Ctrl+left
-  Alt by the side of the key, so a Polish or German user recording
-  `Ctrl+Alt+S` gets the shortcut rather than `type_text("ś")`.
-* **Read-only queries never drive input.** `is_checked()`, `text()`,
-  `value()`, `bounding_box()` and `get_attribute()` resolved the same way
-  an action does, so on a menu item they clicked the parent menu open —
-  and `wait_for_checked()` polls `is_checked()` every 150 ms, clicking the
-  menubar several times a second while waiting.
-* **A pointer action no longer dismisses the popup it is aiming into.**
-  Focusing the root window before every click closed the transient popups
-  that window owns, so clicking an item in a combo-box dropdown or a
-  context menu dismissed it first. An already-active window is now left
-  alone.
-* **`JABLocator.focus()` asks for focus instead of pressing the button.**
-  It was an alias for `click()`, so focusing a Swing button dispatched its
-  action — and `OracleFormsItem.type_text(text, clear=False)` focuses first,
-  so it pressed every button it was asked to type into. A bridge build that
-  exports no `requestFocus` still falls back to the activating path, with a
-  warning, since there is no other way to move focus there. `value()` now
-  consults AccessibleValue
-  before falling through to the text read, so a JSlider or JScrollBar —
-  which publishes one — no longer reaches the last-resort path that clicks
-  the widget's centre, dragging the thumb to the midpoint and returning the
-  clipboard instead of the value it was asked for.
-* **Oracle Forms reports an undelivered keystroke.** `PostMessage` signals
-  failure by returning zero rather than raising, so a form at a different
-  integrity level received nothing while the call reported success and
-  skipped its own fallback. The navigation keys also carry `KF_EXTENDED`
-  now, without which AWT read each one as its numpad twin. A refused
-  foreground activation is logged instead of passing silently.
-
-* **A newline or tab in typed text is no longer dropped.**
-  `type_text("line1\nline2")` wrote `line1line2` and reported success:
-  pywinauto discards a literal `\n` or `\t` unless told otherwise, and
-  escaping removes its `~` newline alias, so no path survived. Every
-  typing site now passes the same flags `Keyboard.type()` already did.
-* **A test whose teardown fails is no longer reported as passed** in
-  `dolphin-report.html`. pytest exited non-zero while the row showed
-  green, because the outcome had been committed during the call phase.
-  The report header carries an `Errors` count as well, so a teardown
-  failure changes the headline and not just one row.
-* **A trace store that cannot be opened disables tracing** instead of
-  turning every test into a setup error. Construction created directories
-  and a sqlite file outside the guard that keeps the rest of tracing
-  observational, so a read-only workspace or a path over MAX_PATH failed
-  the whole run with nothing naming tracing as the cause.
-* **Failure text is redacted before it is stored or published.** The
-  pytest `longrepr` went verbatim into `trace.db`, `trace.html` and the
-  Allure attachment — and under `pytest -l` it carries the failing frame's
-  locals, so a password in scope was published while logging the same
-  string would have masked it.
-* **Redaction was rebuilt around the shapes credentials actually take.**
-  It now finds the keyword inside a compound identifier, so
-  `AWS_SECRET_ACCESS_KEY=…` and `private_key=…` are masked rather than
-  printed verbatim; it absorbs any auth scheme, not just `Bearer` and
-  `Basic`, which previously masked the scheme name and published the
-  credential after it; it follows a quoted value to its closing quote, so a
-  passphrase with spaces or a password containing a comma goes whole; and it
-  covers `pwd`, `passphrase`, `credential`, `signature` and `sessionid`.
-  Python literals are left alone, because masking them turned an assertion
-  diff into two identical sides. An unquoted value containing a semicolon is
-  masked only up to it — there the semicolon really is the delimiter.
-  Redaction remains best-effort; see `SECURITY.md`.
-
-See `SECURITY.md` for the local control channels the library opens and
-what failure artifacts capture.
+* **Secrets and reports:** `Secret` masks registered literal values in
+  Dolphin-managed text. Structural redaction covers logging, traces,
+  self-healing journals, crash-dump text, UIA dumps, Allure results and captured
+  streams, JUnit XML, HTML reports and pytest terminal/collection output.
+  Sensitive parameter snapshots are scoped to their test, including under
+  xdist. Redaction remains best-effort: image pixels and arbitrary native
+  Allure attachment bodies require caller review/sanitization; see `SECURITY.md`.
+* **Qt agent:** authenticated protocol v2 uses random per-attach pipe names and
+  session secrets, a logon-SID ACL, remote-client rejection and controller/server
+  PID checks. Requests and responses are bounded; the agent expires its pipe
+  when its controller exits. Bundled x64 DLLs are hash-verified before injection;
+  C++ source, pinned build scripts and reproducibility checks are included.
+* **Mainframe:** host/text validation and protocol quoting prevent s3270 command
+  injection. Native TN5250 enforces record, buffering, negotiation and read
+  limits. Terminal diagnostics omit typed text and raw frame payloads.
+* **DLL loading:** JAB and HLLAPI use explicit absolute paths and restricted
+  Windows DLL loading flags instead of searching the working directory or PATH.
+* **Process identity:** cleanup anchors launched processes to creation identity
+  and retained handles, avoiding termination of unrelated processes after PID
+  reuse. CDP launchers reject occupied debug ports and verify listener ownership
+  before connecting to the launched application.
+* **Office:** opening documents disables VBA and automatic external-link updates
+  by default and restores temporary security settings even after errors.
+  Excel 4.0/XLM macros and other active content still require Office policy
+  controls; the wrappers are not a document sandbox.
+* **CLI, HTTP and trace input:** `dolphin init` confines output to the working
+  directory, including through symlinks. `http_ok` restricts requests and
+  redirects to HTTP(S). CDP screenshots validate format and size. Trace HTML
+  validates database schema and values, confines screenshot paths and applies
+  a Content Security Policy.
+* **Telemetry:** default Sentry integrations and local-variable capture are
+  disabled; events outside Dolphin are excluded.
+* **Build and release:** GitHub Actions use pinned commits and least-privilege
+  permissions. Locked dependencies and individual extras are audited; native
+  build tooling requires `soupsieve>=4.1` and Python 3.11.5+ for that tool group.
+  Packaging verifies native binaries and wheel provenance, and publication
+  smoke tests verify the downloaded wheel hash against the tested CI artifact.
 
 ## [0.1.0] — 2026-02-11
 
