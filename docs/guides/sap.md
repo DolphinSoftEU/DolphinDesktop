@@ -87,8 +87,8 @@ must use SAP GUI Scripting with their explicit User and Password component IDs.
 
 Run this check on a Windows desktop with SAP GUI 800 and a dedicated test
 account before releasing changes to `keyboard_login()`. The mock unit tests
-do not establish SAP's UIA provider compatibility. The bundled `tests/sap/`
-suite signs in through Scripting and does not validate this method.
+do not establish SAP's UIA provider compatibility. The separate maintainer
+acceptance suite covers both Scripting and keyboard-login validation.
 
 1. On a fresh login screen, inspect the UIA automation IDs and confirm that
    User and Password expose writable Value patterns and Password is classified
@@ -107,7 +107,7 @@ suite signs in through Scripting and does not validate this method.
 5. If required UIA IDs or Value patterns are unavailable, verify safe rejection
    and document that this client requires the Scripting login path.
 
-`tests/sap/test_keyboard_login_live.py` runs this procedure against the
+The maintainer keyboard-login acceptance checks run this procedure against the
 connection named in `DOLPHIN_SAP_CONNECTION`: it records the UIA inventory of
 the logon screen (ids only, no values), checks the safe rejection of step 5,
 and runs steps 2-4 only where the client exposes the fields. The checks read
@@ -122,8 +122,8 @@ raises `ApplicationError` before touching anything, leaves every field and the
 status bar unchanged and submits nothing. Enabling SAP GUI's accessibility
 mode (Options, Accessibility & Scripting, Accessibility) and restarting SAP
 Logon does not change what UI Automation exposes. On this client the Scripting
-login (`find_by_id("wnd[0]/usr/pwdRSYST-BCODE").set_text(...)`, as the bundled
-`tests/sap/conftest.py` does) is the supported path.
+login (`find_by_id("wnd[0]/usr/pwdRSYST-BCODE").set_text(...)`) is the
+supported path.
 
 ## Locators
 
@@ -212,29 +212,12 @@ grid.selectedRows = "0"
 This is useful for ALV grids and custom SAP controls. Dedicated high-level grid
 helpers are intentionally outside the first SAP support version.
 
-## Running the bundled SAP suite
+## SAP acceptance
 
-`tests/sap/` drives a live system and keeps every credential out of the
-repository — it reads them from the environment and skips when they are
-missing:
-
-| Variable | Meaning |
-|---|---|
-| `DOLPHIN_SAP_USER` | logon user |
-| `DOLPHIN_SAP_PASSWORD` | logon password |
-| `DOLPHIN_SAP_CLIENT` | client / mandant, e.g. `001` |
-| `DOLPHIN_SAP_LANG` | logon language (default `EN`) |
-| `DOLPHIN_SAP_CONNECTION` | SAP Logon entry to open when no session is running |
-
-```powershell
-$env:DOLPHIN_SAP_USER = "..."; $env:DOLPHIN_SAP_PASSWORD = "..."
-$env:DOLPHIN_SAP_CLIENT = "001"
-pytest tests/sap -v
-```
-
-The fixtures attach to a running SAP GUI and sign in **only** when the
-session sits on the logon screen, so an already-signed-in session is used
-as-is and never disturbed. Every test in the suite is display-only.
+Real SAP acceptance is maintained separately from the library. It requires a
+prepared SAP GUI environment and a dedicated account. Source-level stand-ins
+check the wrapper contract; a passing live run is required to claim compatibility
+with a specific client/server configuration.
 
 ## Notes
 

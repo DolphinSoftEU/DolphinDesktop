@@ -3,7 +3,7 @@
 Covers the fresh-proxy rebinding after Move(), the removal check after a
 permanent delete, session exit with and without saving, and item creation
 field order. All against mocks; the live counterpart is
-``tests/office/test_outlook_live.py``.
+the separate maintainer Office acceptance suite.
 """
 
 from unittest.mock import MagicMock, call

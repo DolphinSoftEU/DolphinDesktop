@@ -243,14 +243,15 @@ if app.uses_qt_quick():
 
 ## Real-world Qt apps validated
 
-The library is exercised against these production Qt apps in
-`tests/qt/test_qt_real_apps.py`:
+The separate maintainer acceptance suite checks Qt detection against these
+applications when they are available:
 
 - **AMD Radeon Software** (Qt 6) — GPU control panel.
 - **AMD Ryzen Master** (Qt 6) — CPU monitoring.
 - **Logitech G HUB** (Qt 5) — gaming peripheral software.
 
-Tests are skipped automatically when the target app isn't running.
+A missing target is skipped; a detected target with an unexpected Qt result
+fails the check. These detection checks do not establish full UI compatibility.
 
 ## Examples
 

@@ -90,6 +90,11 @@ foreground focus will race with GitHub's screen-lock timer.
 
 ## Testing individual stacks in CI
 
+The paths below describe suites in your own automation project. They are not
+directories bundled with the library. For this repository's component tests,
+see `CONTRIBUTING.md` in the source checkout. Maintainer acceptance
+against installed wheels lives in a separate test repository.
+
 ### Electron / CEF
 
 Runs cleanly on any Windows GitHub runner — Playwright ships its own

@@ -11,11 +11,11 @@ from __future__ import annotations
 import pytest
 
 from dolphin_desktop import AID, Desktop, start_thread
+from tests.mainframe._emulator_env import WS3270  # type: ignore[import-not-found]
 from tests.mainframe.mock_tn3270._mock_server import (  # type: ignore[import-not-found]
     MockTN3270Server,
     ScreenField,
 )
-from tests.mainframe.pub400._mainframe_env import WS3270  # type: ignore[import-not-found]
 
 
 def _make_mock(title: str, port_ref: dict[str, int], key: str) -> MockTN3270Server:

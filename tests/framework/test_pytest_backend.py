@@ -78,7 +78,6 @@ def _write_bootstrap(tmp_path: Path) -> Path:
     return test_directory
 
 
-@pytest.mark.component
 @pytest.mark.parametrize(
     "registration", ["entry_point", "conftest", "nested_conftest", "bootstrap"]
 )
@@ -133,7 +132,6 @@ def test_dispatch(desktop, dolphin_backend):
     assert "1 passed" in result.stdout
 
 
-@pytest.mark.component
 @pytest.mark.parametrize("bootstrap", [False, True])
 def test_unknown_backend_is_usage_error_before_test_execution(tmp_path, bootstrap):
     test_directory = _write_bootstrap(tmp_path) if bootstrap else tmp_path
@@ -150,7 +148,6 @@ def test_unknown_backend_is_usage_error_before_test_execution(tmp_path, bootstra
     assert "test must not run" not in output
 
 
-@pytest.mark.component
 @pytest.mark.parametrize("bootstrap", [False, True])
 def test_auto_cli_uses_concrete_backend_for_native_launch_and_connect(tmp_path, bootstrap):
     test_directory = _write_bootstrap(tmp_path) if bootstrap else tmp_path

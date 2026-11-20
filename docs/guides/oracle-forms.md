@@ -191,8 +191,8 @@ def test_query_runs(form_app):
     assert "Record 1" in form_app.status_line()
 ```
 
-The `tests/oracle_forms/` directory ships a full
-Swing mock and a 14-test integration suite as a reference.
+Maintainer acceptance includes a controlled Swing Forms mock in the separate
+test repository. For a runnable public JAB example, see `examples/java_swing/`.
 
 ## Common failure modes
 

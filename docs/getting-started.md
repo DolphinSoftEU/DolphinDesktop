@@ -168,8 +168,8 @@ def test_forms_reachable():
         app.close()
 ```
 
-For local testing without a Forms server, see the working Java Swing
-mock in `tests/oracle_forms/`.
+For a public Java Access Bridge example, see `examples/java_swing/`.
+The Forms-specific Swing mock is maintained with the separate acceptance suite.
 
 ### Mainframe 3270 (z/OS TSO, CICS)
 

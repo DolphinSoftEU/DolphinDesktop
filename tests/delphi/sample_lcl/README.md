@@ -28,7 +28,7 @@ Neither a Delphi version nor an LCL component Name guarantees a matching
 UIA AutomationId. See `../test_real_vcl.py` for the separate official
 DelphiVCL runtime regression and `docs/guides/delphi.md` for prerequisites.
 
-## What the sample proves
+## Controls in this fixture
 
 * `TButton` invocation (BtnSave, BtnClear, BtnAppendLog)
 * `TEdit` set_text / get_text (EdtName, EdtAge)
@@ -41,5 +41,6 @@ DelphiVCL runtime regression and `docs/guides/delphi.md` for prerequisites.
 * `TStringGrid` cell read (Grid)
 * `TLabel` status assertion (LblStatus)
 
-The full round-trip suite lives at
-`tests/delphi/test_sample_lcl.py`.
+Focused save/clear and checkbox regressions live at
+`tests/delphi/test_sample_lcl.py`. The complete widget and application workflow
+suite is maintained in the separate acceptance repository.

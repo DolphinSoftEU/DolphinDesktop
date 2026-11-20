@@ -51,17 +51,17 @@ Tests are classified by [tests/conftest.py](tests/conftest.py):
 
 | Category | Scope |
 | --- | --- |
-| `unit` | `tests/framework`, `tests/test_support`, and `tests/mainframe/hllapi_mock`; framework checks and test doubles |
+| `unit` | `tests/framework` and `tests/mainframe/hllapi_mock`; code and CI regressions |
 | `component` | `tests/mainframe/mock_tn3270`; controlled local server/emulator |
-| `windows_component` | `tests/component` and `tests/qt/test_qt_agent_v2.py`; controlled Windows processes |
-| `system` | Qt, Delphi, Electron, Oracle Forms, Office and PowerBuilder application suites, except the Qt agent component suite |
-| `external` | SAP, Steam, pub400 and native TN5250 suites using external systems or installed applications |
+| `windows_component` | `tests/component`, `tests/qt` and `tests/delphi`; controlled Windows processes |
 
-The legacy `integration` marker covers `system` and `external`. Consequently,
-`-m "not integration"` also runs component tests and is not a unit-only command.
+Full installed-wheel acceptance against real applications and external systems
+is maintained in a separate repository with maintainer access. This checkout
+keeps focused library regressions and public runnable examples in `examples/`.
 An unclassified new suite fails collection; update the category map when adding
-one. `uv run --locked pytest` selects all categories and requires their combined
-prerequisites.
+one. Running all tests here requires the combined component prerequisites.
+
+
 
 The repository disables automatic loading of the `dolphin-desktop` pytest
 entry point in `pyproject.toml`; `tests/conftest.py` loads the production plugin
@@ -79,7 +79,7 @@ actual executable:
 uv sync --locked --group dev --extra vision --extra cdp
 uv run --no-sync python -m playwright install chromium
 $env:DOLPHIN_WS3270_PATH = 'C:\Tools\wc3270\ws3270.exe'
-uv run --no-sync pytest -m "(component or windows_component) and not qt_agent" -q
+uv run --no-sync pytest -m "(component or windows_component) and not (qt_agent or qt_desktop)" -q
 ```
 
 The path above is an example. CI provisions and verifies wc3270 before testing;
@@ -127,7 +127,7 @@ Install the locked Qt bindings before running the agent component suite:
 
 ```powershell
 uv sync --locked --group dev --group qt-tests --extra vision
-uv run --no-sync pytest tests/qt/test_qt_agent_v2.py -m qt_agent -q
+uv run --no-sync pytest tests/qt -q
 ```
 
 For native agent changes, follow the pinned toolchain, DLL rebuild, manifest
@@ -136,22 +136,20 @@ and reproducibility procedure in
 `native-build` group requires Python 3.11.5+; this is a build-tool requirement,
 not a change to the library's Python requirement.
 
-Run the relevant application suite, such as `uv run --locked pytest tests/delphi/ -q`,
-after completing its stack guide's setup. For example, the Oracle Forms Swing
-mock must be compiled first:
+The Qt selection includes authenticated native-agent regressions and controlled
+UIA widget/tree checks for both bindings. Run it sequentially on an interactive
+desktop. CI installs the Qt bindings before these checks and rejects skips.
 
-```powershell
-javac --release 21 tests/oracle_forms/OracleFormsMock.java
-uv run --locked pytest tests/oracle_forms/ -q
-```
+`tests/delphi/` retains a small LCL action/locator contract and the stock VCL
+support boundary. Build the bundled LCL fixture as described in its README;
+the stock VCL reference additionally requires `delphivcl==1.0.7`.
 
-That mock requires a compatible JDK, an absolute `JAVA_HOME` with JAB available,
-and Java on PATH; see the [Java guide](docs/guides/java.md). Office live tests
-have additional isolation/opt-in requirements documented in the
-[Office guide](docs/guides/office.md). Missing optional applications can cause
-local skips, while configured CI preflight/acceptance checks fail when their
-required prerequisites or passing scenarios are absent. You do not need every
-stack locally; report what ran, what skipped and what remains unverified.
+Application-specific acceptance, including SAP, Office, Electron, Java/Oracle
+Forms, PowerBuilder and live mainframe hosts, belongs in the maintainer test
+repository. Install the exact wheel under review there, merge any new scenarios
+with its existing suites and run the relevant prepared environments. Preserve
+fixture guards and cleanup tests with the suites they protect. Report passes,
+failures and skips; missing prerequisites are incomplete verification.
 
 ## Code style and documentation
 

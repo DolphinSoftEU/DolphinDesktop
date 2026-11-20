@@ -145,22 +145,13 @@ the headline **capabilities** it exposes (against the
 | Limitations   | Domain API, separate from generic `Backend` capabilities. Shared PowerPoint/Outlook sessions are preserved. Opt-in `exclusive=True` requires no existing application process, owns the verified new process and quits/waits for it during cleanup. Outlook requires classic Outlook and an accessible MAPI profile/store; new Outlook has no supported COM facade. Draft move/delete requires item ownership. Dialogs and ribbon UI use UIA/Win32. |
 
 See the [Office guide](guides/office.md) and [COM API reference](reference/office.md).
-DESKTOP-232 / DESKTOP-233 can check these four exports against the public API.
-Real COM acceptance for DESKTOP-240 (PowerPoint) ships in this repository as
-`tests/office/test_powerpoint_live.py` (marker `integration`; skips when
-PowerPoint is not registered): create/open/connect, slide-shape-text round
-trips, formatting, tables, charts, save/reopen persistence, PDF page count and
-text via `pypdf`, shared-session preservation, exclusive process exit and
-controlled errors for missing files, slides and shapes. DESKTOP-241 (Outlook)
-ships as `tests/office/test_outlook_live.py`: draft create/read/modify/find,
-move between folders, soft and permanent delete with folder effects, MSG
-save/reopen with attachments, appointments, `connect()` to a running Outlook
-without quitting it, exclusive process exit and controlled errors. It needs
-classic Outlook plus a dedicated MAPI profile with one local PST store and no
-account (`tests/fixtures/office/make_outlook_profile.py`), and skips otherwise.
-Repeat UAT independently for Office 2019/Microsoft 365 and x86/x64.
-A missing COM server or Outlook profile is a skip, not a real COM PASS.
-Unit stand-ins in this library do not establish real-stack PASS.
+Real COM acceptance is maintained separately. PowerPoint scenarios cover
+create/open/connect, formatting, tables, charts, save/reopen, PDF output and
+process ownership. Outlook scenarios cover drafts, folders, attachments, MSG
+files, appointments and shared/exclusive ownership using an isolated profile
+with one local PST and no account. Repeat acceptance for each supported
+Office/version/architecture combination. Missing COM servers or profiles are
+incomplete verification; source stand-ins verify the wrapper contract.
 
 ### Image fallback
 

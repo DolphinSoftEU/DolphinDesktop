@@ -65,74 +65,13 @@ default blocking, explicit opt-in, link arguments, restoration after errors,
 rejected security settings, a simulated policy block and an XLM prompt.
 These checks verify the wrapper contract, not the Office macro engine.
 
-#### Running the real Office suite
+#### Real Office acceptance
 
-The macro documents are **shipped, pre-built fixtures**:
-`tests/fixtures/office/benign.xlsm`, `benign.docm` and `benign.pptm`. Each
-carries one macro that only rewrites a marker inside the document itself. The
-suite copies them into pytest's temporary directory; it never creates or edits
-a VBA project. The external-link cases build harmless local Excel/Word
-documents in the same temporary directory.
-
-```powershell
-uv run pytest tests/office/test_macro_security.py -q -rs --junitxml artifacts/KAN-574-office-retest.xml
-```
-
-A normal run needs classic Office with registered Excel, Word and PowerPoint COM
-servers and Office's **default** security settings. It does **not** need "Trust
-access to the VBA project object model"; leave that setting off. The suite
-never changes Trust Center settings or organization policies.
-
-Each Excel/Word macro case first opens a separate copy with `allow_macros=True`
-and requires the marker to change (the positive control). Only then does it open
-a fresh copy with `allow_macros=False` and assert that the marker stays
-unchanged. The PowerPoint case opens the `.pptm` with defaults and asks for the
-macro by name; PowerPoint must refuse and the slide text must stay unchanged.
-The Word link case also updates the field explicitly afterwards to prove that
-the source is reachable and changed.
-
-A case is skipped, never passed, when:
-
-- `pywin32` is not installed, or Excel/Word cannot be started through COM;
-- a shipped fixture file is missing from `tests/fixtures/office/`;
-- Office policy blocks the positive control, so the macro does not run even
-  with `allow_macros=True` (the whole case is skipped: the default open cannot
-  be reported as a security pass);
-- a PowerPoint is already running (the PowerPoint case owns its process so the
-  macro-enabled file never outlives the test).
-
-A skip is not evidence that the corresponding security criterion passed.
-
-#### Regenerating the macro fixtures (optional, maintainers only)
-
-Only when the fixtures themselves must change, run the separate generator on a
-dedicated machine where VBA project access was enabled on purpose:
-
-```powershell
-uv run python tests/fixtures/office/make_macro_fixtures.py
-```
-
-Office refuses programmatic access to a VBA project unless "Trust access to the
-VBA project object model" is enabled; that is the only step that needs it, and
-the reason the files are shipped instead of built at test time. Turn the
-setting off again afterwards, review the regenerated macros and commit the
-files with the digests the script prints. Never enable it on a machine just to
-run the tests.
-
-The mandatory CI unit job runs the COM stand-in tests with `pytest -m unit`.
-It does not run this `system` / `integration` suite or verify the real Office
-macro engine. Record a separate Windows/Office run, listing passed, failed and
-skipped cases and the Office versions and policies used for the run.
-
-For a real Office retest, use an isolated Windows account with reviewed `.xlsm`
-and `.docm` fixtures whose `Workbook_Open` / `Document_Open` handlers only write
-a fixed marker in the document (for example, cell A1 / document text). First
-open a separate trusted copy with `allow_macros=True` and require the marker to
-change, then open a fresh copy with defaults and require it to stay unchanged.
-Skip the entire scenario if the positive control is blocked. For Excel, use a
-link to a controlled local workbook with a changed value and verify that the
-cached value is retained on open. Test XLM separately under a policy that blocks
-XLM. Never weaken Trust Center or organization policies to make a test pass.
+The separate maintainer test repository owns real Office scenarios, reviewed
+macro fixtures, fixture generators and their safety/cleanup checks. These runs
+require isolated Office installations and must preserve organization policies.
+A blocked positive control is incomplete verification of the macro engine.
+Record Office versions, policies, passing cases and skips with each run.
 
 ## Excel
 
@@ -338,34 +277,12 @@ opened here; saved drafts/appointments remain saved. Items retrieved from
 existing folders are not automatically closed. Shared Outlook sessions are
 preserved. Failed saves/closes raise and retain the affected items for retry.
 
-### A disposable profile for live tests
+### A disposable profile for automation
 
-`OutlookApp.start()` refuses to run without a configured MAPI profile, and a
-real mailbox is the wrong place for automated drafts. Create a profile that has
-one local Personal Folders file and no account; everything the facade does
-(drafts, folders, move/delete, MSG files, appointments) works offline and
-nothing can be sent:
-
-```text
-uv run python tests/fixtures/office/make_outlook_profile.py
-```
-
-Then start classic Outlook once by hand and finish its welcome wizard with
-"do not connect to an e-mail account" / "use Outlook without an email account".
-
-The live Outlook tests are destructive (they create, move and permanently
-delete items) and are therefore opt-in: set `DOLPHIN_OUTLOOK_UAT` to the test
-store's display name (`Dolphin UAT Store` for the profile the script makes) to
-enable them; unset, they skip. Even with it set, each test verifies before any
-mutation that the profile has no mail account and exactly one store, and that
-its Drafts, Deleted Items and Calendar folders all live in that store: a `.pst`
-file with exactly that display name on a local disk (no UNC, device or mapped
-network-drive path). Optionally set `DOLPHIN_OUTLOOK_UAT_PROFILE` to the
-profile name and `DOLPHIN_OUTLOOK_UAT_PST` to the PST file's path to pin those
-too. Any mismatch fails the test rather than touching anything else, so a
-personal or work mailbox is never modified. The tests clean up every item they
-create. Remove the profile in Control Panel, Mail, Show Profiles when it is no
-longer needed.
+`OutlookApp.start()` requires a configured MAPI profile. Use a dedicated profile
+with one local PST and no mail account for tests that create, move or delete
+items. Maintainer acceptance verifies the store and folder ownership before
+mutation and keeps its opt-in configuration in the separate test repository.
 
 Permanent deletion goes through a proxy re-fetched by EntryID: on PST stores
 Outlook silently ignores `Delete()` on the proxy that `Move()` returned, so the

@@ -22,6 +22,7 @@ from dolphin_desktop import (
 from . import _qt_helpers as h
 
 pytestmark = [
+    pytest.mark.qt_desktop,
     pytest.mark.skipif(not is_windows(), reason="Qt UIA backend tests are Windows-only"),
     pytest.mark.timeout(180),
 ]

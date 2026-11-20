@@ -27,23 +27,9 @@ DEMO_DIR = REPO_ROOT / "examples" / "qt_demo"
 
 QT6_SCRIPT = DEMO_DIR / "all_widgets.py"
 QT6_WINDOW_TITLE = "Dolphin Qt Demo"
-QT6_PREFIX = "qt"  # objectName prefix
 
 QT5_SCRIPT = DEMO_DIR / "all_widgets_qt5.py"
 QT5_WINDOW_TITLE = "Dolphin Qt5 Demo"
-QT5_PREFIX = "qt5"
-
-QML_SCRIPT = DEMO_DIR / "qml_widgets.py"
-QML_WINDOW_TITLE = "Dolphin QML Demo"
-
-CHARTS_SCRIPT = DEMO_DIR / "charts_demo.py"
-CHARTS_WINDOW_TITLE = "Dolphin Charts Demo"
-
-GRAPHICS_SCRIPT = DEMO_DIR / "graphics_demo.py"
-GRAPHICS_WINDOW_TITLE = "Dolphin Graphics Demo"
-
-CM_SCRIPT = DEMO_DIR / "contact_manager.py"
-CM_WINDOW_TITLE = "Dolphin Contact Manager"
 
 
 # ---------------------------------------------------------------------------
@@ -75,21 +61,6 @@ def wait_for_status(win: Any, expected: str, timeout: float = 5.0) -> bool:
     while monotonic() < deadline:
         try:
             if read_status(win) == expected:
-                return True
-        except Exception:
-            pass
-        sleep(0.1)
-    return False
-
-
-def status_starts_with(win: Any, prefix: str, timeout: float = 5.0) -> bool:
-    """Poll until the status label starts with *prefix*."""
-    from dolphin_desktop import monotonic
-
-    deadline = monotonic() + timeout
-    while monotonic() < deadline:
-        try:
-            if read_status(win).startswith(prefix):
                 return True
         except Exception:
             pass
@@ -172,27 +143,3 @@ def launch_demo(desktop: Any, script: Path, title: str):
         except Exception:
             pass
         raise
-
-
-# ---------------------------------------------------------------------------
-# Multi-step workflows (used by both bindings)
-# ---------------------------------------------------------------------------
-
-
-def fill_login_form(win: Any, username: str, password: str) -> None:
-    """Type *username* and *password* into the Inputs tab fields."""
-    select_tab(win, "Inputs")
-    win.edit(name="Username").set_text(username)
-    sleep(0.2)
-    win.edit(name="Password").set_text(password)
-    sleep(0.2)
-
-
-def navigate_all_tabs(win: Any) -> list[str]:
-    """Cycle through every demo tab and return the list of titles visited."""
-    visited: list[str] = []
-    for tab in ("Buttons", "Inputs", "Choices", "Containers", "Dialogs"):
-        select_tab(win, tab)
-        visited.append(tab)
-    select_tab(win, "Buttons")
-    return visited

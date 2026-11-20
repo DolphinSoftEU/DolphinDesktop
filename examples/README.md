@@ -81,9 +81,9 @@ uv run --no-sync python examples/qt_demo/all_widgets.py
 uv run --no-sync python examples/qt_demo/all_widgets_qt5.py
 ```
 
-The Qt applications are shared fixtures, not duplicate test suites. Automation
-examples live in [tests/qt/](../tests/qt/); see the [Qt guide](../docs/guides/qt.md)
-for agent/ABI requirements and the QML, charts and graphics demos.
+The Qt applications are shared fixtures. Focused component regressions live in
+[tests/qt/](../tests/qt/), while full application acceptance is maintained
+separately. See the [Qt guide](../docs/guides/qt.md) for backend prerequisites.
 
 ### CDP and image/OCR
 

@@ -4,8 +4,6 @@ import pytest
 
 from dolphin_desktop import ElementNotFoundError
 
-pytestmark = [pytest.mark.component, pytest.mark.windows_component]
-
 
 def test_stock_vcl_does_not_publish_component_names(real_vcl_app, record_property):
     """Genuine Delphi Names do not become AutomationIds by compiler version."""

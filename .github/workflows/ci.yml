@@ -430,7 +430,7 @@ jobs:
         shell: pwsh
         run: |
           $report = Join-Path $env:RUNNER_TEMP "component-results.xml"
-          uv run --locked pytest -m "(component or windows_component) and not qt_agent" -q --junitxml $report --basetemp "$env:RUNNER_TEMP/component-pytest"
+          uv run --locked pytest -m "(component or windows_component) and not (qt_agent or qt_desktop)" -q --junitxml $report --basetemp "$env:RUNNER_TEMP/component-pytest"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
@@ -473,6 +473,17 @@ jobs:
 
       - name: Verify Qt agent test bindings
         run: uv run --no-sync python -c "import PyQt5, PySide6"
+
+      - name: Qt UIA component regressions
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "qt-desktop-results.xml"
+          uv run --no-sync pytest tests/qt -m qt_desktop -q --junitxml $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$results = Get-Content -Raw -LiteralPath $report
+          if ($results.SelectNodes("//testcase").Count -ne 24 -or $results.SelectNodes("//testcase/skipped").Count -ne 0) {
+            throw "Qt UIA acceptance requires all 24 controlled Qt5/Qt6 cases to pass"
+          }
 
       - name: Qt agent integration and security tests
         shell: pwsh

@@ -278,22 +278,10 @@ unverified against live IBM i hosts.
 Against a real 3270 host (z/OS TSO, CICS) all positional operations
 work through s3270 — the NVT degradation is pub400-specific.
 
-The test suite in `tests/mainframe/pub400/` exercises
-what NVT-mode *does* support:
-
-```
-test_ws3270_installed                          PASS
-test_session_is_connected                      PASS
-test_screen_size                               PASS
-test_sign_on_screen_contains_pub400_banner     PASS
-test_sign_on_screen_has_user_prompt            PASS
-test_cursor_starts_in_user_field               PASS
-test_field_after_user_name_label               PASS
-test_screen_snapshots_are_stable               PASS
-test_typed_char_is_echoed                      PASS
-test_terminal_screen_line_and_text_at          PASS
-test_terminal_screen_find                      PASS
-```
+Live-host acceptance is maintained separately from the library. Controlled
+local round trips remain in `tests/mainframe/mock_tn3270/` and are also used by
+`examples/mainframe/test_mainframe.py`. A local protocol run does not establish
+compatibility with a particular external IBM host or emulator configuration.
 
 ## Backend selection
 
@@ -363,6 +351,6 @@ manages the network side there.
 
 ## See also
 
-* `tests/mainframe/pub400/` — live integration tests.
+* `tests/mainframe/mock_tn3270/` — controlled local protocol regressions.
 * [x3270 project](http://x3270.bgp.nu/) — upstream emulator suite.
 * [EHLLAPI reference (IBM)](https://www.ibm.com/docs/en/personal-communications) — HLLAPI function-code table.

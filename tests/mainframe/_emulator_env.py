@@ -1,4 +1,4 @@
-"""Environment probes for the pub400.com mainframe test suite.
+"""Local ws3270 executable discovery for controlled mainframe tests.
 
 All stdlib access goes through :mod:`dolphin_desktop` public helpers so
 the "autonomous library" contract holds for the test scaffolding too.

@@ -182,8 +182,7 @@ for i, p in enumerate(cdp.pages()):
 owns_cs = "Counter-Strike" in cdp.evaluate("() => document.body.innerText")
 ```
 
-**Steam gotchas** (see also
-`tests/steam/test_steam_cdp.py`):
+**Steam gotchas**:
 
 * Launching a second `steam.exe` normally forwards to the running client
   **without** re-processing CLI args — so the debug flag is silently
@@ -266,8 +265,7 @@ drives the DOM (form fills, click through a Shadow DOM component).
 
 ## See also
 
-* `tests/electron/test_vscode_cdp.py` — full
-  integration test suite (workbench interaction + Shadow DOM piercing).
+* `examples/cdp/test_cdp.py` — public CDP example using a local page.
 * `docs/guides/electron.md` — Electron via plain UIA when it does work.
 * `docs/guides/image-based.md` — last-resort fallback when nothing else sees the
   element.
