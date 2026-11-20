@@ -1,379 +1,271 @@
 # Contributing to Dolphin
 
-Thank you for your interest in contributing!
+This guide covers local development and pull requests. See
+[Architecture](docs/architecture.md) for the library design and
+[RELEASING.md](RELEASING.md) for publication and branch protection policies.
 
 ## Prerequisites
 
-- Windows 10 / 11 or Windows Server 2022+
-- Python 3.11-3.13
-- [uv](https://docs.astral.sh/uv/) package manager
+- Windows 10 / 11 or Windows Server 2022+ for desktop automation tests.
+- Python 3.11–3.13.
+- Git and [uv](https://docs.astral.sh/uv/). CI pins uv in
+  [ci.yml](.github/workflows/ci.yml).
+- An interactive Windows desktop for tests that send physical input or capture
+  pixels. Native Qt agents require x64 target applications.
 
-The optional `native-build` group requires Python 3.11.5+ because its patched
-Soup Sieve dependency (used by `aqtinstall`) does not support earlier patches.
-This tooling requirement does not change the library's Python requirement.
+External applications and tools are needed only for the suites that use them;
+see the relevant [stack guide](docs/guides/index.md).
 
 ## Setup
 
-```bash
+```powershell
 git clone https://github.com/DolphinSoftEU/DolphinDesktop.git
 cd DolphinDesktop
 
-# install all dependencies including dev extras
-uv sync --group dev
-
-# install pre-commit hooks
-uv run pre-commit install
+# Match the unit CI environment: development tools plus image dependencies.
+uv sync --locked --group dev --extra vision
+uv run --locked pre-commit install
 ```
 
-## Running Tests
+`dev` is a dependency group, not a package extra. The setup above does not
+install every optional integration. Add the extras/groups documented below
+when working on those areas. Run commands from the repository root.
 
-Unit and non-integration tests (no real apps required):
+Keep `uv.lock` committed. Ordinary setup and checks use `--locked`; when
+intentionally changing dependencies in `pyproject.toml`, run `uv lock`, review
+both files, and sync again.
 
-```bash
-uv run pytest -m "not integration"
-```
+## Running tests
 
-Full integration test suite (requires Windows desktop session):
-
-```bash
-uv run pytest
-```
-
-With coverage:
-
-```bash
-uv run pytest --cov=dolphin_desktop --cov-report=term-missing
-```
-
-## Minimum dependency verification (KAN-581)
-
-CI and release run a separate Windows matrix for Python 3.11, 3.12 and 3.13,
-with the base package, each extra independently (including the aggregate `all`
-extra), and all extras together. Each job builds a wheel using
-locked build tools, reads its `Requires-Dist` metadata, resolves the lowest
-compatible direct dependencies with binary distributions, then installs the
-hashed resolution in a clean environment. Transitive dependencies use the
-resolver's latest compatible versions. This tests a compatible minimum set,
-not every possible combination allowed by the dependency ranges.
-
-The checks include dependency consistency, import of the installed wheel,
-imports of the selected optional integrations, execution of the installed
-`dolphin --help` and `dolphin info backends` commands, and an explicit check of
-the `dolphin-desktop` pytest entry point whenever the `pytest` extra is selected,
-and a strict `pip-audit` of the resolved set. This audit is independent of the
-existing full-lockfile audit; their vulnerability counts must not be added.
-Build, security and docs tooling remain controlled by `uv.lock`.
-
-To reproduce one matrix entry on Windows (use a fresh checkout or set
-`UV_PROJECT_ENVIRONMENT` to a dedicated tool environment):
+Start with the unit suite; it does not require a real application under test
+(AUT) or an external service:
 
 ```powershell
-uv sync --locked --only-group build --only-group security --python 3.13
+uv run --locked pytest -m unit -q
+
+# The same selection with coverage.
+uv run --locked pytest -m unit --cov=dolphin_desktop --cov-report=term-missing
+```
+
+Tests are classified by [tests/conftest.py](tests/conftest.py):
+
+| Category | Scope |
+| --- | --- |
+| `unit` | `tests/framework`, `tests/test_support`, and `tests/mainframe/hllapi_mock`; framework checks and test doubles |
+| `component` | `tests/mainframe/mock_tn3270`; controlled local server/emulator |
+| `windows_component` | `tests/component` and `tests/qt/test_qt_agent_v2.py`; controlled Windows processes |
+| `system` | Qt, Delphi, Electron, Oracle Forms, Office and PowerBuilder application suites, except the Qt agent component suite |
+| `external` | SAP, Steam, pub400 and native TN5250 suites using external systems or installed applications |
+
+The legacy `integration` marker covers `system` and `external`. Consequently,
+`-m "not integration"` also runs component tests and is not a unit-only command.
+An unclassified new suite fails collection; update the category map when adding
+one. `uv run --locked pytest` selects all categories and requires their combined
+prerequisites.
+
+The repository disables automatic loading of the `dolphin-desktop` pytest
+entry point in `pyproject.toml`; `tests/conftest.py` loads the production plugin
+after coverage starts. Keep this bootstrap for repository tests rather than
+adding an explicit `-p dolphin-desktop`. Installed-package/plugin behavior is
+tested separately in subprocesses and the CI compatibility matrix.
+
+### Controlled component tests
+
+The non-Qt component selection uses the `cdp` extra, Playwright Chromium and
+wc3270's `ws3270.exe`. Install wc3270 and point the environment variable at its
+actual executable:
+
+```powershell
+uv sync --locked --group dev --extra vision --extra cdp
+uv run --no-sync python -m playwright install chromium
+$env:DOLPHIN_WS3270_PATH = 'C:\Tools\wc3270\ws3270.exe'
+uv run --no-sync pytest -m "(component or windows_component) and not qt_agent" -q
+```
+
+The path above is an example. CI provisions and verifies wc3270 before testing;
+see [the Windows component job](.github/workflows/ci.yml).
+`--no-sync` uses the environment prepared by the preceding locked sync.
+
+### Desktop acceptance
+
+Run these targeted checks when changing the corresponding feature. Use an
+interactive desktop without concurrent user input:
+
+```powershell
+# Hidden launch ownership and owner-exit cleanup.
+uv run --locked pytest tests/component/test_hidden_lifecycle.py -q
+
+# Console interrupts, nested runners and concurrent hidden execution.
+uv run --locked pytest tests/component/test_runner_console.py -q
+
+# Win32 selectors, controls and physical menu clicks.
+uv run --locked pytest tests/framework/test_win32_controls.py tests/component/test_win32_controls_windows.py -q
+
+# Recorder hooks, focus transitions and record -> generate -> replay.
+uv run --locked python -m tests._recorder_acceptance
+
+# Physical menu gate; configure the local display to 125% first.
+uv run --locked python -m tests._win32_scaled_acceptance
+```
+
+The recorder and scaled-menu entry points reject missing tests, skips, failures
+and errors. A skipped desktop test is incomplete verification. Scaled-menu
+acceptance measures the actual monitor scale; local runs do not change display
+settings. CI also requires passing owner-lifecycle, recorder, Qt agent and
+console scenarios rather than accepting an all-skipped run.
+
+Recorder evidence defaults to `artifacts/recorder-acceptance.xml`; scaled-menu
+evidence, JUnit and screenshots go to `artifacts/win32-scaled/`. Both entry
+points accept `--output`. CI uploads `windows-component-evidence`,
+`runner-console-<python-version>` and `win32-scaled-125`; use current
+[CI runs](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml)
+for diagnostics and retain run-specific findings in the PR.
+
+### Qt agents and application suites
+
+Install the locked Qt bindings before running the agent component suite:
+
+```powershell
+uv sync --locked --group dev --group qt-tests --extra vision
+uv run --no-sync pytest tests/qt/test_qt_agent_v2.py -m qt_agent -q
+```
+
+For native agent changes, follow the pinned toolchain, DLL rebuild, manifest
+and reproducibility procedure in
+[src_cpp/qt_agent/README.md](src_cpp/qt_agent/README.md). The optional
+`native-build` group requires Python 3.11.5+; this is a build-tool requirement,
+not a change to the library's Python requirement.
+
+Run the relevant application suite, such as `uv run --locked pytest tests/delphi/ -q`,
+after completing its stack guide's setup. For example, the Oracle Forms Swing
+mock must be compiled first:
+
+```powershell
+javac --release 21 tests/oracle_forms/OracleFormsMock.java
+uv run --locked pytest tests/oracle_forms/ -q
+```
+
+That mock requires a compatible JDK, an absolute `JAVA_HOME` with JAB available,
+and Java on PATH; see the [Java guide](docs/guides/java.md). Office live tests
+have additional isolation/opt-in requirements documented in the
+[Office guide](docs/guides/office.md). Missing optional applications can cause
+local skips, while configured CI preflight/acceptance checks fail when their
+required prerequisites or passing scenarios are absent. You do not need every
+stack locally; report what ran, what skipped and what remains unverified.
+
+## Code style and documentation
+
+```powershell
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked mypy src/
+
+# Apply formatting when needed.
+uv run --locked ruff format .
+```
+
+Installed pre-commit hooks run Ruff fixes/formatting on staged Python files and
+mypy on `src/` when Python files change. They do not replace the full-repository
+checks above. To run hooks across existing files, use
+`uv run --locked pre-commit run --all-files`.
+
+For documentation changes under `docs/` or API docstrings, build the site as CI
+does:
+
+```powershell
+uv sync --locked --group dev --extra vision --extra docs
+uv run --no-sync mkdocs build --strict
+```
+
+Conventions:
+
+- Add type hints and docstrings to public functions, classes and methods.
+- In stack scenario `test_*.py` files, exercise the public `dolphin_desktop` API
+  instead of importing stdlib helpers directly. Framework/unit tests, fixtures
+  and controlled AUT helpers may use stdlib and test doubles. Add a public
+  library helper only when it belongs in the supported API.
+- Prefer condition-based waits. In public API scenarios use Dolphin's `sleep()`
+  only when a fixed delay is necessary.
+- Add focused regression coverage for behavior changes, with test categories
+  reflecting the resources the test actually uses.
+- Keep commits focused and document public behavior changes in
+  [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`.
+
+## Dependency and CI verification
+
+[CI](.github/workflows/ci.yml) runs unit tests on Python 3.11–3.13, controlled
+Windows components, Qt agent reproducibility, runner and scaled-menu acceptance,
+security checks, minimum-dependency checks and wheel installation checks across
+Windows/Linux/macOS. It does not run every real-application or external suite.
+Document relevant local application results in the PR.
+
+The pytest compatibility matrix installs the wheel with pytest 9.0.3, 9.2.0
+and the latest 9.x on Python 3.11–3.13, then runs
+`tests/framework/test_terminal_redaction.py` in clean environments. Follow that
+job's commands when changing pytest integration or the `>=9.0.3,<10` range.
+
+After dependency changes, verify the full-lockfile security gate and minimum
+installations. The minimum matrix covers the base package, each extra and all
+extras together. It resolves the lowest compatible direct dependencies from
+wheel metadata; transitive dependencies use the latest compatible resolution.
+To reproduce one profile on Windows:
+
+```powershell
+uv sync --locked --group dev --group security --extra vision --python 3.13
 uv run --no-sync python -m build --no-isolation --wheel --outdir artifacts/minimum/dist
 $wheel = (Get-ChildItem artifacts/minimum/dist/*.whl).FullName
 uv run --no-sync python .github/scripts/check_minimum_dependencies.py --wheel $wheel --output artifacts/minimum/evidence --all-extras
 ```
 
-Replace `--all-extras` with `--extra <name>` for an individual extra (`fast`,
-`vision`, `cdp`, `docs`, `telemetry`, `pytest`, or `all`); omit both for the base
-profile. The `all` extra selects only its wheel requirements, including any
-self-references; it does not implicitly include `docs` or `telemetry`. Repeat with
-Python 3.11 and 3.12. Each profile resolves independently, preventing an
-unrelated extra from raising a shared dependency's minimum during the check.
-CI uploads `minimum-dependencies-<python>-<profile>` even on failure, containing
-the wheel, direct requirements, hashed resolution, command log, audit JSON and
-a success result with interpreter version and wheel SHA-256. A missing success
-result indicates an incomplete or failed check; inspect the command log.
-After dependency/resolver changes, rerun this matrix and the full-lockfile
-security gate. The wheel and reports let a tester reproduce the installation
-without relying on metadata from an unrelated environment.
+Use a fresh output directory with exactly one wheel. Replace `--all-extras` with
+`--extra <name>` for one extra, or omit it for the base package; repeat with
+Python 3.11 and 3.12. The `all` extra includes `cdp`, `fast`, `pytest` and
+`vision`, not `docs` or `telemetry`. CI retains the wheel, resolution, audit and
+command logs in `minimum-dependencies-<python>-<profile>`. The scripts and
+workflow define the current matrix; avoid copying run-specific audit results
+into this guide.
 
-## Pytest compatibility (KAN-763)
+## Submitting a pull request
 
-The supported pytest range is `>=9.0.3,<10`. A separate Windows CI matrix
-installs the built wheel in clean environments on Python 3.11-3.13 with
-pytest 9.0.3, 9.2.0 and the latest 9.x release. It runs
-`tests/framework/test_terminal_redaction.py`, including production-plugin
-subprocesses without a backend provider, collection-only output, sensitive
-parameter IDs, call/teardown failures, subdirectory invocation and xdist.
-The regular unit suite continues to use the lockfile's pytest version.
-Support for pytest 10 requires separate verification before raising the cap.
-
-To reproduce against an installed wheel, install the chosen pytest version,
-`pytest-xdist` and `pytest-timeout` in a clean environment alongside the wheel,
-then run that environment's Python from the repository root:
-
-```powershell
-<venv>/Scripts/python.exe -m pytest tests/framework/test_terminal_redaction.py -q
-```
-
-CI uploads the wheel and JUnit compatibility results for each matrix entry.
-
-## Runner console acceptance
-
-Hidden `Desktop.launch()` owner-death acceptance (KAN-768):
-
-```powershell
-uv run --locked pytest tests/component/test_hidden_lifecycle.py -q
-```
-
-The controlled Tk AUT and its descendant must exit after normal close, normal
-owner exit and hard owner termination, including a venv redirector. Two owners
-on the same desktop verify that killing one leaves the other alive. Tests retain
-original process handles for observations and emergency cleanup, and save
-handshakes, owner logs and `result.json` before cleanup. Desktop disappearance
-is required when no session existed before the test; pre-existing desktop use
-is recorded and never terminated. The Windows component CI gate requires all
-five scenarios to pass without skips and uploads their evidence.
-
-CI runs `tests/component/test_runner_console.py` on Python 3.11 and 3.13
-with real private Windows consoles, including concurrent `run_hidden()` calls
-and a 30-iteration regression creating the same new desktop from two threads.
-The regression checks independent ownership of desktop handles and destruction
-after both handles are closed. Native desktop creation is serialized; command
-execution and console interrupt handling remain concurrent.
-
-Each job uploads `runner-console-<python-version>` even on failure, containing
-the JUnit report and controlled process evidence. For a parallel startup failure,
-inspect `parallel-stderr.bin` alongside each child's `ready.json` and
-`grandchild.json`; the assertion also includes controller exit status, readiness
-flags and the end of its stderr. These distinguish native launch errors from
-readiness timeouts. Tests retain the existing startup deadlines and cannot pass
-through retries or skips.
-
-## Win32 controls and physical menu acceptance (KAN-747)
-
-Run on an interactive Windows desktop without concurrent user input:
-
-```powershell
-uv run --locked pytest tests/framework/test_win32_controls.py tests/component/test_win32_controls_windows.py -q --junitxml=artifacts/win32-controls.xml
-```
-
-The component tests exercise physical `menu.item().click()` on classic nested
-menus and a controlled WinForms `MainMenu`, verifying application-side results.
-The WinForms scenario covers launch, Edit/ComboBox/Tree operations, opening and
-closing a native dialog twice, screenshots and attaching to the launched process.
-It runs with both DPI-unaware and DPI-aware owners. Also run on a display scaled
-above 100% (for example 125%): popup coordinates obtained without the owner HWND
-can otherwise look correct at 100% while sending clicks outside the menu on a
-scaled display. Unit tests independently simulate different logical and screen
-rectangles. `invoke()`/`select()` cannot substitute for a successful `click()`.
-
-The native nested-menu case also covers a real non-activating `WS_EX_TOPMOST`
-window from the controller process above the AUT popup. It checks both an
-initially covered point, a window appearing after the first positive
-hit-test, and one appearing during the final enabled-state read. None may
-dispatch a SendInput batch or deliver a button message to the overlay; removing
-it must allow the same menu command to work. `menu-overlay-layout.json`,
-`menu-overlay-dispatch.json` and `menu-overlay-enabled.json` retain HWND/PID,
-screen point and event counts without reading the obscuring window's contents.
-The same required case swaps two commands inside an open HMENU after the first
-positive hit-test. It requires zero input for the stale command, then resolves
-and clicks the requested caption at its new index. `menu-reordered.json` retains
-the unchanged popup HWND, expected/current command IDs and input counts.
-The AUT also enables and disables commands during real `WM_INITMENUPOPUP`
-handling. `menu-dynamic-state.json` records parent/target input counts: the newly
-enabled command must execute; the newly disabled command permits only opening
-its parent. Synthetic INIT messages issued by lookup do not update this AUT.
-CI includes these tests in the Windows component gate and uploads the WinForms
-screenshots with its JUnit report as `windows-component-evidence`.
-
-The independent `win32-scaled` CI job additionally provisions 125% scaling on
-its disposable GitHub-hosted Windows runner and runs the three physical-menu
-scenarios. It verifies the effective monitor scale before starting pytest and
-on each AUT's actual monitor, rejects skips/incomplete reports, and restores the
-original scale in `finally`. The job gates packaging and runs even when unit
-jobs fail. Its `win32-scaled-125` artifact contains measured scale JSON, JUnit
-and screenshots. The CI-only setter uses Windows Settings' undocumented DPI
-device-info packets (-3/-4); unsupported runners fail this gate rather than
-reporting a 100% run as 125% coverage. This code is outside the runtime package.
-
-To run the same strict gate locally on a display already configured at 125%:
-
-```powershell
-uv run --locked python -m tests._win32_scaled_acceptance
-```
-
-Local runs only verify the display and never change its scaling.
-
-## Recorder acceptance (KAN-576 / KAN-759)
-
-Run on a controlled interactive Windows desktop, without concurrent user input:
-
-```powershell
-.venv\Scripts\python.exe -m tests._recorder_acceptance
-```
-
-This gate requires a real PASS for hook installation, delayed password/text/unknown
-focus transitions, and record → generate → replay against an owned native AUT.
-The replay test verifies the generated selector's HWND, clears the Edit, executes
-the unmodified generated script and checks the resulting field text. The JUnit
-report is saved to `artifacts/recorder-acceptance.xml` (`--output` overrides it).
-For KAN-759, native classification uses the actual pywin32 TID/PID sequence on
-both the window-owning thread and a worker, checking ordinary Edit, ES_PASSWORD
-Edit and unknown controls. Unit coverage separately exercises list and tuple
-results, including changes to either TID or PID between stability checks.
-Missing tests, skips, failures and errors cannot pass the gate. Ordinary developer
-runs may skip when Windows refuses foreground activation; this is incomplete
-verification, and does not satisfy acceptance. The tests never send activation
-shortcuts or input to a foreign foreground window.
-
-Both transition tests wait for actual native Edit text before changing focus;
-hook callbacks alone do not prove target delivery. The process-isolation test
-checks cumulative text separately for each AUT while the recorder worker remains
-paused. Worker queries pump owner-thread messages and use a bounded wait.
-The controlled AUT restores focus to its Edit on activation. Before switching
-between AUTs, the foreground AUT explicitly allows its declared controller PID
-to activate the next window. This handoff is limited to the two owned AUTs;
-unrelated foreground windows never receive a request. Each AUT is clicked once
-so rapid return visits cannot select existing text through a double-click.
-
-Before pointer input, the isolation test additionally waits for actual native
-hit-testing to identify the expected Edit, checking both its owning PID and
-root HWND. Foreground activation alone is insufficient during asynchronous
-layout/z-order changes. The wait pumps controller messages, recomputes the
-point, and sends no input. A real non-activating overlay regression holds a
-different Edit above the active AUT until the controller processes its close
-message. Persistent obstruction or changed ownership still fails the test;
-an immediate guard remains before the mouse event. `input-target.json` records
-the expected and hit HWND/PID/root/class, geometry and transition samples,
-without reading the obscuring field's contents. CI requires all real recorder
-scenarios to pass without skips and uploads these diagnostics on failure.
-
-The AUT publishes its ready identity atomically. Readers retry missing files
-and Windows read-sharing failures within the existing five-second startup
-budget, checking that the AUT is still alive. Malformed published JSON fails
-immediately; a persistent lock fails at the deadline with the original error.
-Native exclusive-handle regressions cover lock release and permanent blocking.
-
-Replay checks retain stage-specific native/UIA text, HWND/focus, modifier state
-and recorder progress in `recorded.diagnostics.json`. Native WM_GETTEXT reads
-have a 500 ms timeout and require a successful call status; zero characters on
-a successful read means an empty field. Probe errors retain partial evidence
-and earlier stages before the original exception is re-raised.
-
-CI uploads the generated script, diagnostics and JUnit report as
-`windows-component-evidence`, including on failure. Review the
-[PR checks](https://github.com/DolphinSoftEU/DolphinDesktop/pull/69/checks) and
-[CI runs](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml)
-for execution results. Keep run-specific findings in the PR or CI reports;
-merge requires passing current-commit CI and a fully passing interactive gate.
-
-## Code Style
-
-This project uses [ruff](https://docs.astral.sh/ruff/) for linting and formatting, and [mypy](https://mypy-lang.org/) for type checking.
-
-```bash
-# lint
-uv run ruff check .
-
-# format
-uv run ruff format .
-
-# type check
-uv run mypy src/
-```
-
-Pre-commit hooks run these automatically on every commit.
-
-## Submitting a Pull Request
-
-1. Fork the repository and create a feature branch.
-2. Add tests for any new functionality.
-3. Ensure `ruff check .`, `ruff format --check .`, and `mypy src/` all pass.
-4. Open a PR against `master` - CI will run the full matrix automatically.
-
-## Running the sample suites
-
-`tests/` ships runnable integration suites for every stack
-(`tests/framework` is the headless unit suite; `tests/qt`,
-`tests/delphi`, `tests/electron`, `tests/steam`, `tests/mainframe`,
-`tests/oracle_forms` target real or mock apps). These are the closest
-thing to end-to-end validation:
-
-```bash
-# Mainframe (mock TN3270 + pub400 s3270 + native TN5250 + HLLAPI ctypes fake)
-uv run pytest tests/mainframe/ -q
-
-# Oracle Forms mock (compile the Java Swing mock first)
-javac --release 21 tests/oracle_forms/OracleFormsMock.java
-uv run pytest tests/oracle_forms/ -q
-
-# Steam CEF (needs Steam running with -cef-enable-debugging on port 8080)
-uv run pytest tests/steam/ -q
-
-# Electron / VS Code (needs VS Code installed at %LOCALAPPDATA%)
-uv run pytest tests/electron/ -q
-```
-
-If a suite can't run in your environment (no VS Code, no wc3270, no
-Steam), it will `pytest.skip` cleanly — you do not need every stack
-locally to contribute.
-
-## Conventions
-
-Key rules the codebase leans on:
-
-* **Type hints on every public function.**
-* **Docstrings on every public class + method** — one-line summary,
-  then Args / Returns / Raises. Users see these in IDE tooltips.
-* **No stdlib imports in `tests/**/test_*.py`** — the autonomous-
-  library contract. Add a wrapper helper to `dolphin_desktop` first,
-  then use the public export. See `dirname`, `path_join`,
-  `start_thread`, `tcp_reachable`, `which` for the pattern.
-* **No raw `time.sleep()` in tests** — use `sleep()` from
-  `dolphin_desktop` and prefer poll-based `wait_for_*` primitives.
-* **Small, focused commits** — rebase noisy history before opening
-  the PR.
+1. Fork the repository if needed and create a focused feature branch.
+2. Add or update relevant tests and public documentation.
+3. Run the unit, lint, format and type checks, plus affected component/application
+   checks. State prerequisites, results and any skips in the PR.
+4. Target the branch for the intended release: `testpypi-preview` for the preview
+   line or `master` for production-bound changes; follow
+   [RELEASING.md](RELEASING.md) for review and merge policy.
+5. Complete the [PR template](.github/pull_request_template.md) and wait for
+   current-commit CI to pass before merging.
 
 ## Adding a new backend
 
-If you're adding support for a new application stack (say, Delphi VCL
-or Chromium apps with custom CDP quirks), follow the pattern the
-existing stacks established:
+1. Implement `Backend` with an ID, platform, declared capabilities and clear
+   unsupported-operation errors. Built-ins register in `_backend.py`; external
+   packages use the `dolphin_desktop.backends` entry-point group. Follow
+   [Backend capabilities](docs/backend-capabilities.md#writing-a-plugin-backend).
+2. Add the stack facade and `Desktop` factories where appropriate, and export
+   public names from `__init__.py` and `__all__`.
+3. Add deterministic unit tests, controlled component tests where practical and
+   relevant real-target scenarios. Update `tests/conftest.py` for new paths.
+4. Update the [support matrix](docs/support-matrix.md), capability documentation
+   and `docs/guides/<stack>.md` with prerequisites, API examples, limitations and
+   troubleshooting; add navigation in `mkdocs.yml`.
+5. Add a changelog entry. For bundled native code, include source, build inputs
+   and artifact verification rather than shipping an unexplained binary.
 
-1. **Module** `src/dolphin_desktop/_<stack>.py` — public classes
-   modeled after `_cdp.py`, `_oracle_forms.py`, `_mainframe.py`.
-2. **Factory** on `Desktop` (`launch_<stack>`, `attach_<stack>`).
-3. **Register** the backend id in `_backend.py` so
-   `list_backends()` surfaces it.
-4. **Exports** in `__init__.py` (both the import list and `__all__`).
-5. **Sample** `tests/<stack>/` with a mock target (and, where useful,
-   a sample app under `examples/`) plus a real-target test that skips
-   gracefully when unavailable.
-6. **Docs** `docs/<stack>.md` — install, quick start, API surface,
-   backend selection, troubleshooting.
-7. **Changelog** entry under `[Unreleased]` in `CHANGELOG.md`.
+## Reporting bugs and security issues
 
-## Reporting bugs
+For ordinary bugs, use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.yml).
+Include Windows/Python/Dolphin versions, `dolphin doctor` output, a minimal
+reproducer, the affected backend/application and expected versus actual output.
+Include relevant spy or trace output after reviewing it for sensitive data.
 
-Please include:
+Report suspected vulnerabilities privately to `kontakt@dolphinsoft.pl` and
+follow [SECURITY.md](SECURITY.md#reporting-a-vulnerability) for response and
+disclosure policy. Do not file security-sensitive details in a public issue.
 
-* Windows version (`winver`)
-* Python version (`python --version`)
-* dolphin_desktop version (`python -c "import dolphin_desktop; print(dolphin_desktop.__version__)"`)
-* `dolphin doctor` output
-* Minimal reproducer (a short pytest file that hits the bug)
-* Actual output vs. expected
-* If applicable: `dolphin spy` output for the failing UI
+## Code of Conduct and license
 
-## Security issues
-
-Please **do not** file public issues for security problems. Email
-`kontakt@dolphinsoft.pl` with details. You'll get an acknowledgement
-within 48h and a fix window we agree on before public disclosure.
-
-## Code of Conduct
-
-Everyone participating in dolphin-desktop follows the
-[Code of Conduct](CODE_OF_CONDUCT.md). Report issues to
-`kontakt@dolphinsoft.pl`.
-
-## License
-
-By contributing, you agree that your contributions will be licensed
-under the [Apache-2.0 License](LICENSE) that covers the project.
-
-## Architecture
-
-See [docs/architecture.md](docs/architecture.md) for a breakdown of the library's design.
+Follow the [Code of Conduct](CODE_OF_CONDUCT.md); report conduct concerns to
+`kontakt@dolphinsoft.pl`. Contributions are licensed under the project's
+[Apache-2.0 License](LICENSE).
