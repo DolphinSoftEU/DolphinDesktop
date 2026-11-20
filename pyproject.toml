@@ -46,7 +46,7 @@ dolphin-run = "dolphin_desktop._runner:main"
 
 [project.urls]
 Homepage = "https://dolphinsoft.pl"
-Documentation = "https://dolphinsoft.pl"
+Documentation = "https://dolphinsoft.pl/docs"
 Source = "https://github.com/DolphinSoftEU/DolphinDesktop"
 Changelog = "https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CHANGELOG.md"
 Issues = "https://github.com/DolphinSoftEU/DolphinDesktop/issues"
@@ -63,9 +63,16 @@ image = "dolphin_desktop._backend:ImageBackend"
 macos = "dolphin_desktop._backend:MacOSAccessibilityBackend"
 linux = "dolphin_desktop._backend:LinuxATSPIBackend"
 cdp   = "dolphin_desktop._backend:CDPBackend"
+delphi = "dolphin_desktop._backend:DelphiBackend"
+java = "dolphin_desktop._backend:JavaBackend"
+mainframe = "dolphin_desktop._backend:MainframeBackend"
+sap = "dolphin_desktop._backend:SapBackend"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dolphin_desktop"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/SecurityTasks"]
 
 [project.optional-dependencies]
 fast = ["mss>=9.0"]
@@ -108,9 +115,8 @@ qt-tests = [
     "PySide6==6.10.3",
 ]
 dev = [
+    { include-group = "build" },
     "allure-pytest>=2.13",
-    "build>=1.5.0",
-    "hatchling==1.30.1",
     "mypy>=1.10",
     "pre-commit>=3.7",
     "pypdf>=6.21.4",
@@ -119,7 +125,6 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
     "ruff>=0.8",
-    "twine>=7.0.0",
 ]
 
 [tool.uv.dependency-groups]
@@ -169,13 +174,13 @@ timeout = 30
 markers = [
     "slow: marks tests as slow",
     "integration: marks tests requiring a real app process",
-    "unit: deterministic tests without a real AUT, process, or network",
+    "unit: deterministic framework tests without a real AUT or external service",
     "component: tests using a controlled local process or dependency",
     "windows_component: Windows-specific tests using a controlled process",
     "system: tests driving a real AUT through the public API",
     "external: tests requiring a system outside the test process",
     "dolphin_headless: marks tests that require headless desktop mode",
-    "dolphin(timeout): overrides Dolphin runtime options for a test",
+    "dolphin(timeout=..., video_mode=..., headless=...): per-test Dolphin configuration",
     "qt_agent: Qt agent DLL injection tests",
     "qt_qml: QML scene-graph introspection tests (Qt agent)",
     "qt_graphics: QGraphicsView walker tests (Qt agent)",
