@@ -51,10 +51,10 @@ jobs:
           enable-cache: true
 
       - name: Install locked docs dependencies
-        run: uv sync --locked --extra docs
+        run: uv sync --locked --no-default-groups --extra docs
 
       - name: Build MkDocs
-        run: uv run --locked mkdocs build --strict
+        run: uv run --no-sync mkdocs build --strict
 
       - name: Upload build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -89,7 +89,7 @@ jobs:
           enable-cache: true
 
       - name: Install locked docs dependencies
-        run: uv sync --locked --extra docs
+        run: uv sync --locked --no-default-groups --extra docs
 
       - name: Configure git
         run: |
@@ -98,5 +98,6 @@ jobs:
 
       - name: Deploy with mike
         run: |
-          uv run --locked mike deploy --push --update-aliases latest
-          uv run --locked mike set-default --push latest
+          uv run --no-sync mike deploy --push --update-aliases latest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run --no-sync mike set-default --push latest

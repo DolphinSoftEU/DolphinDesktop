@@ -1,4 +1,4 @@
-"""Install and audit a wheel's lowest compatible direct dependencies (KAN-581)."""
+"""Install and audit a wheel's lowest compatible direct dependencies."""
 
 from __future__ import annotations
 
@@ -47,8 +47,12 @@ def wheel_requirements(
     with zipfile.ZipFile(wheel) as archive:
         (metadata_path,) = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
         metadata = email.message_from_bytes(archive.read(metadata_path))
-    available = {canonicalize_name(name) for name in metadata.get_all("Provides-Extra", [])}
-    selected = available.copy() if all_extras else ({canonicalize_name(extra)} if extra else set())
+    available: set[str] = {
+        canonicalize_name(name) for name in metadata.get_all("Provides-Extra", [])
+    }
+    selected: set[str] = (
+        available.copy() if all_extras else ({canonicalize_name(extra)} if extra else set())
+    )
     requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
     active: set[str] = set()
     while True:
