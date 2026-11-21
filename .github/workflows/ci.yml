@@ -53,7 +53,7 @@ jobs:
 
       - name: Upload native reproducibility evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qt-agent-reproducibility
           path: artifacts/qt-agent-reproducibility/
@@ -100,7 +100,7 @@ jobs:
 
       - name: Upload minimum installation and audit evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: minimum-dependencies-${{ matrix.python-version }}-${{ matrix.profile }}
           path: artifacts/minimum/
@@ -166,7 +166,7 @@ jobs:
 
       - name: Upload unit reports and reporter subprocess diagnostics
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unit-evidence-${{ matrix.python-version }}
           path: |
@@ -229,7 +229,7 @@ jobs:
 
       - name: Upload compatibility evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pytest-compatibility-${{ matrix.python-version }}-${{ strategy.job-index }}
           path: |
@@ -336,7 +336,7 @@ jobs:
 
       - name: Upload runner console evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: runner-console-${{ matrix.python-version }}
           path: ${{ runner.temp }}/runner-console/
@@ -362,7 +362,7 @@ jobs:
         run: uv run --no-sync python -m tests._win32_scaled_acceptance
       - name: Upload measured DPI, JUnit and screenshots
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: win32-scaled-125
           path: artifacts/win32-scaled/
@@ -455,7 +455,7 @@ jobs:
 
       - name: Upload component test and recorder replay evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-component-evidence
           path: |
@@ -598,7 +598,7 @@ jobs:
 
       - name: Upload package artifacts
         id: upload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dolphin-desktop-dist-attempt-${{ github.run_attempt }}
           path: release-artifact/
@@ -654,7 +654,7 @@ jobs:
 
       - name: Upload platform installation evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheel-platform-${{ matrix.os }}-${{ matrix.python-version }}
           path: artifacts/wheel-platform/
