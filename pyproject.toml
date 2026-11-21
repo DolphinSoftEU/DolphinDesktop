@@ -97,7 +97,7 @@ all = ["dolphin-desktop[cdp,fast,pytest,vision]"]
 
 [dependency-groups]
 native-build = [
-    "cmake==3.31.10",
+    "cmake==4.4.5",
     "ninja==1.11.1.4",
     "aqtinstall==3.3.0",
     # aqtinstall -> bs4 -> beautifulsoup4 -> soupsieve (CVE-2026-126190).
