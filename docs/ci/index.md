@@ -7,7 +7,7 @@ Dolphin tests need Windows. The most reliable CI setup is an agent running as a 
 Start with visible mode:
 
 ```bash
-python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 pytest tests/ -v --dolphin-backend=uia
 ```
 

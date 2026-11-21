@@ -1,12 +1,12 @@
 # Quickstart
 
 This path takes you from a clean Python environment to a generated Notepad test
-using the [0.2.0 preview](installation.md#preview-installation). Git must be on PATH.
+using [Dolphin 0.2.0 from PyPI](installation.md#pypi-installation).
 
 ## 1. Install
 
 ```bash
-python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 ```
 
 Check the environment:

@@ -16,7 +16,7 @@ pipeline {
     stages {
         stage('Install') {
             steps {
-                bat 'python -m pip install "dolphin-desktop[fast,pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"'
+                bat 'python -m pip install "dolphin-desktop[fast,pytest]==0.2.0"'
             }
         }
 

@@ -33,7 +33,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install
-        run: python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+        run: python -m pip install "dolphin-desktop[pytest]==0.2.0"
 
       - name: Check Dolphin environment
         run: dolphin doctor
@@ -46,7 +46,7 @@ jobs:
 
 ```yaml
       - name: Install
-        run: python -m pip install "dolphin-desktop[fast,pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+        run: python -m pip install "dolphin-desktop[fast,pytest]==0.2.0"
 
       - name: Run tests
         env:
@@ -99,7 +99,7 @@ Use `dolphin-run` only for tests you have verified on a hidden desktop:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
-      - run: python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+      - run: python -m pip install "dolphin-desktop[pytest]==0.2.0"
       - run: dolphin-run pytest tests/smoke/ -v --dolphin-backend=uia
 ```
 

@@ -1,9 +1,9 @@
 # DolphinDesktop
 
 [![PyPI](https://img.shields.io/pypi/v/dolphin-desktop.svg)](https://pypi.org/project/dolphin-desktop/)
-[![Python](https://img.shields.io/badge/python-3.11--3.13-blue.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/testpypi-preview/pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.11--3.13-blue.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/pyproject.toml)
 [![Platform](https://img.shields.io/badge/platform-Windows-informational.svg)](https://github.com/DolphinSoftEU/DolphinDesktop)
-[![CI](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml/badge.svg?branch=testpypi-preview)](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml?query=branch%3Atestpypi-preview)
+[![CI](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml?query=branch%3Amaster)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/LICENSE)
 
 Python test automation for Windows desktop applications: native UIA/Win32,
@@ -11,10 +11,8 @@ SAP GUI, Qt, Electron/CEF, Java Swing, Oracle Forms, Delphi, PowerBuilder,
 mainframe terminals and Office COM. Lazy locators, automatic waits and pytest
 fixtures share a common style, with stack-specific facades where needed.
 
-**Release status:** this README describes the upcoming **0.2.0** release.
-[PyPI currently provides 0.1.0](https://pypi.org/project/dolphin-desktop/);
-0.2.0 is available as development source and TestPyPI previews. See the
-[changelog](https://github.com/DolphinSoftEU/DolphinDesktop/blob/testpypi-preview/CHANGELOG.md)
+**Release:** **0.2.0** — **2026-11-21**. See the
+[changelog](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/CHANGELOG.md)
 for changes from 0.1.0.
 
 ## Requirements
@@ -36,13 +34,12 @@ Install the latest published release from PyPI:
 python -m pip install dolphin-desktop
 ```
 
-For the 0.2.0 API described here, use a preview or install the development branch
-from Git in a dedicated environment (requires Git on PATH):
+Install 0.2.0 with pytest support in a dedicated environment:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 
 dolphin doctor
 dolphin init my-tests --yes
@@ -52,10 +49,9 @@ python -m pytest tests/ -v
 
 The default scaffold creates a Notepad test and a Page Object under `objects/`.
 Run it in the environment where Dolphin was installed. The generated project's
-dependency metadata names `dolphin-desktop`; until 0.2.0 is released, install
-the preview/source explicitly when creating a new environment for that project.
+dependency metadata names `dolphin-desktop`.
 For locked repository development, follow
-[CONTRIBUTING.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/testpypi-preview/CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/CONTRIBUTING.md).
 
 The underlying API can also be used directly:
 
@@ -132,7 +128,7 @@ See the [stack guides](https://dolphinsoft.pl/docs/guides) and
 
 ## Optional extras
 
-The following extras apply to the 0.2.0 source/preview:
+The following extras are available in 0.2.0:
 
 | Extra | Purpose |
 | --- | --- |
@@ -158,7 +154,7 @@ prerequisites; their presence in `tests/` does not establish a passing run on
 every product/version. A skipped test is incomplete verification.
 
 See the [current CI runs](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml)
-and [contributing guide](https://github.com/DolphinSoftEU/DolphinDesktop/blob/testpypi-preview/CONTRIBUTING.md)
+and [contributing guide](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/CONTRIBUTING.md)
 for test categories, setup and desktop acceptance commands.
 
 ## Documentation and development
@@ -167,16 +163,16 @@ for test categories, setup and desktop acceptance commands.
   guides and API reference.
 - [Getting Started](https://dolphinsoft.pl/docs/getting-started) and
   [Quickstart](https://dolphinsoft.pl/docs/quickstart).
-- [0.2.0 documentation sources](https://github.com/DolphinSoftEU/DolphinDesktop/tree/testpypi-preview/docs)
-  for the development branch; hosted documentation may lag these changes.
-- [Contributing](https://github.com/DolphinSoftEU/DolphinDesktop/blob/testpypi-preview/CONTRIBUTING.md)
+- [0.2.0 documentation sources](https://github.com/DolphinSoftEU/DolphinDesktop/tree/v0.2.0/docs)
+  for this release; hosted documentation may lag these changes.
+- [Contributing](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/CONTRIBUTING.md)
   for repository setup, checks and local documentation builds.
 
 Package releases are published by designated project maintainers.
 
 ## Security
 
-See [SECURITY.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/testpypi-preview/SECURITY.md)
+See [SECURITY.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/SECURITY.md)
 for private vulnerability reporting, recorder scope, local control channels
 and artifact redaction limits. Screenshots, videos and generated scripts can
 contain sensitive application data; review them before sharing.

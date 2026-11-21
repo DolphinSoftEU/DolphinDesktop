@@ -5,7 +5,7 @@ Run the TeamCity agent as a logged-in Windows user, not as `SYSTEM`, so UIA can 
 ## Command Line Build Step
 
 ```batch
-python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 dolphin doctor
 pytest tests/ -v --dolphin-backend=uia --tb=short
 ```
@@ -13,7 +13,7 @@ pytest tests/ -v --dolphin-backend=uia --tb=short
 ## With Artifacts
 
 ```batch
-python -m pip install "dolphin-desktop[fast,pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+python -m pip install "dolphin-desktop[fast,pytest]==0.2.0"
 set DOLPHIN_TRACE=on-failure
 set DOLPHIN_VIDEO=keepfailedonly
 pytest tests/ -v --dolphin-screenshot-on-fail --junitxml=test-results.xml
@@ -51,7 +51,7 @@ object DesktopTests : BuildType({
         script {
             name = "Install and run"
             scriptContent = """
-                python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+                python -m pip install "dolphin-desktop[pytest]==0.2.0"
                 dolphin doctor
                 pytest tests/ -v --dolphin-backend=uia --tb=short
             """.trimIndent()

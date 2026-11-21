@@ -8,7 +8,7 @@ VCL 10.4+ automatically provides this mapping was incorrect (KAN-761).
 ## Install and prerequisites
 
 ```powershell
-python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 ```
 
 * Windows and a desktop session appropriate to the operations being tested.

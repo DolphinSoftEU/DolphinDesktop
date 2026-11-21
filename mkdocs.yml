@@ -72,7 +72,7 @@ markdown_extensions:
 
 extra:
   documentation_version: "0.2.0"
-  documentation_preview: true
+  documentation_preview: false
   social:
     - icon: fontawesome/solid/globe
       link: https://dolphinsoft.pl

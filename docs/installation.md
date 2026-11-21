@@ -8,35 +8,27 @@
 
 Dolphin uses Microsoft UI Automation, Win32 APIs, pywin32, and COM. macOS and Linux are not supported runtime targets for the documented desktop automation flow.
 
-## Preview installation
+## PyPI installation
 
-This documentation describes the upcoming **0.2.0** release. The published
-[PyPI release](https://pypi.org/project/dolphin-desktop/) is **0.1.0**, whose
-API and integrations differ. For the API shown here, install the development
-branch in a dedicated environment; Git must be on PATH:
+This documentation describes **0.2.0**, released on **2026-11-21**.
+Install the release from [PyPI](https://pypi.org/project/dolphin-desktop/0.2.0/)
+in a dedicated environment:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 ```
 
 This installs pytest and Allure support with Dolphin's compatible pytest range.
-For repeatable CI, replace `testpypi-preview` in the requirement with a reviewed
-commit SHA, or install an approved wheel from the corresponding preview build.
-Install that preview explicitly again when creating a new environment: generated
-project metadata names `dolphin-desktop` without pinning a particular preview.
+For repeatable CI, pin Dolphin to `0.2.0` and lock the full dependency set.
+Generated project metadata names `dolphin-desktop` without pinning a release.
 
-## Published PyPI release
-
-To install the currently published release rather than the preview:
+To install only the base package:
 
 ```powershell
-python -m pip install dolphin-desktop
+python -m pip install "dolphin-desktop==0.2.0"
 ```
-
-The remaining pages describe 0.2.0. See the release's own documentation and
-changelog when using 0.1.0.
 
 ## Base dependencies
 
@@ -84,7 +76,7 @@ wheel:
 * **Oracle Forms / Java Swing** — the Java Access Bridge ships with the
   Adoptium or Oracle JDK and is enabled with `jabswitch /enable`.
 
-After installing the preview above, add optional extras in the same environment:
+After installing Dolphin above, add optional extras in the same environment:
 
 ```bash
 pip install "dolphin-desktop[vision]"
@@ -161,5 +153,5 @@ uv run --no-sync mkdocs serve
 ```
 
 Use `uv run --no-sync mkdocs build --strict` to check a documentation change.
-The navigation, public base URL, preview notice and API rendering are configured
+The navigation, public base URL, release notice and API rendering are configured
 in `mkdocs.yml`. API pages read signatures from `src/`.

@@ -6,7 +6,9 @@ Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 ## [Unreleased]
 
-Planned release: **0.2.0**. Changes are relative to the public 0.1.0 release.
+## [0.2.0] — 2026-11-21
+
+Changes are relative to the public 0.1.0 release.
 
 ### Added
 

@@ -30,7 +30,7 @@ python -m pip install --upgrade pip
 Base install — always required:
 
 ```powershell
-python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 ```
 
 Verify the install:
@@ -259,8 +259,8 @@ The most common issues, quick fixes:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `dolphin: command not found` | Not in the venv's PATH | Reactivate the venv, then reinstall the preview from [Installation](installation.md#preview-installation) |
-| `RuntimeError: dolphin_desktop[cdp] is not installed` | Playwright missing | Add the `cdp` extra to the installed preview; browser downloads are needed only when launching Playwright's own browser |
+| `dolphin: command not found` | Not in the venv's PATH | Reactivate the venv, then reinstall Dolphin from [Installation](installation.md#pypi-installation) |
+| `RuntimeError: dolphin_desktop[cdp] is not installed` | Playwright missing | Add the `cdp` extra to the installed release; browser downloads are needed only when launching Playwright's own browser |
 | `MainframeError: No ws3270/s3270 binary found` | wc3270 not on PATH | Install wc3270 to `%LOCALAPPDATA%\wc3270\` or pass `ws3270_path=` |
 | `Java Access Bridge not enabled` | JAB configuration incomplete | Set a trusted absolute `JAVA_HOME` with the bridge DLL and `jabswitch.exe`; follow the [Java guide](guides/java.md) |
 | `SapConnection: could not attach` | SAP GUI scripting disabled | Enable in SAP GUI Options → Accessibility → Scripting → Enable scripting |

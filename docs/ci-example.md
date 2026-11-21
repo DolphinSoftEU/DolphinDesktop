@@ -1,7 +1,7 @@
 # Windows UI workflow example
 
 This workflow belongs in your automation project. It runs tests against an
-installed Dolphin preview and your prepared application; it is separate from
+installed Dolphin release and your prepared application; it is separate from
 the library's own unit/component CI.
 
 ## Prepare the runner
@@ -49,10 +49,10 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
-      - name: Install the documented preview
+      - name: Install Dolphin 0.2.0
         run: |
           python -m venv .venv
-          .\.venv\Scripts\python.exe -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
+          .\.venv\Scripts\python.exe -m pip install "dolphin-desktop[pytest]==0.2.0"
       - name: Check environment
         run: .\.venv\Scripts\dolphin.exe doctor
       - name: Run desktop tests sequentially
@@ -75,9 +75,8 @@ jobs:
           retention-days: 7
 ```
 
-For a reproducible run, replace `testpypi-preview` with a reviewed commit SHA
-or install an approved wheel. The branch requirement above follows the current
-preview; it is not a dependency lock. See [Installation](installation.md#preview-installation).
+The example pins Dolphin to `0.2.0`. For reproducible runs, also lock the full
+dependency set. See [Installation](installation.md#pypi-installation).
 
 The concurrency group serializes this workflow's runs within the repository.
 Reserve the same desktop across other workflows too. Use `pytest-xdist` only
