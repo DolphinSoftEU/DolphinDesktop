@@ -241,16 +241,16 @@ if app.uses_qt_quick():
     app.window(title="Trading").qml("loginButton").click()
 ```
 
-## Real-world Qt apps validated
+## Real-world Qt detection targets
 
-The library is exercised against these production Qt apps in
-`tests/qt/test_qt_real_apps.py`:
+Examples of Qt applications for checking detection in your environment:
 
 - **AMD Radeon Software** (Qt 6) — GPU control panel.
 - **AMD Ryzen Master** (Qt 6) — CPU monitoring.
 - **Logitech G HUB** (Qt 5) — gaming peripheral software.
 
-Tests are skipped automatically when the target app isn't running.
+Verify detection against the installed application version. Successful detection
+does not establish full UI compatibility.
 
 ## Examples
 

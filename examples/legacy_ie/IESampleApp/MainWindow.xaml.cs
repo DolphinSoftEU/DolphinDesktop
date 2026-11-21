@@ -47,6 +47,7 @@ public partial class MainWindow : Window
         <html>
         <head>
           <meta charset="UTF-8">
+          <meta http-equiv="X-UA-Compatible" content="IE=edge">
           <title>IE/Trident Form - Dolphin sample</title>
           <style>
             body { font-family: Segoe UI, sans-serif; padding: 24px; }
@@ -64,10 +65,10 @@ public partial class MainWindow : Window
           <input id="cityInput" type="text" aria-label="City" placeholder="Enter city" />
           <br/>
           <button id="submitBtn"
-                  onclick="submit()">Submit</button>
-          <p id="result"></p>
+                  onclick="submitForm()">Submit</button>
+          <p id="result" role="status" aria-live="polite"></p>
           <script>
-            function submit() {
+            function submitForm() {
               var name = document.getElementById('nameInput').value;
               var city = document.getElementById('cityInput').value;
               document.getElementById('result').innerText =

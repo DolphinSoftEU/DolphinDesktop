@@ -71,6 +71,11 @@ dolphin spy [--window TITLE] [--exact TITLE] [--class CLASS] [--pid PID]
             [--mainframe HOST:PORT] [--session-type {3270,5250}]
 ```
 
+For remote terminal TLS or custom trust settings, use the Python
+[Mainframe API](../guides/mainframe.md#transport-security). The CLI has no TLS
+configuration flags. Its loopback endpoint can also be the local end of a
+separately verified tunnel.
+
 Stack-specific flags:
 
 | Option | Description |

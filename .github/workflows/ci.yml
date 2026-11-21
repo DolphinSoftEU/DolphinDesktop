@@ -327,7 +327,7 @@ jobs:
             $name = "test_runner_preserves_result_and_controls_its_tree[interrupt-$launcher]"
             $cases = $results.SelectNodes("//testcase[@name='$name']")
             if ($cases.Count -ne 1 -or $cases[0].SelectNodes("skipped|failure|error").Count -ne 0) {
-              throw "KAN-753 requires a real passing Ctrl+Break regression: $name"
+              throw "Runner console acceptance requires a real passing Ctrl+Break regression: $name"
             }
           }
           if ($results.SelectNodes("//testcase/skipped").Count -ne 0) {
@@ -430,20 +430,20 @@ jobs:
         shell: pwsh
         run: |
           $report = Join-Path $env:RUNNER_TEMP "component-results.xml"
-          uv run --locked pytest -m "(component or windows_component) and not qt_agent" -q --junitxml $report --basetemp "$env:RUNNER_TEMP/component-pytest"
+          uv run --locked pytest -m "(component or windows_component) and not (qt_agent or qt_desktop)" -q --junitxml $report --basetemp "$env:RUNNER_TEMP/component-pytest"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
           [xml]$results = Get-Content -Raw -LiteralPath $report
           $cdp = $results.SelectNodes("//testcase[@name='test_parallel_sessions_keep_real_target_and_profile_isolation']")
           if ($cdp.Count -ne 1 -or $cdp[0].SelectNodes("skipped|failure|error").Count -ne 0) {
-            throw "KAN-475 requires a passing real Chromium handshake and profile-isolation regression"
+            throw "CDP acceptance requires a passing real Chromium handshake and profile-isolation regression"
           }
           foreach ($mode in @("normal-close", "owner-hard-kill", "owner-hard-kill-venv", "normal-exit", "two-owners")) {
             $name = "test_hidden_owner_lifecycle[$mode]"
             $cases = $results.SelectNodes("//testcase[@name='$name']")
             if ($cases.Count -ne 1 -or $cases[0].SelectNodes("skipped|failure|error").Count -ne 0) {
-              throw "KAN-768 requires a real passing hidden-owner lifecycle regression: $name"
+              throw "Hidden-owner acceptance requires a real passing lifecycle regression: $name"
             }
           }
           foreach ($name in @("test_real_hook_installation_and_cleanup", "test_real_hook_delayed_password_text_transitions", "test_real_record_generate_replay_targets_native_edit", "test_real_hook_delayed_events_stay_in_target_process", "test_real_pointer_readiness_waits_for_native_hit_testing")) {
@@ -473,6 +473,17 @@ jobs:
 
       - name: Verify Qt agent test bindings
         run: uv run --no-sync python -c "import PyQt5, PySide6"
+
+      - name: Qt UIA component regressions
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "qt-desktop-results.xml"
+          uv run --no-sync pytest tests/qt -m qt_desktop -q --junitxml $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$results = Get-Content -Raw -LiteralPath $report
+          if ($results.SelectNodes("//testcase").Count -ne 24 -or $results.SelectNodes("//testcase/skipped").Count -ne 0) {
+            throw "Qt UIA acceptance requires all 24 controlled Qt5/Qt6 cases to pass"
+          }
 
       - name: Qt agent integration and security tests
         shell: pwsh

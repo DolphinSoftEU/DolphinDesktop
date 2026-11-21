@@ -18,7 +18,7 @@ code is portable between them.
 ```python
 from dolphin_desktop import Desktop, AID, Secret
 
-with Desktop().mainframe(host="tso.host.example", session_type="3270", tls=True) as term:
+with Desktop().mainframe(host="tso.host.example", port=992, session_type="3270", tls=True) as term:
     term.wait_ready()
     term.field_after("USERID").type_text("MYUSER")
     term.field_after("PASSWORD").type_text(Secret("s3cret"))
@@ -31,9 +31,8 @@ Two habits worth adopting from the start:
 
 * **`tls=True`** — a terminal session carries the sign-on in the clear
   otherwise (see [Transport security](#transport-security)).
-* **`Secret(...)`** around a password — the emulator still receives the
-  real characters, but the value is masked in every log, trace, crash
-  dump and report.
+* **`Secret(...)`** around a password — marks the value for Dolphin's
+  diagnostic redaction while sending the actual value to the host.
 
 ## Transport security
 
@@ -54,15 +53,17 @@ connection to a remote host** and asks you to choose:
 ```python
 # Verified TLS — certificate chain AND host name are checked. No fallback:
 # a failed handshake raises, it never silently drops to plaintext.
-term = desktop.mainframe(host="mf.example", session_type="3270", tls=True)
+term = desktop.mainframe(host="mf.example", port=992, session_type="3270", tls=True)
 
-# Private CA: trust an extra PEM bundle on top of the system store.
-term = desktop.mainframe(host="mf.example", tls=True, tls_cafile=r"C:\ca\corp-root.pem")
+# Native TN5250 with an explicit trusted CA bundle.
+term = desktop.mainframe(host="ibmi.example", port=992, session_type="5250",
+                         backend="tn5250", tls=True,
+                         tls_cafile=r"C:\ca\corp-root.pem")
 
 # Native TN5250 with a caller-built context (must still verify the peer).
 import ssl
 ctx = ssl.create_default_context(cafile=r"C:\ca\corp-root.pem")
-term = desktop.mainframe(host="ibmi.example", session_type="5250",
+term = desktop.mainframe(host="ibmi.example", port=992, session_type="5250",
                          backend="tn5250", tls=True, tls_context=ctx)
 
 # An SSH/stunnel tunnel terminated on localhost is exempt (loopback).
@@ -97,31 +98,22 @@ matters.
 
 ### s3270 backend (open source, default)
 
-**Windows** — download the wc3270 portable ZIP:
+On Windows, obtain wc3270 from the [upstream x3270 project](https://x3270.bgp.nu/)
+and locate its `ws3270.exe`. Pass its absolute path as `ws3270_path=` for a
+non-standard installation. The library also checks PATH and well-known wc3270
+installation directories.
 
-```powershell
-# from a browser or:
-Invoke-WebRequest `
-  https://downloads.sourceforge.net/project/x3270/x3270/4.5ga5/wc3270-4.5ga5-noinstall-64.zip `
-  -OutFile $env:TEMP\wc3270.zip
-Expand-Archive $env:TEMP\wc3270.zip -DestinationPath "$env:LOCALAPPDATA\wc3270"
-```
+For a reproducible build, use the archive version and SHA-256 check pinned in
+the source checkout's `.github/workflows/ci.yml`. A public network host is not
+needed for the controlled protocol example in `examples/mainframe/`.
 
-The `_find_s3270()` probe auto-detects `%LOCALAPPDATA%\wc3270\ws3270.exe`
-and the standard Program Files paths. Pass `ws3270_path=` explicitly to
-`Desktop.mainframe()` for non-standard installs.
+TLS trust follows the installed emulator build. In particular, Windows
+Schannel builds use the Windows certificate store; do not assume that passing
+a PEM CA file configures the same trust behavior as native Python TN5250 TLS.
+Configure the emulator's supported verified trust mechanism for the test host.
 
-**Linux/macOS** — dolphin itself runs on Windows only; use these
-instructions to prepare a remote/CI host or to work with the
-pure-protocol pieces. Install via package manager:
-
-```bash
-# Debian/Ubuntu
-sudo apt install x3270
-
-# macOS
-brew install x3270
-```
+The native `tn5250` backend needs no emulator executable. Its live-host
+write/submit limitation is described below.
 
 ### HLLAPI backend (enterprise emulators)
 
@@ -137,12 +129,11 @@ System32. Missing, relative or unusable paths raise `MainframeError`:
 | `PCSHLL32.DLL` | IBM Personal Communications (PCOMM) |
 | `EHLAPI32.DLL` | Attachmate / Rocket Reflection |
 | `WHLAPI32.DLL` | Older Rocket versions |
-| `PCSHLL.DLL` | Legacy 16-bit shims |
 
 If the configured path cannot be loaded, the backend raises a clear error. The DLL
 must be a **32-bit or 64-bit build matching the Python interpreter**
-(a 64-bit Python cannot load a 32-bit DLL). PCOMM historically ships
-32-bit only — use a 32-bit Python for those installs.
+(a 64-bit Python cannot load a 32-bit DLL). Check the configured vendor DLL's
+architecture rather than inferring it from the filename.
 
 ## API surface
 
@@ -150,7 +141,7 @@ must be a **32-bit or 64-bit build matching the Python interpreter**
 
 | Method | Purpose |
 |---|---|
-| `connect(host, port, session_type, timeout)` | Open the session. Called automatically by `Desktop.mainframe(connect=True)`. |
+| `connect(host, port, *, session_type, timeout)` | Open the session. Called automatically by `Desktop.mainframe(connect=True)`. |
 | `disconnect()` | Idempotent teardown. |
 | `is_connected()` | Session-live probe. |
 | `screen() -> TerminalScreen` | Fresh snapshot of the presentation space. |
@@ -209,111 +200,59 @@ Bound to a specific `(row, col, length)`.
 | `AID.PA1` / `PA2` / `PA3` | Program Attention keys — **3270 only**. The `s3270` and `hllapi` backends send them; the native `tn5250` backend raises, because 5250 has no equivalent key to substitute. |
 | `AID.pf(n)` | `"PF1"` .. `"PF24"` |
 
-## pub400.com — public IBM i demo host
+## Choosing a live IBM i host
 
-pub400.com is a public **IBM i** (formerly AS/400) host on port 23. It
-accepts free sign-ups and is safe for automation experiments.
+An IBM i host uses TN5250. A successful NVT banner through a TN3270 emulator
+is not evidence of 5250 support. Select `backend="tn5250"` for the native
+read/negotiation path, or an appropriate HLLAPI emulator for write-critical
+flows. Configure the host, port and verified TLS trust for your environment.
 
-```python
-with Desktop().mainframe(host="pub400.com", session_type="3270") as term:
-    term.wait_ready()
-    print(term.text())
-```
+For a reproducible local protocol example without an external IBM system,
+use `examples/mainframe/test_mainframe.py` in the source checkout.
 
 ## Native TN5250 backend status
 
-The pure-Python TN5250 backend (`backend="tn5250"`) provides:
-
-* **Correct TN5250 telnet negotiation** (BINARY + EOR + TERMINAL-TYPE as
-  IBM-3477-FC + NEW-ENVIRON). No NVT fallback.
-* **Complete WriteToDisplay parser**: SBA, IC, RA, SF orders, plus
-  inline display-attribute bytes (0x20-0x3F range), each of which
-  consumes one screen cell.
-* **Start-Field parsing** with correct writable classification: an SF
-  order marks an INPUT field by definition (5250 protocol); only the
-  bypass bit (FFW hi 0x80) marks a display-only field. Pub400's user
-  and password inputs are correctly detected as writable.
-* **Screen buffer read** with pixel-perfect alignment on pub400's
-  sign-on: `Your user name:` is contiguous on row 5 col 1,
-  `Password (max. 128):` on row 6 col 1, etc.
-
-The read side — screens, fields, cursor — is production-ready.
+The pure-Python TN5250 backend (`backend="tn5250"`) implements Telnet
+negotiation (BINARY, EOR, TERMINAL-TYPE and NEW-ENVIRON), WriteToDisplay
+parsing for SBA/IC/RA/SF orders and inline display attributes, field detection
+and screen/cursor reads. It does not use NVT as a 5250 fallback.
 
 **Known limitations:**
 
-* **The write/submit path is unverified against live IBM i hosts.**
-  Client-to-host input records (RIF response with typed field data)
-  build correctly at the byte level and follow RFC 1205 (GDS record
-  type, opcode, payload structure), but live hosts such as pub400 do
-  not visibly react to Enter/PF keys — there may be a flags or
-  Save/Restore Screen precondition specific to IBM i's TN5250 server
-  that the current implementation does not satisfy. For write-critical
-  5250 flows, use the `hllapi` backend with an enterprise emulator.
-* **No Write Structured Field (WSF) support** — Query, Set Reply Mode,
-  Read Partition Query all fall through as unhandled. This means
-  advanced Forms features (queries at cursor position, dynamic menus)
-  are not driven, but they are not required for the standard sign-on
-  and menu-navigation flow.
+* **The write/submit path is unverified against live IBM i hosts.** Unit
+  checks of generated input records do not establish that a host processes
+  Enter/PF keys or updates the intended fields. Use HLLAPI with a prepared
+  enterprise emulator for write-critical 5250 flows and validate that setup.
+* **Write Structured Field (WSF) support is absent.** Hosts requiring those
+  commands need a different backend or additional implementation.
 
-## pub400 through the s3270 backend — NVT fallback caveat
+The `s3270` backend supports 3270 only. `session_type="5250"` is rejected;
+select `tn5250` or HLLAPI for IBM i rather than relying on raw Telnet/NVT.
 
-IBM i speaks **TN5250** natively. ws3270 only speaks **TN3270**, so
-the negotiation degrades to **NVT** (raw telnet). In NVT mode:
-
-* Reading the screen works — `screen()`, `text()`, `field_after()`,
-  `contains()`, `find()` all behave normally.
-* Writing single characters works — the host echoes them back and the
-  cursor advances.
-* **Positional `move_cursor`, field-level `TerminalField.type_text`,
-  and AID keys (Enter/PF) do NOT trigger form submissions** — pub400
-  ignores them because there is no 5250 record-descriptor to respond
-  to.
-
-For field-level 5250 **read** automation against pub400 use the shipped
-**native TN5250 backend** (`backend="tn5250"` — see
-[Native TN5250 backend status](#native-tn5250-backend-status) above);
-for write-critical 5250 flows use the `hllapi` backend with an
-enterprise emulator, since the native backend's write/submit path is
-unverified against live IBM i hosts.
-Against a real 3270 host (z/OS TSO, CICS) all positional operations
-work through s3270 — the NVT degradation is pub400-specific.
-
-The test suite in `tests/mainframe/pub400/` exercises
-what NVT-mode *does* support:
-
-```
-test_ws3270_installed                          PASS
-test_session_is_connected                      PASS
-test_screen_size                               PASS
-test_sign_on_screen_contains_pub400_banner     PASS
-test_sign_on_screen_has_user_prompt            PASS
-test_cursor_starts_in_user_field               PASS
-test_field_after_user_name_label               PASS
-test_screen_snapshots_are_stable               PASS
-test_typed_char_is_echoed                      PASS
-test_terminal_screen_line_and_text_at          PASS
-test_terminal_screen_find                      PASS
-```
+Controlled local round trips are available in `tests/mainframe/mock_tn3270/` and are also used by
+`examples/mainframe/test_mainframe.py`. A local protocol run does not establish
+compatibility with a particular external IBM host or emulator configuration.
 
 ## Backend selection
 
 ```python
 # Default — s3270 subprocess (3270 hosts)
-term = desktop.mainframe(host="host.example", session_type="3270")
+term = desktop.mainframe(host="host.example", tls=True, session_type="3270")
 
 # Explicit s3270 with custom binary path
 term = desktop.mainframe(
-    host="host.example",
+    host="host.example", tls=True,
     ws3270_path=r"D:\tools\wc3270\ws3270.exe",
     model="3279-2",           # 24x80 instead of 43x80
 )
 
 # Native TN5250 — for IBM i / AS400 hosts (pub400, banks, ERP AS400)
 term = desktop.mainframe(
-    host="pub400.com",
-    port=23,
+    host="ibmi.example",
+    port=992,
     session_type="5250",
     backend="tn5250",
+    tls=True,
 )
 # Pure-Python client, zero external dependency. Negotiates real 5250
 # (not NVT fallback like s3270). Parses WriteToDisplay commands into
@@ -326,12 +265,6 @@ term = desktop.mainframe(
     hllapi_dll_path=r"C:\Program Files\IBM\Personal Communications\PCSHLL32.DLL",
 )
 
-# HLLAPI — explicit DLL
-term = desktop.mainframe(
-    backend="hllapi",
-    session_id="A",
-    hllapi_dll_path=r"C:\Program Files\IBM\Personal Communications\PCSHLL32.DLL",
-)
 ```
 
 The `host`, `port`, and `session_type` arguments are recorded on the
@@ -341,7 +274,7 @@ manages the network side there.
 ## Common failure modes
 
 **`No ws3270/s3270 binary found`**
-: Install wc3270 (Windows) or `x3270` (Linux/macOS) — see install
+: Install wc3270 on Windows — see the install
   section. Pass `ws3270_path=` for non-standard installs.
 
 **`No HLLAPI-compatible DLL found`**
@@ -358,11 +291,11 @@ manages the network side there.
 **`MoveCursor() is not valid in NVT mode`**
 : The host did not accept TN3270/TN3270E negotiation — connection
   fell back to plain telnet. `move_cursor()` and positional AID keys
-  are unavailable; only sequential typing works. Almost always means
-  the target is a 5250-only IBM i host (see pub400 caveat above).
+  are unavailable; only sequential typing works. Check the host's protocol;
+  a 5250-only IBM i host requires `tn5250` or HLLAPI.
 
 ## See also
 
-* `tests/mainframe/pub400/` — live integration tests.
-* [x3270 project](http://x3270.bgp.nu/) — upstream emulator suite.
+* `tests/mainframe/mock_tn3270/` — controlled local protocol regressions.
+* [x3270 project](https://x3270.bgp.nu/) — upstream emulator suite.
 * [EHLLAPI reference (IBM)](https://www.ibm.com/docs/en/personal-communications) — HLLAPI function-code table.

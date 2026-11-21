@@ -10,7 +10,7 @@ Dolphin includes Java Access Bridge helpers for Swing and AWT applications on Wi
   is already enabled. Enabling it also requires `bin\jabswitch.exe`.
   Dolphin loads JAB exclusively from this `JAVA_HOME\bin`: registry discovery,
   `System32`, the working directory and `PATH` do not supply a fallback DLL.
-- A 64-bit Java runtime is recommended.
+- A 64-bit Python interpreter is required to load this 64-bit bridge DLL.
 
 ## Launch
 

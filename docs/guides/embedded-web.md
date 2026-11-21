@@ -31,14 +31,17 @@ and has no extra dependency.
 ## Install
 
 ```powershell
-pip install "dolphin-desktop[cdp]"
-playwright install chromium
+# Install Dolphin with CDP support:
+python -m pip install "dolphin-desktop[cdp]"
 ```
 
-The `[cdp]` extra pulls in Playwright; `playwright install chromium`
-downloads a browser used for Playwright's protocol implementation.
-Attempting to use CDP without the extra raises a `RuntimeError`
-with these exact install instructions (never a bare `ImportError`).
+The `[cdp]` extra installs Playwright's client and driver. Connecting to an
+existing Electron, CEF or WebView2 debug endpoint uses that application's
+Chromium engine; a separate Playwright browser download is not required.
+Run `python -m playwright install chromium` only for a test or fixture that
+launches Playwright's own Chromium, such as the local `examples/cdp/` demo.
+See [PyPI installation](../installation.md#pypi-installation) before
+adding extras. Missing CDP dependencies produce an installation hint.
 
 ## Quick start
 
@@ -182,8 +185,7 @@ for i, p in enumerate(cdp.pages()):
 owns_cs = "Counter-Strike" in cdp.evaluate("() => document.body.innerText")
 ```
 
-**Steam gotchas** (see also
-`tests/steam/test_steam_cdp.py`):
+**Steam gotchas**:
 
 * Launching a second `steam.exe` normally forwards to the running client
   **without** re-processing CLI args — so the debug flag is silently
@@ -266,8 +268,7 @@ drives the DOM (form fills, click through a Shadow DOM component).
 
 ## See also
 
-* `tests/electron/test_vscode_cdp.py` — full
-  integration test suite (workbench interaction + Shadow DOM piercing).
+* `examples/cdp/test_cdp.py` — public CDP example using a local page.
 * `docs/guides/electron.md` — Electron via plain UIA when it does work.
 * `docs/guides/image-based.md` — last-resort fallback when nothing else sees the
   element.

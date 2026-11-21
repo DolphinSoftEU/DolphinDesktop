@@ -1787,7 +1787,7 @@ class CDPLocator:
             ) from exc
 
     def value(self, *, timeout: float = 5.0) -> str:
-        """Return the ``value`` of an <input>/<textarea>/<select>."""
+        """Return the ``value`` of an ``<input>``, ``<textarea>`` or ``<select>``."""
         try:
             return self._resolve().input_value(timeout=timeout * 1000)
         except CDPStalePageError:

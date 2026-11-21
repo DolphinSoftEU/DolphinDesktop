@@ -7,7 +7,7 @@ Dolphin tests need Windows. The most reliable CI setup is an agent running as a 
 Start with visible mode:
 
 ```bash
-pip install dolphin-desktop pytest
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 pytest tests/ -v --dolphin-backend=uia
 ```
 
@@ -21,7 +21,7 @@ dolphin-run pytest tests/smoke/ -v --dolphin-backend=uia
 
 | Requirement | Reason |
 | --- | --- |
-| Windows Server 2019/2022 or Windows 10/11 | Dolphin depends on Windows UIA, Win32, and COM |
+| Windows 10/11 or a prepared Windows Server 2022+ desktop session | Dolphin depends on Windows UIA, Win32, and COM |
 | Python 3.11, 3.12, or 3.13 | Package requirement |
 | Agent runs as a normal logged-in user | UIA cannot drive another user's desktop |
 | Same privilege level as the app under test | Non-elevated tests cannot automate elevated apps |

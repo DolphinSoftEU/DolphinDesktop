@@ -30,7 +30,7 @@ python -m pip install --upgrade pip
 Base install — always required:
 
 ```powershell
-pip install dolphin-desktop pytest
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 ```
 
 Verify the install:
@@ -39,11 +39,10 @@ Verify the install:
 dolphin doctor
 ```
 
-`dolphin doctor` prints a table of every automation subsystem (UIA,
-Win32, JAB, CDP, SAP, image OCR) and whether each is functional. For
-rows that name an extra (`[cdp]`, `[vision]`), a ❌ tells you which
-extra to install (see next step); the other stacks work from the base
-install once their external prerequisite is in place.
+`dolphin doctor` reports Python, package dependencies and local accessibility
+prerequisites. A successful probe does not establish compatibility with your
+application or a remote service. Install the optional extra and external
+runtime required by your stack, then run a focused test against that target.
 
 ## 3 — Install the extra for your stack
 
@@ -54,8 +53,8 @@ Pick the row that matches the app you want to test:
 | Windows GUI (WPF, WinForms, UWP) | *(base install is enough)* | [Quickstart](quickstart.md) |
 | **SAP GUI Scripting** | *(base install)* | [SAP guide](guides/sap.md) |
 | **Qt 5 / Qt 6** (widgets + QML) | *(base install)* | [Qt guide](guides/qt.md) |
-| **Electron / CEF** (VS Code, Steam, Spotify…) | `pip install "dolphin-desktop[cdp]"` + `playwright install chromium` | [Embedded web](guides/embedded-web.md) |
-| **Java Swing / Oracle Forms** | *(base install; JAB is auto-enabled)* | [Oracle Forms](guides/oracle-forms.md) |
+| **Electron / CEF** (VS Code, Steam, Spotify…) | Add `[cdp]`; enable remote debugging on the target app | [Embedded web](guides/embedded-web.md) |
+| **Java Swing / Oracle Forms** | *(base install; configure an absolute `JAVA_HOME` with JAB)* | [Oracle Forms](guides/oracle-forms.md) |
 | **Mainframe 3270** (z/OS, CICS) | *(base install; needs wc3270)* | [Mainframe](guides/mainframe.md) |
 | **Mainframe 5250** (IBM i, AS/400) | *(base install; pure-Python)* | [Mainframe](guides/mainframe.md) |
 | **Delphi / VCL** (RAD Studio, Lazarus) | *(base install)* | [Delphi](guides/delphi.md) |
@@ -70,10 +69,10 @@ pip install "dolphin-desktop[cdp,vision]"
 
 ## 4 — Your first test, per stack
 
-Each snippet is a **runnable pytest file** — save it as
-`test_first.py`, then `pytest test_first.py -v`. Every example returns
-`assert True` on success so you can confirm dolphin talks to the
-platform correctly before wiring your own selectors.
+Each snippet is a minimal pytest pattern for a prepared application. Replace
+example paths, hosts and selectors with your own settings before running it.
+For local demos that need no business-system credentials, see `examples/` in
+the source checkout. A skipped test means its target was not verified.
 
 > **You supply the path to your app.** dolphin_desktop never
 > hardcodes a location for your executable — every `launch_*(...)`
@@ -91,7 +90,8 @@ def test_notepad_launches():
     with Desktop().launch("notepad.exe") as app:
         win = app.window(class_name="Notepad")
         win.wait_until_ready(timeout=5)
-        assert "Notepad" in win.title()
+        assert win.is_visible()
+        assert win.title()
 ```
 
 ### SAP GUI
@@ -168,34 +168,26 @@ def test_forms_reachable():
         app.close()
 ```
 
-For local testing without a Forms server, see the working Java Swing
-mock in `tests/oracle_forms/`.
+For a public Java Access Bridge example, see `examples/java_swing/`.
 
 ### Mainframe 3270 (z/OS TSO, CICS)
 
-Install [wc3270](https://x3270.miraheze.org/wiki/Download) first —
+Install [wc3270](https://x3270.bgp.nu/) first —
 dolphin auto-detects `ws3270.exe` in `%LOCALAPPDATA%\wc3270\` and
 `C:\Program Files\wc3270\`.
 
 ```python
-import pytest
-from dolphin_desktop import Desktop, MainframeError, which
+from dolphin_desktop import Desktop
 
 def test_3270_reachable():
-    if which("ws3270") is None:
-        pytest.skip("install wc3270: see docs/guides/mainframe.md")
-    try:
-        term = Desktop().mainframe(
-            host="your.3270.host",
-            session_type="3270",
-        )
-    except MainframeError as exc:
-        pytest.skip(f"host unreachable: {exc}")
-    try:
+    with Desktop().mainframe(
+        host="your.3270.host",
+        port=992,
+        session_type="3270",
+        tls=True,
+    ) as term:
         term.wait_ready(timeout=10)
         assert term.screen().rows in (24, 43)
-    finally:
-        term.disconnect()
 ```
 
 ### Delphi / VCL (Lazarus, RAD Studio)
@@ -232,22 +224,23 @@ image-based fallback in 0.2.0.
 
 ### Mainframe 5250 (IBM i)
 
-Pure-Python — no external binary required.
+Pure Python, with no emulator binary required. Supply a prepared IBM i host,
+its verified TLS endpoint and expected sign-on text. See the native TN5250
+limitations in the [mainframe guide](guides/mainframe.md#native-tn5250-backend-status).
 
 ```python
-import pytest
-from dolphin_desktop import Desktop, tcp_reachable
+from dolphin_desktop import Desktop
 
 def test_ibm_i_reachable():
-    if not tcp_reachable("pub400.com", 23, timeout=3):
-        pytest.skip("no network to pub400.com")
     with Desktop().mainframe(
-        host="pub400.com",
+        host="your.ibmi.host",
+        port=992,
         session_type="5250",
         backend="tn5250",
+        tls=True,
     ) as term:
         term.wait_ready(timeout=10)
-        assert "PUB400" in term.text()
+        assert "Sign On" in term.text()  # Adapt to your host's sign-on screen.
 ```
 
 ## 5 — Run
@@ -265,10 +258,10 @@ The most common issues, quick fixes:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `dolphin: command not found` | Not in the venv's PATH | Reactivate the venv, then `pip install --upgrade dolphin-desktop` |
-| `RuntimeError: dolphin_desktop[cdp] is not installed` | Playwright missing | `pip install "dolphin-desktop[cdp]" && playwright install chromium` |
+| `dolphin: command not found` | Not in the venv's PATH | Reactivate the venv, then reinstall Dolphin from [Installation](installation.md#pypi-installation) |
+| `RuntimeError: dolphin_desktop[cdp] is not installed` | Playwright missing | Add the `cdp` extra to the installed release; browser downloads are needed only when launching Playwright's own browser |
 | `MainframeError: No ws3270/s3270 binary found` | wc3270 not on PATH | Install wc3270 to `%LOCALAPPDATA%\wc3270\` or pass `ws3270_path=` |
-| `Java Access Bridge not enabled` | JAB switch off | Run `jabswitch /enable` in an admin PowerShell, then relaunch the test |
+| `Java Access Bridge not enabled` | JAB configuration incomplete | Set a trusted absolute `JAVA_HOME` with the bridge DLL and `jabswitch.exe`; follow the [Java guide](guides/java.md) |
 | `SapConnection: could not attach` | SAP GUI scripting disabled | Enable in SAP GUI Options → Accessibility → Scripting → Enable scripting |
 | Locator times out on a visible element | UIA / JAB tree not published yet | Increase `timeout=` on `wait_for()` or use `dolphin doctor` to verify UIA is healthy |
 | `SetCursorPos: No error message is available` | RDP or background focus | Use the JAB-direct path (`item.type_text` on Forms) or move to `CDPLocator` for web content |
@@ -284,4 +277,4 @@ Troubleshooting section of each guide under `docs/guides/`.
 * Per-stack guides linked in the install table above.
 
 Contributing a stack that isn't listed here? PRs welcome —
-the per-stack suites under `tests/` show the pattern.
+the public demos under `examples/` show the pattern.

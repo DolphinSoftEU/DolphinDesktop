@@ -6,8 +6,11 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug! Please include as much of the
-        info below as you can — it dramatically speeds up the fix.
+        Include a minimal reproducer and the versions below.
+        Report suspected vulnerabilities privately, following
+        [SECURITY.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/SECURITY.md).
+        Remove credentials, personal information and sensitive application
+        content from code, logs, screenshots and other attachments.
   - type: input
     id: dolphin-version
     attributes:
@@ -42,10 +45,12 @@ body:
         - "Qt 5 / Qt 6"
         - "Electron / CEF (CDP)"
         - "Java Swing / Oracle Forms (JAB)"
+        - "Delphi VCL / Lazarus LCL"
         - "Mainframe 3270 (s3270)"
         - "Mainframe 5250 (native TN5250)"
         - "HLLAPI (PCOMM / Attachmate / Rocket)"
         - "Image-based / OCR"
+        - "Office (Excel / Word / PowerPoint)"
         - "CLI / pytest plugin / other"
     validations:
       required: true

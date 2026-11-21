@@ -14,6 +14,8 @@ class NotepadPage:
     def __init__(self, window: Window) -> None:
         self._win = window
         self._editor = window.get_by_role("Document")
+        if not self._editor.exists():
+            self._editor = window.get_by_role("Edit")
 
     def type_text(self, text: str) -> "NotepadPage":
         self._editor.click()

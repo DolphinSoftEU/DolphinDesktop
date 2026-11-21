@@ -1,8 +1,12 @@
 """Examples: WPF application automation.
 
 Demonstrates AutomationId-based selectors, combo box, list, and check box.
-Replace 'MyWpfApp.exe' with an actual WPF app path.
+Build WpfSampleApp with build.ps1 first. To use your own application, set
+DOLPHIN_WPF_APP and adapt the sample selectors.
 """
+
+import os
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +15,20 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def app(launch):
-    return launch("MyWpfApp.exe", timeout=15)
+    command = os.environ.get("DOLPHIN_WPF_APP")
+    if not command:
+        executable = (
+            Path(__file__).parent
+            / "WpfSampleApp"
+            / "bin"
+            / "Debug"
+            / "net10.0-windows"
+            / "WpfSampleApp.exe"
+        )
+        if not executable.is_file():
+            pytest.skip("Build the WPF sample first: ./examples/wpf/build.ps1 (.NET 10 SDK)")
+        command = f'"{executable}"'
+    return launch(command, timeout=15)
 
 
 def test_fill_form(app):
@@ -40,7 +57,7 @@ def test_list_items(app):
     win = app.window(title_re=".*Product List.*")
 
     # Get all list items
-    items = win.get_by_role("List").get_by_role("ListItem").all()
+    items = win.get_by_role("List").locator(control_type="ListItem").all()
     assert len(items) > 0
 
     # Click the first item
@@ -55,11 +72,13 @@ def test_tree_navigation(app):
     tree = win.get_by_role("Tree")
 
     # Expand a node
-    node = tree.get_by_role("TreeItem", name="Documents")
-    node.click()
+    node = tree.locator(control_type="TreeItem", title="Documents")
+    node.expand()
 
     # Find a child
-    child = node.get_by_role("TreeItem", name="Reports")
-    child.double_click()
+    child = node.locator(control_type="TreeItem", title="Reports")
+    child.select()
 
-    assert win.get_by_automation_id("lblCurrentPath").text() == "Documents\\Reports"
+    win.get_by_automation_id("lblCurrentPath").wait_for_text(
+        "Documents\\Reports", contains=False, timeout=5
+    )
