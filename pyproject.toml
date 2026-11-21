@@ -52,7 +52,7 @@ Changelog = "https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CHANGEL
 Issues = "https://github.com/DolphinSoftEU/DolphinDesktop/issues"
 Security = "https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/SECURITY.md"
 
-[project.entry-points."pytest11"]
+[project.entry-points."pytest>=9.2.0,<10"]
 dolphin-desktop = "dolphin_desktop.pytest_plugin"
 
 [project.entry-points."dolphin_desktop.backends"]
@@ -87,7 +87,7 @@ telemetry = [
     "sentry-sdk>=2.8.0",
 ]
 pytest = [
-    "pytest>=9.0.3,<10",
+    "pytest>=9.2.0,<10",
     "allure-pytest>=2.13",
 ]
 cdp = [
@@ -116,7 +116,7 @@ dev = [
     "allure-pytest>=2.13",
     "mypy>=1.10",
     "pre-commit>=3.7",
-    "pytest>=9.0.3,<10",
+    "pytest>=9.2.0,<10",
     "pytest-cov>=5.0",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -38,14 +38,14 @@ name = "aqtinstall"
 version = "3.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "bs4", marker = "python_full_version >= '3.11.5'" },
-    { name = "defusedxml", marker = "python_full_version >= '3.11.5'" },
-    { name = "humanize", marker = "python_full_version >= '3.11.5'" },
-    { name = "patch-ng", marker = "python_full_version >= '3.11.5'" },
-    { name = "py7zr", marker = "python_full_version >= '3.11.5'" },
-    { name = "requests", marker = "python_full_version >= '3.11.5'" },
-    { name = "semantic-version", marker = "python_full_version >= '3.11.5'" },
-    { name = "texttable", marker = "python_full_version >= '3.11.5'" },
+    { name = "bs4" },
+    { name = "defusedxml" },
+    { name = "humanize" },
+    { name = "patch-ng" },
+    { name = "py7zr" },
+    { name = "requests" },
+    { name = "semantic-version" },
+    { name = "texttable" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/19/24a588de6c25d43169d172dab47e63a63cd0d8f90e98cf86487acbf00ac7/aqtinstall-3.3.0.tar.gz", hash = "sha256:9c7d85fbe7258be2d7d23fda33f8aff2e8b7536817255eaeaaf4226da8546a31", size = 374818, upload-time = "2025-06-02T11:10:53.913Z" }
 wheels = [
@@ -210,8 +210,8 @@ name = "beautifulsoup4"
 version = "4.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "soupsieve", marker = "python_full_version >= '3.11.5'" },
-    { name = "typing-extensions", marker = "python_full_version >= '3.11.5'" },
+    { name = "soupsieve" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/65/318323f98dbee45d42dff61d8f047181bc6f2268a9068cfad035a46be5af/beautifulsoup4-4.15.0.tar.gz", hash = "sha256:288e3ca7d54b06f2ac191970bc275c1939cb46d450b255bf6718b04aa37ab4f7", size = 632571, upload-time = "2026-06-07T16:44:20.453Z" }
 wheels = [
@@ -289,7 +289,7 @@ name = "brotlicffi"
 version = "1.2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "python_full_version >= '3.11.5'" },
+    { name = "cffi" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/92/8b/10c6c4bac3a7d292707c9b879b8b3bb7f6c8ca5db5e6dff559bd9d59d45e/brotlicffi-1.2.1.0.tar.gz", hash = "sha256:5d0b89e959f643aab4c58c15c06e1e87b6f6605e5e88c3c1c28f5ce1c58c4e5f", size = 479661, upload-time = "2026-10-22T16:19:33.199Z" }
 wheels = [
@@ -313,7 +313,7 @@ name = "bs4"
 version = "0.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "beautifulsoup4", marker = "python_full_version >= '3.11.5'" },
+    { name = "beautifulsoup4" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c9/aa/4acaf814ff901145da37332e05bb510452ebed97bc9602695059dd46ef39/bs4-0.0.2.tar.gz", hash = "sha256:a48685c58f50fe127722417bae83fe6badf500d54b55f7e39ffe43b798653925", size = 698, upload-time = "2024-01-17T18:15:47.371Z" }
 wheels = [
@@ -761,6 +761,9 @@ security = [
     { name = "pip-audit" },
 ]
 
+[package.group-requires-python]
+native-build = ">=3.11.5"
+
 [package.metadata]
 requires-dist = [
     { name = "allure-pytest", marker = "extra == 'pytest'", specifier = ">=2.13" },
@@ -775,7 +778,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "playwright", marker = "extra == 'cdp'", specifier = ">=1.40" },
     { name = "pytesseract", marker = "extra == 'vision'", specifier = ">=0.3.10" },
-    { name = "pytest", marker = "extra == 'pytest'", specifier = ">=9.0.3,<10" },
+    { name = "pytest", marker = "extra == 'pytest'", specifier = ">=9.2.0,<10" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
     { name = "pywinauto", specifier = ">=0.6.8" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -795,7 +798,7 @@ dev = [
     { name = "hatchling", specifier = "==1.30.1" },
     { name = "mypy", specifier = ">=1.10" },
     { name = "pre-commit", specifier = ">=3.7" },
-    { name = "pytest", specifier = ">=9.0.3,<10" },
+    { name = "pytest", specifier = ">=9.2.0,<10" },
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pytest-xdist", specifier = ">=3.5" },
@@ -955,7 +958,7 @@ name = "importlib-metadata"
 version = "9.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp", marker = "python_full_version < '3.13'" },
+    { name = "zipp" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6f/7e/1e7e8dc30634b93ebb3d58a3dea569ad146e656218d3960ab04f62047b29/importlib_metadata-9.0.1.tar.gz", hash = "sha256:ab830580bc0ef3db61ce8fae716389e5462b67e033018bab6d8f80ef17172f99", size = 59124, upload-time = "2026-08-28T15:30:34.646Z" }
 wheels = [
@@ -1867,16 +1870,16 @@ name = "py7zr"
 version = "1.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "backports-zstd", marker = "python_full_version >= '3.11.5'" },
-    { name = "brotli", marker = "python_full_version >= '3.11.5' and platform_python_implementation == 'CPython'" },
-    { name = "brotlicffi", marker = "python_full_version >= '3.11.5' and platform_python_implementation == 'PyPy'" },
-    { name = "inflate64", marker = "python_full_version >= '3.11.5'" },
-    { name = "multivolumefile", marker = "python_full_version >= '3.11.5'" },
-    { name = "psutil", marker = "python_full_version >= '3.11.5' and sys_platform != 'cygwin'" },
-    { name = "pybcj", marker = "python_full_version >= '3.11.5'" },
-    { name = "pycryptodomex", marker = "python_full_version >= '3.11.5'" },
-    { name = "pyppmd", marker = "python_full_version >= '3.11.5'" },
-    { name = "texttable", marker = "python_full_version >= '3.11.5'" },
+    { name = "backports-zstd" },
+    { name = "brotli", marker = "platform_python_implementation == 'CPython'" },
+    { name = "brotlicffi", marker = "platform_python_implementation == 'PyPy'" },
+    { name = "inflate64" },
+    { name = "multivolumefile" },
+    { name = "psutil", marker = "sys_platform != 'cygwin'" },
+    { name = "pybcj" },
+    { name = "pycryptodomex" },
+    { name = "pyppmd" },
+    { name = "texttable" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d6/31/d5469ec310b57c730785068c227caf2263391be846ae5e99488f69b394eb/py7zr-1.1.4.tar.gz", hash = "sha256:7674697559bd06b697bf6e8249985cee6dc704a4b07b8e11f24d0b1695707c3e", size = 76503, upload-time = "2026-10-12T11:31:18.36Z" }
 wheels = [
@@ -2162,7 +2165,7 @@ wheels = [
 
 [[package]]
 name = "pytest"
-version = "9.0.3"
+version = "9.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
@@ -2171,9 +2174,9 @@ dependencies = [
     { name = "pluggy" },
     { name = "pygments" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7d/0d/549bd94f1a0a402dc8cf64563a117c0f3765662e2e668477624baeec44d5/pytest-9.0.3.tar.gz", hash = "sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c", size = 1572165, upload-time = "2026-04-07T17:16:18.027Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/79/42/bb4641652e58dedeac2ec51abc1f8cae4fee4ec63899a0999016229a0f2a/pytest-9.2.0.tar.gz", hash = "sha256:97c4f3b1f3c7414aa36465e09b8220f1d03627993bd51b1282e193753c80557b", size = 1797555, upload-time = "2026-10-27T21:30:20.728Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/24/a372aaf5c9b7208e7112038812994107bc65a84cd00e0354a88c2c77a617/pytest-9.0.3-py3-none-any.whl", hash = "sha256:2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9", size = 375249, upload-time = "2026-04-07T17:16:16.13Z" },
+    { url = "https://files.pythonhosted.org/packages/51/39/1f5d8c8877a0fa327db959c19341d4be61660de1ab6b7391f9eb805bcd67/pytest-9.2.0-py3-none-any.whl", hash = "sha256:07acdcf88ec174f907dc01af70bf52d49b014bbab03faeeade31c96b18c2e588", size = 411776, upload-time = "2026-10-27T21:30:19.131Z" },
 ]
 
 [[package]]
