@@ -80,7 +80,7 @@ jobs:
           CI_RUN_ATTEMPT: ${{ steps.provenance.outputs.ci_run_attempt }}
         run: python .github/scripts/preview_version.py expected
 
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.11.9"
           enable-cache: true
