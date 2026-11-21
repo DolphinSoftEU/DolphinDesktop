@@ -2,6 +2,70 @@
 
 Dolphin can run a command on a hidden Windows desktop with `dolphin-run`.
 
+The command inherits the launcher's console and process group. Windows delivers
+Ctrl+Break to the command and its descendants, and Ctrl+C when Ctrl+C processing
+is enabled. `dolphin-run` preserves the inherited Ctrl+C ignore setting;
+`CREATE_NEW_PROCESS_GROUP` disables Ctrl+C for the new group. Use Ctrl+Break for
+such groups. Programmatic Ctrl+C must target the whole shared console with
+`GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)`; it cannot target a process group.
+See Microsoft's [console event documentation](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent).
+The launcher waits for application cleanup and returns the command's exit code.
+After an interrupt,
+an unresponsive command tree receives a termination request after ten seconds
+with exit code 130. The runner then waits at most another ten seconds for the
+command process to exit; if it remains active, a timeout error initiates job
+cleanup instead of repeatedly requesting termination.
+Concurrent `run_hidden()` calls in one Python process share one native console
+handler, which notifies every active caller. Child environment overrides are
+private, so one runner cannot change another runner's `DOLPHIN_HEADLESS` setting
+or the parent's environment. The handler is removed when the last caller exits.
+Removal failures are reported; the module retains the callback reference and
+reuses the existing registration until a later removal succeeds. With no active
+callers, a retained callback returns `FALSE` and lets other handlers run.
+
+Each command inherits only private copies of its standard input, output and error
+handles through `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Other inheritable handles,
+including pipes belonging to concurrent runners, are excluded. When all standard
+handles are absent or forwarding is disabled, handle inheritance is disabled.
+When only some streams are available, missing stdin reads EOF from `NUL`, and
+missing stdout or stderr writes to `NUL`. All three forwarded handles are valid.
+
+Processes that detach from the console cannot receive its console events, but
+remain in the runner's Windows Job Object for cleanup. Remaining descendants are
+terminated when the command finishes, including processes behind venv redirectors.
+
+An existing CI agent Job Object is supported when Windows permits job nesting.
+Jobs with UI restrictions can prevent assignment to the runner's private job;
+in that case the launcher reports `AssignProcessToJobObject failed` and terminates
+the suspended command before its code runs. Configure the CI agent job to permit
+nesting; the runner retains job-based cleanup and does not request breakaway.
+See Microsoft's [nested job requirements](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs).
+
+Before final cleanup, the runner sets the job's active process limit to zero.
+This blocks new process associations while preserving the existing job limits.
+It then reads the complete process list and retains handles before requesting
+termination, closing the window in which an unobserved descendant could start.
+Incomplete lists are retried with a larger buffer, including successful Windows
+responses containing fewer IDs than assigned processes.
+The runner waits for retained handles to be signalled and for the job to report
+zero active processes before closing its handles and the hidden desktop handle.
+A private completion port provides additional process handles during execution,
+but notifications are advisory: missing, inaccessible or unverifiable entries
+do not replace a valid application exit code with a cleanup error. Opened handles
+are checked for membership in the owned job before caching. Completed handles
+and their PID entries are released during execution; a reused PID is checked
+again on a newly opened handle. If monitoring cannot start, final cleanup still
+uses sealing and the authoritative process snapshot. Cleanup still raises an
+error if sealing, enumeration or termination fails, or if processes remain
+pending after its ten-second timeout.
+
+The real console, process-tree and desktop-handle regressions run in the Windows
+component suite: `pytest tests/component/test_runner_console.py`. Deterministic
+cleanup and timeout tests remain in `tests/framework/test_runner_cleanup.py`.
+The required `runner-console` CI matrix runs the real console regressions on
+Python 3.11 and 3.13, rejects skips, and checks that the Ctrl+Break cases for the
+installed executable, Python invocation and nested launcher all passed.
+
 ```bash
 dolphin-run pytest tests/ -v
 ```
@@ -36,6 +100,28 @@ from dolphin_desktop import Desktop
 desktop = Desktop(hidden=True)
 ```
 
+Applications started through a hidden `Desktop.launch()` (including the typed
+launch helpers) belong to a private Windows Job Object owned by the calling
+Python process. Windows terminates those applications and their descendants
+when that owner exits, including a crash or `TerminateProcess` / `taskkill /F`
+without `/T`. The job handle is not inherited. Assignment happens during process
+creation using `PROC_THREAD_ATTRIBUTE_JOB_LIST`, so there is no unprotected
+interval between process creation and job assignment. See Microsoft's
+[creation-time job assignment explanation](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812/).
+
+All hidden `Desktop` instances in the same Python process share this ownership.
+Discarding a `Desktop` facade does not terminate its applications. Continue using
+`Application.close()` for normal application shutdown; the job is the fallback
+for remaining processes at owner exit. Processes attached through `connect()`
+and applications owned by other Python processes are not added to this job.
+Brokered launches outside the owned process tree are outside this guarantee.
+An incompatible existing CI job causes launch to fail before application code
+runs; configure it to allow nested jobs. There is no unprotected launch fallback.
+
+`DolphinHidden` is shared by sessions in the same window station. It disappears
+after the last process/thread and desktop handle using it are released. Exiting
+one owner leaves other active sessions running on that desktop.
+
 Use visible mode even when `DOLPHIN_HEADLESS` is set:
 
 ```python
@@ -53,13 +139,20 @@ Known limitations:
 - UAC prompts appear on the secure desktop and cannot be automated by Dolphin.
 - Clipboard behavior can be surprising because the window station and desktop focus both matter.
 
+Targeted keyboard shortcuts are supported by ``Locator.press_key(...)``. On a
+hidden desktop Dolphin briefly makes ``DolphinHidden`` the input desktop,
+sends the sequence through the normal Windows keyboard path, and restores the
+previous desktop. If the desktop cannot be switched, Dolphin falls back to
+window-targeted messages for controls that support them. Global
+``Keyboard.press(...)`` still requires an interactive input desktop because it
+has no target window.
+
 If a test uses many physical mouse actions, run it on a visible interactive desktop unless you have verified that the target app and actions work under `dolphin-run`.
 
 ## Headless-Safe API — `invoke()` and Friends
 
-Under the hood, `Locator.click()`, `.hover()`, `.drag_to()`, and other
-"input-simulation" actions call pywinauto's `click_input()`, which
-uses `win32api.SetCursorPos` to move the physical cursor. That
+Native UIA `Locator.click()`, `.hover()` and `.drag_to()` use
+physical mouse operations, including moving the cursor with `SetCursorPos`. That
 requires an **input desktop** — a desktop currently attached to the
 hardware mouse/keyboard — which `DolphinHidden` is not. Under
 `dolphin-run` those calls explode with `pywintypes.error: (2,
@@ -102,8 +195,9 @@ JAB's `doAccessibleActions("click" / "toggle" / "expand" / …)` and
 - Fires only the "action" event — the button's `OnClick`, the
   checkbox's state-change, the text field's `Text` property. No hover,
   no keystrokes, no focus dance.
-- Better for **smoke tests + state assertions** — runs anywhere,
-  including `dolphin-run` and CI hosts without a display.
+- Useful for **smoke tests + state assertions** on a prepared Windows
+  desktop, including a validated `dolphin-run` subset. A working accessibility
+  provider and application session are still required.
 - Fails with `UnsupportedPatternError` if the element does not
   implement the required UIA pattern (no silent fallback to
   mouse — the difference between "programmatic worked" and "we

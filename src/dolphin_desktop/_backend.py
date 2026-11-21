@@ -29,6 +29,8 @@ from ._capabilities import (
 from ._exceptions import UnsupportedCapabilityError
 from ._helpers import _escape_keys
 
+_VALID_PLATFORMS = frozenset({"windows", "macos", "linux", "any"})
+
 
 def _check_capability_arg(value: Any, caller: str) -> None:
     """Raise TypeError when *value* is not a :class:`Capability` member.
@@ -119,6 +121,11 @@ class Backend(abc.ABC):
                 f"{cls.__name__} must set a class attribute "
                 f"``platform: str`` ('windows', 'macos', 'linux', or 'any'). "
                 f"Got {type(plat).__name__}: {plat!r}."
+            )
+        if plat not in _VALID_PLATFORMS:
+            raise ValueError(
+                f"{cls.__name__} declares unsupported platform {plat!r}. "
+                "Use one of: windows, macos, linux, any."
             )
 
     @abc.abstractmethod
@@ -568,7 +575,9 @@ class ImageBackend(Backend):
         # ImageBackend does not publish GET_TREE, so this always raises —
         # a screen has no element tree to walk.
         self.require_capability(Capability.GET_TREE)
-        raise AssertionError("unreachable: require_capability always raises here")
+        raise AssertionError(
+            "unreachable: require_capability always raises here"
+        )  # pragma: no cover
 
     def screenshot(self, element: Any | None = None) -> Any:
         self.require_capability(Capability.SCREENSHOT)
@@ -650,7 +659,7 @@ class _MarkerBackend(Backend):
 
     def get_tree(self, root: Any, *, depth: int | None = None) -> dict[str, Any]:
         self._raise()
-        return {}  # unreachable — satisfies type checker
+        return {}  # pragma: no cover  # unreachable — satisfies type checker
 
     def screenshot(self, element: Any | None = None) -> Any:
         self._raise()
@@ -679,11 +688,12 @@ class DelphiBackend(_MarkerBackend):
     Real automation runs through UIA — dolphin's Delphi surface
     (:class:`~dolphin_desktop.DelphiApp`, ``.launch_delphi``) sits on
     top of the UIA backend, adding a Delphi-aware
-    ``TComponent.Name → AutomationId`` locator. Registered as a marker
+    provider-published UIA ID / caption / index locator. Registered as a marker
     so ``list_backends()`` surfaces it.
 
-    Capability set matches UIA + Delphi component surface: locate /
-    read / input / programmatic — the full accessibility contract.
+    Capabilities describe available facade operations. Each target must
+    expose the required UIA elements and patterns; Delphi Name exposure
+    is not guaranteed by this marker.
     """
 
     id = "delphi"
@@ -963,6 +973,28 @@ def _load_plugins_locked() -> None:
                 stacklevel=2,
             )
             continue
+        cls_platform = getattr(cls, "platform", None)
+        if not isinstance(cls_platform, str) or not cls_platform:
+            warnings.warn(
+                f"dolphin_desktop.backends entry point {ep.name!r} points at "
+                f"{cls.__module__}.{cls.__qualname__} whose ``platform`` "
+                f"attribute is not a non-empty str "
+                f"(got {type(cls_platform).__name__}: {cls_platform!r}). "
+                "Skipping.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+        if cls_platform not in _VALID_PLATFORMS:
+            warnings.warn(
+                f"dolphin_desktop.backends entry point {ep.name!r} points at "
+                f"{cls.__module__}.{cls.__qualname__} with unsupported "
+                f"platform {cls_platform!r}. Use one of: "
+                "windows, macos, linux, any. Skipping.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
         # Prefer cls.id — that is what require_capability quotes in the
         # error message. Entry-point name is advisory; warn on mismatch.
         if ep.name != cls.id:
@@ -1003,10 +1035,9 @@ def register(cls: type[Backend]) -> type[Backend]:
     Silent-overwrite protection: re-registering the same class under
     the same id is a no-op (idempotent, safe for tests that call
     ``register()`` in setUp). Registering a **different** class under
-    an already-taken id emits a ``RuntimeWarning`` — most such calls
-    are unintentional collisions with a built-in id (``"uia"``,
-    ``"cdp"``, …) and would silently replace the built-in behaviour
-    otherwise.
+    an already-taken id raises ``ValueError`` without modifying the
+    existing registry entry. This prevents an extension from replacing
+    built-in behaviour (``"uia"``, ``"cdp"``, …) by accident.
 
     Argument validation:
 
@@ -1017,6 +1048,8 @@ def register(cls: type[Backend]) -> type[Backend]:
     * *cls* must declare a non-empty ``id: str`` class attribute
       (``TypeError`` — this is the registry key; a missing / blank id
       would silently register under ``""`` and break resolve()).
+    * *cls* must declare a supported ``platform`` value: ``windows``,
+      ``macos``, ``linux``, or ``any``.
     """
     if not isinstance(cls, type):
         raise TypeError(
@@ -1038,24 +1071,45 @@ def register(cls: type[Backend]) -> type[Backend]:
             f"Got {type(bid).__name__}: {bid!r}. "
             f"Set e.g. ``id = 'my_backend'`` on the class."
         )
+    platform = getattr(cls, "platform", None)
+    if not isinstance(platform, str) or not platform:
+        raise TypeError(
+            f"register() expected {cls.__qualname__} to declare a "
+            f"non-empty class attribute ``platform: str``. "
+            f"Got {type(platform).__name__}: {platform!r}."
+        )
+    if platform not in _VALID_PLATFORMS:
+        raise ValueError(
+            f"register() rejected unsupported platform {platform!r} on "
+            f"{cls.__qualname__}. Use one of: windows, macos, linux, any."
+        )
     if cls.id in _REGISTRY and _REGISTRY[cls.id] is not cls:
-        import warnings
-
         existing = _REGISTRY[cls.id]
-        warnings.warn(
+        raise ValueError(
             f"Backend id {cls.id!r} already registered "
             f"({existing.__module__}.{existing.__qualname__}); "
-            f"replacing with {cls.__module__}.{cls.__qualname__}. "
-            f"Use a different id if you did not intend to override the "
-            f"existing backend.",
-            RuntimeWarning,
-            stacklevel=2,
+            f"refusing to replace it with "
+            f"{cls.__module__}.{cls.__qualname__}. Use a different id."
         )
+    if cls.id in _REGISTRY:
+        return cls
     _REGISTRY[cls.id] = cls
     return cls
 
 
 # Resolver
+
+
+def _validate_backend_id(backend_id: str) -> None:
+    """Validate a registry ID without constructing or probing any backend."""
+    _load_plugins()
+    if backend_id != "auto" and backend_id not in _REGISTRY:
+        raise ValueError(
+            f"Unknown backend {backend_id!r}.  "
+            f"Available backends: {sorted(_REGISTRY)}.  "
+            "Third-party backends can be added via the "
+            "'dolphin_desktop.backends' entry-point group."
+        )
 
 
 def resolve(backend_id: str) -> Backend:
@@ -1073,19 +1127,10 @@ def resolve(backend_id: str) -> Backend:
     ValueError
         If *backend_id* is not found in the registry.
     """
-    _load_plugins()
+    _validate_backend_id(backend_id)
 
     if backend_id == "auto":
         return _auto_detect()
-
-    if backend_id not in _REGISTRY:
-        available = sorted(_REGISTRY)
-        raise ValueError(
-            f"Unknown backend {backend_id!r}.  "
-            f"Available backends: {available}.  "
-            "Third-party backends can be added via the "
-            "'dolphin_desktop.backends' entry-point group."
-        )
 
     cls = _REGISTRY[backend_id]
     try:

@@ -1,15 +1,20 @@
 """Tests for the Playwright-shaped compatibility layer."""
 
+
+# Fakes
+
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from dolphin_desktop import _cdp as cdp
 from dolphin_desktop import playwright_compat as pwc
-from dolphin_desktop._cdp import CDPStalePageError
-
-# Fakes
+from dolphin_desktop._cdp import CDPSession, CDPStalePageError
+from tests.framework._fake_playwright import CountingSyncApi
 
 
 class _FakePage:
@@ -259,7 +264,7 @@ class TestPageBinding:
 
 
 class TestTimeoutUnits:
-    def test_goto_forwards_milliseconds_unchanged(self, two_page_context):
+    def test_goto_passes_milliseconds_to_native_playwright(self, two_page_context):
         session, context = two_page_context
         context.pages[0].goto("https://example.test/", timeout=60_000)
         assert session.pages()[0].goto_calls == [("https://example.test/", 60_000)]
@@ -376,3 +381,132 @@ class TestPlaywrightShape:
         loc.fill("a")
         loc.type("b")
         assert [c[1]["clear"] for c in loc._inner.calls] == [True, False]
+
+
+def test_playwright_page_reselects_session_before_delegation() -> None:
+    from dolphin_desktop.playwright_compat import _PlaywrightPage
+
+    session = Mock()
+    page = SimpleNamespace()
+    session.pages.return_value = [page]
+    adapter = _PlaywrightPage(session, page)
+    assert adapter._select() is session
+    session.switch_to_page.assert_called_once_with(0)
+
+
+def test_playwright_compat_converts_timeout_to_milliseconds() -> None:
+    from dolphin_desktop.playwright_compat import _ms_kwargs, _seconds, _timeout_s
+
+    assert _seconds(1500) == 1.5
+    assert _timeout_s(2.5) == {"timeout": 0.0025}
+    assert _ms_kwargs({"timeout": 1.25, "x": 1}) == {"timeout": 0.00125, "x": 1}
+
+
+# Unsupported surfaces must fail explicitly rather than leaking ImportError or AttributeError.
+
+
+def test_unsupported_playwright_surfaces_raise_not_implemented() -> None:
+    from dolphin_desktop.playwright_compat import async_playwright, sync_playwright
+
+    with pytest.raises(NotImplementedError, match="sync-only"):
+        async_playwright()
+
+    with sync_playwright() as playwright:
+        with pytest.raises(NotImplementedError, match="Chromium"):
+            _ = playwright.firefox
+        with pytest.raises(NotImplementedError, match="Chromium"):
+            _ = playwright.webkit
+        with pytest.raises(NotImplementedError, match=r"chromium\.launch"):
+            playwright.chromium.launch()
+
+
+def test_unsupported_browser_context_and_page_surfaces_raise_not_implemented() -> None:
+    browser = pwc._PlaywrightBrowser(Mock())
+    context = pwc._PlaywrightContext(Mock())
+
+    with pytest.raises(NotImplementedError, match="new contexts"):
+        browser.new_context()
+    with pytest.raises(NotImplementedError, match="new pages"):
+        context.new_page()
+    with pytest.raises(NotImplementedError, match="storage state"):
+        context.storage_state()
+    with pytest.raises(NotImplementedError, match="tracing"):
+        _ = context.tracing
+
+
+# KAN-746: the facade next to a session the library already holds on this thread.
+
+
+@pytest.fixture
+def shared_driver(monkeypatch):
+    api = CountingSyncApi()
+    cdp._THREAD_PLAYWRIGHT.lease = None
+    monkeypatch.setattr(cdp, "_require_playwright", lambda: api)
+    yield api
+    cdp._THREAD_PLAYWRIGHT.lease = None
+
+
+def test_connect_over_cdp_coexists_with_an_open_session_on_the_same_thread(shared_driver):
+    endpoint = "http://127.0.0.1:9222"
+    launched = CDPSession.connect(endpoint, timeout=1)
+
+    with pwc.sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(endpoint, timeout=5_000)
+        page = browser.contexts[0].pages[0]
+        assert page.title() is shared_driver.browsers[1].contexts[0].pages[0].title.return_value
+        browser.close()
+
+    assert len(shared_driver.drivers) == 1
+    shared_driver.browsers[1].close.assert_called_once_with()
+    shared_driver.browsers[0].close.assert_not_called()
+    shared_driver.drivers[0].stop.assert_not_called()
+    assert launched._closed is False
+    assert launched.page is shared_driver.browsers[0].contexts[0].pages[0]
+
+    launched.close()
+    shared_driver.drivers[0].stop.assert_called_once_with()
+
+
+def test_closing_the_launched_session_first_keeps_the_facade_connected(shared_driver):
+    endpoint = "http://127.0.0.1:9222"
+    launched = CDPSession.connect(endpoint, timeout=1)
+    with pwc.sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(endpoint)
+        launched.close()
+        shared_driver.drivers[0].stop.assert_not_called()
+        assert browser.contexts[0].pages[0].url == "app://main.html"
+        browser.close()
+    shared_driver.drivers[0].stop.assert_called_once_with()
+
+
+# KAN-762: polling context.pages between plain sleeps must see a new window.
+
+
+def test_context_pages_sees_a_window_opened_between_polls() -> None:
+    page = MagicMock(name="page")
+    page.is_closed.return_value = False
+    page.url = "file:///page.html"
+    popup = MagicMock(name="popup")
+    popup.is_closed.return_value = False
+    popup.url = "file:///page_b.html"
+    context = MagicMock(name="context")
+    context.pages = [page]
+    browser = MagicMock(name="browser")
+    browser.contexts = [context]
+    session = CDPSession(MagicMock(), browser, context, page, endpoint="http://127.0.0.1:9222")
+    # The driver delivers the popup during the second round trip.
+    calls = []
+
+    def deliver(_ms):
+        calls.append(_ms)
+        if len(calls) == 2:
+            context.pages.append(popup)
+
+    page.wait_for_timeout.side_effect = deliver
+    compat_context = pwc._PlaywrightBrowser(session).contexts[0]
+
+    with patch("time.sleep"):
+        first = [p.url for p in compat_context.pages]
+        second = [p.url for p in compat_context.pages]
+    assert first == ["file:///page.html"]
+    assert "file:///page_b.html" in second

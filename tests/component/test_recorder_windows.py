@@ -1,0 +1,676 @@
+"""Real native focus and low-level hook regressions for KAN-576 / KAN-759."""
+
+import json
+from unittest.mock import Mock
+
+import pytest
+import win32file
+from tests.component import _recorder_window
+from tests.component._recorder_window import (
+    check_real_hook_lifecycle,
+    record_generate_replay,
+    record_native_transitions,
+    record_process_isolation,
+    record_process_isolation_with_delayed_hit_testing,
+)
+
+from dolphin_desktop._recorder import _PASSWORD_PLACEHOLDER
+
+pytestmark = [pytest.mark.windows_component, pytest.mark.timeout(20)]
+
+
+def test_ready_identity_is_not_visible_during_partial_write(monkeypatch, tmp_path):
+    from tests.component import _real_window
+
+    ready = tmp_path / "owned.ready.json"
+    write_text = _real_window.Path.write_text
+    observed = []
+
+    def interrupted_write(path, data, *, encoding):
+        write_text(path, '{"hwnd":', encoding=encoding)
+        observed.append(ready.exists())
+        result = write_text(path, data, encoding=encoding)
+        observed.append(ready.exists())
+        return result
+
+    monkeypatch.setattr(_real_window.Path, "write_text", interrupted_write)
+    _real_window._publish_ready(ready, 123, 456)
+    assert observed == [False, False]
+    assert json.loads(ready.read_text(encoding="utf-8")) == {"hwnd": 123, "pid": 456}
+    assert list(tmp_path.iterdir()) == [ready]
+
+
+def _locked_ready_identity(ready):
+    # Acquire the exclusive handle at creation, without an unlocked setup gap.
+    lock = win32file.CreateFile(
+        str(ready),
+        win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+        0,
+        None,
+        win32file.CREATE_NEW,
+        0,
+        None,
+    )
+    try:
+        win32file.WriteFile(lock, json.dumps({"hwnd": 123, "pid": 456}).encode("utf-8"))
+    except Exception:
+        lock.Close()
+        raise
+    return lock
+
+
+def test_ready_identity_waits_for_real_windows_read_lock(monkeypatch, tmp_path):
+    ready = tmp_path / "owned.ready.json"
+    locks = [_locked_ready_identity(ready)]
+    waits = []
+
+    def unlock(delay):
+        waits.append(delay)
+        locks.pop().Close()
+
+    try:
+        with pytest.raises(PermissionError):
+            ready.read_text(encoding="utf-8")
+        monkeypatch.setattr(_recorder_window.time, "sleep", unlock)
+        identity = _recorder_window._wait_for_ready_identity(
+            ready, Mock(poll=Mock(return_value=None))
+        )
+        assert identity == {"hwnd": 123, "pid": 456}
+        assert len(waits) == 1
+        assert 0 < waits[0] <= 0.01
+    finally:
+        for lock in locks:
+            lock.Close()
+
+
+def test_ready_identity_permanent_lock_fails_at_deadline(monkeypatch, tmp_path):
+    ready = tmp_path / "owned.ready.json"
+    lock = _locked_ready_identity(ready)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(_recorder_window.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        _recorder_window.time, "sleep", lambda delay: clock.update(now=clock["now"] + delay)
+    )
+    try:
+        with pytest.raises(AssertionError, match="not readable within") as caught:
+            _recorder_window._wait_for_ready_identity(
+                ready, Mock(poll=Mock(return_value=None)), timeout=0.025
+            )
+        assert isinstance(caught.value.__cause__, PermissionError)
+        assert clock["now"] == pytest.approx(0.025)
+    finally:
+        lock.Close()
+
+
+def test_ready_identity_waits_for_atomic_publication(monkeypatch, tmp_path):
+    from tests.component import _real_window
+
+    ready = tmp_path / "owned.ready.json"
+    monkeypatch.setattr(
+        _recorder_window.time, "sleep", lambda _: _real_window._publish_ready(ready, 123, 456)
+    )
+    assert _recorder_window._wait_for_ready_identity(ready, Mock(poll=Mock(return_value=None))) == {
+        "hwnd": 123,
+        "pid": 456,
+    }
+
+
+def test_ready_identity_does_not_retry_invalid_published_json(monkeypatch, tmp_path):
+    ready = tmp_path / "owned.ready.json"
+    ready.write_text('{"hwnd":', encoding="utf-8")
+    sleep = Mock()
+    monkeypatch.setattr(_recorder_window.time, "sleep", sleep)
+    with pytest.raises(json.JSONDecodeError):
+        _recorder_window._wait_for_ready_identity(ready, Mock(poll=Mock(return_value=None)))
+    sleep.assert_not_called()
+
+
+def test_ready_identity_does_not_wait_for_dead_process(tmp_path):
+    with pytest.raises(AssertionError, match="code 17"):
+        _recorder_window._wait_for_ready_identity(
+            tmp_path / "owned.ready.json", Mock(poll=Mock(return_value=17))
+        )
+
+
+@pytest.mark.parametrize(
+    "controller,requested_pid,foreground,granted",
+    [
+        (456, 456, 123, True),
+        (456, 789, 123, False),
+        (456, 456, 987, False),
+        (None, 456, 123, False),
+    ],
+)
+def test_aut_grants_foreground_only_to_its_controller(
+    monkeypatch, controller, requested_pid, foreground, granted
+):
+    from tests.component import _real_window
+
+    allow = Mock(return_value=1)
+    monkeypatch.setattr(_real_window, "_controller_pid", controller)
+    monkeypatch.setattr(_real_window.win32gui, "GetForegroundWindow", lambda: foreground)
+    monkeypatch.setattr(_real_window._user32, "AllowSetForegroundWindow", allow)
+    result = _real_window._wnd_proc(
+        123, _real_window.WM_ALLOW_CONTROLLER_FOREGROUND, requested_pid, 0
+    )
+    assert bool(result) is granted
+    if granted:
+        allow.assert_called_once_with(controller)
+    else:
+        allow.assert_not_called()
+
+
+def test_aut_restores_edit_focus_on_owning_thread(monkeypatch):
+    from tests.component import _real_window
+
+    focus = Mock()
+    monkeypatch.setattr(_real_window, "_controls", {_real_window.ID_EDIT: 789})
+    monkeypatch.setattr(_real_window.win32gui, "SetFocus", focus)
+    assert _real_window._wnd_proc(123, _real_window.win32con.WM_SETFOCUS, 0, 0) == 0
+    focus.assert_called_once_with(789)
+
+
+def test_foreground_handoff_never_contacts_unowned_window(monkeypatch):
+    send = Mock()
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 987)
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", send)
+    _recorder_window._handoff_owned_foreground({123, 456})
+    send.assert_not_called()
+
+
+def test_refused_foreground_handoff_fails_acceptance(monkeypatch):
+    monkeypatch.setenv("DOLPHIN_RECORDER_ACCEPTANCE", "1")
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(1, 0)))
+    with pytest.raises(pytest.fail.Exception, match="refused to hand activation"):
+        _recorder_window._handoff_owned_foreground({123, 456})
+
+
+def test_owned_activation_waits_for_foreground_transition(monkeypatch):
+    activate = Mock()
+    pump = Mock()
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", activate)
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(1, 0)))
+    monkeypatch.setattr(
+        _recorder_window.win32gui, "GetForegroundWindow", Mock(side_effect=[987, 987, 123])
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    monkeypatch.setattr(_recorder_window.time, "sleep", Mock())
+    _recorder_window._activate_owned_window(123)
+    activate.assert_called_once_with(123)
+    assert pump.call_count == 2
+
+
+def test_owned_activation_timeout_remains_acceptance_failure(monkeypatch):
+    monkeypatch.setenv("DOLPHIN_RECORDER_ACCEPTANCE", "1")
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", Mock())
+    monkeypatch.setattr(_recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(1, 0)))
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 987)
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 1, 3]))
+    monkeypatch.setattr(_recorder_window.time, "sleep", Mock())
+    mouse = Mock()
+    keyboard = Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    with pytest.raises(pytest.fail.Exception, match="foreground HWND is 987"):
+        _recorder_window._activate_owned_window(123)
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
+
+
+def test_recorder_wait_services_controller_messages_before_observing_focus(monkeypatch):
+    state = {"focus": 0}
+    rec = Mock()
+    pump = Mock(side_effect=lambda: state.update(focus=789))
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    _recorder_window._wait_for_recorder_state(rec, lambda: state["focus"] == 789)
+    pump.assert_called_once_with()
+
+
+def test_recorder_wait_times_out_without_sending_input_or_skipping(monkeypatch):
+    rec = Mock(_hook_error=None)
+    rec._evt_queue.qsize.return_value = 0
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 3]))
+    monkeypatch.setattr(_recorder_window._recorder, "_capture_context", lambda: "no focus")
+    mouse = Mock()
+    keyboard = Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    with pytest.raises(AssertionError, match=r"no focus.*expected owned Edit"):
+        _recorder_window._wait_for_recorder_state(
+            rec, lambda: False, details=lambda: "expected owned Edit"
+        )
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
+
+
+def _mock_pointer_windows(monkeypatch):
+    state = {"hit": 987, "rect": (0, 0, 20, 20), "pid": 456}
+    gui = _recorder_window.win32gui
+    monkeypatch.setattr(gui, "GetForegroundWindow", lambda: 123)
+    monkeypatch.setattr(gui, "GetWindowRect", lambda hwnd: state["rect"])
+    monkeypatch.setattr(gui, "GetAncestor", lambda hwnd, flag: 123 if hwnd == 789 else 654)
+    monkeypatch.setattr(gui, "WindowFromPoint", lambda point: state["hit"])
+    monkeypatch.setattr(gui, "GetClassName", lambda hwnd: "Edit" if hwnd in (789, 987) else "Root")
+    monkeypatch.setattr(
+        _recorder_window.win32process,
+        "GetWindowThreadProcessId",
+        lambda hwnd: (42, state["pid"] if hwnd in (123, 789) else 999),
+    )
+    # Waiting must not send input or manipulate an obscuring window.
+    forbidden = Mock(side_effect=AssertionError("input during pointer readiness wait"))
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", forbidden)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", forbidden)
+    monkeypatch.setattr(_recorder_window.win32api, "SetCursorPos", forbidden)
+    monkeypatch.setattr(gui, "SetForegroundWindow", forbidden)
+    monkeypatch.setattr(gui, "GetWindowText", forbidden)
+    return state
+
+
+def test_pointer_wait_checks_hit_testing_after_foreground_is_already_correct(monkeypatch, tmp_path):
+    state = _mock_pointer_windows(monkeypatch)
+    pumps = []
+
+    def pump():
+        pumps.append(1)
+        if len(pumps) == 2:
+            state.update(hit=789, rect=(100, 200, 120, 240))
+
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    monkeypatch.setattr(_recorder_window.time, "sleep", Mock())
+    report = tmp_path / "input-target.json"
+    point = _recorder_window._wait_for_owned_pointer_target(Mock(), 123, 456, 789, report)
+    assert point == (110, 220)  # Recomputed after layout changed, not the stale (10, 10).
+    assert len(pumps) == 2
+    samples = json.loads(report.read_text(encoding="utf-8"))[0]["samples"]
+    assert [item["hit"] for item in samples] == [987, 789]
+    assert all(item["foreground"] == 123 for item in samples)
+
+
+@pytest.mark.parametrize("obstruction", ["other-window", "reused-owner"])
+def test_pointer_wait_fails_without_input_and_retains_obscurer_identity(
+    monkeypatch, tmp_path, obstruction
+):
+    state = _mock_pointer_windows(monkeypatch)
+    if obstruction == "reused-owner":
+        state.update(hit=789, pid=999)
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 3]))
+    monkeypatch.setattr(
+        _recorder_window._recorder, "_capture_context", lambda: "controlled context"
+    )
+    report = tmp_path / "input-target.json"
+    with pytest.raises(AssertionError, match="owned pointer target"):
+        _recorder_window._wait_for_owned_pointer_target(Mock(), 123, 456, 789, report)
+    evidence = json.loads(report.read_text(encoding="utf-8"))[0]
+    assert evidence["stage"] == "target not ready"
+    snapshot = evidence["samples"][-1]
+    assert snapshot["ready"] is False
+    assert snapshot["hit_pid"] == 999
+    if obstruction == "other-window":
+        assert snapshot["hit_root"] == 654
+        assert snapshot["hit_class"] == "Edit"
+    else:
+        assert snapshot["root_pid"] == 999
+
+
+def test_owned_focus_recovers_after_foreground_is_lost(monkeypatch):
+    context = _recorder_window._recorder._InputContext
+    state = {"requested": False, "activations": 0, "focus": context()}
+
+    def activate(root):
+        assert root == 123
+        state["activations"] += 1
+        state["requested"] = True
+
+    def pump():
+        if state["requested"]:
+            # The first activation is lost; only a retry reaches the AUT queue.
+            if state["activations"] >= 2:
+                state["focus"] = context(hwnd=123, pid=456, focus=789)
+            state["requested"] = False
+
+    monkeypatch.setattr(_recorder_window._recorder, "_capture_context", lambda: state["focus"])
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", pump)
+    monkeypatch.setattr(_recorder_window.win32gui, "IsWindow", lambda root: True)
+    monkeypatch.setattr(
+        _recorder_window.win32process, "GetWindowThreadProcessId", lambda root: (1, 456)
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", activate)
+    mouse, keyboard = Mock(), Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    _recorder_window._wait_for_owned_focus(Mock(), 123, 456, 789)
+    assert state["activations"] == 2
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
+
+
+@pytest.mark.parametrize("actual_pid", [456, 999])
+def test_owned_focus_timeout_reports_native_and_process_state(monkeypatch, actual_pid):
+    rec = Mock(_hook_error=None)
+    rec._evt_queue.qsize.return_value = 1
+    monkeypatch.setattr(_recorder_window.win32gui, "PumpWaitingMessages", Mock())
+    monkeypatch.setattr(_recorder_window.time, "monotonic", Mock(side_effect=[0, 0, 3]))
+    monkeypatch.setattr(
+        _recorder_window._recorder, "_capture_context", lambda: Mock(hwnd=0, focus=0)
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 0)
+    monkeypatch.setattr(_recorder_window.win32gui, "IsWindow", lambda root: True)
+    monkeypatch.setattr(
+        _recorder_window.win32process, "GetWindowThreadProcessId", lambda root: (42, actual_pid)
+    )
+    monkeypatch.setattr(_recorder_window._recorder, "_native_focus", lambda thread: (0, 0))
+    activate = Mock(side_effect=_recorder_window.win32gui.error(5, "SetForegroundWindow", "denied"))
+    monkeypatch.setattr(_recorder_window.win32gui, "SetForegroundWindow", activate)
+    handle = Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "OpenProcess", Mock(return_value=handle))
+    monkeypatch.setattr(_recorder_window.win32process, "GetExitCodeProcess", lambda h: 259)
+    with pytest.raises(AssertionError) as failure:
+        _recorder_window._wait_for_owned_focus(rec, 123, 456, 789)
+    message = str(failure.value)
+    assert "'foreground_hwnd': 0" in message
+    assert "'window_exists': True" in message
+    assert f"'window_thread_pid': (42, {actual_pid})" in message
+    assert "'native_active_focus': (0, 0)" in message
+    assert "'process_exit_code': 259" in message
+    if actual_pid == 456:
+        assert "denied" in message
+        activate.assert_called_once_with(123)
+    else:
+        assert "changed process" in message
+        activate.assert_not_called()
+    handle.Close.assert_called_once_with()
+
+
+def test_worker_query_pumps_same_process_window_messages():
+    # No foreground activation or desktop input is needed for WM_GETTEXT.
+    gui = _recorder_window.win32gui
+    root = gui.CreateWindowEx(
+        0,
+        "Static",
+        "KAN-759 worker query",
+        0,
+        0,
+        0,
+        100,
+        100,
+        0,
+        0,
+        _recorder_window.win32api.GetModuleHandle(None),
+        None,
+    )
+    try:
+        owner = _recorder_window.win32api.GetCurrentThreadId()
+
+        def query():
+            assert _recorder_window.win32api.GetCurrentThreadId() != owner
+            return gui.GetWindowText(root)
+
+        assert _recorder_window._query_on_worker(query) == "KAN-759 worker query"
+    finally:
+        gui.DestroyWindow(root)
+
+
+def test_worker_query_timeout_does_not_wait_for_worker_shutdown():
+    release = _recorder_window.threading.Event()
+    finished = _recorder_window.threading.Event()
+
+    def query():
+        try:
+            assert release.wait(5), "Test did not release the blocked worker"
+        finally:
+            finished.set()
+
+    try:
+        with pytest.raises(TimeoutError, match="native context worker"):
+            _recorder_window._query_on_worker(query, timeout=0.05)
+        # The caller must receive the timeout before the worker is unblocked.
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(2), "Controlled worker did not exit"
+
+
+def test_worker_query_propagates_failure():
+    failure = RuntimeError("controlled worker failure")
+    with pytest.raises(RuntimeError) as caught:
+        _recorder_window._query_on_worker(Mock(side_effect=failure))
+    assert caught.value is failure
+
+
+@pytest.mark.parametrize("text", ["", "tttt", "zażółć"])
+def test_native_edit_diagnostic_reads_actual_control_text(text):
+    gui = _recorder_window.win32gui
+    edit = gui.CreateWindowEx(
+        0,
+        "Edit",
+        text,
+        0,
+        0,
+        0,
+        100,
+        100,
+        0,
+        0,
+        _recorder_window.win32api.GetModuleHandle(None),
+        None,
+    )
+    try:
+        assert _recorder_window._native_edit_text(edit) == text
+    finally:
+        gui.DestroyWindow(edit)
+
+
+@pytest.mark.parametrize("status", [0, 1])
+def test_native_read_status_distinguishes_failure_from_empty_text(monkeypatch, tmp_path, status):
+    field = Mock()
+    field.text.return_value = ""
+    field._resolve.return_value.handle = 789
+    rec = Mock(_processed=5, _hook_error=None)
+    monkeypatch.setattr(
+        _recorder_window.win32gui, "SendMessageTimeout", Mock(return_value=(status, 0))
+    )
+    monkeypatch.setattr(
+        _recorder_window._recorder,
+        "_capture_context",
+        lambda: _recorder_window._recorder._InputContext(123, 456, 789, password=False),
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    output = tmp_path / "recorded.py"
+
+    def read():
+        _recorder_window._wait_for_edit_text(
+            field, 123, 789, "", "cleared before replay", rec, output, timeout=0
+        )
+
+    if status:
+        read()
+    else:
+        with pytest.raises(OSError, match=r"WM_GETTEXT.*zero status"):
+            read()
+    evidence = json.loads(output.with_suffix(".diagnostics.json").read_text(encoding="utf-8"))[-1]
+    if status:
+        assert evidence["native_text"] == ""
+        assert "errors" not in evidence
+    else:
+        assert "native_text" not in evidence
+        assert evidence["errors"]["native_text"]["type"] == "OSError"
+        assert "zero status" in evidence["errors"]["native_text"]["message"]
+
+
+@pytest.mark.parametrize("uia_text,native_text", [("tttt", ""), ("", "tttt"), ("TTTT", "TTTT")])
+def test_replay_diagnostic_identifies_stage_and_text_disagreement(
+    monkeypatch, tmp_path, uia_text, native_text
+):
+    field = Mock()
+    field.text.return_value = uia_text
+    field._resolve.return_value.handle = 789
+    rec = Mock(_processed=5, _hook_error=None)
+    monkeypatch.setattr(_recorder_window, "_native_edit_text", lambda hwnd: native_text)
+    monkeypatch.setattr(
+        _recorder_window._recorder,
+        "_capture_context",
+        lambda: _recorder_window._recorder._InputContext(123, 456, 789, password=False),
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    output = tmp_path / "recorded.py"
+    with pytest.raises(AssertionError, match="generated script replay"):
+        _recorder_window._wait_for_edit_text(
+            field, 123, 789, "tttt", "generated script replay", rec, output, timeout=0
+        )
+    evidence = json.loads(output.with_suffix(".diagnostics.json").read_text(encoding="utf-8"))
+    assert evidence[-1]["uia_text"] == uia_text
+    assert evidence[-1]["native_text"] == native_text
+    assert evidence[-1]["stage"] == "generated script replay"
+
+
+@pytest.mark.parametrize("failed_probe", ["uia_text", "native_text", "resolved_hwnd"])
+def test_replay_diagnostic_saves_partial_data_before_reraising(monkeypatch, tmp_path, failed_probe):
+    field = Mock()
+    field.text.return_value = "tttt"
+    field._resolve.return_value.handle = 789
+    rec = Mock(_processed=5, _hook_error=None)
+    native = Mock(return_value="tttt")
+    failure = OSError("controlled diagnostic read failure")
+    probes = {"uia_text": field.text, "native_text": native, "resolved_hwnd": field._resolve}
+    probes[failed_probe].side_effect = failure
+    monkeypatch.setattr(_recorder_window, "_native_edit_text", native)
+    monkeypatch.setattr(
+        _recorder_window._recorder,
+        "_capture_context",
+        lambda: _recorder_window._recorder._InputContext(123, 456, 789, password=False),
+    )
+    monkeypatch.setattr(_recorder_window.win32gui, "GetForegroundWindow", lambda: 123)
+    output = tmp_path / "recorded.py"
+    report = output.with_suffix(".diagnostics.json")
+    report.write_text('[{"stage": "recorded input"}]', encoding="utf-8")
+
+    with pytest.raises(OSError) as caught:
+        _recorder_window._wait_for_edit_text(
+            field, 123, 789, "tttt", "generated script replay", rec, output, timeout=0
+        )
+
+    assert caught.value is failure
+    history = json.loads(report.read_text(encoding="utf-8"))
+    assert history[0] == {"stage": "recorded input"}
+    evidence = history[1]
+    assert evidence["stage"] == "generated script replay"
+    assert evidence["errors"][failed_probe] == {
+        "type": "OSError",
+        "message": "controlled diagnostic read failure",
+    }
+    assert failed_probe not in evidence
+    assert evidence["foreground_hwnd"] == 123
+    assert evidence["focus_hwnd"] == 789
+    for name, expected in (("uia_text", "tttt"), ("native_text", "tttt"), ("resolved_hwnd", 789)):
+        if name != failed_probe:
+            assert evidence[name] == expected
+
+
+def test_real_hook_installation_and_cleanup():
+    check_real_hook_lifecycle()
+
+
+def test_real_hook_delayed_password_text_transitions():
+    actions, code = record_native_transitions()
+    assert [(action.kind, action.data) for action in actions] == [
+        ("type_text", _PASSWORD_PLACEHOLDER),
+        ("type_text", "tttt"),
+        ("type_text", _PASSWORD_PLACEHOLDER),
+        ("type_text", _PASSWORD_PLACEHOLDER),
+    ]
+    assert "tttt" in code
+    for secret in ("qqqq", "ssss", "kkkk"):
+        assert secret not in code
+
+
+def test_real_record_generate_replay_targets_native_edit(tmp_path):
+    record_generate_replay(tmp_path / "recorded.py")
+
+
+def test_real_hook_delayed_events_stay_in_target_process(tmp_path):
+    actions, code = record_process_isolation(tmp_path)
+    assert [action.data for action in actions if action.kind == "type_text"] == ["tttt", "ssss"]
+    assert actions
+    assert all(action.window_title == "KAN-576 owned" for action in actions)
+    assert "tttt" in code
+    assert "ssss" in code
+    for foreign_text in ("qqqq", "zzzz", "KAN-576 foreign"):
+        assert foreign_text not in code
+
+
+def test_real_pointer_readiness_waits_for_native_hit_testing(tmp_path, monkeypatch):
+    actions, code = record_process_isolation_with_delayed_hit_testing(tmp_path, monkeypatch)
+    assert [action.data for action in actions if action.kind == "type_text"] == ["tttt", "ssss"]
+    assert all(action.window_title == "KAN-576 owned" for action in actions)
+    for foreign_text in ("qqqq", "zzzz", "KAN-576 foreign", "initial text"):
+        assert foreign_text not in code
+
+
+def test_real_pointer_guard_rejects_input_without_the_readiness_wait(tmp_path, monkeypatch):
+    def immediate(rec, root, pid, edit, output):
+        left, top, right, bottom = _recorder_window.win32gui.GetWindowRect(edit)
+        return ((left + right) // 2, (top + bottom) // 2)
+
+    monkeypatch.setattr(_recorder_window, "_wait_for_owned_pointer_target", immediate)
+    mouse, keyboard = Mock(), Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "mouse_event", mouse)
+    monkeypatch.setattr(_recorder_window.win32api, "keybd_event", keyboard)
+    # Negative control: the real overlay deterministically reproduces the old
+    # immediate hit-test failure; removing the input guard cannot make it pass.
+    with pytest.raises(AssertionError, match="Owned Edit is obscured"):
+        record_process_isolation_with_delayed_hit_testing(tmp_path, monkeypatch)
+    mouse.assert_not_called()
+    keyboard.assert_not_called()
+
+
+def test_replay_cleanup_closes_aut_when_recorder_stop_fails(monkeypatch, tmp_path):
+    import dolphin_desktop
+    from dolphin_desktop import _application
+
+    output = tmp_path / "recorded.py"
+    output.with_suffix(".ready.json").write_text(json.dumps({"hwnd": 123, "pid": 456}))
+    process = Mock(pid=456)
+    process.poll.return_value = None
+    handle = Mock()
+    recorder = Mock()
+    failure = OSError("controlled recorder shutdown failure")
+    recorder.stop.side_effect = failure
+    recorder._hook_thread.is_alive.return_value = False
+    app = Mock()
+    # Fail before input is sent, after both the recorder and app are acquired.
+    app.window.side_effect = RuntimeError("controlled setup failure")
+    monkeypatch.setattr(_recorder_window.subprocess, "Popen", Mock(return_value=process))
+    monkeypatch.setattr(_application, "_enumerate_descendant_pids", lambda pid: set())
+    monkeypatch.setattr(
+        _recorder_window.win32process, "GetWindowThreadProcessId", lambda hwnd: (1, 456)
+    )
+    monkeypatch.setattr(_recorder_window.win32api, "OpenProcess", Mock(return_value=handle))
+    monkeypatch.setattr(_recorder_window._recorder, "Recorder", Mock(return_value=recorder))
+    monkeypatch.setattr(_recorder_window.win32gui, "GetDlgItem", Mock(return_value=789))
+    monkeypatch.setattr(_recorder_window, "_activate_owned_window", Mock())
+    monkeypatch.setattr(
+        dolphin_desktop, "Desktop", Mock(return_value=Mock(connect=Mock(return_value=app)))
+    )
+    monkeypatch.setattr(
+        _recorder_window.win32process,
+        "GetExitCodeProcess",
+        lambda value: _recorder_window.win32con.STILL_ACTIVE,
+    )
+    terminate = Mock()
+    monkeypatch.setattr(_recorder_window.win32api, "TerminateProcess", terminate)
+
+    with pytest.raises(OSError) as caught:
+        record_generate_replay(output)
+
+    assert caught.value is failure
+    recorder.stop.assert_called_once_with()
+    recorder._hook_thread.join.assert_called_once_with(3)
+    app.detach.assert_called_once_with()
+    terminate.assert_called_once_with(handle, 0)
+    handle.Close.assert_called_once_with()
+    process.terminate.assert_called_once_with()
+    process.communicate.assert_called_once_with(timeout=5)

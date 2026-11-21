@@ -15,7 +15,7 @@ Use these guides after the quickstart when you know what kind of application you
 | [Oracle Forms](oracle-forms.md) | The app is an Oracle Forms client (Java applet / Web Start) |
 | [Qt 5 / Qt 6](qt.md) | The app uses Qt widgets (financial, trading, KDE, AMD/NVIDIA control panels) |
 | [IBM Mainframe](mainframe.md) | The test drives a 3270 / 5250 terminal session or an HLLAPI emulator |
-| [Office](office.md) | The test needs Excel or Word automation through COM |
+| [Office](office.md) | The test needs Excel, Word, PowerPoint or classic Outlook automation through COM |
 | [SAP GUI for Windows](sap.md) | The test targets classic SAP GUI with SAP GUI Scripting enabled |
 | [Image-Based Fallback](image-based.md) | Accessibility APIs cannot see a rendered control |
 | [Headless Mode](../tutorials/headless-mode.md) | You need to run tests on a hidden Windows desktop |

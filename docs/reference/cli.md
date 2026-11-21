@@ -27,13 +27,13 @@ Commands:
 ## `dolphin init`
 
 ```text
-dolphin init [NAME] [--template {minimal,standard,enterprise}] [--yes] [--install] [--git]
+dolphin init [NAME] [--template {minimal,standard,enterprise,sap,qt,electron,mainframe,oracle-forms,delphi}] [--yes] [--install] [--git]
 ```
 
 | Option | Description |
 | --- | --- |
 | `NAME` | Project directory to create. If omitted, Dolphin prompts for a name. |
-| `--template {minimal,standard,enterprise}` | Choose the scaffold template. |
+| `--template {minimal,standard,enterprise,sap,qt,electron,mainframe,oracle-forms,delphi}` | Choose the scaffold template. |
 | `--yes`, `-y` | Non-interactive defaults: `my-dolphin-tests` and `standard`. |
 | `--install` | Run `pip install` for scaffold dependencies after creation. |
 | `--git` | Run `git init` in the new project directory. |
@@ -71,6 +71,11 @@ dolphin spy [--window TITLE] [--exact TITLE] [--class CLASS] [--pid PID]
             [--mainframe HOST:PORT] [--session-type {3270,5250}]
 ```
 
+For remote terminal TLS or custom trust settings, use the Python
+[Mainframe API](../guides/mainframe.md#transport-security). The CLI has no TLS
+configuration flags. Its loopback endpoint can also be the local end of a
+separately verified tunnel.
+
 Stack-specific flags:
 
 | Option | Description |
@@ -95,20 +100,47 @@ dolphin spy --image-pick --output-dir templates
 
 Use `--pick` to select an element interactively. Use `--image-pick` to capture a template PNG for image fallback.
 
+If UI Automation denies access during `--pick` or `--image-pick`, the picker removes its highlight,
+prints an access-denied diagnostic to stderr and exits with code 1. Check the target
+application's permissions and integrity level. Transient element disappearance
+remains tolerated, and pressing Escape normally cancels the picker.
+For `--pick`, access denial also fails the command during owner checks and after selection,
+including selector construction and verification; it is not reported as cancellation
+or an unverified locator.
+
 ## `dolphin record`
 
 ```text
-dolphin record --output FILE [--app TITLE] [--backend {uia,win32}] [--func-name NAME]
+dolphin record --output FILE (--app TITLE | --pid PID | --global) [--backend {uia,win32}] [--func-name NAME]
 ```
 
 Examples:
 
 ```bash
-dolphin record --output tests/test_recorded.py
+dolphin record --output tests/test_recorded.py --global
 dolphin record --output tests/test_login.py --app "Login" --func-name test_login_workflow
 ```
 
 The recorder prints a generated pytest function. Press `Ctrl+F12` to stop recording.
+
+`--app` resolves the title fragment to exactly one running process before installing
+hooks. Missing or ambiguous matches fail; use `--pid` to select a process directly.
+Subsequent events are filtered by the captured PID, even if window titles change.
+The generated `--app` test reconnects using the title fragment, so restarting the
+application does not leave a stale PID in the script. With `--pid`, the generated
+function accepts `process_id: int`; pass the current PID when calling it, or supply
+a `process_id` pytest fixture.
+Recording across applications requires explicit `--global` (Python:
+`Recorder(global_recording=True)`); `Recorder()` alone cannot start.
+
+Keyboard events carry their original window, PID, native focus and password status.
+Only stable native Windows `Edit` controls without `ES_PASSWORD` release plaintext.
+Password fields, focus-query failures and other controls (including UIA-only fields)
+produce `<REDACTED-PASSWORD>`. The worker never classifies old input using live UIA
+focus. A preceding click selector can be reused when the native event confirms
+the same process, window and focused child control. Focus changes or unverifiable
+targets discard it; unresolved selectors require manual completion in the script.
+Review the generated file before sharing it.
 
 ## `dolphin trace list`
 

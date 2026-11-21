@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+from contextlib import nullcontext
+from threading import Event
 
 import pytest
 
@@ -69,6 +71,8 @@ class _FakeKernel32:
 
 @pytest.fixture
 def hidden_desktop(monkeypatch):
+    monkeypatch.setattr(_runner, "_console_interrupts", lambda: nullcontext(Event()))
+    monkeypatch.setattr(_runner, "_owned_job", lambda: nullcontext(99))
     monkeypatch.setattr(_runner, "get_current_desktop_name", lambda: "Default")
     monkeypatch.setattr(_runner, "create_hidden_desktop", lambda *a, **k: 0x1234)
     monkeypatch.setattr(_runner, "close_desktop", lambda handle: None)

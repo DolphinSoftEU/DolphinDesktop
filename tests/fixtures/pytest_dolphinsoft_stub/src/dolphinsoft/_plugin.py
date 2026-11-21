@@ -1,9 +1,7 @@
-"""Stub pytest11 plugin — flips ``dolphinsoft._event_mode_active``."""
+"""Minimal pytest11 plugin used only to prove side-by-side installation."""
 
 from __future__ import annotations
 
-import dolphinsoft
 
-
-def pytest_configure(config):
-    dolphinsoft._event_mode_active = True
+def pytest_configure(config) -> None:
+    config.addinivalue_line("markers", "dolphinsoft_stub: cross-install fixture")

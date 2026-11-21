@@ -26,6 +26,36 @@ with sync_playwright() as p:
     browser.close()
 ```
 
+## Next to an existing session
+
+The facade can attach to an app that dolphin already drives, on the same
+thread, for example one started with `Desktop().launch_electron_cdp(...)`:
+
+```python
+from dolphin_desktop import Desktop
+from dolphin_desktop.playwright_compat import sync_playwright
+
+app, session = Desktop().launch_electron_cdp("app.exe", debug_port=9222)
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
+    assert page.title()
+    browser.close()          # disconnects the facade only
+session.locator("#ready").wait_for()   # the first session still works
+session.close()
+```
+
+All CDP sessions on one thread share a single Playwright driver, because
+Playwright's sync API allows only one running instance per thread. Each
+session still has its own CDP connection, so closing one never disconnects
+another. The driver stops when the last session on the thread closes.
+Close every session (or use it as a context manager) on the thread that
+opened it, before that thread ends: a session left open keeps the driver, a
+`node` process, running until it is closed or garbage collected. Playwright
+objects only work on the thread that created them, so `close()` from any
+other thread raises `DolphinError` and leaves the session open for its owner
+to close.
+
 ## Not implemented
 
 The following Playwright APIs are **not** available through the
@@ -35,7 +65,8 @@ compat layer — dolphin does not have equivalents:
 * `chromium.launch()` — dolphin never spawns a standalone Chromium;
   use `Desktop().launch_electron_cdp(...)` for Electron apps or
   `connect_over_cdp(url)` for a running one.
-* Async API (`async_playwright`) — dolphin's CDP surface is sync-only.
+* Async API (`async_playwright`) — dolphin's CDP surface is sync-only;
+  calling it raises `NotImplementedError` with a migration hint.
 * Trace viewer / video recording APIs — dolphin has its own trace /
   video capture (see the pytest plugin options).
 * Multi-context / storage-state persistence — Electron apps run
@@ -43,3 +74,9 @@ compat layer — dolphin does not have equivalents:
 
 Calls to these attributes raise `NotImplementedError` with a
 pointer to the dolphin equivalent.
+
+The same explicit exception is used for `browser.new_context()`,
+`context.new_page()`, `context.storage_state()`, `context.tracing` and
+`page.video`.  These names are exposed so an accidentally ported Playwright
+test fails with a useful compatibility message rather than an
+`AttributeError`.

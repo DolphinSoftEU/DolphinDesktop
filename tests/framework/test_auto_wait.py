@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import dolphin_desktop
 import dolphin_desktop._config as _cfg
+import dolphin_desktop._locator as locator_module
 from dolphin_desktop import ElementNotFoundError
 from dolphin_desktop._locator import Locator, _ResolvedLocator
 from dolphin_desktop._window import Window
@@ -295,6 +296,46 @@ class TestAutoWaitRetry:
         # 4.0 s default that would apply if the timeout were dropped.
         assert 0.3 <= elapsed < 2.0
 
+    def test_click_timeout_ms_bounds_the_wait_even_with_a_longer_locator_timeout(self):
+        """KAN-531: timeout_ms must take precedence over the locator's own
+
+        (longer) configured timeout end-to-end — not just be threaded
+        through as a value, but actually bound how long click() waits, even
+        when the element would eventually appear within the locator's own
+        timeout.
+        """
+        ready = threading.Event()
+        spec = MagicMock()
+        child = MagicMock()
+
+        visible = MagicMock()
+        visible.is_visible.return_value = True
+
+        def appears_once_ready():
+            if not ready.is_set():
+                raise RuntimeError("element is not there yet")
+            return visible
+
+        child.wrapper_object.side_effect = appears_once_ready
+        spec.child_window.return_value = child
+        spec.children.return_value = []
+
+        # The element only appears at 0.5s, well within the locator's own
+        # 2.0s timeout — but timeout_ms=150 must still cut the wait short.
+        threading.Timer(0.5, ready.set).start()
+        loc = _window(spec).get_by_role("Button").timeout(2.0)
+
+        start = time.monotonic()
+        with pytest.raises(ElementNotFoundError):
+            loc.click(timeout_ms=150)
+        elapsed = time.monotonic() - start
+
+        # Generous upper bound (as in test_locator_timeout_bounds_the_visibility_wait
+        # above): the poll interval and scheduler jitter can push the actual
+        # wait well past 150ms under load, but it must still be nowhere near
+        # the locator's own 2.0s timeout — that's the behavior under test.
+        assert elapsed < 1.0
+
     def test_chained_actions_without_explicit_wait(self):
         """Chain of actions uses auto-wait on every step."""
         spec = _succeeding_spec()
@@ -387,7 +428,9 @@ class TestZeroTimeoutTriesOnce:
         match = MagicMock()
         match.element_info.automation_id = "App.win.btn_ok"
         spec.descendants.return_value = [match]
+        spec.child_window.side_effect = TypeError("unsupported qt_object_name criterion")
         assert _window(spec).get_by_object_name("btn_ok").exists() is True
+        spec.child_window.assert_not_called()
 
     def test_wait_until_hidden_returns_for_an_absent_element(self):
         loc = _window(_failing_spec()).get_by_role("Button")
@@ -414,17 +457,25 @@ class TestWaitForUsesFallbacks:
         primary = MagicMock()
         primary.wrapper_object.side_effect = Exception("primary never becomes visible")
         fallback = MagicMock()
+        fallback.wrapper_object.return_value.is_visible.return_value = True
         spec = MagicMock()
         spec.children.return_value = []
         spec.child_window.side_effect = lambda **kw: (
-            fallback if kw == {"auto_id": "btnOk"} else primary
+            fallback if kw.get("auto_id") == "btnOk" else primary
         )
         return spec
 
     def test_fallback_selector_satisfies_wait_for(self):
         spec = self._spec_where_only_the_fallback_resolves()
         loc = Locator(_window(spec), title="OK", fallback=[{"auto_id": "btnOk"}]).timeout(0.05)
-        assert loc.wait_for() is loc
+        # This tests selector fallback, not elapsed time. Coverage and a busy
+        # CI worker must not consume the deadline before the fallback probe.
+        with patch.object(locator_module.time, "monotonic", return_value=100.0):
+            assert loc.wait_for() is loc
+        assert [call.kwargs for call in spec.child_window.call_args_list] == [
+            {"title": "OK"},
+            {"auto_id": "btnOk"},
+        ]
 
     def test_missing_element_raises_the_same_error_as_click(self):
         loc = _window(_failing_spec()).get_by_role("Button").timeout(0.05)
@@ -441,6 +492,73 @@ class TestWaitForUsesFallbacks:
         loc = _window(spec).get_by_role("Button").timeout(0.05)
         with pytest.raises(WaitTimeoutError):
             loc.wait_for(state="enabled")
+
+    def test_hidden_state_polls_visibility_and_returns_same_locator(self):
+        loc = _window().get_by_role("Button")
+        visible = MagicMock(side_effect=[True, False])
+
+        with (
+            patch.object(loc, "is_visible", visible),
+            patch.object(locator_module.time, "sleep") as sleep,
+        ):
+            assert loc.wait_for(state="hidden", timeout=1.0) is loc
+
+        assert visible.call_count == 2
+        sleep.assert_called_once_with(0.1)
+
+    def test_hidden_state_times_out_when_element_stays_visible(self):
+        from dolphin_desktop import WaitTimeoutError
+
+        loc = _window().get_by_role("Button")
+        with (
+            patch.object(loc, "is_visible", return_value=True),
+            patch.object(locator_module.time, "monotonic", side_effect=[0.0, 1.0]),
+            patch.object(locator_module.time, "sleep"),
+            pytest.raises(WaitTimeoutError, match="still visible"),
+        ):
+            loc.wait_for(state="hidden", timeout=0.5)
+
+    def test_exists_reports_an_existing_hidden_element(self):
+        spec = _succeeding_spec()
+        spec.child_window.return_value.wrapper_object.return_value.is_visible.return_value = False
+        loc = _window(spec).get_by_role("Button")
+
+        assert loc.exists() is True
+        # KAN-592: pywinauto's own child_window()/find_elements() defaults
+        # visible_only=True and filters hidden elements out server-side —
+        # presence resolution must override that, not just handle a wrapper
+        # a mock happens to hand back regardless of criteria.
+        spec.child_window.assert_called_once_with(visible_only=False, control_type="Button")
+
+    def test_wait_for_exists_accepts_an_existing_hidden_element(self):
+        spec = _succeeding_spec()
+        spec.child_window.return_value.wrapper_object.return_value.is_visible.return_value = False
+        loc = _window(spec).get_by_role("Button")
+
+        assert loc.wait_for(state="exists", timeout=0.1) is loc
+        spec.child_window.assert_called_once_with(visible_only=False, control_type="Button")
+
+    def test_presence_wait_uses_selector_fallbacks(self):
+        spec = self._spec_where_only_the_fallback_resolves()
+        loc = Locator(_window(spec), title="OK", fallback=[{"auto_id": "btnOk"}]).timeout(0.05)
+
+        assert loc.exists() is True
+        assert loc.wait_for(state="exists") is loc
+
+    def test_resolved_locator_exists_when_wrapped_element_is_hidden(self):
+        element = MagicMock()
+        element.is_visible.return_value = False
+        loc = _ResolvedLocator(element)
+
+        assert loc.exists() is True
+        assert loc.wait_for(state="exists", timeout=0) is loc
+
+    @pytest.mark.parametrize("timeout", [-1.0, float("nan"), float("inf"), float("-inf")])
+    def test_locator_timeout_rejects_invalid_values(self, timeout):
+        loc = Locator(_window())
+
+        with pytest.raises(ValueError):
+            loc.timeout(timeout)
 
 
 # py.typed consumers must be able to chain through timeout()/nth()

@@ -6,6 +6,8 @@ wrappers do with a reply, not how the reply reached them.
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 
 from dolphin_desktop._exceptions import DolphinError, ElementNotFoundError, WaitTimeoutError
@@ -217,3 +219,23 @@ class TestSlots:
         element = factory(_FakeAgent())
         with pytest.raises(AttributeError):
             element.hadnle = "typo"
+
+
+def test_qt_agent_element_delegates_properties_and_reports_invalid_replies() -> None:
+    from dolphin_desktop._qt_elements import WidgetElement, _agent_result
+    from dolphin_desktop._qt_inject import QtAgentRpcError
+
+    agent = Mock()
+    agent.get_property.return_value = "Save"
+    element = WidgetElement(agent, "h1", {"class": "QPushButton", "objectName": "save"})
+    assert element.get_property("text") == "Save"
+    assert repr(element) == "WidgetElement('QPushButton', objectName='save')"
+    with pytest.raises(QtAgentRpcError, match="instead of a result object"):
+        _agent_result(None, "describe", element)
+
+
+def test_qt_element_property_matching_is_type_aware() -> None:
+    from dolphin_desktop._qt_elements import _property_matches
+
+    assert _property_matches("Save", "Save") is True
+    assert _property_matches("Save", "save") is False

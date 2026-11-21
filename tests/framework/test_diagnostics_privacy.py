@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dolphin_desktop import config
-from dolphin_desktop._config import get_log_level
+from dolphin_desktop import _config, config
+from dolphin_desktop._config import VALID_LOG_LEVELS, get_log_level
 from dolphin_desktop._logging import ROOT_LOGGER, get_logger, setup_logging
 
 _PYTHON = sys.executable
@@ -75,6 +75,38 @@ class TestConfigAppliesLogLevel:
         dolphin_logger.addHandler(handler)
         config(log_level="DEBUG")
         assert handler.level == logging.DEBUG
+
+    @pytest.mark.parametrize("value", ["TRACE", "WARNING", ""])
+    def test_invalid_runtime_log_level_does_not_leak(self, dolphin_logger: logging.Logger, value):
+        config(log_level="ERROR")
+        before_defaults = _config._defaults.copy()
+        before_logger = (
+            dolphin_logger.level,
+            tuple(dolphin_logger.handlers),
+            dolphin_logger.propagate,
+        )
+
+        with pytest.raises(ValueError, match="Invalid log_level"):
+            config(log_level=value)
+
+        assert _config._defaults == before_defaults
+        assert (
+            dolphin_logger.level,
+            tuple(dolphin_logger.handlers),
+            dolphin_logger.propagate,
+        ) == before_logger
+
+    @pytest.mark.parametrize("value", VALID_LOG_LEVELS)
+    def test_supported_runtime_log_levels_apply(self, dolphin_logger: logging.Logger, value):
+        config(log_level=value.lower())
+        assert get_log_level() == value
+        assert dolphin_logger.level == getattr(logging, value)
+
+    def test_internal_log_level_parser_rejects_unknown_values(self):
+        from dolphin_desktop._logging import _level_int
+
+        with pytest.raises(ValueError, match="Invalid log_level"):
+            _level_int("not-a-log-level")
 
 
 # Redaction must survive handlers dolphin does not own
@@ -270,6 +302,20 @@ class TestTelemetryIntegrations:
             tel._initialized = False
         assert fake.init.call_args.kwargs["integrations"] == [sentinel]
 
+    def test_init_is_silent_when_sentry_is_not_installed(self):
+        import dolphin_desktop._telemetry as tel
+
+        tel._initialized = False
+        try:
+            with (
+                patch.dict(sys.modules, {"sentry_sdk": None}),
+                patch.dict(os.environ, {"DOLPHIN_TELEMETRY": "on"}),
+                patch.object(tel, "_DOLPHIN_DSN", "https://key@example.invalid/1"),
+            ):
+                tel.init()
+        finally:
+            tel._initialized = False
+
 
 class TestTelemetryStripsUserSource:
     def _event(self) -> dict:
@@ -328,6 +374,26 @@ class TestTelemetryStripsUserSource:
         event["exception"]["values"][0]["stacktrace"]["frames"].reverse()
         hint = {"exc_info": (ValueError, ValueError("oops"), None)}
         assert _before_send(event, hint) is None
+
+    def test_exception_values_are_redacted(self):
+        event = {
+            "exception": {
+                "values": [
+                    {
+                        "type": "ElementNotFoundError",
+                        "value": ('login="DESKTOP_LOGIN_2c4b" clipboard="DESKTOP_CLIPBOARD_4a6e"'),
+                    }
+                ]
+            }
+        }
+
+        sent = self._send(event)
+
+        assert sent is event
+        serialized = json.dumps(sent)
+        assert "DESKTOP_LOGIN_2c4b" not in serialized
+        assert "DESKTOP_CLIPBOARD_4a6e" not in serialized
+        assert sent["exception"]["values"][0]["value"] == ('login="***" clipboard="***"')
 
 
 # Self-healing telemetry file
@@ -532,6 +598,55 @@ class TestRedactionCoversFailureText:
         source = inspect.getsource(pytest_plugin)
         assert "_redact(str(report.longrepr))" in source
 
+    def test_real_pytest_junit_and_captured_streams_are_redacted(self, tmp_path: Path) -> None:
+        """A child pytest run must not leak captured secrets through any reporter."""
+        password = "DESKTOP_E2E_PASSWORD_7f3a"
+        token = "DESKTOP_E2E_TOKEN_9b1c"
+        login = "DESKTOP_E2E_LOGIN_4d2e"
+        test_file = tmp_path / "test_secret_output.py"
+        test_file.write_text(
+            "import sys\n"
+            "\n"
+            "def test_secret_output():\n"
+            f"    print('password={password}')\n"
+            f"    print('token={token}', file=sys.stderr)\n"
+            f"    assert False, 'login={login}'\n",
+            encoding="utf-8",
+        )
+        junit = tmp_path / "junit.xml"
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(Path(__file__).resolve().parents[2] / "src"), env.get("PYTHONPATH", "")]
+        )
+        env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+        result = subprocess.run(
+            [
+                _PYTHON,
+                "-m",
+                "pytest",
+                str(test_file),
+                "-q",
+                "-p",
+                "dolphin_desktop.pytest_plugin",
+                "--dolphin-trace=off",
+                "--dolphin-video=off",
+                f"--junitxml={junit}",
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        assert result.returncode != 0
+        assert junit.is_file()
+        output = result.stdout + result.stderr + junit.read_text(encoding="utf-8")
+        for secret in (password, token, login):
+            assert secret not in output
+        assert "AssertionError" in output
+        assert "1 failed" in output
+
 
 class TestRedactionDoesNotEatOrdinaryText:
     """The pattern runs over pytest's longrepr, where prose is common.
@@ -586,6 +701,14 @@ class TestRedactionShapesThatLeakedBefore:
         ("text", "secret"),
         [
             ("token=abcd", "abcd"),
+            ("pin=1234", "1234"),
+            ("pinCode=1234", "1234"),
+            ("cardPin=1234", "1234"),
+            ("pin1=1234", "1234"),
+            ("card_pin=KAN469_SYNTHETIC_PIN_CANARY", "KAN469_SYNTHETIC_PIN_CANARY"),
+            ("pin-code=1234", "1234"),
+            ("PIN_CODE=1234", "1234"),
+            ("card.pin=1234", "1234"),
             ("password=12345", "12345"),
             ("secret=abcde", "abcde"),
             ("Password=P@ss,w0rd", "P@ss,w0rd"),
@@ -596,8 +719,37 @@ class TestRedactionShapesThatLeakedBefore:
             ("API_KEY=SK-ABCDEF", "SK-ABCDEF"),
             ("apiKey: abcd1234", "abcd1234"),
             ("api-key=abcd1234", "abcd1234"),
+            ('login="DESKTOP_LOGIN_2c4b"', "DESKTOP_LOGIN_2c4b"),
+            ('clipboard="DESKTOP_CLIPBOARD_4a6e"', "DESKTOP_CLIPBOARD_4a6e"),
+            (
+                'connection_string="Server=127.0.0.1;Password=DESKTOP_PASSWORD"',
+                "Server=127.0.0.1;Password=DESKTOP_PASSWORD",
+            ),
+            (
+                "connection_string=Server=127.0.0.1;User Id=DESKTOP_LOGIN;"
+                "Password=DESKTOP_PASSWORD",
+                "Server=127.0.0.1;User Id=DESKTOP_LOGIN;Password=DESKTOP_PASSWORD",
+            ),
             ("password:\thunter2tab", "hunter2tab"),
             ("password: hunter2\n  next: line", "hunter2"),
+            # KAN-630: dict-repr shape — the quote right after the keyword
+            # (from Python's own repr()) must not break the separator match.
+            (
+                "Element {'login': 'DESKTOP_CANARY_LOGIN_9f2e'} not found after 5.0s.",
+                "DESKTOP_CANARY_LOGIN_9f2e",
+            ),
+            (
+                "{'clipboard': 'DESKTOP_CANARY_CLIP_7a1c'}",
+                "DESKTOP_CANARY_CLIP_7a1c",
+            ),
+            (
+                "{'connection_string': 'DESKTOP_CANARY_CS_1b2c'}",
+                "DESKTOP_CANARY_CS_1b2c",
+            ),
+            (
+                "{'username': 'DESKTOP_CANARY_USER_3d4e'}",
+                "DESKTOP_CANARY_USER_3d4e",
+            ),
         ],
     )
     def test_the_value_never_survives(self, text: str, secret: str) -> None:
@@ -617,6 +769,8 @@ class TestRedactionShapesThatLeakedBefore:
             "auth failed for host example.com",
             "token expired 3 minutes ago",
             "authorization denied by policy",
+            "mapping=the value is visible",
+            "shipping=the value is visible",
         ],
     )
     def test_prose_and_line_boundaries_are_untouched(self, text: str) -> None:
@@ -628,6 +782,25 @@ class TestRedactionShapesThatLeakedBefore:
         from dolphin_desktop._logging import _redact
 
         assert _redact("?token=abcd1234&next=1") == "?token=***&next=1"
+
+    def test_unquoted_connection_string_preserves_following_diagnostic_text(self) -> None:
+        from dolphin_desktop._logging import _redact
+
+        text = (
+            "connection_string=Server=127.0.0.1;User Id=DESKTOP_LOGIN;"
+            "Password=DESKTOP_PASSWORD, action=connect"
+        )
+
+        redacted = _redact(text)
+
+        assert redacted == "connection_string=***, action=connect"
+
+    def test_unquoted_connection_string_preserves_closing_parenthesis(self) -> None:
+        from dolphin_desktop._logging import _redact
+
+        text = "connect(connection_string=Server=127.0.0.1;Password=DESKTOP_PASSWORD)"
+
+        assert _redact(text) == "connect(connection_string=***)"
 
 
 class TestRedactionAdversarialCorpus:
@@ -814,3 +987,116 @@ class TestSelfhealJournalStaysParseable:
         parsed = json.loads(line)  # a rewritten line raises here
         assert "42" not in parsed["fallback"]
         assert _selfheal.selfheal_stats(file=journal)
+
+
+class TestMarkSensitiveRegistry:
+    """The registry backing :class:`Secret` — see the module docstring in _logging.py."""
+
+    def test_short_and_non_string_values_are_ignored(self) -> None:
+        from dolphin_desktop._logging import _marked_secrets, mark_sensitive
+
+        before = dict(_marked_secrets)
+        mark_sensitive("abc")  # 3 chars, below the 4-char minimum
+        mark_sensitive(12345)  # type: ignore[arg-type]
+        assert _marked_secrets == before
+
+    def test_registry_evicts_the_oldest_entry_once_full(self) -> None:
+        from dolphin_desktop._logging import (
+            _MARKED_SECRETS_MAX,
+            _marked_secrets,
+            mark_sensitive,
+        )
+
+        saved = dict(_marked_secrets)
+        _marked_secrets.clear()
+        try:
+            for i in range(_MARKED_SECRETS_MAX):
+                mark_sensitive(f"canary-{i:04d}")
+            assert "canary-0000" in _marked_secrets
+
+            mark_sensitive("canary-overflow")
+
+            assert len(_marked_secrets) == _MARKED_SECRETS_MAX
+            assert "canary-0000" not in _marked_secrets
+            assert "canary-overflow" in _marked_secrets
+        finally:
+            _marked_secrets.clear()
+            _marked_secrets.update(saved)
+
+
+class TestSecretWrapper:
+    def test_wrapping_a_secret_reuses_its_value(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        inner = Secret("hunter2xyz")
+        outer = Secret(inner)
+        assert outer.reveal() == "hunter2xyz"
+
+    def test_non_string_value_is_rejected(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        with pytest.raises(TypeError, match="expects a str"):
+            Secret(12345)  # type: ignore[arg-type]
+
+    def test_str_and_repr_never_reveal_the_value(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        secret = Secret("hunter2xyz")
+        assert str(secret) == "***"
+        assert repr(secret) == "Secret('***')"
+        assert "hunter2xyz" not in str(secret)
+        assert "hunter2xyz" not in repr(secret)
+
+    def test_len_and_bool_reflect_the_wrapped_value(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        assert len(Secret("hunter2xyz")) == len("hunter2xyz")
+        assert bool(Secret("hunter2xyz")) is True
+        assert bool(Secret("")) is False
+
+    def test_equality_compares_wrapped_values_not_identity(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        assert Secret("hunter2xyz") == Secret("hunter2xyz")
+        assert Secret("hunter2xyz") != Secret("other")
+        assert Secret("hunter2xyz").__eq__("hunter2xyz") is NotImplemented
+
+    def test_hash_is_derived_from_the_wrapped_value(self) -> None:
+        from dolphin_desktop._logging import Secret
+
+        assert hash(Secret("hunter2xyz")) == hash(Secret("hunter2xyz"))
+        assert len({Secret("hunter2xyz"), Secret("hunter2xyz")}) == 1
+
+
+class TestRedactValueStructural:
+    def test_recursion_depth_is_capped(self) -> None:
+        """A pathologically deep structure must mask out rather than recurse forever."""
+        from dolphin_desktop._logging import redact_value
+
+        assert redact_value("password=hunter2xyz", _depth=33) == "***"
+        assert redact_value({"a": 1}, _depth=33) == "***"
+
+    def test_a_secret_instance_inside_a_structure_is_masked(self) -> None:
+        from dolphin_desktop._logging import Secret, redact_value
+
+        out = redact_value({"note": Secret("hunter2xyz")})
+        assert out["note"] == "***"
+
+    def test_tuples_and_sets_keep_their_type(self) -> None:
+        from dolphin_desktop._logging import redact_value
+
+        assert redact_value(("password=hunter2xyz", "plain")) == ("password=***", "plain")
+        out = redact_value(frozenset({"password=hunter2xyz"}))
+        assert isinstance(out, frozenset)
+        assert out == frozenset({"password=***"})
+
+
+def test_logging_filter_redacts_message_arguments() -> None:
+    from dolphin_desktop._logging import _RedactingFilter
+
+    record = logging.LogRecord(
+        "dolphin_desktop.unit", logging.INFO, "", 0, "token=%s", ("secret",), None
+    )
+    assert _RedactingFilter().filter(record) is True
+    assert record.args == ()
+    assert "secret" not in record.msg

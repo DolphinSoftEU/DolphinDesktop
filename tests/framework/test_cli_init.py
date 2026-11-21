@@ -1,16 +1,38 @@
 """Unit tests for `dolphin init` project scaffolding."""
 
+
+# minimal template
+
 from __future__ import annotations
 
+import importlib
 import io
+import runpy
 import sys
-from unittest.mock import MagicMock
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from dolphin_desktop._cli import _doctor_cmd, _scaffold
 
-# minimal template
+
+def test_docs_reference_cli_lists_every_init_template() -> None:
+    """KAN-605: docs/reference/cli.md must not drift from the CLI's actual
+
+    `--template` choices — a new stack template added to _STACK_TEMPLATES
+    without a docs update would otherwise go unnoticed.
+    """
+    from dolphin_desktop import _cli
+
+    templates = ["minimal", "standard", "enterprise", *_cli._STACK_TEMPLATES]
+
+    docs_path = Path(__file__).resolve().parents[2] / "docs" / "reference" / "cli.md"
+    docs_text = docs_path.read_text(encoding="utf-8")
+
+    missing = [t for t in templates if t not in docs_text]
+    assert not missing, f"docs/reference/cli.md is missing templates: {missing}"
 
 
 def test_minimal_creates_expected_files(tmp_path):
@@ -74,6 +96,38 @@ def test_standard_notepad_page_has_expected_api(tmp_path):
     assert "def type_text" in content
     assert "def read_text" in content
     assert "def clear" in content
+
+
+@pytest.mark.parametrize("template", ["minimal", "standard", "enterprise"])
+@pytest.mark.parametrize("document_exists", [True, False])
+def test_generated_notepad_uses_available_editor(tmp_path, pytestconfig, template, document_exists):
+    target = tmp_path / "proj"
+    _scaffold(target, "proj", template, "3.11")
+    document, edit = MagicMock(), MagicMock()
+    document.exists.return_value = document_exists
+    editor = document if document_exists else edit
+    editor.text.return_value = "Hello, Dolphin!"
+    window = MagicMock()
+    window.get_by_role.side_effect = {"Document": document, "Edit": edit}.__getitem__
+
+    if template == "minimal":
+        # The generated project's pytest config declares this marker.
+        pytestconfig.addinivalue_line("markers", "integration: generated sample test")
+        sample = runpy.run_path(str(target / "tests" / "test_sample.py"))
+        launch = MagicMock()
+        launch.return_value.window.return_value = window
+        sample["test_notepad_type_and_read"](launch)
+    else:
+        sample = runpy.run_path(str(target / "objects" / "notepad_page.py"))
+        page = sample["NotepadPage"](window)
+        page.type_text("Hello, Dolphin!")
+        assert page.read_text() == "Hello, Dolphin!"
+
+    editor.click.assert_called_once_with()
+    editor.type_text.assert_called_once_with("Hello, Dolphin!")
+    unused = edit if document_exists else document
+    unused.click.assert_not_called()
+    unused.type_text.assert_not_called()
 
 
 def test_standard_test_uses_page_object(tmp_path):
@@ -193,3 +247,163 @@ def test_doctor_does_not_crash_on_ascii_only_stdout(monkeypatch):
     assert "[ok]  accessible (0 top-level window(s) visible)" in output
     assert "DOLPHIN_TRACE" in output
     assert "?" not in output
+
+
+def test_doctor_reports_a_diagnostic_failure(monkeypatch, capsys):
+    import pywinauto
+
+    def broken_desktop(**_kwargs):
+        raise RuntimeError("UIA unavailable")
+
+    monkeypatch.setattr(pywinauto, "Desktop", broken_desktop)
+
+    _doctor_cmd(SimpleNamespace())
+
+    assert "FAILED — UIA unavailable" in capsys.readouterr().out
+
+
+def test_cli_standard_scaffold_and_unknown_template(tmp_path) -> None:
+    from dolphin_desktop._cli import _scaffold
+
+    target = tmp_path / "standard"
+    _scaffold(target, "demo", "standard", "3.12")
+    assert (target / "objects" / "notepad_page.py").exists()
+    assert (target / "tests" / "test_sample.py").exists()
+    with pytest.raises(ValueError, match="Unknown template"):
+        _scaffold(tmp_path / "bad", "demo", "unknown", "3.12")
+
+
+def test_cli_handlers_scaffold_stats_and_trace_listing(tmp_path, monkeypatch, capsys) -> None:
+    from dolphin_desktop import _cli as cli
+
+    monkeypatch.chdir(tmp_path)
+    cli._init_cmd(
+        SimpleNamespace(
+            yes=True,
+            name="demo",
+            template="minimal",
+            install=False,
+            git=False,
+        )
+    )
+    assert (tmp_path / "demo" / "pyproject.toml").exists()
+    assert (tmp_path / "demo" / "tests" / "test_sample.py").exists()
+
+    with patch("dolphin_desktop._selfheal.selfheal_stats", return_value=[]):
+        cli._selfheal_stats_cmd(SimpleNamespace(last=2, file=None))
+    assert "No self-healing events recorded" in capsys.readouterr().out
+
+    runs = [
+        {"status": "passed", "started_at": 0, "finished_at": 1.25, "test_nodeid": "test_ok"},
+        {"status": None, "started_at": 2, "test_nodeid": "test_running"},
+    ]
+    with patch("dolphin_desktop._trace.list_runs", return_value=runs):
+        cli._trace_list_cmd(SimpleNamespace(dir=str(tmp_path), last=5))
+    output = capsys.readouterr().out
+    assert "PASSED" in output and "TEST_RUNNING" not in output
+    assert "test_running" in output and "—" in output
+
+
+def test_init_rejects_absolute_path_outside_cwd(tmp_path, monkeypatch, capsys) -> None:
+    """KAN-636: `dolphin init` must not scaffold outside the working directory."""
+    from dolphin_desktop import _cli as cli
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    outside = tmp_path / "outside-project"
+
+    with pytest.raises(SystemExit):
+        cli._init_cmd(
+            SimpleNamespace(
+                yes=True, name=str(outside), template="minimal", install=False, git=False
+            )
+        )
+
+    assert "resolves outside the current working directory" in capsys.readouterr().out
+    assert not outside.exists()
+
+
+def test_init_rejects_path_traversal(tmp_path, monkeypatch, capsys) -> None:
+    """KAN-636: a '..' name must not escape the working directory either."""
+    from dolphin_desktop import _cli as cli
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+
+    with pytest.raises(SystemExit):
+        cli._init_cmd(
+            SimpleNamespace(
+                yes=True, name="../escaped-project", template="minimal", install=False, git=False
+            )
+        )
+
+    assert "resolves outside the current working directory" in capsys.readouterr().out
+    assert not (tmp_path / "escaped-project").exists()
+
+
+def test_init_rejects_symlinked_target_escaping_cwd(tmp_path, monkeypatch, capsys) -> None:
+    """KAN-636: a symlinked intermediate directory must not bypass the containment check."""
+    from dolphin_desktop import _cli as cli
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    try:
+        (workspace / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported in this environment")
+    monkeypatch.chdir(workspace)
+
+    with pytest.raises(SystemExit):
+        cli._init_cmd(
+            SimpleNamespace(
+                yes=True, name="link/escaped", template="minimal", install=False, git=False
+            )
+        )
+
+    assert "resolves outside the current working directory" in capsys.readouterr().out
+    assert not (outside / "escaped").exists()
+
+
+def test_cli_doctor_and_backend_info_are_rendered(monkeypatch, capsys) -> None:
+    from dolphin_desktop import _cli as cli
+
+    real_import = importlib.import_module
+
+    def fake_import(name: str):
+        if name in {"cv2", "pytesseract", "mss", "sentry_sdk"}:
+            raise ImportError(name)
+        return SimpleNamespace(__version__="test")
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    import pywinauto
+
+    monkeypatch.setattr(
+        pywinauto,
+        "Desktop",
+        lambda **_kwargs: SimpleNamespace(windows=lambda: [object(), object()]),
+    )
+    cli._doctor_cmd(None)
+    doctor_output = capsys.readouterr().out
+    assert "Required dependencies:" in doctor_output
+    assert "Optional dependencies:" in doctor_output
+    assert "accessible (2 top-level window(s) visible)" in doctor_output
+
+    monkeypatch.setattr(importlib, "import_module", real_import)
+    backend_rows = [
+        {
+            "id": "demo",
+            "platform": "any",
+            "available": True,
+            "source": "plugin",
+            "description": "A backend with a very long description that is truncated",
+        }
+    ]
+    with patch("dolphin_desktop._backend.list_backends", return_value=backend_rows):
+        cli._info_backends_cmd(SimpleNamespace())
+    info_output = capsys.readouterr().out
+    assert "ID" in info_output and "demo" in info_output
+    assert "Total: 1 backend(s)" in info_output

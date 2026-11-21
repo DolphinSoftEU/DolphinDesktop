@@ -21,9 +21,9 @@ Companion pages:
 | `image`          | Template matching + OCR (opencv + tesseract)                 | `ImageBackend`              |
 | `cdp`            | Chrome DevTools Protocol via Playwright                      | `CDPBackend` marker → `CDPSession` |
 | `sap`            | SAP GUI Scripting COM engine                                 | `SapBackend` marker → `SapGui` |
-| `mainframe`      | s3270 subprocess **or** HLLAPI DLL binding                   | `MainframeBackend` marker → `MainframeTerminal` |
-| `delphi`         | UIA + `TComponent.Name → AutomationId` name resolution       | `DelphiBackend` marker → `DelphiApp` |
-| `java`           | Java Access Bridge (JAB) — Swing / Oracle Forms / JavaFX     | `JavaBackend` marker → `OracleFormsApp` / `JavaAccessBridge` |
+| `mainframe`      | s3270 subprocess, native TN5250 **or** HLLAPI DLL binding                   | `MainframeBackend` marker → `MainframeTerminal` |
+| `delphi`         | UIA + provider-published ID / caption / index resolution       | `DelphiBackend` marker → `DelphiApp` |
+| `java`           | Java Access Bridge (JAB) — Swing / AWT / Oracle Forms     | `JavaBackend` marker → `OracleFormsApp` / `JavaAccessBridge` |
 
 Marker backends surface in `list_backends()` and publish the same
 `Capability` set the fronting facade offers, but direct backend
@@ -88,11 +88,11 @@ the headline **capabilities** it exposes (against the
 | Field         | Value                                                              |
 | ------------- | ------------------------------------------------------------------ |
 | Primary       | `delphi` (marker → `DelphiApp` on UIA)                             |
-| Alt           | `win32` — for pre-VCL-10.4 Delphi that does not publish `TComponent.Name` as UIA AutomationId |
+| Alt           | `win32` — standard HWND controls through the generic API; does not recover `TComponent.Name` |
 | Alt           | `image` — Ownerdraw controls (custom TCanvas paint)                |
 | Modes         | Launch, Attach, Hidden desktop                                     |
-| Capabilities  | Full accessibility set + SCREENSHOT + DRAG + SCROLL                |
-| Limitations   | Lazarus LCL does not publish AutomationId — falls back to class + role matching. VCL 10.4+ works out-of-the-box; earlier VCL requires the `win32` alt. |
+| Capabilities  | Operations depend on the target UIA provider and exposed patterns |
+| Limitations   | `TForm.Name` / `TComponent.Name` lookup is unsupported on stock VCL (including Delphi 12 / delphivcl 1.0.7) and LCL unless an application-supplied UIA provider publishes matching AutomationIds. Dolphin ships no such provider or RTTI agent. Use inspected UIA captions/indices; non-windowed `TLabel` can be absent. See [Delphi prerequisites and reference](guides/delphi.md). |
 
 ### PowerBuilder (2019+ Appeon)
 
@@ -104,15 +104,15 @@ the headline **capabilities** it exposes (against the
 | Capabilities  | Full accessibility set for standard controls                       |
 | Limitations   | DataWindow interior may be custom-painted and opaque to UIA — check with `dolphin spy`; fall back to `image` / OCR for those. |
 
-### Java Swing / JavaFX / Oracle Forms 12c
+### Java Swing / AWT / Oracle Forms
 
 | Field         | Value                                                              |
 | ------------- | ------------------------------------------------------------------ |
 | Primary       | `java` (marker → `JavaAccessBridge` / `OracleFormsApp`)            |
-| Alt           | `uia` — JavaFX 8+ apps that set `-Djavafx.accessible=true` register in UIA |
-| Modes         | Requires JAB enabled (`jabswitch /enable` — Windows switch style) and `WindowsAccessBridge-64.dll` reachable on PATH |
+| Alt           | `uia` when the target toolkit publishes a usable Windows UI Automation provider |
+| Modes         | Requires JAB enabled (`jabswitch /enable` — Windows switch style) and a trusted absolute `JAVA_HOME` containing `bin\WindowsAccessBridge-64.dll` and `bin\jabswitch.exe` |
 | Capabilities  | Full accessibility set + SCREENSHOT + SCROLL                       |
-| Limitations   | JAB does not expose a native drag pattern (DRAG omitted from `java` cap set). Oracle Forms applet in a browser needs `-Djavafx.accessible=true` on the JRE and the browser applet plugin. |
+| Limitations   | JAB does not expose a native drag pattern (DRAG omitted from `java` cap set). The target must expose its controls through JAB; browser/applet availability and other Java UI toolkits require separate runtime validation. |
 
 ### Mainframe TN3270 (z/OS, CICS)
 
@@ -132,17 +132,26 @@ the headline **capabilities** it exposes (against the
 | Alt           | HLLAPI if the site uses PCOMM/Rumba (same cap set)                 |
 | Modes         | Direct connect                                                     |
 | Capabilities  | Same as TN3270                                                     |
-| Limitations   | Read-side full; write-side WSF handshake missing on some IBM i releases. |
+| Limitations   | Screen/field reading and negotiation are available. The native write/submit path is unverified against live IBM i hosts; use an appropriate HLLAPI emulator for write-critical flows. |
 
-### Office (Excel / Word / PowerPoint / Outlook)
+### Office COM (Excel / Word / PowerPoint / classic Outlook)
 
 | Field         | Value                                                              |
 | ------------- | ------------------------------------------------------------------ |
-| Primary       | Office COM automation (in-process, not a `Backend` registry entry) |
+| Primary       | Office COM automation through public `ExcelApp`, `WordApp`, `PowerPointApp`, `OutlookApp` facades (not `Backend` registry entries) |
 | Alt           | `uia` for the ribbon / task-pane UI when COM cannot reach a dialog |
 | Modes         | Launch, Attach                                                     |
-| Capabilities  | LOCATE (workbook / worksheet / range), READ_TEXT, TYPE_TEXT (cell values), SET_VALUE, INVOKE (macros), SCREENSHOT via UIA |
-| Limitations   | Office COM is a domain API — not exposed via the generic `Backend` interface. Uses its own `ExcelApp.open(path)` / `ExcelApp.connect()` / `WordApp` facades. Modeless dialogs (e.g. AutoCorrect prompts) still routed through UIA. |
+| Capabilities  | Excel: workbook / worksheet / cell / range access, values and formulas, save. Word: document text, find and replace, save. PowerPoint: create/open/connect, slides (add, reorder, delete, layout title, speaker notes), shapes with text formatting (bold/italic/underline, font, size, colour, character ranges, hyperlinks), geometry, embedded pictures, tables, charts, save, PDF export. Outlook: create/read mail and appointments, recipients, attachments, folders, save MSG, explicit mail send. SCREENSHOT via UIA. |
+| Limitations   | Domain API, separate from generic `Backend` capabilities. Shared PowerPoint/Outlook sessions are preserved. Opt-in `exclusive=True` requires no existing application process, owns the verified new process and quits/waits for it during cleanup. Outlook requires classic Outlook and an accessible MAPI profile/store; new Outlook has no supported COM facade. Draft move/delete requires item ownership. Dialogs and ribbon UI use UIA/Win32. |
+
+See the [Office guide](guides/office.md) and [COM API reference](reference/office.md).
+Validate PowerPoint against the installed Office version, including
+create/open/connect, formatting, tables, charts, save/reopen, PDF output and
+process ownership. For Outlook, validate drafts, folders, attachments, MSG
+files, appointments and shared/exclusive ownership using an isolated profile
+with one local PST and no account. Repeat acceptance for each supported
+Office/version/architecture combination. Missing COM servers or profiles are
+incomplete verification; source stand-ins verify the wrapper contract.
 
 ### Image fallback
 
@@ -156,54 +165,23 @@ the headline **capabilities** it exposes (against the
 
 ## Cross-cutting mode notes
 
-* **Hidden mode** — every UIA-backed row supports the hidden-desktop
-  session mode (`Desktop(hidden=True)`), used to avoid stealing
-  focus during CI runs. Does not apply to `cdp` (Playwright has its
-  own headless mode) or `mainframe` (terminals are headless by
-  definition).
+* **Hidden mode** — `Desktop(hidden=True)` starts supported applications on
+  a hidden Windows desktop. Verify the target and chosen operations first;
+  physical input and screen capture still depend on the input desktop. See
+  [Headless Mode](tutorials/headless-mode.md). CDP controls a separate browser
+  target; mainframe backends operate on terminal buffers.
 * **Attach vs Launch** — every row supports attach-to-running.
   `mainframe` HLLAPI is *attach-only* (the emulator process owns the
   session).
 * **Multi-monitor / DPI** — `image` and `screenshot`-based verbs
   respect per-monitor DPI awareness set by the target process.
 
-## Out-of-scope: dead technologies (intentional non-support)
+## Other runtimes
 
-The following are **deliberately unsupported**. They are listed
-here so their absence reads as a decision, not an oversight.
-
-### Adobe Flash / Flex (AIR)
-
-* **Adobe end-of-life 2020-12-31** — Flash Player removed from
-  every major browser; Flash Player itself blocks execution as of
-  the January 2021 kill-switch. AIR moved to Harman with a paid
-  licence and near-zero user base.
-* **Automation surface never existed** — Flex's browser-based
-  automation bindings relied on the Flash Player plugin
-  intercepting JS-to-ActionScript bridges. That plugin is gone.
-* **Dolphin decision** — no `flash` / `flex` backend will ship. Migrate
-  legacy Flex apps to Angular/React (CDP-backed) or a
-  Delphi/VCL desktop port; both are in-scope.
-
-### Microsoft Silverlight
-
-* **Microsoft end-of-life 2021-10-12** — pulled from Windows
-  Update; unsupported on any current browser (last surviving path
-  was IE11 mode in Edge Legacy, itself EOL 2022-06-15).
-* **No modern automation path** — the `UIAutomationSilverlight`
-  bridge required the Silverlight runtime, which no longer
-  installs cleanly on Windows 10 22H2 / Windows 11.
-* **Dolphin decision** — no `silverlight` backend. Migration path is
-  Blazor WebAssembly (CDP-backed) or a WPF desktop rewrite (`uia`).
-
-### Also deliberately out-of-scope
-
-| Tech                         | Status               | Migration path                     |
-| ---------------------------- | -------------------- | ---------------------------------- |
-| Java Applets in browser      | JRE plugin removed   | JavaFX (`uia` or JNLP + `java`)    |
-| Internet Explorer 11 shell   | EOL 2022-06-15       | Edge (CDP)                         |
-| Windows Forms 1.x on .NET Fx | Runs but no roadmap  | WinForms .NET 6+ (`uia`)           |
-| MFC via UIA proxy DLL        | Works partially      | Officially `win32` backend         |
+Dolphin ships no dedicated Flash/Flex, Silverlight, Java browser-applet or
+Internet Explorer backend. Do not infer support for these runtimes from the
+native Windows or CDP rows. Inspect the actual accessibility surface before
+choosing a generic UIA, Win32 or image fallback.
 
 ## Capability checklist
 
@@ -233,7 +211,7 @@ as fully covered iff **every row below is supported** for that stack.
 | **Retry / re-run**            | `--dolphin-retry N` pytest option (native, no plugin needed) |
 | **Self-healing selectors**    | `dolphin selfheal-stats` + fuzzy locator drift             |
 | **Code-generation from spy**  | `dolphin spy` / `dolphin record`                           |
-| **Multi-user / RDP**          | `Desktop(hidden=True)` for parallel sessions               |
+| **Hidden desktop**            | `Desktop(hidden=True)`; input/session isolation requires separate verification |
 
 ### Notable strengths
 
@@ -242,7 +220,7 @@ as fully covered iff **every row below is supported** for that stack.
 * **Mainframe TN3270 / TN5250 / HLLAPI**: three interchangeable
   backends behind one `MainframeTerminal` API.
 * **Serializable capability introspection**:
-  `list_backends()` returns JSON — downstream tooling can build a
+  `list_backends()` returns JSON-serializable dictionaries — downstream tooling can build a
   live compatibility map without parsing docs.
 
 ### Known limitations
@@ -261,5 +239,5 @@ Honest boundaries:
 * **Mobile (iOS / Android)** — use a dedicated mobile-automation framework.
 * **macOS-native apps** — the `macos` backend is a reserved stub.
 * **Linux X11 / Wayland** — the `linux` backend is a reserved stub.
-* **Anything Flash / Silverlight-based** — see the out-of-scope
-  section above.
+* **Flash / Silverlight applications** — no dedicated backend; see
+  [Other runtimes](#other-runtimes).

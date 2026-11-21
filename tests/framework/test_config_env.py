@@ -14,6 +14,7 @@ import pytest
 from dolphin_desktop import _config
 from dolphin_desktop._config import (
     MAX_VIDEO_FPS,
+    VALID_LOG_LEVELS,
     VALID_TRACE_MODES,
     _env_choice,
     _env_number,
@@ -67,6 +68,28 @@ class TestEnumEnvValues:
         monkeypatch.setenv("DOLPHIN_TRACE", " Always ")
         assert _env_choice("DOLPHIN_TRACE", "on-failure", VALID_TRACE_MODES) == "always"
 
+    @pytest.mark.parametrize("value", VALID_LOG_LEVELS)
+    def test_supported_log_level_environment_values_are_accepted(self, monkeypatch, value):
+        monkeypatch.setenv("DOLPHIN_DESKTOP_LOG_LEVEL", value.lower())
+        from dolphin_desktop._config import _env_log_level
+
+        assert _env_log_level() == value
+
+    def test_invalid_log_level_environment_value_warns_and_defaults_to_info(self, monkeypatch):
+        monkeypatch.setenv("DOLPHIN_DESKTOP_LOG_LEVEL", "TRACE")
+        monkeypatch.setenv("DOLPHIN_LOG_LEVEL", "ERROR")
+        from dolphin_desktop._config import _env_log_level
+
+        with pytest.warns(UserWarning, match="DOLPHIN_DESKTOP_LOG_LEVEL"):
+            assert _env_log_level() == "INFO"
+
+    def test_prefixed_log_level_environment_value_wins(self, monkeypatch):
+        monkeypatch.setenv("DOLPHIN_DESKTOP_LOG_LEVEL", "ERROR")
+        monkeypatch.setenv("DOLPHIN_LOG_LEVEL", "DEBUG")
+        from dolphin_desktop._config import _env_log_level
+
+        assert _env_log_level() == "ERROR"
+
 
 class TestDefaultsAreBuiltThroughTheValidators:
     def test_a_hostile_environment_cannot_poison_the_defaults(self, monkeypatch):
@@ -83,3 +106,60 @@ class TestDefaultsAreBuiltThroughTheValidators:
             for name in ("DOLPHIN_TIMEOUT", "DOLPHIN_VIDEO", "DOLPHIN_VIDEO_FPS"):
                 monkeypatch.delenv(name, raising=False)
             importlib.reload(_config)
+
+
+def test_config_rejects_invalid_modes_and_frame_rates() -> None:
+    from dolphin_desktop import _config
+
+    with pytest.raises(ValueError, match="Invalid trace_mode"):
+        _config.config(trace_mode="sometimes")
+    with pytest.raises(ValueError, match="video_fps"):
+        _config.config(video_fps=31)
+
+
+def test_config_rejects_non_integer_video_fps_instead_of_truncating() -> None:
+    """KAN-569: a fractional video_fps must raise, not silently become int(fps)."""
+    from dolphin_desktop import _config
+
+    _config.config(video_fps=24)
+    try:
+        with pytest.raises(TypeError, match="video_fps"):
+            _config.config(video_fps=10.5)
+        assert _config.get_video_fps() == 24
+    finally:
+        _config.config(video_fps=10)
+
+
+def test_config_rejects_non_integer_retry_count_instead_of_truncating() -> None:
+    """KAN-570: a fractional retry_count must raise, not silently become int(retry_count)."""
+    from dolphin_desktop import _config
+
+    _config.config(retry_count=2)
+    try:
+        with pytest.raises(TypeError, match="retry_count"):
+            _config.config(retry_count=1.5)
+        assert _config.get_retry_count() == 2
+    finally:
+        _config.config(retry_count=0)
+
+
+def test_config_environment_validation_and_runtime_limits(monkeypatch) -> None:
+    from dolphin_desktop import _config
+
+    monkeypatch.setenv("DOLPHIN_UNIT_VALUE", "nan")
+    with pytest.warns(UserWarning, match="not a finite number"):
+        assert _config._env_number("DOLPHIN_UNIT_VALUE", 5.0, float, minimum=0) == 5.0
+    with pytest.raises(ValueError, match="timeout must be non-negative"):
+        _config.config(timeout=-1)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_config_rejects_non_finite_timeouts(value) -> None:
+    with pytest.raises(ValueError, match="timeout must be finite"):
+        _config.config(timeout=value)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_config_rejects_non_finite_poll_intervals(value) -> None:
+    with pytest.raises(ValueError, match="poll_interval must be finite"):
+        _config.config(poll_interval=value)

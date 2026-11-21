@@ -1,152 +1,187 @@
-# Dolphin Desktop
+# DolphinDesktop
 
-Python-native test automation for every UI stack a Windows enterprise
-hits — SAP GUI, Qt 5/6, Electron/CEF, WPF/WinForms/UWP, Java Swing,
-Oracle Forms, Delphi/VCL, PowerBuilder, mainframe 3270/5250, and
-Office COM — under one API. Lazy locators, auto-waiting, pytest-first.
+[![PyPI](https://img.shields.io/pypi/v/dolphin-desktop.svg)](https://pypi.org/project/dolphin-desktop/)
+[![Python](https://img.shields.io/badge/python-3.11--3.13-blue.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/pyproject.toml)
+[![Platform](https://img.shields.io/badge/platform-Windows-informational.svg)](https://github.com/DolphinSoftEU/DolphinDesktop)
+[![CI](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml?query=branch%3Amaster)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/LICENSE)
 
-```bash
-pip install dolphin-desktop
+Python test automation for Windows desktop applications: native UIA/Win32,
+SAP GUI, Qt, Electron/CEF, Java Swing, Oracle Forms, Delphi, PowerBuilder,
+mainframe terminals and Office COM. Lazy locators, automatic waits and pytest
+fixtures share a common style, with stack-specific facades where needed.
+
+**Release:** **0.2.0** — **2026-11-21**. See the
+[changelog](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CHANGELOG.md)
+for changes from 0.1.0.
+
+## Requirements
+
+- Windows 10 or Windows 11 for desktop automation.
+- Python 3.11–3.13; 64-bit Python recommended. Qt agent targets must be x64.
+- The same Windows user/session and compatible permissions as the application
+  under test. Physical input and pixel capture require an interactive desktop.
+
+Installing or importing the package on Linux/macOS does not enable Windows
+desktop automation; some non-desktop helpers can still be used there.
+External applications and runtimes are installed separately from Python extras.
+
+## Install and quickstart
+
+Install the latest published release from PyPI:
+
+```powershell
+python -m pip install dolphin-desktop
 ```
+
+Install 0.2.0 with pytest support in a dedicated environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
+
+dolphin doctor
+dolphin init my-tests --yes
+cd my-tests
+python -m pytest tests/ -v
+```
+
+The default scaffold creates a Notepad test and a Page Object under `objects/`.
+Run it in the environment where Dolphin was installed. The generated project's
+dependency metadata names `dolphin-desktop`.
+For locked repository development, follow
+[CONTRIBUTING.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CONTRIBUTING.md).
+
+The underlying API can also be used directly:
 
 ```python
 from dolphin_desktop import Desktop
 
-desktop = Desktop()
-app = desktop.launch("notepad.exe")
-win = app.window(class_name="Notepad")
-
-editor = win.get_by_role("Document")
-editor.click()
-editor.type_text("Hello, Dolphin!")
-
-assert "Hello, Dolphin!" in editor.text()
-
-app.kill()
+with Desktop().launch("notepad.exe") as app:
+    win = app.window(class_name="Notepad")
+    editor = win.get_by_role("Document")
+    if not editor.exists():
+        editor = win.get_by_role("Edit")
+    editor.click()
+    editor.type_text("Hello, Dolphin!")
+    assert "Hello, Dolphin!" in editor.text()
 ```
 
-## What It Provides
+The context manager cleans up the launched application even if an assertion
+fails. Selectors depend on the target's accessibility tree; use `dolphin spy`
+to inspect controls if your Notepad or application exposes different roles.
 
-| Stack                                       | Under the hood                                          | Extra needed                |
-|---------------------------------------------|--------------------------------------------------------|-----------------------------|
-| Windows GUI (WPF, WinForms, UWP, MFC)       | UIA + Win32 via pywinauto                              | *(base)*                    |
-| **SAP GUI Scripting**                       | COM Scripting binding                                  | *(base)*                    |
-| **Qt 5 / Qt 6** (widgets, QML, QGraphicsView)| UIA + injected agent DLL                              | *(base)*                    |
-| **Electron / CEF** (VS Code, Steam, Spotify)| Chrome DevTools Protocol via Playwright                | `[cdp]`                     |
-| **WebView2** (Edge Chromium embedded)       | Same CDP surface                                       | `[cdp]`                     |
-| **Java Swing / Oracle Forms**               | Direct JAB API                                         | *(base + JDK 8)*            |
-| **Mainframe 3270** (z/OS TSO, CICS)         | ws3270 subprocess wrap                                 | *(base + wc3270)*           |
-| **Mainframe 5250** (IBM i, AS/400)          | Pure-Python native TN5250 client                       | *(base)*                    |
-| **HLLAPI** (PCOMM, Attachmate, Rocket)      | ctypes binding to `EHLAPI32.DLL`                       | *(base + emulator)*         |
-| **Delphi / VCL** (RAD Studio, Lazarus)      | UIA + Delphi-aware locator with 5 strategies           | *(base)*                    |
-| **PowerBuilder** (2019+ Appeon)             | UIA + OCR fallback for DataWindow                      | *(base; `[vision]` for OCR)* |
-| Office (Excel / Word)                       | COM Automation via pywin32                             | *(base + Office)*           |
-| Image-based fallback                        | OpenCV template match + Tesseract OCR                  | `[vision]`                  |
+## Features
 
-Every backend shares the same design: **lazy locators, auto-waiting,
-readable assertions.**
+- Lazy locators with automatic waits, explicit state/text waiters and ordered
+  selector/image fallbacks.
+- Programmatic actions such as `invoke()` and `set_value()` where the target
+  exposes the required pattern. Unsupported operations report capability or
+  pattern errors rather than silently substituting physical input.
+- Backend capability discovery and stack-specific locators for native controls,
+  Java, SAP and CDP.
+- pytest `desktop` / `launch` fixtures, retries, screenshots, traces, video and
+  optional Allure reporting.
+- CLI tools for project scaffolding, environment diagnostics, element picking,
+  recording, trace viewing and hidden-desktop execution with `dolphin-run`.
 
-- Lazy locators that resolve only when an action or query runs.
-- Auto-waiting on every action with per-call `timeout=`.
-- pytest plugin with `desktop` and `launch` fixtures.
-- Trace / screenshot / video / recorder / spy / project scaffold CLI.
-- **Autonomous library contract** — user tests import only from `dolphin_desktop`.
+Timeout conventions depend on the API: native locators support
+`.timeout(seconds)`, selected convenience methods accept `timeout_ms`, and
+`playwright_compat` follows Playwright's millisecond convention. See the
+[API reference](https://dolphinsoft.pl/docs/reference) for individual signatures.
 
-## Verification status
+## Application stacks
 
-Honest per-stack coverage. "Verified" means an automated suite in this
-repository exercises the stack against a real application or a faithful
-mock; run `pytest tests/` to reproduce.
+| Stack | Automation surface | Prerequisites beyond the base package |
+| --- | --- | --- |
+| Native Windows: WPF, WinForms, UWP, MFC | UIA / Win32 through pywinauto | Target application with accessible controls |
+| SAP GUI | COM Scripting, `SapGui` / `SapSession` / `SapLocator` | SAP GUI; Scripting enabled on client and server |
+| Qt 5 / Qt 6 | UIA widgets; bundled agent for QObject, QML and QGraphicsView | Compatible x64 target for agent operations |
+| Electron / CEF | CDP through Playwright | `[cdp]`; target started with remote debugging enabled |
+| WebView2 | UIA by default; optional CDP attachment | `[cdp]` only for DOM access, with an enabled debug endpoint |
+| Java Swing / Oracle Forms | Java Access Bridge | JRE/JDK with JAB and an explicitly configured absolute `JAVA_HOME` |
+| Mainframe TN3270 | s3270 subprocess | wc3270 / `ws3270.exe` |
+| Mainframe TN5250 | Native pure-Python protocol client | Reachable IBM i host; write-path limitation below |
+| HLLAPI | Emulator DLL binding | Compatible terminal emulator and absolute `hllapi_dll_path` |
+| Delphi VCL / Lazarus LCL | UIA/MSAA controls and Delphi facade | Accessible controls; Name selectors require a provider |
+| PowerBuilder | UIA; image/OCR fallback for opaque DataWindow content | `[vision]` and Tesseract when OCR is needed |
+| Excel / Word / PowerPoint / classic Outlook | Public COM facades | Installed desktop Office; configured MAPI profile for Outlook |
+| Image fallback | OpenCV template matching / Tesseract OCR | `[vision]`; Tesseract executable for OCR |
 
-| Stack                            | Status        | How it is exercised                    |
-|----------------------------------|---------------|----------------------------------------|
-| Native Windows (UIA / Win32)     | Verified      | headless suite + real apps             |
-| Qt 5 / Qt 6 widgets              | Verified      | real Qt apps built by the suite        |
-| Delphi / Lazarus LCL             | Verified      | real Lazarus sample app                |
-| Electron / CEF (VS Code, Steam)  | Verified      | real applications over CDP             |
-| Oracle Forms                     | Verified      | Java Swing mock over JAB               |
-| Mainframe TN3270 / TN5250        | Verified      | protocol mocks + pub400 integration    |
-| HLLAPI                           | Verified      | fake `EHLAPI32.DLL`                    |
-| PowerBuilder (Appeon runtime)    | Verified      | live PB 2025 demo: UIA + OCR fallback  |
-| SAP GUI                          | Verified      | live ABAP system over GUI Scripting    |
-| Delphi VCL (real RAD Studio)     | **Projected** | pending install                        |
-| Oracle Forms 12c (real)          | **Projected** | pending install                        |
-| HLLAPI real emulator             | **Projected** | pending trial                          |
+Important boundaries:
 
-The SAP suite in `tests/sap/` runs against a real ABAP system and is
-**credential-free**: it reads user, password and client from environment
-variables and skips cleanly when they are absent, so it ships safely and
-is a no-op on a machine without SAP. It needs SAP GUI Scripting enabled
-on both the client and the server (`sapgui/user_scripting = TRUE`).
-dolphin stores no SAP credentials of its own: you attach to a session you
-have already logged into, or drive the logon screen with credentials your
-test supplies. See [docs/guides/sap.md](docs/guides/sap.md).
+- Stock VCL does not automatically publish Delphi component names as UIA
+  AutomationIds. Name lookup requires an application-supplied provider;
+  Dolphin includes no VCL Name provider or RTTI agent.
+- Native TN5250 screen reading has live-host coverage; its write/submit path
+  remains unverified against live IBM i hosts. Use HLLAPI with an enterprise
+  emulator for write-critical flows.
+- `Desktop.mainframe(tls=True)` enables verified TLS on supported backends.
+  Remote plaintext requires explicit `allow_plaintext=True`; port 992 alone
+  does not enable TLS.
+- Outlook automation requires classic Outlook, not new Outlook. Office COM
+  exposes document/item APIs; ribbons and dialogs use UIA/Win32 separately.
+- Hidden mode supports suitable programmatic operations; physical clicks and
+  keyboard input still depend on the desktop and control capabilities.
 
-## Quickstart
+See the [stack guides](https://dolphinsoft.pl/docs/guides) and
+[support matrix](https://dolphinsoft.pl/docs/support-matrix) for detailed limits.
 
-```bash
-pip install dolphin-desktop pytest
-dolphin doctor
-dolphin init my-tests --yes
-cd my-tests
-pytest tests/ -v
-```
+## Optional extras
 
-The default scaffold creates a Notepad test and a small Page Object under `objects/`.
+The following extras are available in 0.2.0:
 
-## Documentation
+| Extra | Purpose |
+| --- | --- |
+| `cdp` | Playwright integration for CDP-enabled applications |
+| `vision` | OpenCV, NumPy and pytesseract for template matching and OCR |
+| `fast` | `mss` for faster screenshots |
+| `pytest` | Supported pytest version and Allure integration |
+| `telemetry` | Sentry integration, enabled explicitly |
+| `all` | `cdp`, `fast`, `pytest` and `vision`; excludes `telemetry` and `docs` |
+| `docs` | MkDocs tools for building the documentation |
 
-Full docs live under `docs/` and are rendered as an MkDocs site
-(`uv run mkdocs serve` to preview locally, or browse the sources
-directly on GitHub).
+Install extras together, for example `dolphin-desktop[cdp,vision,pytest]`, from
+the same source/version you selected above. MP4 recording needs an external
+`ffmpeg` executable; the `fast` extra does not install it. OCR needs a separate
+Tesseract installation. There is no `video` or `dev` extra in 0.2.0.
 
-Entry points:
+## Tests and verification
 
-- **[Getting started](docs/getting-started.md)** — the shortest path
-  from a clean venv to a passing test per stack (SAP / Qt / Electron /
-  Java / Mainframe / Delphi / etc.).
-- **[Installation](docs/installation.md)** — base install + per-stack
-  extras (`[sap]`, `[qt]`, `[cdp]`, `[vision]`).
-- **[Quickstart](docs/quickstart.md)** — generate a Notepad project
-  from the CLI in under a minute.
-- **[Core concepts](docs/core-concepts.md)** — lazy locators,
-  auto-waiting, backends, pytest fixtures, headless mode, how dolphin
-  locates your app.
+CI covers unit tests, controlled Windows components, native Qt agent
+reproducibility, dependency/security checks and wheel installation on
+Windows/Linux/macOS. Real-application and external-system suites have separate
+prerequisites; their presence in `tests/` does not establish a passing run on
+every product/version. A skipped test is incomplete verification.
 
-Per-stack guides:
-[Native Windows](docs/guides/native.md) ·
-[SAP](docs/guides/sap.md) ·
-[Qt](docs/guides/qt.md) ·
-[Java Swing / AWT](docs/guides/java.md) ·
-[Delphi / VCL](docs/guides/delphi.md) ·
-[Mainframe (3270 / 5250 / HLLAPI)](docs/guides/mainframe.md) ·
-[Oracle Forms](docs/guides/oracle-forms.md) ·
-[PowerBuilder](docs/guides/powerbuilder.md) ·
-[WebView2](docs/guides/webview2.md) ·
-[Office](docs/guides/office.md) ·
-[Image-based](docs/guides/image-based.md) ·
-[Embedded web (Electron / CEF)](docs/guides/embedded-web.md).
+See the [current CI runs](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml)
+and [contributing guide](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CONTRIBUTING.md)
+for test categories, setup and desktop acceptance commands.
 
-Reference:
-[API index](docs/reference/index.md) ·
-[Support matrix](docs/support-matrix.md) — stack × backend × mode ·
-[Backend capabilities](docs/backend-capabilities.md) — the
-`Capability` vocabulary ·
-[CLI](docs/reference/cli.md) ·
-[Migration guide](docs/migration.md).
+## Documentation and development
 
-## Development
+- [Documentation](https://dolphinsoft.pl/docs): installation, quickstart,
+  guides and API reference.
+- [Getting Started](https://dolphinsoft.pl/docs/getting-started) and
+  [Quickstart](https://dolphinsoft.pl/docs/quickstart).
+- [0.2.0 documentation sources](https://github.com/DolphinSoftEU/DolphinDesktop/tree/master/docs)
+  for this release; hosted documentation may lag these changes.
+- [Contributing](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CONTRIBUTING.md)
+  for repository setup, checks and local documentation builds.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and
-[RELEASING.md](RELEASING.md) for the publish checklist.
+Package releases are published by designated project maintainers.
 
-## Contact
+## Security
 
-Maintained by DolphinSoft Kamil Głuszek.
+See [SECURITY.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/SECURITY.md)
+for private vulnerability reporting, recorder scope, local control channels
+and artifact redaction limits. Screenshots, videos and generated scripts can
+contain sensitive application data; review them before sharing.
 
-- Website: <https://dolphinsoft.pl>
-- Email: <kontakt@dolphinsoft.pl>
+## Contact and license
 
-## License
+Maintained by DolphinSoft: [dolphinsoft.pl](https://dolphinsoft.pl) ·
+[kontakt@dolphinsoft.pl](mailto:kontakt@dolphinsoft.pl).
 
-[Apache License 2.0](LICENSE)
+[Apache License 2.0](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/LICENSE).

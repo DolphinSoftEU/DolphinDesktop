@@ -16,7 +16,7 @@ tests would fail if any of these regressed:
 
 from __future__ import annotations
 
-from dolphin_desktop import AID, monotonic
+from dolphin_desktop import AID, monotonic, sleep
 
 
 def test_initial_screen_has_title_and_labels(mock_term) -> None:
@@ -82,10 +82,12 @@ def test_pf3_disconnects(mock_term) -> None:
     contain AID 0xF3."""
     term, srv = mock_term
     term.press(AID.pf(3))
-    # Give the mock a moment to observe the disconnect intent.
-    term.wait_change(timeout=3)
-    # The mock may have closed the socket already — we cannot always
-    # read a subsequent screen. But we can inspect what it received.
+    # PF3 intentionally closes the mock socket, so waiting for a screen change
+    # would turn the expected disconnect into ``Wait failed``. Wait on the
+    # server-side observation instead; this is the behaviour the test asserts.
+    deadline = monotonic() + 3
+    while srv.last_read is None and monotonic() < deadline:
+        sleep(0.01)
     assert srv.last_read is not None
     assert srv.last_read.aid == 0xF3, f"expected AID_PF3 (0xF3), got 0x{srv.last_read.aid:02X}"
 

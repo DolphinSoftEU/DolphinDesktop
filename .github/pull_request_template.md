@@ -1,53 +1,24 @@
-<!--
-Thanks for contributing. Please walk through the checklist below.
-Small PRs merge fastest; multi-purpose PRs may be asked to split.
--->
-
 ## Summary
 
-<!-- One or two sentences. What changes and why. -->
+<!-- What changes, why, and which backends or public APIs are affected?
+Call out breaking changes and migration steps when applicable. -->
 
-## Type of change
+## Validation
 
-- [ ] Bug fix (non-breaking change which fixes an issue)
-- [ ] New feature (non-breaking change which adds functionality)
-- [ ] Breaking change (fix or feature causing existing API to change)
-- [ ] Docs / test-only change
-- [ ] New backend / stack (please read the "Adding a new backend"
-      section in `CONTRIBUTING.md`)
-
-## Which stack does this touch?
-
-- [ ] UIA / Win32
-- [ ] SAP GUI
-- [ ] Qt
-- [ ] Electron / CEF (CDP)
-- [ ] Java Swing / Oracle Forms (JAB)
-- [ ] Mainframe (3270 / 5250 / HLLAPI)
-- [ ] Image / OCR
-- [ ] CLI / pytest plugin / infra
+<!-- List commands and results, including failed or skipped cases.
+For application tests, include Windows/Python/application versions and relevant
+prerequisites. Use synthetic data and review artifacts before attaching them. -->
 
 ## Checklist
 
-- [ ] `ruff check .` passes
-- [ ] `ruff format --check .` passes
-- [ ] `mypy src/` passes
-- [ ] Added / updated tests
-- [ ] Added / updated docs
-- [ ] `CHANGELOG.md` updated under `[Unreleased]`
-- [ ] For a new stack: `docs/guides/<stack>.md` includes install, quick
-      start, backend selection, and a Troubleshooting section
-- [ ] No stdlib imports in the per-stack suites `tests/<stack>/test_*.py`
-      (autonomous library contract — see `_helpers.py`)
+- [ ] Relevant tests added or updated, or not applicable with an explanation
+- [ ] Ruff lint/format and mypy checks passed, or not applicable with an explanation
+- [ ] Public documentation and `CHANGELOG.md` updated when applicable
+- [ ] No credentials, personal information or sensitive application data included
 
-## Test plan
-
-<!--
-How did you verify the change? Which sample suites did you run
-locally, and against what environment (VS Code installed? pub400
-reachable? Steam signed in? Oracle Forms deployment available?)?
--->
+Follow [CONTRIBUTING.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CONTRIBUTING.md)
+for validation commands, test-suite conventions and requirements for new backends.
 
 ## Related issue
 
-<!-- Fixes #123 -->
+<!-- Fixes #123, if applicable. -->

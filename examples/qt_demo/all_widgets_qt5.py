@@ -2,7 +2,7 @@
 
 Mirrors the PySide6 demo's widget tree exactly (same ``objectName`` and
 ``accessibleName`` for every control) so the integration tests in
-``tests/test_qt5.py`` can exercise the same surface against Qt 5.
+``tests/qt/`` can exercise the same surface against Qt 5.
 
 PyQt5 chosen over PySide2 because PySide2 has no wheel for Python ≥ 3.12 —
 PyQt5 5.15 still ships ``cp38-abi3`` wheels that work on 3.13.

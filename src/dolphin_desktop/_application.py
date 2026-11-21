@@ -2,16 +2,29 @@
 
 from __future__ import annotations
 
+import ntpath
+import os
 import re
+import sys
 import time
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PureWindowsPath
+from typing import Any, Literal
+from weakref import WeakSet
 
-from pywinauto import Application as _PyWinApp
-from pywinauto import Desktop as _PwDesktop
-from pywinauto.findwindows import ElementNotFoundError as _PyWinElementNotFoundError
-from pywinauto.findwindows import find_elements as _find_elements
-from pywinauto.keyboard import send_keys as _send_keys
+if sys.platform == "win32":
+    from pywinauto import Application as _PyWinApp
+    from pywinauto import Desktop as _PwDesktop
+    from pywinauto.findwindows import ElementNotFoundError as _PyWinElementNotFoundError
+    from pywinauto.findwindows import find_elements as _find_elements
+    from pywinauto.keyboard import send_keys as _send_keys
+else:
+    from ._platform_compat import _unavailable_class, _unsupported_callable
+
+    _PyWinApp = _unavailable_class("Application", "pywinauto.Application")
+    _PwDesktop = _unavailable_class("Desktop", "pywinauto.Desktop")
+    _PyWinElementNotFoundError = RuntimeError
+    _find_elements = _unsupported_callable("pywinauto.findwindows.find_elements")
+    _send_keys = _unsupported_callable("pywinauto.keyboard.send_keys")
 
 from ._exceptions import WindowNotFoundError
 from ._locator import _ResolvedLocator
@@ -31,6 +44,21 @@ _live_pids: set[int] = set()
 # ``_live_pids`` (to survive per-test teardown) but keeps it here, so the
 # session finalizer can still tear it down.
 _session_pids: set[int] = set()
+
+# Process handles opened immediately after a Dolphin-owned process is created.
+# A Windows process handle refers to the original process object, not to a
+# future process that happens to receive the same numeric PID.  The pytest
+# cleanup hooks use these handles so PID reuse can never make cleanup terminate
+# an unrelated process.
+_owned_process_handles: dict[int, Any] = {}
+
+# Keep live wrappers in sync when a reaper releases their shared anchor,
+# without extending the lifetime of the wrappers themselves.
+_owned_process_apps: WeakSet[Application] = WeakSet()
+
+# Owned PIDs for which opening the identity anchor failed.  These must remain
+# visible for diagnostics but are never eligible for PID-only termination.
+_unanchored_pids: set[int] = set()
 
 # PIDs dolphin attached to but does not own. Never drained by the pytest
 # plugin's kill loops — that is the point of owns_process=False — but needed so
@@ -60,10 +88,143 @@ _PROCESS_VM_READ = 0x0010
 # Enough for QueryFullProcessImageNameW, and granted where the wider
 # _PROCESS_QUERY_INFORMATION is refused.
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_STILL_ACTIVE = 259
+_PROCESS_NOT_FOUND_ERRORS = frozenset({87, 1168})
 
 # ``EnumProcessModulesEx`` filter: 0x03 = LIST_MODULES_ALL — needed for
 # 64-bit hosts loading Qt DLLs that a plain EnumProcessModules misses.
 _ENUM_MODULES_ALL = 0x03
+_NO_PROCESS_HANDLE = object()
+
+
+def _is_system_notepad(path: str | None) -> bool:
+    """Recognize only Windows' own Notepad launchers, never a basename alone."""
+    if not path:
+        return False
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    return ntpath.normcase(ntpath.abspath(path)) in {
+        ntpath.normcase(ntpath.join(root, "notepad.exe")),
+        ntpath.normcase(ntpath.join(root, "System32", "notepad.exe")),
+        ntpath.normcase(ntpath.join(root, "SysWOW64", "notepad.exe")),
+    }
+
+
+def _is_notepad_launcher(path: str | None) -> bool:
+    """Include the MSIX redirector image returned directly by CreateProcessW."""
+    if _is_system_notepad(path):
+        return True
+    if not path:
+        return False
+    apps = PureWindowsPath(os.environ.get("ProgramFiles", r"C:\Program Files")) / "WindowsApps"
+    try:
+        relative = PureWindowsPath(path).relative_to(apps)
+    except ValueError:
+        return False
+    return (
+        len(relative.parts) == 3
+        and re.fullmatch(
+            r"microsoft\.windowsnotepad_[\d.]+_(?:x64|x86|arm64)__8wekyb3d8bbwe",
+            relative.parts[0],
+            re.IGNORECASE,
+        )
+        is not None
+        and relative.parts[1].lower() == "notepad"
+        and relative.parts[2].lower() == "notepad.exe"
+    )
+
+
+def _process_package_family(pid: int) -> str | None:
+    """Read the OS package identity; unpackaged/inaccessible processes fail closed."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        kernel.OpenProcess.restype = wt.HANDLE
+        kernel.CloseHandle.argtypes = [wt.HANDLE]
+        kernel.GetPackageFamilyName.argtypes = [wt.HANDLE, ctypes.POINTER(wt.UINT), wt.LPWSTR]
+        kernel.GetPackageFamilyName.restype = wt.LONG
+        handle = kernel.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            size = wt.UINT(256)
+            name = ctypes.create_unicode_buffer(size.value)
+            if kernel.GetPackageFamilyName(handle, ctypes.byref(size), name) != 0:
+                return None
+            return name.value
+        finally:
+            kernel.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def _open_owned_process_handle(pid: int) -> Any | None:
+    """Open a terminate-capable handle anchored to the current process object."""
+    try:
+        import win32api
+        import win32con
+
+        access = win32con.PROCESS_TERMINATE | getattr(
+            win32con, "PROCESS_QUERY_LIMITED_INFORMATION", 0x1000
+        )
+        handle = win32api.OpenProcess(access, False, int(pid))
+        return handle or None
+    except Exception:
+        # Cleanup must fail closed when the identity cannot be anchored.  The
+        # caller still tracks the PID for diagnostics, but must not reopen it
+        # later and guess which process it represents.
+        return None
+
+
+def _close_owned_process_handle(handle: Any) -> None:
+    """Close a handle previously returned by :func:`_open_owned_process_handle`."""
+    try:
+        import win32api
+
+        win32api.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def _release_owned_process_handle(handle: Any) -> None:
+    """Invalidate wrappers before closing their shared process anchor."""
+    for app in tuple(_owned_process_apps):
+        if app._owned_process_handle == handle:
+            app._owned_process_handle = None
+            app._owned_process_released = True
+    _close_owned_process_handle(handle)
+
+
+def _register_owned_process_handle(pid: int, handle: Any) -> bool:
+    """Publish *handle* for plugin cleanup unless the PID is already tracked.
+
+    A second live wrapper with the same numeric PID is a possible PID-reuse
+    edge case.  Never replace the first anchor in the shared PID map: doing so
+    would make the session reaper lose the original process object.  The
+    second wrapper still retains its own handle and can terminate it directly,
+    but its PID is marked unanchored for the shared reaper.
+    """
+    existing = _owned_process_handles.get(int(pid))
+    if existing is not None and existing != handle:
+        return False
+    _owned_process_handles[int(pid)] = handle
+    return True
+
+
+def _discard_owned_process_handle(pid: int, handle: Any = _NO_PROCESS_HANDLE) -> None:
+    """Remove and close the anchor for *pid*, optionally only if it matches."""
+    key = int(pid)
+    stored = _owned_process_handles.get(key)
+    if handle is not _NO_PROCESS_HANDLE and handle is None:
+        return
+    if handle is not _NO_PROCESS_HANDLE and stored != handle:
+        _release_owned_process_handle(handle)
+        return
+    stored = _owned_process_handles.pop(key, None)
+    if stored is not None:
+        _release_owned_process_handle(stored)
 
 
 def _list_modules(pid: int, *, use_extended: bool = False) -> list[str]:
@@ -167,6 +328,244 @@ def _process_image_path(pid: int) -> str | None:
             pass
 
 
+def _process_state(pid: int) -> Literal["running", "stopped", "unknown"]:
+    """Return the process state without collapsing query failures into stopped."""
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wt.HANDLE
+        k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        k32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+        k32.GetExitCodeProcess.restype = wt.BOOL
+        k32.CloseHandle.argtypes = [wt.HANDLE]
+    except Exception:
+        return "unknown"
+
+    try:
+        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    except Exception:
+        return "unknown"
+    if not handle:
+        return "stopped" if ctypes.get_last_error() in _PROCESS_NOT_FOUND_ERRORS else "unknown"
+    try:
+        exit_code = wt.DWORD()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return "unknown"
+        return "running" if exit_code.value == _PROCESS_STILL_ACTIVE else "stopped"
+    except Exception:
+        return "unknown"
+    finally:
+        try:
+            k32.CloseHandle(handle)
+        except Exception:
+            pass
+
+
+# Process identity — guards TerminateProcess against PID reuse.
+#
+# A PID is only unique while the process lives; once it exits Windows may hand
+# the same number to something unrelated. Between the moment a tracked AUT is
+# registered for cleanup and the moment the reaper fires, an early-exiting AUT
+# can therefore be replaced by a stranger wearing its PID. Terminating on the
+# number alone would then kill that stranger (CWE-367). We record each launched
+# process's creation time — the ``(PID, creation-time)`` pair is stable across
+# the process's whole life and unforgeable by a later reuse — and refuse to
+# terminate a PID whose creation time no longer matches what we recorded.
+_process_identities: dict[int, int] = {}
+
+
+def _process_creation_time_from_handle(handle: Any) -> int | None:
+    """Read a process handle's creation time without opening its PID again."""
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetProcessTimes.argtypes = [
+            wt.HANDLE,
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+        ]
+        k32.GetProcessTimes.restype = wt.BOOL
+    except Exception:
+        return None
+
+    try:
+        creation = wt.FILETIME()
+        exit_t = wt.FILETIME()
+        kernel_t = wt.FILETIME()
+        user_t = wt.FILETIME()
+        process_handle = wt.HANDLE(int(handle))
+        if not k32.GetProcessTimes(
+            process_handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_t),
+            ctypes.byref(kernel_t),
+            ctypes.byref(user_t),
+        ):
+            return None
+        return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    except Exception:
+        return None
+
+
+def _process_creation_time(process_or_handle: Any) -> int | None:
+    """Return a PID's or an open process handle's creation time as a FILETIME.
+
+    ``GetProcessTimes`` needs only ``PROCESS_QUERY_LIMITED_INFORMATION``,
+    which succeeds against higher-integrity processes where the wider right is
+    denied. Passing an existing handle queries that exact process object;
+    callers retain ownership of it. Any failure returns None — the caller
+    treats "unknown" distinctly from "known and different".
+    """
+    if not isinstance(process_or_handle, int):
+        return _process_creation_time_from_handle(process_or_handle)
+
+    try:
+        import ctypes
+        import ctypes.wintypes as wt
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wt.HANDLE
+        k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        k32.GetProcessTimes.argtypes = [
+            wt.HANDLE,
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+            ctypes.POINTER(wt.FILETIME),
+        ]
+        k32.GetProcessTimes.restype = wt.BOOL
+        k32.CloseHandle.argtypes = [wt.HANDLE]
+    except Exception:
+        return None
+
+    try:
+        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(process_or_handle))
+    except Exception:
+        return None
+    if not handle:
+        return None
+    try:
+        creation = wt.FILETIME()
+        exit_t = wt.FILETIME()
+        kernel_t = wt.FILETIME()
+        user_t = wt.FILETIME()
+        if not k32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_t),
+            ctypes.byref(kernel_t),
+            ctypes.byref(user_t),
+        ):
+            return None
+        return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    except Exception:
+        return None
+    finally:
+        try:
+            k32.CloseHandle(handle)
+        except Exception:
+            pass
+
+
+def record_process_identity(pid: int) -> None:
+    """Remember *pid*'s current creation time so cleanup can verify it later."""
+    ct = _process_creation_time(pid)
+    if ct is not None:
+        _process_identities[pid] = ct
+
+
+def forget_process_identity(pid: int) -> None:
+    """Drop any recorded identity for *pid* (idempotent)."""
+    _process_identities.pop(pid, None)
+
+
+def _identity_matches(pid: int) -> bool:
+    """Return True only when the recorded creation time can be confirmed."""
+    expected = _process_identities.get(pid)
+    if expected is None:
+        return False
+    current = _process_creation_time(pid)
+    return current is not None and current == expected
+
+
+def terminate_tracked_pid(pid: int, log: Any | None = None) -> bool:
+    """Terminate *pid* only when its recorded identity matches. Returns True if killed.
+
+    The handle used for the identity check is also used for termination. This
+    closes the PID-reuse window between checking a PID and opening it for
+    ``TerminateProcess``. An unrecorded PID or an identity that cannot be
+    confirmed is skipped.
+    """
+    expected = _process_identities.get(pid)
+    if expected is None:
+        if log is not None:
+            log.warning(
+                "skipping TerminateProcess for PID=%d: process identity was not recorded",
+                pid,
+            )
+        return False
+
+    handle: Any | None = None
+    win32api: Any | None = None
+    terminated = False
+    identity_changed = False
+    try:
+        import win32api as _win32api  # type: ignore[import]
+        import win32con  # type: ignore[import]
+
+        win32api = _win32api
+        access = win32con.PROCESS_TERMINATE | getattr(
+            win32con, "PROCESS_QUERY_LIMITED_INFORMATION", _PROCESS_QUERY_LIMITED_INFORMATION
+        )
+        handle = win32api.OpenProcess(access, False, pid)
+        if not handle:
+            if log is not None:
+                log.warning(
+                    "skipping TerminateProcess for PID=%d: process handle could not be opened",
+                    pid,
+                )
+            return False
+        current = _process_creation_time(handle)
+        if current is None or current != expected:
+            identity_changed = current is not None
+            if log is not None:
+                reason = (
+                    "creation time changed" if identity_changed else "creation time is unreadable"
+                )
+                log.warning(
+                    "skipping TerminateProcess for PID=%d: %s; process identity could not "
+                    "be confirmed",
+                    pid,
+                    reason,
+                )
+            return False
+        win32api.TerminateProcess(handle, 1)
+        terminated = True
+        return True
+    except Exception as exc:
+        if log is not None:
+            log.warning("Could not terminate tracked process PID=%d: %s", pid, exc)
+        return False
+    finally:
+        if handle and win32api is not None:
+            try:
+                win32api.CloseHandle(handle)
+            except Exception:
+                pass
+        # Keep a confirmed identity after a transient open/query/termination
+        # failure so the session cleanup can safely retry. Drop it once the
+        # process is terminated or the PID is proven to identify another
+        # process.
+        if terminated or identity_changed:
+            forget_process_identity(pid)
+
+
 def _has_any_signature(names: list[str], signatures: tuple[str, ...]) -> bool:
     """Return True if any signature substring appears in any module name."""
     return any(sig in name for name in names for sig in signatures)
@@ -194,6 +593,79 @@ def _electron_by_window_class(pid: int) -> bool:
         return bool(found)
     except Exception:
         return False
+
+
+def _visible_window_handles(pid: int) -> list[int]:
+    """Return visible top-level window handles owned by *pid*.
+
+    ``pywinauto.Application.windows()`` builds its result from the selected
+    accessibility backend.  UIA can omit owned/transient top-level windows,
+    including the active modal dialog of an application.  Win32's window list
+    is the authoritative source for that relationship, so use it to fill in
+    anything the backend did not expose.
+    """
+    try:
+        import win32gui
+        import win32process
+    except Exception:
+        return []
+
+    handles: list[int] = []
+
+    def _cb(hwnd: int, _: object) -> None:
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+            if window_pid == pid:
+                handles.append(int(hwnd))
+        except Exception:
+            # Windows can destroy a dialog between EnumWindows and the
+            # callback.  Ignore that window and keep the enumeration useful.
+            pass
+
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:
+        return []
+    return handles
+
+
+def _get_last_active_popup(hwnd: int) -> int | None:
+    """Return the last active popup for *hwnd*, or ``None`` on failure."""
+    try:
+        import win32gui
+
+        get_last_active_popup = getattr(win32gui, "GetLastActivePopup", None)
+        if get_last_active_popup is not None:
+            return int(get_last_active_popup(hwnd))
+    except Exception:
+        pass
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        get_last_active_popup = user32.GetLastActivePopup
+        get_last_active_popup.argtypes = (wintypes.HWND,)
+        get_last_active_popup.restype = wintypes.HWND
+        return int(get_last_active_popup(hwnd))
+    except Exception:
+        return None
+
+
+def _last_active_popup_handle(pid: int) -> int | None:
+    """Return the visible active popup handle for *pid*, if one exists."""
+    handles = _visible_window_handles(pid)
+    visible_handles = set(handles)
+    for hwnd in handles:
+        popup = _get_last_active_popup(hwnd)
+        if popup is None:
+            continue
+        if popup != hwnd and popup in visible_handles:
+            return popup
+    return None
 
 
 def _webview2_by_modules(pid: int) -> bool:
@@ -303,6 +775,14 @@ def _enumerate_child_pids(parent_pid: int) -> list[int]:
     return _process_parent_map().get(parent_pid, [])
 
 
+def _snapshot_process_ids() -> set[int] | None:
+    """Return a pre-launch process baseline, or None when enumeration failed."""
+    parents = _process_parent_map()
+    if not parents:
+        return None
+    return {pid for children in parents.values() for pid in children}
+
+
 def _enumerate_descendant_pids(root_pid: int) -> set[int]:
     """Return every PID below *root_pid*, not just its direct children.
 
@@ -383,6 +863,7 @@ class Application:
         desktop: Any | None = None,
         owns_process: bool = True,
         image_path: str | None = None,
+        owned_process_handle: Any = _NO_PROCESS_HANDLE,
     ) -> None:
         if default_timeout_ms < 0:
             raise ValueError("default_timeout_ms must be non-negative")
@@ -391,6 +872,7 @@ class Application:
         self.default_timeout_ms = default_timeout_ms
         self._desktop = desktop
         self._owns_process = owns_process
+        self._launch_snapshot: set[int] | None = None
         self._launched_apps: list[tuple[str, Application]] = []
         # Cache for Qt runtime info — module enumeration right after process
         # spawn is non-deterministic on Windows (EnumProcessModulesEx can
@@ -412,17 +894,48 @@ class Application:
                 self._image_path = _process_image_path(self.process_id)
             except Exception:
                 self._image_path = None
+        self._owned_process_handle: Any | None = None
+        self._owned_process_released = False
+        try:
+            pid = self.process_id
+        except Exception:
+            return
         if owns_process:
+            handle = (
+                _open_owned_process_handle(pid)
+                if owned_process_handle is _NO_PROCESS_HANDLE
+                else owned_process_handle
+            )
+            if handle == 0:
+                handle = None
+            self._owned_process_handle = handle
+            if handle is not None:
+                _owned_process_apps.add(self)
+            self._launch_creation_time = (
+                _process_creation_time_from_handle(handle) if handle is not None else None
+            )
+            _live_pids.add(pid)
+            _session_pids.add(pid)
+            if handle is not None and _register_owned_process_handle(pid, handle):
+                _unanchored_pids.discard(pid)
+            else:
+                _unanchored_pids.add(pid)
+                _log.warning(
+                    "Could not anchor cleanup handle for owned process PID=%s; "
+                    "automatic cleanup will fail closed",
+                    pid,
+                )
+            # Independent of the OS handle above: pin (pid, creation time) so a
+            # cleanup path with no live Application object — the pytest reaper,
+            # which runs after this object and its handle are gone — can still
+            # prove a PID it is about to kill is the process we started, not
+            # one the OS has since recycled the number to.
             try:
-                _live_pids.add(self.process_id)
-                _session_pids.add(self.process_id)
+                record_process_identity(pid)
             except Exception:
                 pass
         else:
-            try:
-                _attached_pids.add(self.process_id)
-            except Exception:
-                pass
+            _attached_pids.add(pid)
 
     # Window accessors
 
@@ -452,6 +965,7 @@ class Application:
 
             entry = _repository.resolve(alias)
             criteria: dict[str, Any] = dict(entry.selector)
+            fallback = entry.fallback
         else:
             criteria = {"found_index": found_index}
             if title is not None:
@@ -463,26 +977,75 @@ class Application:
             if auto_id is not None:
                 criteria["auto_id"] = auto_id
 
-        win = self._find_window(criteria, timeout)
+        # The primary search gets the complete public timeout.  Fallbacks
+        # below receive only the time left from this same absolute deadline.
+        deadline = time.monotonic() + timeout if timeout > 0 else None
+        try:
+            win = self._find_window(criteria, timeout)
+        except WindowNotFoundError as primary_error:
+            if alias is None:
+                raise
+
+            from . import _selfheal
+
+            for fallback_selector in fallback:
+                fallback_timeout = (
+                    max(0.0, deadline - time.monotonic()) if deadline is not None else timeout
+                )
+                if deadline is not None and fallback_timeout <= 0:
+                    raise primary_error
+                try:
+                    win = self._find_window(fallback_selector, fallback_timeout)
+                except WindowNotFoundError:
+                    continue
+                _selfheal.record_fallback(criteria, fallback_selector)
+                break
+            else:
+                raise primary_error
+
         if alias is not None:
             win._alias = alias  # type: ignore[attr-defined]
         return win
 
     def _find_window(self, criteria: dict[str, Any], timeout: float) -> Window:
+        self._resolve_launch_handoff()
         # First pass: search within this application's own process.
         try:
             spec = self._app.window(**criteria)
             spec.wait("visible", timeout=timeout * 0.6)
+            spec = self._bind_window_handle(self._app, spec)
             return Window(spec, application=self)
         except Exception:
             pass
+
+        # pywinauto's title lookup can omit an owned modal window even though
+        # windows() finds its native top-level handle. Keep alias lookup scoped
+        # to this application before considering a desktop-wide hand-off.
+        if "title" in criteria and set(criteria) <= {"title", "found_index"}:
+            try:
+                owned_windows = self.windows()
+            except Exception:
+                owned_windows = []
+            matching_windows = []
+            for candidate in owned_windows:
+                try:
+                    if candidate.title() == criteria["title"] and candidate.is_visible():
+                        matching_windows.append(candidate)
+                except Exception:
+                    continue
+            try:
+                return matching_windows[criteria.get("found_index", 0)]
+            except IndexError:
+                pass
 
         # Fallback: single-instance apps (e.g. Windows 11 Notepad) hand off to
         # an existing process, so the window's PID differs from the launched one.
         # Search the entire desktop with the same criteria.
         try:
-            spec = _PwDesktop(backend=self._backend).window(**criteria)
+            desktop = _PwDesktop(backend=self._backend)
+            spec = desktop.window(**criteria)
             spec.wait("visible", timeout=timeout * 0.4)
+            spec = self._bind_window_handle(desktop, spec)
         except Exception as exc:
             raise WindowNotFoundError(
                 f"Window {criteria!r} not found after {timeout}s "
@@ -490,6 +1053,12 @@ class Application:
             ) from exc
         self._adopt_hand_off(spec, criteria)
         return Window(spec, application=self)
+
+    @staticmethod
+    def _bind_window_handle(owner: Any, spec: Any) -> Any:
+        """Rebuild a discovered window specification around its native handle."""
+        handle = spec.wrapper_object().handle
+        return owner.window(handle=handle)
 
     def _adopt_hand_off(self, spec: Any, criteria: dict[str, Any]) -> None:
         """Repoint ``self._app`` at the process that really owns *spec*'s window.
@@ -526,6 +1095,7 @@ class Application:
                     "Desktop().connect(process=...)"
                 ),
             )
+        new_handle = None
         try:
             old_pid = self.process_id
             # Build + connect the replacement pywinauto App on a local
@@ -537,17 +1107,60 @@ class Application:
             # confusing pywinauto AppNotConnected.
             new_app = _PyWinApp(backend=self._backend)
             new_app.connect(process=actual_pid)
+            new_handle = _open_owned_process_handle(actual_pid) if self._owns_process else None
+            if _is_notepad_launcher(self._image_path):
+                # Validate the exact process we will later terminate, before
+                # transferring ownership. PID-only queries can race PID reuse.
+                created = _process_creation_time(actual_pid)
+                if (
+                    new_handle is None
+                    or created is None
+                    or _process_creation_time_from_handle(new_handle) != created
+                    or not self._is_hand_off_pid(actual_pid)
+                ):
+                    raise WindowNotFoundError(
+                        f"Cannot verify ownership of window {criteria!r} (pid {actual_pid})"
+                    )
+            image_path = _process_image_path(actual_pid)
             self._app = new_app
+            self._image_path = image_path
+            self._qt_info = None
+            self._launch_handoff_resolved = True
             if self._owns_process:
+                _discard_owned_process_handle(old_pid, getattr(self, "_owned_process_handle", None))
+                _unanchored_pids.discard(old_pid)
+                self._owned_process_handle = new_handle
+                self._owned_process_released = False
+                if new_handle is not None:
+                    _owned_process_apps.add(self)
                 _live_pids.discard(old_pid)
                 _live_pids.add(actual_pid)
                 _session_pids.discard(old_pid)
                 _session_pids.add(actual_pid)
+                if self._owned_process_handle is not None and _register_owned_process_handle(
+                    actual_pid, self._owned_process_handle
+                ):
+                    _unanchored_pids.discard(actual_pid)
+                else:
+                    _unanchored_pids.add(actual_pid)
+                    _log.warning(
+                        "Could not anchor cleanup handle after process hand-off PID=%s; "
+                        "automatic cleanup will fail closed",
+                        actual_pid,
+                    )
+                # The tracked PID changed; re-pin identity to the process that
+                # actually owns the window, and drop the launcher's.
+                forget_process_identity(old_pid)
+                record_process_identity(actual_pid)
             else:
                 _attached_pids.discard(old_pid)
                 _attached_pids.add(actual_pid)
-        except Exception:
-            pass
+        except Exception as exc:
+            if new_handle is not None and self._app is not new_app:
+                _close_owned_process_handle(new_handle)
+            raise WindowNotFoundError(
+                f"Could not adopt window {criteria!r} (pid {actual_pid}): {exc}"
+            ) from exc
 
     def _is_hand_off_pid(self, pid: int) -> bool:
         """Return True when *pid* is plausibly this application's own process.
@@ -558,26 +1171,190 @@ class Application:
         repoint this Application at a stranger and — when we own the process —
         hand that PID to the per-test teardown reaper, killing a user's app.
         Only a genuine hand-off qualifies: the same PID, a descendant of it, or
-        another instance of the same executable image (the single-instance
-        pattern this fallback exists for). Anything unverifiable is refused.
+        another instance of the same executable image after a DolphinDesktop-
+        launched process has exited (the single-instance pattern this fallback
+        exists for). Attached processes never use that image-only fallback: a
+        matching image there could be an independent process. A matching image
+        while the original is still alive is not enough to distinguish an
+        independent process, so anything unverifiable is refused.
         """
         try:
             if pid == self.process_id:
                 return True
+            if _is_notepad_launcher(self._image_path):
+                launched = getattr(self, "_launch_creation_time", None)
+                created = _process_creation_time(pid)
+                image = _process_image_path(pid)
+                return (
+                    self._owns_process
+                    and launched is not None
+                    and created is not None
+                    and created >= launched
+                    and image is not None
+                    and self._is_new_notepad_descendant(pid, created)
+                    and (
+                        image == self._image_path
+                        or (
+                            PureWindowsPath(image).name.lower() == "notepad.exe"
+                            and _process_package_family(pid)
+                            == "Microsoft.WindowsNotepad_8wekyb3d8bbwe"
+                        )
+                    )
+                )
             if pid in _enumerate_descendant_pids(self.process_id):
                 return True
         except Exception:
             return False
+        # An attached process is not a launcher-owned single-instance stub.
+        # Matching its executable after it exits can therefore identify any
+        # unrelated process running the same image, so only launch()-owned
+        # applications may use the image-path hand-off fallback.
+        if not self._owns_process:
+            return False
         if self._image_path is None:
+            return False
+        if _process_state(self.process_id) != "stopped":
             return False
         return _process_image_path(pid) == self._image_path
 
+    def _is_new_notepad_descendant(self, pid: int, created: int) -> bool:
+        """Require a new, time-ordered ancestry chain back to our anchored launcher.
+
+        MSIX package identity and temporal proximity alone never grant ownership:
+        another user can independently activate the very same package concurrently.
+        Missing snapshots, pre-existing ancestors and PID reuse all fail closed.
+        """
+        baseline = getattr(self, "_launch_snapshot", None)
+        launched = getattr(self, "_launch_creation_time", None)
+        if baseline is None or launched is None:
+            return False
+        root = self.process_id
+        root_created = _process_creation_time(root)
+        if (root_created is not None and root_created != launched) or (
+            root_created is None and _process_state(root) != "stopped"
+        ):
+            return False
+        parents = {
+            child: parent
+            for parent, children in _process_parent_map().items()
+            for child in children
+        }
+        seen = {root}
+        while True:
+            if pid in baseline or pid in seen or created < launched:
+                return False
+            seen.add(pid)
+            parent = parents.get(pid)
+            if parent is None:
+                return False
+            if parent == root:
+                return True
+            parent_created = _process_creation_time(parent)
+            if parent_created is None or parent_created > created:
+                return False
+            pid, created = parent, parent_created
+
+    def _resolve_launch_handoff(self, timeout: float = 0.0) -> None:
+        """Bind a unique new packaged Notepad window, including delayed activation."""
+        if (
+            not self._owns_process
+            or getattr(self, "_owned_process_released", False)
+            or getattr(self, "_launch_handoff_resolved", False)
+            or not _is_notepad_launcher(getattr(self, "_image_path", None))
+        ):
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                try:
+                    if self._app.windows():
+                        self._launch_handoff_resolved = True
+                        return  # Classic Notepad still owns its window.
+                except Exception:
+                    pass  # pywinauto may reject an already-exited launcher.
+                candidates = {}
+                existing_notepad = False
+                desktop = _PwDesktop(backend=self._backend)
+                for wrapper in desktop.windows():
+                    try:
+                        pid = wrapper.process_id()
+                        baseline = getattr(self, "_launch_snapshot", None)
+                        if (
+                            baseline is not None
+                            and pid in baseline
+                            and _is_notepad_launcher(_process_image_path(pid))
+                        ):
+                            existing_notepad = True
+                            continue
+                        launched = getattr(self, "_launch_creation_time", None)
+                        created = _process_creation_time(pid)
+                        if (
+                            pid != self.process_id
+                            and launched is not None
+                            and created is not None
+                            and created >= launched
+                            and self._is_hand_off_pid(pid)
+                        ):
+                            candidates[pid] = wrapper.handle
+                    except Exception:
+                        continue  # A disappearing window must not hide other candidates.
+                if len(candidates) == 1:
+                    pid, handle = next(iter(candidates.items()))
+                    self._adopt_hand_off(desktop.window(handle=handle), {"handle": handle})
+                    if self.process_id == pid:
+                        return
+                elif len(candidates) > 1:
+                    return  # Concurrent launches cannot be attributed safely.
+                elif existing_notepad:
+                    return  # An existing instance may have consumed activation.
+            except Exception as exc:
+                _log.debug("Notepad hand-off discovery failed: %s", exc)
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
     def top_window(self) -> Window:
+        self._resolve_launch_handoff()
+        # pywinauto selects the first element returned by the accessibility
+        # backend, which can be the owner window even when a modal popup is
+        # active.  Win32 tracks that owner/popup relationship directly.
+        popup_handle = _last_active_popup_handle(self.process_id)
+        if popup_handle is not None:
+            try:
+                spec = self._app.window(handle=popup_handle)
+                return Window(spec, application=self)
+            except Exception:
+                pass
         spec = self._app.top_window()
         return Window(spec, application=self)
 
     def windows(self) -> list[Window]:
-        return [Window(w, application=self) for w in self._app.windows()]
+        self._resolve_launch_handoff()
+        raw_windows = self._app.windows()
+        windows = [Window(w, application=self) for w in raw_windows]
+
+        # The accessibility backend may omit an owned modal dialog.  Merge
+        # the native top-level list without disturbing pywinauto's existing
+        # ordering or its handling of hidden windows.
+        known_handles: set[int] = set()
+        for raw_window in raw_windows:
+            try:
+                handle = raw_window.handle
+                if isinstance(handle, int):
+                    known_handles.add(handle)
+            except Exception:
+                continue
+
+        for hwnd in _visible_window_handles(self.process_id):
+            if hwnd in known_handles:
+                continue
+            try:
+                spec = self._app.window(handle=hwnd)
+            except Exception:
+                continue
+            windows.append(Window(spec, application=self))
+            known_handles.add(hwnd)
+        return windows
 
     def set_default_timeout(self, timeout_ms: int) -> None:
         if timeout_ms < 0:
@@ -674,7 +1451,7 @@ class Application:
         except _PyWinElementNotFoundError:
             return []
         wrapper_cls = self._app.backend.generic_wrapper_class
-        return [_ResolvedLocator(wrapper_cls(element)) for element in elements]
+        return [_ResolvedLocator(wrapper_cls(element), application=self) for element in elements]
 
     def press_key(self, keys: str) -> None:
         self.top_window()._get_spec().set_focus()
@@ -715,6 +1492,89 @@ class Application:
                 pass
             self._qt_agent = None
 
+    def _terminate_owned_process(self, *, soft: bool) -> None:
+        """Terminate the process represented by this wrapper's anchored handle.
+
+        Objects built by older callers/tests without ``_owned_process_handle``
+        retain the legacy pywinauto path.  Real ``Application`` instances are
+        fail-closed: a missing anchor is an error, never a reason to reopen a
+        PID that may already belong to somebody else.
+        """
+        if getattr(self, "_owned_process_released", False):
+            return
+        missing = object()
+        handle = getattr(self, "_owned_process_handle", missing)
+        if handle is missing:
+            self._app.kill(soft=soft)
+            return
+        if handle is None:
+            raise RuntimeError(
+                f"Cannot safely terminate owned process PID={self.process_id}: "
+                "the process identity handle was not captured"
+            )
+        import win32api
+
+        # A handle remains bound to the original kernel process object even if
+        # its numeric PID is reused, so this operation cannot kill the reuse.
+        pid = self.process_id
+        status_known = True
+        try:
+            import win32process
+
+            running = win32process.GetExitCodeProcess(handle) == _PROCESS_STILL_ACTIVE
+        except Exception:
+            # If the status probe is unavailable, terminating through the
+            # anchor is still safe, but a PID-based window lookup is not. Do
+            # not fall back to either PID-based probe or soft-close in this
+            # uncertain state.
+            running = True
+            status_known = False
+        # The window lookup is also a process-targeting operation: pywinauto
+        # enumerates windows by the wrapper's numeric PID.  Never perform it
+        # after the anchored process has exited, because that PID may already
+        # identify a different process.  If the probe itself fails, retaining
+        # the conservative ``running=True`` result keeps the forced terminate
+        # safe, while ``status_known`` prevents a PID-based soft close.
+        if running and status_known and soft:
+            self._request_soft_close()
+        if running:
+            win32api.TerminateProcess(handle, 1)
+        _discard_owned_process_handle(pid, handle)
+        _unanchored_pids.discard(pid)
+        self._owned_process_handle = None
+
+    def _request_soft_close(self) -> None:
+        """Send the same best-effort window close requests as pywinauto.
+
+        ``pywinauto.Application.kill(soft=True)`` sends ``WM_CLOSE`` and then
+        reopens ``self.process`` by numeric PID for the forced termination.
+        Reusing that method would reintroduce the PID-reuse race, so only its
+        window-close portion is reproduced here; the final termination is
+        performed by :meth:`_terminate_owned_process` through the anchored
+        process handle.
+        """
+        try:
+            windows = list(self._app.windows(visible_only=True))
+        except Exception as exc:
+            _log.debug("Could not enumerate windows for soft close: %s", exc)
+            return
+
+        for window in windows:
+            try:
+                if hasattr(window, "close"):
+                    window.close()
+                    continue
+            except TimeoutError:
+                _log.debug("Timed out sending WM_CLOSE during soft close")
+            except Exception as exc:
+                _log.debug("Window close request failed: %s", exc)
+
+            try:
+                if hasattr(window, "force_close"):
+                    window.force_close()
+            except Exception as exc:
+                _log.debug("Window force-close request failed: %s", exc)
+
     def close(self, timeout: float = 5.0) -> None:
         """Shut the application down, asking first.
 
@@ -735,6 +1595,7 @@ class Application:
             timeout: Forwarded to the secondary applications closed above;
                 ``kill(soft=True)`` takes no timeout of its own.
         """
+        self._resolve_launch_handoff()
         self._close_qt_agent()
         children, self._launched_apps = self._launched_apps, []
         for _, child in children:
@@ -742,6 +1603,8 @@ class Application:
                 child.close(timeout=timeout)
             except Exception:
                 pass
+        if getattr(self, "_owned_process_released", False):
+            return
         # This Application is done with the process either way; a crash dump
         # taken afterwards should no longer scope its capture to it.
         _attached_pids.discard(self.process_id)
@@ -752,13 +1615,26 @@ class Application:
         # reaper's set. Removing before kill would leave the process
         # as a zombie if kill() fails (e.g. permissions, transient COM
         # error) — the reaper would no longer know to clean it up.
+        legacy_registration = not hasattr(self, "_owned_process_handle")
         try:
-            self._app.kill(soft=True)
-        except Exception:
-            pass
+            self._terminate_owned_process(soft=True)
+        except Exception as exc:
+            if legacy_registration:
+                # Keep compatibility for synthetic wrappers created before
+                # anchored handles existed. Real wrappers stay registered so
+                # the session safety-net can retry and report the failure.
+                try:
+                    _live_pids.discard(self.process_id)
+                    _session_pids.discard(self.process_id)
+                except Exception:
+                    pass
+            else:
+                _log.warning("Could not clean up owned process: %s", exc)
+            return
         try:
             _live_pids.discard(self.process_id)
             _session_pids.discard(self.process_id)
+            forget_process_identity(self.process_id)
         except Exception:
             pass
 
@@ -781,6 +1657,7 @@ class Application:
         terminated — dolphin never kills a process it did not start — but its
         launched children still are, and a warning is logged.
         """
+        self._resolve_launch_handoff()
         self._close_qt_agent()
         first_error: Exception | None = None
         children, self._launched_apps = self._launched_apps, []
@@ -789,6 +1666,10 @@ class Application:
                 child.kill()
             except Exception as exc:
                 first_error = first_error or exc
+        if getattr(self, "_owned_process_released", False):
+            if first_error is not None:
+                raise first_error
+            return
         if not self._owns_process:
             self._warn_not_owned("kill")
             if first_error is not None:
@@ -797,17 +1678,26 @@ class Application:
         # Same order as close(): kill first, forget the PID second, so
         # a failed kill still leaves the session-end reaper with a
         # PID to retry against.
+        legacy_registration = not hasattr(self, "_owned_process_handle")
+        main_process_terminated = False
         try:
-            if self._app.is_process_running():
-                self._app.kill(soft=False)
+            if legacy_registration:
+                if self._app.is_process_running():
+                    self._terminate_owned_process(soft=False)
+                    main_process_terminated = True
+            else:
+                self._terminate_owned_process(soft=False)
+                main_process_terminated = True
         except Exception as exc:
             first_error = first_error or exc
         finally:
-            try:
-                _live_pids.discard(self.process_id)
-                _session_pids.discard(self.process_id)
-            except Exception:
-                pass
+            if legacy_registration or main_process_terminated:
+                try:
+                    _live_pids.discard(self.process_id)
+                    _session_pids.discard(self.process_id)
+                    forget_process_identity(self.process_id)
+                except Exception:
+                    pass
         if first_error is not None:
             raise first_error
 
@@ -1053,9 +1943,15 @@ class Application:
             _live_pids.discard(self.process_id)
             if session:
                 _session_pids.discard(self.process_id)
+                if self._owns_process:
+                    handle = getattr(self, "_owned_process_handle", None)
+                    _discard_owned_process_handle(self.process_id, handle)
+                _unanchored_pids.discard(self.process_id)
+                self._owned_process_handle = None
                 # "dolphin will not touch that process" extends to the crash
-                # dump's capture scope.
+                # dump's capture scope and its recorded kill-time identity.
                 _attached_pids.discard(self.process_id)
+                forget_process_identity(self.process_id)
         except Exception:
             pass
 

@@ -2,14 +2,27 @@
 
 from __future__ import annotations
 
+import math
 import os
+import sys
 import time
 import warnings
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from pywinauto import Application as _PyWinApp
+if sys.platform == "win32":
+    from pywinauto import Application as _PyWinApp
+else:
+    from ._platform_compat import _unavailable_class
 
-from ._application import Application, _process_image_path
+    _PyWinApp = _unavailable_class("Application", "pywinauto.Application")
+
+from ._application import (
+    Application,
+    _is_notepad_launcher,
+    _process_image_path,
+    _snapshot_process_ids,
+)
 from ._exceptions import ApplicationError, DolphinError
 
 
@@ -25,6 +38,28 @@ def _image_path_now(app: _PyWinApp) -> str | None:
         return _process_image_path(app.process)
     except Exception:
         return None
+
+
+def _may_launch_notepad(cmd: str) -> bool:
+    """Cheaply gate the pre-spawn snapshot; process identity is verified later.
+
+    Bare Notepad commands can resolve to the system launcher. Explicit paths
+    must identify a Windows launcher or installed Notepad package. Arguments
+    containing Notepad never make a different executable eligible.
+    """
+    command = cmd.lstrip()
+    if command.startswith('"'):
+        executable, closing_quote, _ = command[1:].partition('"')
+        if not closing_quote:
+            return False
+    else:
+        executable = command.split(maxsplit=1)[0] if command else ""
+    lowered = executable.lower()
+    if lowered in {"notepad", "notepad.exe"}:
+        return True
+    if not lowered.endswith(("\\notepad.exe", "/notepad.exe", "\\notepad", "/notepad")):
+        return False
+    return _is_notepad_launcher(executable if lowered.endswith(".exe") else executable + ".exe")
 
 
 if TYPE_CHECKING:
@@ -51,7 +86,8 @@ class Desktop:
     backend:
         ``"uia"`` (default) uses Microsoft UI Automation — works with UWP,
         WPF, and modern Win32 apps.  ``"win32"`` uses the legacy Win32 API
-        and is better for older applications.
+        and is better for older applications. ``"auto"`` resolves once when
+        constructing Desktop (to ``"uia"`` on Windows), before launch/connect.
     hidden:
         ``True``  — launch AUT processes on a hidden desktop (``DolphinHidden``)
         so windows are invisible on the physical display.  Full UIA support
@@ -74,6 +110,10 @@ class Desktop:
     ) -> None:
         if default_timeout_ms < 0:
             raise ValueError("default_timeout_ms must be non-negative")
+        if backend == "auto":
+            from ._backend import resolve
+
+            backend = resolve("auto").id
         self._backend = backend
         self._default_timeout_ms = default_timeout_ms
         self._hidden_mode = hidden
@@ -132,6 +172,58 @@ class Desktop:
 
         atexit.register(close_desktop, self._hDesk)
 
+    def _launch_with_environment(
+        self,
+        cmd: str,
+        *,
+        backend: str,
+        timeout: float = 10.0,
+        wait_for_idle: bool = False,
+        work_dir: str | None,
+        env: Mapping[str, str] | None,
+    ) -> tuple[_PyWinApp, str | None, int]:
+        """Create a child and return its still-open identity handle.
+
+        This mirrors the process-registration part of pywinauto's
+        ``Application.start``: assign the freshly-created PID directly
+        instead of reconnecting to it.  A single-instance launcher may hand
+        off and exit before a ``connect(process=...)`` call runs.  The handle
+        is transferred to :class:`Application`; closing it here would reopen
+        the PID-reuse race this launch path is intended to prevent.
+        """
+        from ._runner import close_process_handle, launch_cmd_on_desktop, terminate_process_handle
+
+        pid, h_process = launch_cmd_on_desktop(
+            cmd,
+            None,
+            timeout=timeout,
+            wait_for_idle=wait_for_idle,
+            work_dir=work_dir,
+            env=env,
+        )
+        try:
+            # Query the image while the launcher PID is still as fresh as
+            # possible.  Application._is_hand_off_pid uses this cached path
+            # after a single-instance handoff has replaced the launcher.
+            image_path = _process_image_path(pid)
+            app = _PyWinApp(backend=backend)
+            app.process = pid
+            return app, image_path, h_process
+        except Exception:
+            # The process handle still identifies exactly the child created by
+            # this launch. Terminate through it before closing the handle so a
+            # later PID reuse cannot turn a connect/setup failure into a kill
+            # of an unrelated process.
+            try:
+                terminate_process_handle(h_process)
+            except Exception:
+                pass
+            try:
+                close_process_handle(h_process)
+            except Exception:
+                pass
+            raise
+
     # Launch / connect
 
     def launch(
@@ -141,6 +233,9 @@ class Desktop:
         timeout: float = 10.0,
         work_dir: str | None = None,
         startup_delay: float = 0.5,
+        env: Mapping[str, str] | None = None,
+        wait_for_idle: bool = False,
+        handoff_timeout: float = 2.0,
     ) -> Application:
         """Start a new process and return an :class:`Application`.
 
@@ -150,7 +245,8 @@ class Desktop:
             Command line to execute (e.g. ``"notepad.exe"`` or
             ``r"C:\\Windows\\notepad.exe my_file.txt"``).
         timeout:
-            Maximum seconds to wait for the process to start.
+            Maximum seconds to wait for a GUI process to become input-idle
+            after creation when *wait_for_idle* is true.
         work_dir:
             Optional working directory for the new process.
         startup_delay:
@@ -158,29 +254,73 @@ class Desktop:
             Useful for single-instance apps (e.g. Windows 11 Notepad) that
             hand off to an existing process — a brief pause lets the target
             window appear before :meth:`Application.window` is called.
+        env:
+            Optional environment overlay for the child process. Values are
+            merged into a private environment block for this spawn only;
+            the caller's environment is never modified.
+        wait_for_idle:
+            Opt in to waiting for GUI input-idle readiness. The default
+            preserves the former ``wait_for_idle=False`` launch behaviour;
+            console processes return as soon as ``CreateProcessW`` succeeds.
+        handoff_timeout:
+            Maximum additional seconds to discover Notepad's replacement
+            process (default 2). Existing instances are never owned; an
+            unverified broker activation requires explicit ``connect()``.
         """
+        if not math.isfinite(handoff_timeout) or handoff_timeout < 0:
+            raise ValueError("handoff_timeout must be finite and non-negative")
         if self._is_hidden:
             return self._launch_hidden(
-                cmd, timeout=timeout, work_dir=work_dir, startup_delay=startup_delay
+                cmd,
+                timeout=timeout,
+                work_dir=work_dir,
+                startup_delay=startup_delay,
+                env=env,
+                wait_for_idle=wait_for_idle,
             )
 
+        from ._runner import close_process_handle, terminate_process_handle
+
+        process_handle: int | None = None
         try:
-            app = _PyWinApp(backend=self._backend)
-            # wait_for_idle=False: packaged/store apps do not support
-            # WaitForInputIdle and would raise RuntimeWarning otherwise.
-            app.start(cmd, timeout=timeout, wait_for_idle=False, work_dir=work_dir)
+            baseline = _snapshot_process_ids() if _may_launch_notepad(cmd) else None
+            # CreateProcessW returns the identity anchor together with the PID.
+            # Keep that handle before startup_delay: a fast single-instance
+            # launcher may exit and its numeric PID may be reused during the
+            # delay, but the handle still refers to the original process.
+            app, image_path, process_handle = self._launch_with_environment(
+                cmd,
+                backend=self._backend,
+                timeout=timeout,
+                wait_for_idle=wait_for_idle,
+                work_dir=work_dir,
+                env=env,
+            )
+            if startup_delay > 0:
+                time.sleep(startup_delay)
+            result = Application(
+                app,
+                backend=self._backend,
+                default_timeout_ms=self._default_timeout_ms,
+                desktop=self,
+                image_path=image_path,
+                owned_process_handle=process_handle,
+            )
+            if baseline is not None and _is_notepad_launcher(image_path):
+                result._launch_snapshot = baseline
+                result._resolve_launch_handoff(timeout=handoff_timeout)
+            return result
         except Exception as exc:
+            if process_handle is not None:
+                try:
+                    terminate_process_handle(process_handle)
+                except Exception:
+                    pass
+                try:
+                    close_process_handle(process_handle)
+                except Exception:
+                    pass
             raise ApplicationError(f"Failed to launch {cmd!r}: {exc}") from exc
-        image_path = _image_path_now(app)
-        if startup_delay > 0:
-            time.sleep(startup_delay)
-        return Application(
-            app,
-            backend=self._backend,
-            default_timeout_ms=self._default_timeout_ms,
-            desktop=self,
-            image_path=image_path,
-        )
 
     # ------------------------------------------------------------------
     # Internal helpers used by stack-specific launch/attach factories.
@@ -197,6 +337,8 @@ class Desktop:
         timeout: float = 10.0,
         work_dir: str | None = None,
         startup_delay: float = 0.5,
+        env: Mapping[str, str] | None = None,
+        wait_for_idle: bool = False,
     ) -> Application:
         """Launch a process on an explicit backend, bypassing ``self._backend``.
 
@@ -211,23 +353,47 @@ class Desktop:
             # Hidden-desktop path always respects the configured
             # self._backend — hidden-mode is orthogonal to UIA/Win32.
             return self._launch_hidden(
-                cmd, timeout=timeout, work_dir=work_dir, startup_delay=startup_delay
+                cmd,
+                timeout=timeout,
+                work_dir=work_dir,
+                startup_delay=startup_delay,
+                env=env,
+                wait_for_idle=wait_for_idle,
             )
+
+        from ._runner import close_process_handle, terminate_process_handle
+
+        process_handle: int | None = None
         try:
-            pw = _PyWinApp(backend=backend)
-            pw.start(cmd, timeout=timeout, wait_for_idle=False, work_dir=work_dir)
+            pw, image_path, process_handle = self._launch_with_environment(
+                cmd,
+                backend=backend,
+                timeout=timeout,
+                wait_for_idle=wait_for_idle,
+                work_dir=work_dir,
+                env=env,
+            )
+            if startup_delay > 0:
+                time.sleep(startup_delay)
+            return Application(
+                pw,
+                backend=backend,
+                default_timeout_ms=self._default_timeout_ms,
+                desktop=self,
+                image_path=image_path,
+                owned_process_handle=process_handle,
+            )
         except Exception as exc:
+            if process_handle is not None:
+                try:
+                    terminate_process_handle(process_handle)
+                except Exception:
+                    pass
+                try:
+                    close_process_handle(process_handle)
+                except Exception:
+                    pass
             raise ApplicationError(f"Failed to launch {cmd!r}: {exc}") from exc
-        image_path = _image_path_now(pw)
-        if startup_delay > 0:
-            time.sleep(startup_delay)
-        return Application(
-            pw,
-            backend=backend,
-            default_timeout_ms=self._default_timeout_ms,
-            desktop=self,
-            image_path=image_path,
-        )
 
     def _connect_raw(
         self,
@@ -305,36 +471,56 @@ class Desktop:
         timeout: float,
         work_dir: str | None,
         startup_delay: float,
+        env: Mapping[str, str] | None = None,
+        wait_for_idle: bool = False,
     ) -> Application:
         """Launch *cmd* on the hidden desktop and connect pywinauto by PID."""
-        from ._runner import close_process_handle, launch_cmd_on_desktop
+        from ._runner import (
+            _hidden_launch_job,
+            close_process_handle,
+            launch_cmd_on_desktop,
+            terminate_process_handle,
+        )
 
         self._ensure_hidden_mode()
         try:
-            pid, h_process = launch_cmd_on_desktop(cmd, work_dir=work_dir)
-            close_process_handle(h_process)
+            pid, h_process = launch_cmd_on_desktop(
+                cmd,
+                timeout=timeout,
+                wait_for_idle=wait_for_idle,
+                work_dir=work_dir,
+                env=env,
+                job_handle=_hidden_launch_job(),
+            )
         except OSError as exc:
             raise ApplicationError(f"Failed to launch {cmd!r} on hidden desktop: {exc}") from exc
 
-        image_path = _process_image_path(pid)
-        if startup_delay > 0:
-            time.sleep(startup_delay)
-
         try:
+            image_path = _process_image_path(pid)
+            if startup_delay > 0:
+                time.sleep(startup_delay)
             app = _PyWinApp(backend=self._backend)
             app.connect(process=pid, timeout=timeout)
+            return Application(
+                app,
+                backend=self._backend,
+                default_timeout_ms=self._default_timeout_ms,
+                desktop=self,
+                image_path=image_path,
+                owned_process_handle=h_process,
+            )
         except Exception as exc:
+            try:
+                terminate_process_handle(h_process)
+            except Exception:
+                pass
+            try:
+                close_process_handle(h_process)
+            except Exception:
+                pass
             raise ApplicationError(
                 f"Failed to connect to hidden-desktop process (pid={pid}): {exc}"
             ) from exc
-
-        return Application(
-            app,
-            backend=self._backend,
-            default_timeout_ms=self._default_timeout_ms,
-            desktop=self,
-            image_path=image_path,
-        )
 
     def connect(
         self,
@@ -429,29 +615,20 @@ class Desktop:
         qt_env:
             Additional environment variables to set in the child process
             (e.g. ``{"QT_LOGGING_RULES": "*.debug=true"}``).  Always merged
-            on top of ``QT_ACCESSIBILITY=1``.
+            on top of ``QT_ACCESSIBILITY=1``.  The parent environment is
+            never modified.
         """
-        import os
-
         overrides = {"QT_ACCESSIBILITY": "1"}
         if qt_env:
             overrides.update(qt_env)
 
-        # Save and override env vars only for the spawn — restore in finally so
-        # subsequent launches of non-Qt apps don't inherit these settings.
-        # (pywinauto's Application.start uses subprocess.Popen with no env=,
-        # so the child inherits os.environ at spawn time.)
-        saved: dict[str, str | None] = {k: os.environ.get(k) for k in overrides}
-        try:
-            for k, v in overrides.items():
-                os.environ[k] = v
-            return self.launch(cmd, timeout=timeout, work_dir=work_dir, startup_delay=startup_delay)
-        finally:
-            for k, prev in saved.items():
-                if prev is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = prev
+        return self.launch(
+            cmd,
+            timeout=timeout,
+            work_dir=work_dir,
+            startup_delay=startup_delay,
+            env=overrides,
+        )
 
     def launch_python_script(
         self,
@@ -546,9 +723,23 @@ class Desktop:
         other CEF-hosted apps use ``-cef-enable-debugging`` on a fixed port).
         """
         from ._cdp import CDPSession
+        from ._netinfo import describe_owners, loopback_listener_pids
 
         if port_flag not in cmd:
             cmd = cmd.rstrip() + f" {port_flag}"
+
+        # Port collision before launch: if something already loopback-listens
+        # on the debug port, the app we are about to start will not be able to
+        # bind it, and probing the port would then reach the squatter's server
+        # instead. Refuse rather than connect to whatever answers.
+        preexisting = loopback_listener_pids(debug_port)
+        if preexisting:
+            raise RuntimeError(
+                f"{runtime_label} CDP debug port {debug_port} is already in use by "
+                f"PID(s) {sorted(preexisting)} before launch — refusing to start, because "
+                "the debugger port could not be bound by the new process and a probe "
+                "would reach the existing server. Pass a unique high debug_port per run."
+            )
 
         app = self.launch(cmd, timeout=timeout, work_dir=work_dir, startup_delay=startup_delay)
 
@@ -560,12 +751,19 @@ class Desktop:
 
         while time.monotonic() < deadline:
             try:
-                with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1.0) as resp:
-                    if resp.status == 200:
-                        break
+                # endpoint is a fixed http:// loopback URL built from a
+                # numeric port, not caller-controlled; no file:// or custom
+                # scheme can reach urlopen here.
+                with urllib.request.urlopen(  # nosec B310
+                    f"{endpoint}/json/version", timeout=1.0
+                ) as resp:
+                    ready = resp.status == 200
             except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
                 last_err = exc
                 time.sleep(0.25)
+                continue
+            if ready:
+                break
         else:
             try:
                 app.kill()
@@ -576,8 +774,62 @@ class Desktop:
                 f"within {timeout}s: {last_err}"
             )
 
-        session = CDPSession.connect(endpoint, timeout=max(1.0, deadline - time.monotonic()))
+        # The port answers 200 — but is it *our* process answering? Bind the
+        # listener to the launched PID or one of its verified descendants
+        # before handing the endpoint to Playwright. A 200 from a foreign PID
+        # (a squatter, a leftover browser) is rejected. If the owner cannot
+        # be determined, the HTTP response alone cannot prove ownership.
+        self._verify_cdp_port_owner(app, debug_port, runtime_label, describe_owners)
+
+        try:
+            session = CDPSession.connect(endpoint, timeout=max(1.0, deadline - time.monotonic()))
+        except Exception:
+            try:
+                app.kill()
+            except Exception:
+                pass
+            raise
         return app, session
+
+    def _verify_cdp_port_owner(
+        self,
+        app: Application,
+        debug_port: int,
+        runtime_label: str,
+        describe_owners: Any,
+    ) -> None:
+        """Refuse a CDP port whose loopback listener is a process we do not own.
+
+        The owner set is compared against the launched PID and its verified
+        descendant tree (Chromium hands the debugger to a child process, so
+        the listener is frequently a descendant, not the launcher itself).
+        """
+        from ._application import _enumerate_descendant_pids
+        from ._netinfo import loopback_listener_pids
+
+        owners = loopback_listener_pids(debug_port)
+        if not owners:
+            try:
+                app.kill()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"{runtime_label} CDP debug port {debug_port} answered, but its "
+                "listener PID could not be determined. Refusing to connect because "
+                "endpoint ownership cannot be confirmed."
+            )
+        allowed = {app.process_id} | _enumerate_descendant_pids(app.process_id)
+        if not owners <= allowed:
+            try:
+                app.kill()
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"{runtime_label} CDP debug port {debug_port} is served by a process that is "
+                f"not the application dolphin launched (pid {app.process_id}) nor a descendant "
+                f"of it: {describe_owners(debug_port)}. Refusing to connect — the endpoint "
+                "would expose another process's DOM, cookies and screenshots."
+            )
 
     def launch_electron_cdp(
         self,
@@ -718,11 +970,11 @@ class Desktop:
         """Launch a Delphi / VCL (or Lazarus / LCL) executable and
         return a :class:`~dolphin_desktop.DelphiApp` facade.
 
-        Delphi / VCL apps expose standard controls via Windows UIA
-        automatically. On Delphi 10.4+ the developer-assigned
-        ``TComponent.Name`` propagates to UIA ``AutomationId`` — the
-        preferred selector. On older Delphi / Lazarus the fallback is
-        (class_name, caption).
+        Standard windowed VCL / LCL controls can be exposed through UIA.
+        ``TComponent.Name`` is not automatically a UIA ``AutomationId``,
+        including on Delphi 12. Name lookup needs an application-supplied
+        provider publishing matching IDs; Dolphin supplies no such provider.
+        Use captions, indices or UIA-visible adjacent labels otherwise.
 
         Args:
             cmd: Full command line to the Delphi/Lazarus executable.
@@ -933,14 +1185,29 @@ class Desktop:
         hllapi_dll_path: str | None = None,
         extra_args: list[str] | None = None,
         trace: bool = False,
+        tls: bool = False,
+        tls_cafile: str | None = None,
+        tls_context: Any | None = None,
+        allow_plaintext: bool = False,
     ) -> MainframeTerminal:
         """Open a mainframe/midrange terminal session.
 
+        Transport security: a terminal session carries the sign-on
+        credentials in the clear unless TLS is negotiated, so a plaintext
+        connection to a remote host is refused with a ``MainframeError``
+        unless ``allow_plaintext=True`` is passed. Loopback hosts (the local
+        end of an SSH/stunnel tunnel, or a mock server) are exempt. A port
+        number — 992 included — never enables TLS by itself.
+
         Args:
-            host: Hostname or IP of the TN3270/TN5250 gateway. Ignored
-                when ``backend='hllapi'`` (the emulator manages the
-                connection).
-            port: TCP port. 23 (telnet) is standard for 3270/5250 hosts.
+            host: Hostname, IPv4 address or bracketed IPv6 literal of the
+                TN3270/TN5250 gateway. Ignored when ``backend='hllapi'`` (the
+                emulator manages the connection). x3270 host prefixes are not
+                passed through; ``L:`` is accepted as a synonym for
+                ``tls=True``. Control characters, including leading or trailing
+                CR/LF, are rejected before the s3270 process starts.
+            port: TCP port. 23 (telnet) is standard for 3270/5250 hosts,
+                992 for TLS.
             session_type: ``"3270"`` for zSeries / z/OS, ``"5250"`` for
                 iSeries / IBM i. s3270 negotiates the correct TN option
                 automatically based on this hint.
@@ -967,7 +1234,8 @@ class Desktop:
                 (the emulator's own configuration wins).
             session_id: HLLAPI session letter (A, B, C, …). Ignored by
                 the s3270 backend.
-            hllapi_dll_path: Absolute path to an HLLAPI-compatible DLL
+            hllapi_dll_path: Required for ``backend="hllapi"``: an existing
+                absolute path to a trusted HLLAPI-compatible DLL
                 (``PCSHLL32.DLL``, ``EHLAPI32.DLL``, …). Ignored by the
                 s3270 backend.
             extra_args: Additional command-line arguments for the s3270
@@ -975,7 +1243,21 @@ class Desktop:
             trace: When True, every backend command + response is emitted
                 via ``dolphin_desktop.get_logger("dolphin_desktop.mainframe")``
                 at INFO level — invaluable when debugging why a test
-                fails inside a locked keyboard or a stuck field.
+                fails inside a locked keyboard or a stuck field. Typed text
+                and raw protocol frames are never included — the trace
+                names the action and the payload size only.
+            tls: Negotiate TLS with certificate *and* host-name
+                verification. ``tn5250`` uses :func:`ssl.create_default_context`;
+                ``s3270`` opens the emulator's ``L:`` tunnel. A failed
+                handshake raises — there is no fallback to plaintext.
+            tls_cafile: PEM bundle of a private CA to trust in addition to
+                the system store (``-cafile`` for s3270).
+            tls_context: An :class:`ssl.SSLContext` for the ``tn5250``
+                backend. It must still verify the peer (``check_hostname``
+                on, ``verify_mode == CERT_REQUIRED``) or it is refused.
+            allow_plaintext: Accept an unencrypted session to a remote
+                host. Logged as a warning; use it only through a channel
+                that is protected by other means.
 
         Returns:
             A :class:`~dolphin_desktop.MainframeTerminal`. Use as a
@@ -1001,6 +1283,10 @@ class Desktop:
             hllapi_dll_path=hllapi_dll_path,
             extra_args=extra_args,
             trace=trace,
+            tls=tls,
+            tls_cafile=tls_cafile,
+            tls_context=tls_context,
+            allow_plaintext=allow_plaintext,
         )
         if connect:
             term.connect(host, port, session_type=session_type, timeout=timeout)

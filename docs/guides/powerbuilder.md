@@ -30,12 +30,8 @@ with Desktop().launch_powerbuilder(r"C:\path\to\pb_app.exe") as app:
 
 `Desktop.launch_powerbuilder()` is a **semantic wrapper** over
 `Desktop.launch()` — same UIA backend, same locator surface. The
-wrapper exists so:
-
-* Tests self-document intent (`launch_powerbuilder(...)` reads better
-  than `launch(...)`).
-* Future PB-specific launch prep (PBNI hook injection, PowerScript
-  recorder handshake) has a stable API to hang off.
+wrapper makes the application's intended stack explicit while using the same
+launch and locator behavior.
 
 ### Common Appeon PB control classes
 
@@ -81,7 +77,7 @@ on a live PB 2025 runtime (older versions use `PBWindow<version>` /
 * Interior of DataWindows requires **image-based fallback** —
   install the `vision` extra and use `ImageLocator`:
 
-  ```python
+  ```powershell
   pip install "dolphin-desktop[vision]"
   ```
 
@@ -109,7 +105,7 @@ on a live PB 2025 runtime (older versions use `PBWindow<version>` /
   from dolphin_desktop import Keyboard, Mouse, Screen
 
   bb = win.locator(class_name="pbdw", found_index=1).bounding_box()
-  region = (bb["left"], bb["top"], bb["right"], bb["bottom"])
+  region = (bb["x"], bb["y"], bb["x"] + bb["width"], bb["y"] + bb["height"])
 
   pt = Screen.find_text("Alberta", region=region)   # OCR-locate the cell
   Mouse.double_click(*pt)                           # select its content
@@ -127,7 +123,7 @@ on a live PB 2025 runtime (older versions use `PBWindow<version>` /
 * Full field-level automation would require **PBNI** (PowerBuilder
   Native Interface) or a PowerScript instrumentation script inside
   the PB IDE. Both need an Appeon licence and are outside the
-  0.2.0 scope. Tracked as follow-up (v0.3+).
+  implemented scope; no PB instrumentation agent is bundled.
 
 ## Which version am I targeting?
 
@@ -152,12 +148,3 @@ Check the exe's manifest:
 | Menu items unreachable | PB uses its own drawing for popup menus | Use `Keyboard.type("%F", escape=False)` to open the File menu via mnemonic, then navigate with arrows / `{ENTER}` |
 | Custom controls (Foundation Class, DevExpress-for-PB) not detected | Third-party libs paint their own UI | Fall back to `ImageLocator`; consider `dolphin spy` to check what UIA does see |
 | Buttons don't respond to `.click()` | PB Classic button uses BM_CLICK but not the UIA Invoke pattern | `.click()` already sends a real mouse click; if the control ignores it, fall back to `ImageLocator` and click the button by its pixels |
-
-## Scope decision
-
-* **In 0.2.0:** semantic wrapper `Desktop.launch_powerbuilder()`,
-  documentation of standard-controls path for Appeon PB, image-based
-  fallback path for classic PB. **No proprietary framework
-  introspection.**
-* **Deferred to v0.3+:** PBNI-based DataWindow row/column extraction
-  (requires Appeon licence + trial account for verification).

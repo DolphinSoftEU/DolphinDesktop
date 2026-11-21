@@ -1,6 +1,76 @@
 # Office
 
-Dolphin automates Excel and Word through COM wrappers. These helpers require Microsoft Office and pywin32 on Windows.
+Dolphin automates Excel, Word, PowerPoint and classic Outlook through COM wrappers.
+These helpers require the corresponding Microsoft Office applications and pywin32 on Windows.
+
+## Supported applications
+
+The dedicated Office COM API exports `ExcelApp`, `WordApp`, `PowerPointApp`
+and `OutlookApp` from `dolphin_desktop`. Outlook requires classic Outlook with
+an existing configured MAPI profile; new Outlook is outside this COM API.
+Ribbon controls and dialogs still use the generic `Desktop` UIA/Win32 API.
+See the [Support Matrix](../support-matrix.md#office-com-excel-word-powerpoint-classic-outlook).
+
+## Macro security
+
+`ExcelApp.open()` and `WordApp.open()` default to `allow_macros=False`.
+They set `AutomationSecurity=3` immediately before opening the file to disable
+VBA macros, then restore the previous value in `finally`, including when opening
+fails. Excel also sets `AskToUpdateLinks=False` and opens with `UpdateLinks=0`;
+Word sets `Options.UpdateLinksAtOpen=False` to prevent automatic OLE link
+updates and restores its previous value in `finally`. Enabling macros does
+not enable these external link updates.
+See Microsoft's [UpdateLinksAtOpen documentation](https://learn.microsoft.com/en-us/office/vba/api/word.options.updatelinksatopen).
+
+!!! warning "Macro execution requires explicit trust"
+
+    `allow_macros=True` selects `msoAutomationSecurityLow` (`1`). VBA macros can
+    execute arbitrary code with your account's permissions. Use this opt-in only
+    with trusted documents. Office policies, Protected View and other security
+    controls can still prevent execution; Dolphin does not bypass them.
+
+```python
+from dolphin_desktop import ExcelApp, WordApp
+
+# Explicitly permit macros only in files whose code you trust.
+with ExcelApp.open("trusted.xlsm", allow_macros=True) as xl:
+    print(xl.active_sheet.name)
+
+with WordApp.open("trusted.docm", allow_macros=True) as wd:
+    print(wd.active_document.name)
+```
+
+`AutomationSecurity=3` does **not** disable Excel 4.0/XLM macros; Excel can still
+display a security prompt for them. Enforce XLM restrictions through Office
+policy and never approve active content from an untrusted file. See Microsoft's
+[AutomationSecurity documentation](https://learn.microsoft.com/en-us/office/vba/api/excel.application.automationsecurity).
+`UpdateLinks=0` controls workbook external links, not every data connection or
+other type of active content. These wrappers are not a document sandbox.
+
+The security setting applies to the file opened by `open()` and is restored
+afterwards. `connect()` does not change security or disable macros in documents
+already open. Documents remain editable because the API supports modifying and
+saving them; read-only mode would not itself prevent macro execution.
+
+### Security regression checks
+
+Run the deterministic COM stand-in tests without Office or real macros:
+
+```powershell
+uv run pytest tests/framework/test_office_com.py tests/framework/test_office.py -q
+```
+
+The synthetic auto-open macro only increments an in-memory counter. Tests cover
+default blocking, explicit opt-in, link arguments, restoration after errors,
+rejected security settings, a simulated policy block and an XLM prompt.
+These checks verify the wrapper contract, not the Office macro engine.
+
+#### Real Office acceptance
+
+Real Office validation requires reviewed macro fixtures, safety/cleanup checks
+and isolated Office installations. Preserve organization policies.
+A blocked positive control is incomplete verification of the macro engine.
+Record Office versions, policies, passing cases and skips with each run.
 
 ## Excel
 
@@ -61,6 +131,201 @@ with WordApp.connect() as wd:
 
 A connected instance is left running when the block exits — see the note
 above.
+
+## PowerPoint
+
+```python
+from dolphin_desktop import PowerPointApp
+
+with PowerPointApp.create(visible=False) as ppt:
+    presentation = ppt.active_presentation
+    slide = presentation.add_slide()  # blank layout, appended at the end
+    caption = slide.add_textbox("Quarterly report")
+    caption.text = "Quarterly report — reviewed"
+    presentation.save_as("report.pptx")
+    presentation.export_pdf("report.pdf")
+
+with PowerPointApp.open("report.pptx", visible=False) as ppt:
+    print(ppt.active_presentation.slide(1).shape(1).text)
+```
+
+Slide and shape indexes are 1-based; shapes can also be selected by name.
+
+Text formatting is exposed on shapes and on character ranges, so a test can
+assert how a slide looks, not only what it says:
+
+```python
+title = slide.add_textbox("Revenue up 12%", left=50, top=40, width=500, height=60)
+title.bold = True
+title.font_size = 32
+title.font_color = (200, 0, 0)
+title.characters(12, 3).italic = True  # "12%" only, 1-based positions
+
+assert title.bold is True
+assert title.italic is None            # mixed: part of the box is italic
+assert title.characters(12, 3).italic is True
+assert slide.shape_names == [title.name]
+
+logo = slide.add_picture("logo.png", left=600, top=40)
+assert not logo.has_text and logo.width > 0
+presentation.move_slide(presentation.slide_count, 1)  # bring the last slide first
+```
+
+Formatting reads return `None` when a range mixes values. Pictures are embedded,
+never linked, so the saved file does not depend on the source path.
+
+Tables, charts, speaker notes, layout titles and hyperlinks are covered too:
+
+```python
+slide = presentation.add_slide(layout=11)          # title-only layout
+slide.title = "Q3 by region"
+slide.notes = "Mention the EMEA restatement."
+
+table = slide.add_table(3, 2, values=[["Region", "Revenue"], ["EMEA", 120], ["APAC", 95]])
+assert table.table.values[1] == ["EMEA", "120"]
+table.table.cell(1, 1).bold = True
+
+chart = slide.add_chart(["Q1", "Q2", "Q3"], {"EMEA": [100, 110, 120]}, title="EMEA trend")
+assert chart.chart.series_values("EMEA") == [100.0, 110.0, 120.0]
+
+link = slide.add_textbox("Full report")
+link.hyperlink = "https://example.test/report"   # clickable in a slide show
+link.hyperlink = ""                              # removes the link again
+```
+
+Setting `hyperlink` writes the address and sets the mouse-click action to
+`ppActionHyperlink`, so the link works in a slide show, not only in the editor.
+An empty string turns the action off and deletes the hyperlink; a blank
+address such as `" "` raises `ValueError`.
+
+`add_chart()` writes each series as literal arrays on the chart, so the embedded
+Excel workbook is never opened and Excel does not need to be installed. PowerPoint
+only inserts charts into a presentation that has a document window, so build
+chart decks with `create(visible=True)` / `open(visible=True)`; on a hidden
+presentation `add_chart()` raises `RuntimeError` instead of a bare COM error.
+Reading an existing chart works on hidden presentations too. A visible shared
+PowerPoint stays open after `quit()`; pass `exclusive=True` when the test should
+also end the process. To check the exported PDF itself (page count, text), parse it with a
+PDF library in your test. The repository's own live tests do that with `pypdf`.
+`open()` disables VBA macros by default and restores the previous
+`AutomationSecurity` setting after opening, including on failure. As with the
+other Office wrappers, `allow_macros=True` is an explicit opt-in for trusted
+files; Office policies still apply. This is not a sandbox for linked content.
+Opening a presentation already open in PowerPoint raises `RuntimeError` so the
+wrapper cannot accidentally take ownership of the operator's document.
+
+PowerPoint is a shared COM server. `connect()` attaches to its active
+presentation; `open()` / `create()` expose the presentation they opened/created
+even when it has no window. In shared mode, `quit()` and context exit close only
+those owned presentations and release COM references, preserving the process. Save explicitly or use
+`quit(save_changes=True)` to retain changes. Failed saves/closes raise and keep
+the affected presentation available for retry.
+
+`export_pdf()` uses PowerPoint's `ExportAsFixedFormat` with PDF output. Real
+acceptance tests must parse the resulting PDF and verify page count/content,
+not just check COM arguments or the file extension.
+
+## Classic Outlook
+
+```python
+from dolphin_desktop import OutlookApp, OutlookMail
+
+with OutlookApp.start() as outlook:  # starts or reuses classic Outlook
+    draft = outlook.create_mail(subject="Local report", body="Review the attachment.")
+    draft.add_attachment("report.pdf")
+    draft.save_as("report.msg")  # local file only; does not send
+
+with OutlookApp.start() as outlook:
+    mail = outlook.open_item("report.msg")
+    assert isinstance(mail, OutlookMail)
+    print(mail.subject, mail.body)
+    mail.attachment(1).save_as("report-copy.pdf")
+    print(outlook.default_folder("inbox").item_count)
+```
+
+`connect()` requires an already running classic Outlook session. `start()` may
+reuse the operator's session; neither method logs on/off or configures profiles.
+`start()` checks registered MAPI profiles before COM activation, then validates
+the active profile and accessible stores. Missing/unusable profiles raise
+`RuntimeError`. Missing folders/items raise `LookupError`.
+Folders support `item(1)` and `folder("Child")`; supported default folder names
+are `inbox`, `drafts`, `sent`, `deleted`, `calendar`, or an `OlDefaultFolders`
+integer. Items other than mail and appointments raise `TypeError` on lookup.
+
+Drafts created by this `OutlookApp` support `move(folder)` and `delete()`.
+`move()` updates the existing wrapper to the COM object returned by Outlook;
+`find_item(entry_id)` can verify its absence/presence in source/destination
+folders. Folder lookup recognizes owned drafts by EntryID **and** StoreID.
+Pre-existing messages, sent messages and locally opened MSG files cannot be
+moved/deleted by this API. Destinations must come from the creating facade.
+
+`delete()` moves an owned draft to its store's Deleted Items folder. A repeated
+call raises instead of silently deleting permanently. For UAT data cleanup,
+`delete(permanent=True)` explicitly removes only an owned draft already there.
+
+`create_appointment(subject=...)` returns a calendar item with editable `start`
+and `end` Python datetimes (Outlook local time), `location`, `subject` and `body`.
+It can be saved to a local MSG file or explicitly persisted to the calendar
+with `save()`. Creating/saving appointments does not send invitations.
+
+Mail supports `to`, `cc`, `bcc`, `subject`, `body`, `html_body` and attachments.
+`save()` stores a draft; only an explicit `mail.send()` sends a message using
+Outlook's configured account. Outlook security prompts/policies remain active.
+Context exit and `quit()` discard unsaved changes to only the items created or
+opened here; saved drafts/appointments remain saved. Items retrieved from
+existing folders are not automatically closed. Shared Outlook sessions are
+preserved. Failed saves/closes raise and retain the affected items for retry.
+
+### A disposable profile for automation
+
+`OutlookApp.start()` requires a configured MAPI profile. Use a dedicated profile
+with one local PST and no mail account for tests that create, move or delete
+items. Verify store and folder ownership before any mutation, and explicitly
+opt in to destructive operations in your test configuration.
+
+Permanent deletion goes through a proxy re-fetched by EntryID: on PST stores
+Outlook silently ignores `Delete()` on the proxy that `Move()` returned, so the
+facade re-fetches after every move and verifies the outcome. The verification
+re-fetches the item: an unambiguous `MAPI_E_NOT_FOUND` confirms it is gone, and
+any other failure (a store, session or permission error) is treated as an
+unknown outcome and raised as `RuntimeError`, never reported as a successful
+delete.
+
+## Exclusive Office sessions for UAT
+
+`PowerPointApp.create/open(..., exclusive=True)` and
+`OutlookApp.start(exclusive=True)` require **no existing** process of that Office
+application. Use a dedicated test account without concurrent Office launches.
+This mode verifies the new process's image/creation time and retains its process
+handle. `owns_process` and `process_id` expose the resulting ownership.
+
+After COM activation, exclusive startup polls process visibility for up to
+five seconds, servicing COM messages between attempts. Multiple candidates or
+a failed identity check stop initialization immediately. Failed activation,
+visibility timeout or ownership verification reports observed PIDs and a final
+snapshot of possible orphaned processes. A failed snapshot is reported as
+unknown, not as absence. No unverified process is claimed or terminated;
+inspect the reported processes before retrying. Office may still start after
+the timeout, so a diagnostic snapshot without candidates cannot prove that no
+process will appear later.
+
+After document/item cleanup, `quit()` calls `Application.Quit()`, releases COM
+references and waits for that process handle to signal exit while pumping COM
+messages. A shutdown timeout raises and can be retried; processes are never
+force-killed. Foreign open presentations block exclusive PowerPoint shutdown.
+Objects from a closed facade are no longer usable. Shared mode (the default)
+and `connect()` never acquire process ownership or quit the operator's session.
+
+For end-to-end validation, distinguish pre-existing and owned processes and
+check exported PDF content independently. Use a configured nonproduction
+Outlook profile and controlled draft folders. Create only synthetic drafts,
+verify move/delete outcomes and clean up saved items even after failures.
+To check missing-profile handling, use a Windows account without configured
+profiles and verify that no Outlook process starts.
+
+Repeat on Office 2019 and Microsoft 365, x86 and x64, recording product/version/
+bitness per run. A successful run on one installation does not establish PASS
+for another, and skipped profile-dependent scenarios do not count as PASS.
 
 ## Combining UI And Office Checks
 

@@ -1,0 +1,474 @@
+"""Exclusive Office ownership must never infer absence from a failed probe."""
+
+import ctypes
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+from dolphin_desktop import OutlookApp, PowerPointApp
+from dolphin_desktop import _office_session as sessions
+from dolphin_desktop import _outlook as outlook
+from dolphin_desktop import _powerpoint as ppt
+
+
+@pytest.fixture
+def native_snapshot(monkeypatch):
+    state = SimpleNamespace(error=5, index=0)
+    records = [("POWERPNT.EXE", 42), ("notepad.exe", 43)]
+    kernel = SimpleNamespace(
+        CreateToolhelp32Snapshot=MagicMock(return_value=123),
+        Process32FirstW=MagicMock(),
+        Process32NextW=MagicMock(),
+        CloseHandle=MagicMock(),
+    )
+
+    def fill(pointer):
+        entry = pointer._obj
+        assert entry.dwSize == ctypes.sizeof(type(entry))
+        entry.szExeFile, entry.th32ProcessID = records[state.index]
+        return True
+
+    def first(handle, pointer):
+        assert handle == 123
+        state.index = 0
+        return fill(pointer)
+
+    def next_entry(handle, pointer):
+        assert handle == 123
+        state.index += 1
+        if state.index == len(records):
+            state.error = 18  # ERROR_NO_MORE_FILES
+            return False
+        return fill(pointer)
+
+    kernel.Process32FirstW.side_effect = first
+    kernel.Process32NextW.side_effect = next_entry
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_, **__: kernel, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: state.error, raising=False)
+    monkeypatch.setattr(
+        ctypes, "WinError", lambda code: OSError(code, "Win32 probe failed"), raising=False
+    )
+    return kernel, records
+
+
+def test_native_snapshot_enumerates_records_and_releases_handle(native_snapshot):
+    kernel, records = native_snapshot
+    assert sessions._process_entries() == records
+    kernel.CreateToolhelp32Snapshot.assert_called_once_with(2, 0)
+    assert kernel.Process32FirstW.call_count == 1
+    assert kernel.Process32NextW.call_count == 2
+    kernel.CloseHandle.assert_called_once_with(123)
+
+
+@pytest.mark.parametrize(
+    "failure", ["null-handle", "invalid-handle", "first", "next", "next-error"]
+)
+def test_native_snapshot_errors_are_not_reported_as_empty_process_lists(native_snapshot, failure):
+    kernel, _ = native_snapshot
+    if failure == "null-handle":
+        kernel.CreateToolhelp32Snapshot.return_value = None
+    elif failure == "invalid-handle":
+        kernel.CreateToolhelp32Snapshot.return_value = ctypes.c_void_p(-1).value
+    elif failure == "first":
+        kernel.Process32FirstW.side_effect = None
+        kernel.Process32FirstW.return_value = False
+    elif failure == "next":
+        kernel.Process32NextW.side_effect = None
+        kernel.Process32NextW.return_value = False
+    else:
+        kernel.Process32NextW.side_effect = OSError("enumeration interrupted")
+    with pytest.raises(OSError):
+        sessions._process_entries()
+    if failure in ("null-handle", "invalid-handle"):
+        kernel.CloseHandle.assert_not_called()
+    else:
+        kernel.CloseHandle.assert_called_once_with(123)
+
+
+@pytest.mark.parametrize("exclusive", [None, 1, "true"])
+def test_invalid_ownership_option_is_rejected_before_activation(monkeypatch, exclusive):
+    client, snapshot = MagicMock(), MagicMock()
+    monkeypatch.setattr(sessions, "_office_pids", snapshot)
+    with pytest.raises(TypeError, match="exclusive must be a bool"):
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=exclusive)
+    snapshot.assert_not_called()
+    client.Dispatch.assert_not_called()
+
+
+def test_shared_start_does_not_claim_or_probe_processes(monkeypatch):
+    client = MagicMock()
+    probe = MagicMock(side_effect=AssertionError("shared session must not probe"))
+    monkeypatch.setattr(sessions, "_office_pids", probe)
+    com, session = sessions._start_office(
+        client, "Office.Application", "OFFICE.EXE", exclusive=False
+    )
+    assert com is client.Dispatch.return_value
+    assert session is None
+
+
+def test_snapshot_matches_executable_name_without_hiding_probe_errors(monkeypatch):
+    monkeypatch.setattr(
+        sessions, "_process_entries", lambda: [("powerpnt.exe", 42), ("other.exe", 43)]
+    )
+    assert sessions._office_pids("POWERPNT.EXE") == [42]
+    monkeypatch.setattr(
+        sessions, "_process_entries", MagicMock(side_effect=OSError("snapshot failed"))
+    )
+    with pytest.raises(OSError, match="snapshot failed"):
+        sessions._office_pids("POWERPNT.EXE")
+
+
+@pytest.mark.parametrize("snapshot", [[42], OSError("tasklist failed")])
+def test_exclusive_start_refuses_existing_or_unknown_processes(monkeypatch, snapshot):
+    probe = MagicMock()
+    if isinstance(snapshot, Exception):
+        probe.side_effect = snapshot
+    else:
+        probe.return_value = snapshot
+    monkeypatch.setattr(sessions, "_office_pids", probe)
+    client = MagicMock()
+    with pytest.raises((RuntimeError, OSError)):
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    client.Dispatch.assert_not_called()
+
+
+def test_exclusive_start_only_claims_unique_new_process(monkeypatch):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], [42]]))
+    anchor = MagicMock()
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    client = MagicMock()
+    com, session = sessions._start_office(
+        client, "Office.Application", "OFFICE.EXE", exclusive=True
+    )
+    assert com is client.Dispatch.return_value
+    assert session is anchor.return_value
+    assert anchor.call_args.args[:2] == (42, "OFFICE.EXE")
+
+
+def test_ambiguous_activation_never_waits_to_claim_a_surviving_process(monkeypatch):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], [42, 43], [43]]))
+    anchor, pause = MagicMock(), MagicMock()
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    monkeypatch.setattr(sessions, "_startup_pause", pause)
+    client = MagicMock()
+    with pytest.raises(sessions._OfficeStartupError, match="Multiple candidate") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.observed_pids == (42, 43)
+    assert caught.value.possible_orphan_pids == (43,)
+    anchor.assert_not_called()
+    pause.assert_not_called()
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+@pytest.fixture
+def startup_clock(monkeypatch):
+    clock = SimpleNamespace(now=0.0, delays=[])
+
+    def pause(delay):
+        clock.delays.append(delay)
+        clock.now += delay
+
+    monkeypatch.setattr(
+        sessions,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: clock.now,
+            time_ns=lambda: 1_000_000_000,
+        ),
+    )
+    monkeypatch.setattr(sessions, "_startup_pause", pause)
+    monkeypatch.setattr(sessions, "_START_TIMEOUT", 0.12)
+    return clock
+
+
+def test_delayed_visibility_is_retried_and_identity_is_verified(monkeypatch, startup_clock):
+    probe = MagicMock(side_effect=[[], [], [], [42]])
+    anchor = MagicMock()
+    monkeypatch.setattr(sessions, "_office_pids", probe)
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    client = MagicMock()
+    com, session = sessions._start_office(
+        client, "Office.Application", "OFFICE.EXE", exclusive=True
+    )
+    assert com is client.Dispatch.return_value
+    assert session is anchor.return_value
+    assert startup_clock.delays == [0.05, 0.05]
+    anchor.assert_called_once_with(42, "OFFICE.EXE", 116444736010000000)
+    client.Dispatch.assert_called_once_with("Office.Application")
+
+
+def test_visibility_timeout_is_bounded_and_reports_no_current_process(monkeypatch, startup_clock):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(return_value=[]))
+    anchor = MagicMock()
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    client = MagicMock()
+    with pytest.raises(sessions._OfficeStartupError, match="No process became visible") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert isinstance(caught.value.__cause__, TimeoutError)
+    assert startup_clock.now == pytest.approx(0.12)
+    assert all(0 < delay <= 0.05 for delay in startup_clock.delays)
+    assert caught.value.possible_orphan_pids == ()
+    assert "may still start later" in str(caught.value)
+    anchor.assert_not_called()
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_process_detected_only_in_timeout_diagnostics_is_not_claimed(monkeypatch, startup_clock):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], [], [], [], [], [42]]))
+    anchor = MagicMock()
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    client = MagicMock()
+    with pytest.raises(sessions._OfficeStartupError, match="Possible orphaned") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.possible_orphan_pids == (42,)
+    assert caught.value.observed_pids == (42,)
+    anchor.assert_not_called()
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_dispatch_error_reports_possible_orphan_without_terminating_it(monkeypatch):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], [42]]))
+    client = MagicMock()
+    error = OSError("COM activation failed")
+    client.Dispatch.side_effect = error
+    with pytest.raises(sessions._OfficeStartupError, match="COM activation failed") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.__cause__ is error
+    assert caught.value.possible_orphan_pids == (42,)
+    assert "No process was claimed or terminated" in str(caught.value)
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_failed_identity_is_not_retried_with_a_replacement_process(monkeypatch):
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], [42], [43]]))
+    error = RuntimeError("Creation time does not establish ownership")
+    anchor = MagicMock(side_effect=error)
+    monkeypatch.setattr(sessions, "_OfficeSession", anchor)
+    client = MagicMock()
+    with pytest.raises(sessions._OfficeStartupError, match="Creation time") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.__cause__ is error
+    assert caught.value.observed_pids == (42, 43)
+    anchor.assert_called_once()
+    assert anchor.call_args.args[0] == 42
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_failed_snapshot_during_activation_reports_unknown_orphan_status(monkeypatch):
+    error = OSError("snapshot unavailable")
+    monkeypatch.setattr(sessions, "_office_pids", MagicMock(side_effect=[[], error, error]))
+    client = MagicMock()
+    with pytest.raises(sessions._OfficeStartupError, match="snapshot unavailable") as caught:
+        sessions._start_office(client, "Office.Application", "OFFICE.EXE", exclusive=True)
+    assert caught.value.__cause__ is error
+    assert caught.value.possible_orphan_pids is None
+    assert "Current process snapshot unavailable" in str(caught.value)
+    client.Dispatch.return_value.Quit.assert_not_called()
+
+
+def test_startup_pause_services_com_without_reactivating_office(monkeypatch):
+    pump, sleep = MagicMock(), MagicMock()
+    monkeypatch.setitem(sys.modules, "pythoncom", SimpleNamespace(PumpWaitingMessages=pump))
+    monkeypatch.setattr(sessions, "time", SimpleNamespace(sleep=sleep))
+    sessions._startup_pause(0.05)
+    pump.assert_called_once_with()
+    sleep.assert_called_once_with(0.05)
+
+
+def test_outlook_preserves_startup_orphan_diagnostics(monkeypatch):
+    monkeypatch.setattr(sessions, "_office_pids", lambda _: [42])
+    error = sessions._OfficeStartupError("OUTLOOK.EXE", OSError("activation failed"), set())
+    monkeypatch.setattr(outlook, "_configured_profiles", lambda: ["UAT"])
+    monkeypatch.setattr(outlook, "_require_win32com", MagicMock())
+    monkeypatch.setattr(outlook, "_start_office", MagicMock(side_effect=error))
+    with pytest.raises(RuntimeError, match="Possible orphaned OUTLOOK") as caught:
+        OutlookApp.start(exclusive=True)
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("creation,path", [(None, "x"), (99, "x"), (101, None), (101, "other.exe")])
+def test_identity_failure_closes_anchor_without_claiming_process(monkeypatch, creation, path):
+    handle = MagicMock()
+    api = SimpleNamespace(OpenProcess=MagicMock(return_value=handle))
+    monkeypatch.setitem(sys.modules, "win32api", api)
+    monkeypatch.setattr(sessions, "_process_creation_time_from_handle", lambda _: creation)
+    monkeypatch.setattr(sessions, "_process_image_path", lambda _: path)
+    with pytest.raises(RuntimeError):
+        sessions._OfficeSession(42, "OFFICE.EXE", 100)
+    handle.Close.assert_called_once_with()
+
+
+@pytest.fixture
+def anchored_session(monkeypatch):
+    handle = MagicMock()
+    monkeypatch.setitem(sys.modules, "win32api", SimpleNamespace(OpenProcess=lambda *_: handle))
+    monkeypatch.setattr(sessions, "_process_creation_time_from_handle", lambda _: 101)
+    monkeypatch.setattr(sessions, "_process_image_path", lambda _: r"C:\Office\OFFICE.EXE")
+    session = sessions._OfficeSession(42, "OFFICE.EXE", 100)
+    wait = MagicMock(side_effect=[258, 0])
+    monkeypatch.setitem(sys.modules, "win32event", SimpleNamespace(WaitForSingleObject=wait))
+    monkeypatch.setitem(sys.modules, "pythoncom", SimpleNamespace(PumpWaitingMessages=MagicMock()))
+    return session, handle, wait
+
+
+def test_quit_waits_for_anchored_process_and_is_idempotent(anchored_session):
+    session, handle, wait = anchored_session
+    com = MagicMock()
+    session.quit(com)
+    session.quit(com)
+    com.Quit.assert_called_once_with()
+    assert wait.call_args_list[1].args == (handle, 50)
+    assert session.closed
+    handle.Close.assert_called_once_with()
+
+
+def test_already_exited_original_does_not_call_com_quit_on_possible_replacement(anchored_session):
+    session, handle, wait = anchored_session
+    wait.side_effect = [0]
+    com = MagicMock()
+    session.quit(com)
+    com.Quit.assert_not_called()
+    handle.Close.assert_called_once_with()
+
+
+def test_failed_handle_query_never_calls_quit(anchored_session):
+    session, _, wait = anchored_session
+    wait.side_effect = [-1]
+    com = MagicMock()
+    with pytest.raises(RuntimeError, match="Cannot inspect"):
+        session.quit(com)
+    com.Quit.assert_not_called()
+
+
+def test_wait_pumps_com_messages(anchored_session):
+    _, handle, wait = anchored_session
+    wait.side_effect = [258, 0]
+    assert sessions._wait_for_exit(handle, 1)
+    sys.modules["pythoncom"].PumpWaitingMessages.assert_called_once_with()
+
+
+def test_exit_wait_timeout_reports_failure_after_servicing_com(anchored_session, monkeypatch):
+    _, handle, wait = anchored_session
+    wait.side_effect = [258]
+    monkeypatch.setattr(
+        sessions, "time", SimpleNamespace(monotonic=MagicMock(side_effect=[0, 0, 1]))
+    )
+    assert sessions._wait_for_exit(handle, 1) is False
+    sys.modules["pythoncom"].PumpWaitingMessages.assert_called_once_with()
+    handle.Close.assert_not_called()
+
+
+def test_exit_wait_query_failure_keeps_process_anchor_open(anchored_session):
+    _, handle, wait = anchored_session
+    wait.side_effect = [-1]
+    with pytest.raises(RuntimeError, match="Cannot wait for the owned Office process handle"):
+        sessions._wait_for_exit(handle, 1)
+    handle.Close.assert_not_called()
+
+
+def test_already_exited_process_still_releases_facade_resources(anchored_session):
+    session, handle, wait = anchored_session
+    wait.side_effect = [0]
+    release, com = MagicMock(), MagicMock()
+    session.quit(com, release=release)
+    release.assert_called_once_with()
+    com.Quit.assert_not_called()
+    handle.Close.assert_called_once_with()
+
+
+def test_release_callback_runs_before_waiting_for_exit(anchored_session, monkeypatch):
+    session, handle, wait = anchored_session
+    wait.side_effect = [258]
+    released = []
+
+    def wait_after_release(actual_handle, timeout):
+        assert released == [True]
+        assert actual_handle is handle
+        return True
+
+    monkeypatch.setattr(sessions, "_wait_for_exit", wait_after_release)
+    session.quit(MagicMock(), release=lambda: released.append(True))
+
+
+def test_failed_com_quit_retains_references_for_retry(anchored_session):
+    session, handle, wait = anchored_session
+    wait.side_effect = [258]
+    com = MagicMock()
+    com.Quit.side_effect = OSError("busy")
+    release = MagicMock()
+    with pytest.raises(OSError, match="busy"):
+        session.quit(com, release=release)
+    release.assert_not_called()
+    handle.Close.assert_not_called()
+
+
+def test_exit_timeout_can_be_retried_without_quitting_again(anchored_session, monkeypatch):
+    session, handle, wait = anchored_session
+    wait.side_effect = [258, 0]
+    monkeypatch.setattr(sessions, "_wait_for_exit", lambda *_: False)
+    com = MagicMock()
+    with pytest.raises(RuntimeError, match="did not exit"):
+        session.quit(com)
+    assert not session.closed
+    handle.Close.assert_not_called()
+    session.quit(com)
+    com.Quit.assert_called_once_with()
+    assert session.closed
+
+
+@pytest.mark.parametrize("factory", ["powerpoint", "outlook"])
+def test_facade_quits_verified_exclusive_process_after_owned_objects_close(monkeypatch, factory):
+    session = MagicMock(pid=42, closed=False, _quit_requested=False)
+    com = MagicMock()
+    com.Presentations.Count = 0
+    com.GetNamespace.return_value.CurrentProfileName = "UAT"
+    com.GetNamespace.return_value.Stores.Count = 1
+    if factory == "powerpoint":
+        monkeypatch.setattr(ppt, "_start_office", lambda *_, **__: (com, session))
+        monkeypatch.setattr(ppt, "_require_win32com", MagicMock())
+        app = PowerPointApp.create(exclusive=True)
+    else:
+        monkeypatch.setattr(outlook, "_start_office", lambda *_, **__: (com, session))
+        monkeypatch.setattr(outlook, "_configured_profiles", lambda: ["UAT"])
+        monkeypatch.setattr(outlook, "_require_win32com", MagicMock())
+        app = OutlookApp.start(exclusive=True)
+    assert app.owns_process
+    assert app.process_id == 42
+    app.quit()
+    session.quit.assert_called_once_with(com, release=app._release_com)
+
+
+def test_unowned_powerpoint_document_blocks_exclusive_quit():
+    com = MagicMock()
+    com.Presentations.Count = 1
+    session = MagicMock(closed=False, _quit_requested=False)
+    app = PowerPointApp(com, _session=session)
+    with pytest.raises(RuntimeError, match="Unowned presentations"):
+        app.quit()
+    session.quit.assert_not_called()
+
+
+def test_already_exited_powerpoint_session_releases_proxy_without_com_calls():
+    com = MagicMock()
+    session = MagicMock()
+    session.running.return_value = False
+    app = PowerPointApp(com, _session=session)
+    app.quit()
+    assert app._com is None
+    session.quit.assert_not_called()
+    com.Quit.assert_not_called()
+
+
+def test_exclusive_outlook_profile_failure_still_cleans_up_started_session(monkeypatch):
+    com = MagicMock()
+    com.GetNamespace.side_effect = OSError("profile inaccessible")
+    session = MagicMock()
+    monkeypatch.setattr(outlook, "_configured_profiles", lambda: ["UAT"])
+    monkeypatch.setattr(outlook, "_require_win32com", MagicMock())
+    monkeypatch.setattr(outlook, "_start_office", lambda *_, **__: (com, session))
+    with pytest.raises(RuntimeError, match="MAPI profile unavailable"):
+        OutlookApp.start(exclusive=True)
+    assert session.quit.call_args.args == (com,)
+    assert callable(session.quit.call_args.kwargs["release"])

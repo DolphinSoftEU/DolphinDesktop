@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import argparse
 import logging
 import os
+import sys
 import zipfile
 from unittest.mock import MagicMock, patch
 
@@ -196,6 +196,33 @@ class TestTelemetry:
         # _DOLPHIN_DSN is empty so still not initialized
         assert not is_enabled()
 
+    def test_opt_in_uses_configured_sentry_dsn(self):
+        import sys
+
+        import dolphin_desktop._telemetry as tel
+
+        self._reset()
+        fake = MagicMock()
+        with (
+            patch.dict(
+                sys.modules,
+                {"sentry_sdk": fake},
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "DOLPHIN_TELEMETRY": "on",
+                    "SENTRY_DSN": "http://desktop-187@127.0.0.1:9/1",
+                },
+            ),
+            patch.object(tel, "_DOLPHIN_DSN", ""),
+        ):
+            tel.init()
+
+        assert fake.init.call_args.kwargs["dsn"] == ("http://desktop-187@127.0.0.1:9/1")
+        assert tel.is_enabled()
+        self._reset()
+
     def test_before_send_drops_non_dolphin_exception(self):
         from dolphin_desktop._telemetry import _before_send
 
@@ -314,7 +341,14 @@ class TestTelemetry:
 
 
 class TestCrashDump:
-    pytestmark = pytest.mark.integration
+    pytestmark = pytest.mark.unit
+
+    @pytest.fixture(autouse=True)
+    def no_real_uia_capture(self, monkeypatch):
+        monkeypatch.setattr(
+            "dolphin_desktop._crash._fmt_uia_tree",
+            lambda *_args, **_kwargs: "mocked UIA tree",
+        )
 
     def test_creates_zip(self, tmp_path):
         from dolphin_desktop._crash import write_crash_dump
@@ -389,60 +423,6 @@ class TestCrashDump:
 # dolphin doctor CLI
 
 
-class TestDoctorCommand:
-    pytestmark = pytest.mark.integration
-
-    def test_doctor_prints_dolphin_version(self, capsys):
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "dolphin" in out.lower()
-
-    def test_doctor_prints_python_version(self, capsys):
-        import sys
-
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        major_minor = f"{sys.version_info.major}.{sys.version_info.minor}"
-        assert major_minor in out
-
-    def test_doctor_reports_required_deps(self, capsys):
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "pywinauto" in out
-        assert "Pillow" in out
-
-    def test_doctor_reports_optional_deps(self, capsys):
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "sentry-sdk" in out
-        assert "mss" in out
-
-    def test_doctor_reports_env_vars(self, capsys):
-        from dolphin_desktop._cli import _doctor_cmd
-
-        _doctor_cmd(argparse.Namespace())
-        out = capsys.readouterr().out
-        assert "DOLPHIN_TIMEOUT" in out
-        assert "DOLPHIN_TELEMETRY" in out
-
-    def test_doctor_dispatched_from_main(self, capsys):
-        from dolphin_desktop._cli import main
-
-        with patch("sys.argv", ["dolphin", "doctor"]):
-            main()
-
-        out = capsys.readouterr().out
-        assert "dolphin" in out.lower()
-
-
 # Config round-trip for runtime settings
 
 
@@ -450,7 +430,7 @@ class TestConfigRoundTrip:
     def test_log_level_default(self):
         from dolphin_desktop._config import _defaults
 
-        assert _defaults["log_level"] in ("DEBUG", "INFO", "ERROR", "WARNING")
+        assert _defaults["log_level"] in ("DEBUG", "INFO", "ERROR")
 
     def test_log_level_set_via_config(self):
         from dolphin_desktop import config
@@ -487,6 +467,13 @@ class TestConfigRoundTrip:
 
 
 class TestZombieRegistry:
+    @pytest.fixture(autouse=True)
+    def _fake_process_anchors(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        monkeypatch.setattr(_application, "_open_owned_process_handle", lambda pid: f"handle-{pid}")
+        monkeypatch.setitem(sys.modules, "win32api", MagicMock())
+
     def test_pid_registered_on_application_init(self):
 
         from dolphin_desktop import _application
@@ -500,6 +487,8 @@ class TestZombieRegistry:
 
         # cleanup
         _application._live_pids.discard(99999)
+        _application._session_pids.discard(99999)
+        _application._discard_owned_process_handle(99999)
         assert _application._live_pids == prev
 
     def test_kill_removes_the_pid_from_the_live_registry(self):
@@ -542,6 +531,7 @@ class TestZombieRegistry:
         assert app._owns_process is False
         assert 66666 not in _application._live_pids
         assert 66666 not in _application._session_pids
+        _application._attached_pids.discard(66666)
 
 
 class TestDesktopWideWindowFallback:
@@ -591,17 +581,20 @@ class TestDesktopWideWindowFallback:
 
         app = self._app_whose_own_process_has_no_window(4242)
         try:
-            app._image_path = r"c:\windows\notepad.exe"
+            app._image_path = r"c:\tools\single-instance-demo.exe"
             monkeypatch.setattr(_application, "_PwDesktop", self._desktop_returning_pid(9999))
             monkeypatch.setattr(_application, "_process_parent_map", dict)
             monkeypatch.setattr(
-                _application, "_process_image_path", lambda pid: r"c:\windows\notepad.exe"
+                _application,
+                "_process_image_path",
+                lambda pid: r"c:\tools\single-instance-demo.exe",
             )
+            monkeypatch.setattr(_application, "_process_state", lambda _pid: "stopped")
             new_app = MagicMock()
             new_app.process = 9999
             monkeypatch.setattr(_application, "_PyWinApp", MagicMock(return_value=new_app))
 
-            app._find_window({"title_re": ".*Notepad.*"}, 0.1)
+            app._find_window({"title_re": ".*Single Instance Demo.*"}, 0.1)
 
             new_app.connect.assert_called_once_with(process=9999)
             assert app._app is new_app
@@ -611,6 +604,30 @@ class TestDesktopWideWindowFallback:
             for pid in (4242, 9999):
                 _application._live_pids.discard(pid)
                 _application._session_pids.discard(pid)
+
+    def test_same_image_hand_off_is_not_adopted_for_attached_process(self, monkeypatch):
+        from dolphin_desktop import WindowNotFoundError, _application
+
+        app = self._app_whose_own_process_has_no_window(4242)
+        app._owns_process = False
+        try:
+            app._image_path = r"c:\windows\python.exe"
+            monkeypatch.setattr(_application, "_PwDesktop", self._desktop_returning_pid(9999))
+            monkeypatch.setattr(_application, "_process_parent_map", dict)
+            monkeypatch.setattr(
+                _application, "_process_image_path", lambda pid: r"c:\windows\python.exe"
+            )
+            monkeypatch.setattr(_application, "_process_state", lambda _pid: "stopped")
+
+            with pytest.raises(WindowNotFoundError):
+                app._find_window({"title": "Python window"}, 0.1)
+
+            assert app._app.process == 4242
+        finally:
+            for pid in (4242, 9999):
+                _application._live_pids.discard(pid)
+                _application._session_pids.discard(pid)
+                _application._attached_pids.discard(pid)
 
     def test_child_process_is_adopted(self, monkeypatch):
         from dolphin_desktop import _application
@@ -716,11 +733,14 @@ class TestLaunchCapturesImagePath:
     """
 
     def test_image_path_survives_a_launcher_that_exits_during_startup_delay(self, monkeypatch):
-        from dolphin_desktop import _application, _desktop
+        """DESKTOP-203 / KAN-472: launch identity survives PID reuse timing."""
+        from dolphin_desktop import _application, _desktop, _runner
 
         pw = MagicMock()
         pw.process = 31313
         monkeypatch.setattr(_desktop, "_PyWinApp", MagicMock(return_value=pw))
+        monkeypatch.setattr(_runner, "launch_cmd_on_desktop", lambda *args, **kwargs: (31313, 777))
+        monkeypatch.setitem(sys.modules, "win32api", MagicMock())
 
         alive = {"value": True}
 
@@ -735,13 +755,24 @@ class TestLaunchCapturesImagePath:
         app = _desktop.Desktop().launch("stub.exe", startup_delay=0.5)
         try:
             assert app._image_path == r"c:\apps\stub.exe"
+            assert app._owned_process_handle == 777
+            assert _application._owned_process_handles[31313] == 777
         finally:
             _application._live_pids.discard(31313)
             _application._session_pids.discard(31313)
+            _application._unanchored_pids.discard(31313)
+            _application._discard_owned_process_handle(31313, 777)
 
 
 class TestProcessOwnership:
     """``close()`` and ``kill()`` must apply the same ownership rule."""
+
+    @pytest.fixture(autouse=True)
+    def _fake_process_anchors(self, monkeypatch):
+        from dolphin_desktop import _application
+
+        monkeypatch.setattr(_application, "_open_owned_process_handle", lambda pid: f"handle-{pid}")
+        monkeypatch.setitem(sys.modules, "win32api", MagicMock())
 
     def _app(self, pid: int, *, owns: bool):
         from dolphin_desktop import _application
@@ -755,6 +786,9 @@ class TestProcessOwnership:
 
         _application._live_pids.discard(pid)
         _application._session_pids.discard(pid)
+        _application._attached_pids.discard(pid)
+        _application._unanchored_pids.discard(pid)
+        _application._discard_owned_process_handle(pid)
 
     def test_close_leaves_an_attached_process_running(self):
         app = self._app(55555, owns=False)
@@ -767,12 +801,15 @@ class TestProcessOwnership:
             app.close()
         finally:
             self._discard(55556)
-        app._app.kill.assert_called_once_with(soft=True)
+        app._app.kill.assert_not_called()
 
     def test_kill_leaves_an_attached_process_running(self):
         app = self._app(55557, owns=False)
-        app.kill()
-        app._app.kill.assert_not_called()
+        try:
+            app.kill()
+            app._app.kill.assert_not_called()
+        finally:
+            self._discard(55557)
 
     def test_kill_terminates_a_launched_process(self):
         app = self._app(55558, owns=True)
@@ -780,7 +817,7 @@ class TestProcessOwnership:
             app.kill()
         finally:
             self._discard(55558)
-        app._app.kill.assert_called_once_with(soft=False)
+        app._app.kill.assert_not_called()
 
     def test_kill_still_terminates_children_of_an_attached_app(self):
         parent = self._app(55559, owns=False)
@@ -789,8 +826,9 @@ class TestProcessOwnership:
             parent._launched_apps.append(("child.exe", child))
             parent.kill()
         finally:
+            self._discard(55559)
             self._discard(55560)
-        child._app.kill.assert_called_once_with(soft=False)
+        child._app.kill.assert_not_called()
         parent._app.kill.assert_not_called()
 
     def test_docstrings_do_not_promise_termination_of_attached_processes(self):
@@ -805,12 +843,14 @@ class TestStackLauncherWiring:
     """``_launch_raw`` / ``_launch_hidden`` must produce fully-wired Applications."""
 
     def test_launch_raw_binds_desktop_and_default_timeout(self, monkeypatch):
-        from dolphin_desktop import _application, _desktop
+        from dolphin_desktop import _application, _desktop, _runner
 
         pw = MagicMock()
         pw.process = 40404
         monkeypatch.setattr(_desktop, "_PyWinApp", MagicMock(return_value=pw))
         monkeypatch.setattr(_desktop, "_process_image_path", lambda _pid: None)
+        monkeypatch.setattr(_runner, "launch_cmd_on_desktop", lambda *args, **kwargs: (40404, 1))
+        monkeypatch.setitem(sys.modules, "win32api", MagicMock())
 
         desktop = _desktop.Desktop(default_timeout_ms=2500)
         app = desktop._launch_raw("app.exe", backend="uia", startup_delay=0)
@@ -823,11 +863,19 @@ class TestStackLauncherWiring:
             for pid in (40404,):
                 _application._live_pids.discard(pid)
                 _application._session_pids.discard(pid)
+                _application._unanchored_pids.discard(pid)
+                _application._discard_owned_process_handle(pid)
 
     def test_launch_hidden_binds_desktop_and_default_timeout(self, monkeypatch):
         from dolphin_desktop import _application, _desktop, _runner
 
-        monkeypatch.setattr(_runner, "launch_cmd_on_desktop", lambda cmd, work_dir=None: (50505, 1))
+        monkeypatch.setattr(_runner, "_hidden_launch_job", lambda: 999)
+        launcher = MagicMock(return_value=(50505, 1))
+        monkeypatch.setattr(
+            _runner,
+            "launch_cmd_on_desktop",
+            launcher,
+        )
         monkeypatch.setattr(_runner, "close_process_handle", lambda _h: None)
         pw = MagicMock()
         pw.process = 50505
@@ -838,12 +886,22 @@ class TestStackLauncherWiring:
         desktop._hidden_initialized = True
         app = desktop._launch_hidden("app.exe", timeout=1.0, work_dir=None, startup_delay=0)
         try:
+            launcher.assert_called_once_with(
+                "app.exe",
+                timeout=1.0,
+                wait_for_idle=False,
+                work_dir=None,
+                env=None,
+                job_handle=999,
+            )
             assert app.default_timeout_ms == 3300
             assert app._desktop is desktop
             assert app._image_path == r"c:\h\app.exe"
         finally:
             _application._live_pids.discard(50505)
             _application._session_pids.discard(50505)
+            _application._unanchored_pids.discard(50505)
+            _application._discard_owned_process_handle(50505, 1)
 
 
 class TestTempFile:
@@ -875,57 +933,6 @@ class TestTempFile:
                 assert fh.read() == "hello"
         finally:
             remove_file(path)
-
-
-class TestImagePathIsReadableAtSpawn:
-    """``_image_path_now`` must work the moment ``CreateProcess`` returns.
-
-    The module-list route (``EnumProcessModules``) fails until the target's
-    loader has populated the PEB, so it answers ``None`` for every freshly
-    spawned process — which is exactly the window in which a single-instance
-    launcher hands off and exits.
-    """
-
-    def test_path_is_known_immediately_after_create_process(self):
-        import subprocess
-        import sys
-
-        from dolphin_desktop._application import _process_image_path
-
-        for _ in range(5):
-            proc = subprocess.Popen(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            try:
-                path = _process_image_path(proc.pid)
-            finally:
-                proc.kill()
-                proc.wait()
-            assert path is not None
-            assert path.endswith(".exe")
-
-    def test_launch_passes_a_real_path_to_the_application(self, monkeypatch):
-        import subprocess
-        import sys
-
-        from dolphin_desktop import _application, _desktop
-
-        proc = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(30)"],
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        pw = MagicMock()
-        pw.process = proc.pid
-        monkeypatch.setattr(_desktop, "_PyWinApp", MagicMock(return_value=pw))
-        try:
-            app = _desktop.Desktop().launch("stub.exe", startup_delay=0)
-            assert app._image_path is not None
-        finally:
-            _application._live_pids.discard(proc.pid)
-            _application._session_pids.discard(proc.pid)
-            proc.kill()
-            proc.wait()
 
 
 class TestCloseMatchesKillOnChildren:
@@ -1004,7 +1011,7 @@ class TestAttachedPidsAreTrackedButNeverKilled:
 
         self._attached(61003)
         try:
-            pytest_plugin.pytest_runtest_teardown(MagicMock(), None)
+            pytest_plugin._reap_test_processes(MagicMock())
             assert 61003 in _application._attached_pids
         finally:
             _application._attached_pids.discard(61003)

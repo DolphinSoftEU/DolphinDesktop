@@ -6,7 +6,8 @@ No. The documented runtime target is Windows desktop automation. The package has
 
 ## Which Python versions are supported?
 
-Python 3.11 or newer. The package metadata currently allows Python 3.11+.
+For the 0.2.0 release, the supported range is Python 3.11–3.13. The package
+metadata rejects Python 3.14 and newer until a release explicitly adds support.
 
 ## Do I have to use pytest?
 
@@ -25,7 +26,7 @@ dolphin init my-tests --yes
 Install Dolphin in the same environment that runs pytest:
 
 ```bash
-pip install dolphin-desktop pytest
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 ```
 
 The plugin is loaded through the `pytest11` package entry point. You do not need to import it in `conftest.py`.
@@ -39,7 +40,7 @@ dolphin spy --window "App Title" --depth 3
 dolphin spy --pick
 ```
 
-The visible label may not be the UIA title, and the control type may differ from what you expect. For example, Windows Notepad exposes the editor as `Document`.
+The visible label may not be the UIA title, and the control type may differ from what you expect. For example, Windows Notepad can expose the editor as `Document` or, in classic Windows 10 Notepad, `Edit`.
 
 ## Which selector should I prefer?
 

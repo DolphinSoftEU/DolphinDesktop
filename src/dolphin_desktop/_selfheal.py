@@ -5,18 +5,28 @@ Records fallback activations to a JSONL file and provides stats access.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from ._logging import _redact, get_logger
+from ._logging import get_logger, redact_value
 
 logger = get_logger("selfheal")
 
 _DEFAULT_STATS_FILE = ".dolphin-selfheal.jsonl"
 _MAX_BYTES = 1_048_576
+_WINDOWS_CONTENTION_ERRNOS = frozenset(
+    {errno.EACCES, errno.EAGAIN, errno.EDEADLK},
+)
+_WINDOWS_CONTENTION_WINERRORS = frozenset({32, 33})
+_WINDOWS_RETRY_DELAY = 0.01
+_WINDOWS_RETRY_TIMEOUT = 1.0
+_WINDOWS_RETRY_MAX_ATTEMPTS = 100
 
 
 def _stats_file() -> Path:
@@ -39,21 +49,89 @@ def _rotate(path: Path) -> None:
         pass
 
 
-def _redact_values(value: Any) -> Any:
-    """Redact every string inside *value*, leaving the structure intact.
+def _is_windows_contention(error: OSError) -> bool:
+    winerror = getattr(error, "winerror", None)
+    if winerror is not None:
+        return winerror in _WINDOWS_CONTENTION_WINERRORS
+    return error.errno in _WINDOWS_CONTENTION_ERRNOS
 
-    Recursive because the journal's ``primary`` and ``fallback`` are selector
-    dicts: redacting only the top level let a secret inside
-    ``{"title": "password=…"}`` through, which is exactly where a selector
-    carries one.
+
+def _retry_windows_contention(operation: Callable[[], Any], *, timeout: float | None = None) -> Any:
+    """Retry Windows contention for a bounded period, then re-raise."""
+    retry_timeout = _WINDOWS_RETRY_TIMEOUT if timeout is None else max(0.0, timeout)
+    deadline = time.monotonic() + retry_timeout
+    attempts = 0
+    while True:
+        try:
+            return operation()
+        except OSError as error:
+            if os.name != "nt" or not _is_windows_contention(error):
+                raise
+            # Telemetry is best effort.  A stuck worker must not make every
+            # selector fallback wait forever on its sidecar lock.
+            attempts += 1
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or attempts >= _WINDOWS_RETRY_MAX_ATTEMPTS:
+                raise
+            time.sleep(min(_WINDOWS_RETRY_DELAY, remaining))
+
+
+@contextmanager
+def _stats_lock(path: Path) -> Iterator[None]:
+    """Serialise journal rotation and reads across independent processes.
+
+    The lock is deliberately a sidecar file: rotating the journal itself
+    while another process has it open would not protect the other process's
+    append on Windows.  ``fcntl`` and ``msvcrt`` are both standard-library
+    platform primitives, so this does not add a runtime dependency.
     """
-    if isinstance(value, str):
-        return _redact(value)
-    if isinstance(value, dict):
-        return {k: _redact_values(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redact_values(v) for v in value]
-    return value
+    lock_path = path.with_name(path.name + ".lock")
+    lock_file = _retry_windows_contention(lambda: lock_path.open("a+b"))
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                _retry_windows_contention(lambda: lock_file.write(b"\0"))
+                _retry_windows_contention(lock_file.flush)
+
+            def acquire_lock() -> None:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+
+            _retry_windows_contention(acquire_lock)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+    finally:
+        lock_file.close()
+
+
+def _redact_values(value: Any) -> Any:
+    """Redact *value* before it is written to the on-disk journal.
+
+    Delegates to :func:`dolphin_desktop._logging.redact_value`, which masks
+    a dict entry by *key* (e.g. ``{"password": "hunter2"}`` -> whole value
+    masked, regardless of the value's own shape) in addition to running the
+    same pattern-based redaction this module used to do alone. A selector
+    dict with a bare value under a sensitive key name (no embedded
+    ``keyword=value`` text of its own) was previously written to
+    ``selfheal.jsonl`` unredacted — this journal is a direct file write that
+    no log handler's redaction filter ever sees, so it needs the same
+    protection independently.
+    """
+    return redact_value(value)
 
 
 def record_fallback(
@@ -82,9 +160,17 @@ def record_fallback(
     entry = _redact_values(entry)
     path = _stats_file()
     try:
-        _rotate(path)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        with _stats_lock(path):
+            _rotate(path)
+            serialized_entry = json.dumps(entry) + "\n"
+            stats_file = _retry_windows_contention(
+                lambda: path.open("a", encoding="utf-8"),
+            )
+            try:
+                _retry_windows_contention(lambda: stats_file.write(serialized_entry))
+                _retry_windows_contention(stats_file.flush)
+            finally:
+                stats_file.close()
     except OSError:
         pass
 
@@ -112,10 +198,14 @@ def selfheal_stats(n: int = 10, file: Path | None = None) -> list[dict[str, Any]
         return []
     records: list[dict[str, Any]] = []
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
+        with _stats_lock(path):
+            if not path.exists():
+                return []
+            text = _retry_windows_contention(lambda: path.read_text(encoding="utf-8"))
+            for line in text.splitlines():
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
     except (OSError, json.JSONDecodeError):
         pass
     return records[-n:]

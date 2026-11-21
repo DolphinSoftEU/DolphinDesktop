@@ -1,9 +1,13 @@
 """Tests for the YAML-backed object repository."""
 
+
+# Helpers
+
 from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,12 +16,7 @@ import dolphin_desktop as dolphin
 from dolphin_desktop import AliasNotFoundError
 from dolphin_desktop._exceptions import DolphinError
 from dolphin_desktop._window import Window
-from dolphin_desktop.objects import (
-    ObjectRepository,
-    _map_selector,
-)
-
-# Helpers
+from dolphin_desktop.objects import ObjectRepository, _map_selector
 
 
 def _yaml_file(tmp_path: Path, content: str, name: str = "repo.yaml") -> Path:
@@ -129,6 +128,73 @@ class TestValidation:
         repo = ObjectRepository()
         with pytest.raises(FileNotFoundError):
             repo.load("nonexistent_file.yaml")
+
+    def test_unknown_entry_fields_are_rejected(self, tmp_path):
+        f = _yaml_file(tmp_path, "btn: {selector: {name: OK}, selektor: {name: typo}}\n")
+        with pytest.raises(ValueError, match=r"unknown alias field.*selektor"):
+            ObjectRepository().load(f)
+
+    def test_duplicate_yaml_keys_include_nested_path_and_location(self, tmp_path):
+        f = _yaml_file(
+            tmp_path,
+            """\
+            win:
+              selector: {title: App}
+              children:
+                btn:
+                  selector:
+                    name: OK
+                    name: Cancel
+        """,
+        )
+        with pytest.raises(ValueError, match=r"duplicate YAML key 'name'.*win\.btn\.selector"):
+            ObjectRepository().load(f)
+
+    def test_duplicate_sequence_yaml_keys_handle_unhashable_keys(self, tmp_path):
+        f = _yaml_file(
+            tmp_path,
+            """\
+            ? [one, two]
+            : first
+            ? [one, two]
+            : second
+        """,
+        )
+        with pytest.raises(ValueError, match=r"duplicate YAML key .* at '\$'"):
+            ObjectRepository().load(f)
+
+    def test_malformed_yaml_reports_location(self, tmp_path):
+        f = _yaml_file(tmp_path, "btn: [\n")
+        with pytest.raises(ValueError, match=r"malformed YAML at line 2, column"):
+            ObjectRepository().load(f)
+
+    def test_non_string_child_alias_is_rejected(self, tmp_path):
+        f = _yaml_file(
+            tmp_path,
+            """\
+            win:
+              selector: {title: App}
+              children:
+                1:
+                  selector: {name: Button}
+        """,
+        )
+        with pytest.raises(ValueError, match=r"alias key must be a string, got 1"):
+            ObjectRepository().load(f)
+
+    def test_yaml_location_without_mark_is_empty(self):
+        from dolphin_desktop.objects import _yaml_location
+
+        assert _yaml_location(None) == ""
+
+    def test_duplicate_error_exposes_its_context(self):
+        from dolphin_desktop.objects import _DuplicateYamlKeyError
+
+        mark = SimpleNamespace(line=1, column=2)
+        error = _DuplicateYamlKeyError("name", "btn.selector", mark)
+        assert error.key == "name"
+        assert error.yaml_path == "btn.selector"
+        assert error.mark is mark
 
 
 # Loading and resolution
@@ -463,3 +529,22 @@ class TestPublicModuleAPI:
         assert hasattr(dolphin.objects, "discover")
         assert hasattr(dolphin.objects, "clear")
         assert hasattr(dolphin.objects, "available")
+
+
+def test_object_repository_resolves_the_highest_priority_level() -> None:
+    from dolphin_desktop.objects import ObjectEntry, ObjectRepository
+
+    repository = ObjectRepository()
+    repository._registry["workspace"]["save"] = ObjectEntry({"title": "Workspace"})
+    repository._registry["test"]["save"] = ObjectEntry({"title": "Test"})
+    assert repository.resolve("save").selector == {"title": "Test"}
+    with pytest.raises(Exception, match="missing"):
+        repository.resolve("missing")
+
+
+def test_objects_parse_repository_entry_aliases() -> None:
+    from dolphin_desktop.objects import _parse_entry
+
+    entry = _parse_entry({"selector": {"name": "Save"}, "fallback": [{"role": "Button"}]})
+    assert entry.selector == {"title": "Save"}
+    assert entry.fallback == [{"control_type": "Button"}]

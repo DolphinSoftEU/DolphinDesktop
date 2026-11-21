@@ -1,0 +1,1243 @@
+"""Tests for :mod:`dolphin_desktop._desktop`.
+
+The public ``Desktop`` facade mostly delegates to platform-specific helpers.
+These tests keep those seams deterministic by replacing pywinauto, process
+launchers, network probes, and stack factories with mocks.
+"""
+
+from __future__ import annotations
+
+import atexit
+import os
+import urllib.error
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock, call
+
+import pytest
+
+import dolphin_desktop._desktop as desktop_module
+from dolphin_desktop._application import (
+    _cef_by_modules,
+    _enumerate_descendant_pids,
+    _qt_module_info,
+)
+from dolphin_desktop._desktop import Desktop
+from dolphin_desktop._exceptions import ApplicationError, DolphinError
+
+
+def test_image_path_now_returns_path_and_swallows_probe_errors(monkeypatch) -> None:
+    app = SimpleNamespace(process=123)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: f"{pid}.exe")
+    assert desktop_module._image_path_now(app) == "123.exe"
+
+    monkeypatch.setattr(
+        desktop_module,
+        "_process_image_path",
+        Mock(side_effect=RuntimeError("process vanished")),
+    )
+    assert desktop_module._image_path_now(app) is None
+
+
+def test_constructor_validation_auto_detection_and_repr(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    with pytest.raises(ValueError, match="non-negative"):
+        desktop_module.Desktop(default_timeout_ms=-1)
+
+    explicit = desktop_module.Desktop(backend="win32", hidden=False, default_timeout_ms=0)
+    assert explicit._is_hidden is False
+    assert repr(explicit) == "Desktop(backend='win32', hidden=False)"
+
+    monkeypatch.setenv("DOLPHIN_HEADLESS", "1")
+    monkeypatch.setattr(runner, "has_interactive_station", lambda: True)
+    assert desktop_module.Desktop()._is_hidden is True
+
+    monkeypatch.delenv("DOLPHIN_HEADLESS")
+    monkeypatch.setattr(runner, "has_interactive_station", lambda: False)
+    auto_hidden = desktop_module.Desktop()
+    assert auto_hidden._is_hidden is True
+    assert repr(auto_hidden) == "Desktop(backend='uia')"
+
+    monkeypatch.setattr(
+        runner,
+        "has_interactive_station",
+        Mock(side_effect=OSError("probe unavailable")),
+    )
+    assert desktop_module.Desktop()._is_hidden is False
+
+
+@pytest.mark.parametrize("detected_backend", ["uia", "win32"])
+@pytest.mark.parametrize("hidden", [False, True])
+@pytest.mark.parametrize("operation", ["launch", "connect"])
+def test_auto_resolves_once_before_native_launch_or_connect(
+    monkeypatch, detected_backend, hidden, operation
+) -> None:
+    from dolphin_desktop import _backend, _runner
+
+    auto_detect = Mock(return_value=_backend._REGISTRY[detected_backend]())
+    monkeypatch.setattr(_backend, "_auto_detect", auto_detect)
+    process_app = Mock(process=321)
+    pywin_app = Mock(return_value=process_app)
+    application = Mock(return_value="wrapped")
+    launcher = Mock(return_value=(321, 987))
+    hidden_job = Mock(return_value=999)
+    monkeypatch.setattr(desktop_module, "_PyWinApp", pywin_app)
+    monkeypatch.setattr(desktop_module, "Application", application)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
+    monkeypatch.setattr(_runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(_runner, "_hidden_launch_job", hidden_job)
+
+    desktop = Desktop(backend="auto", hidden=hidden)
+    monkeypatch.setattr(desktop, "_ensure_hidden_mode", Mock())
+    if operation == "launch":
+        assert desktop.launch("probe.exe", startup_delay=0) == "wrapped"
+        launcher.assert_called_once()
+    else:
+        assert desktop.connect(process=321) == "wrapped"
+        process_app.connect.assert_called_once_with(timeout=10.0, process=321)
+        launcher.assert_not_called()
+    auto_detect.assert_called_once_with()
+    if hidden and operation == "launch":
+        hidden_job.assert_called_once_with()
+        assert launcher.call_args.kwargs["job_handle"] == 999
+    else:
+        hidden_job.assert_not_called()
+    pywin_app.assert_called_once_with(backend=detected_backend)
+    assert application.call_args.kwargs["backend"] == detected_backend
+    assert desktop._backend == detected_backend
+
+
+def test_ensure_hidden_mode_initializes_once_and_registers_cleanup(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    get_name = Mock(return_value="WinSta0\\Default")
+    create = Mock(return_value=456)
+    switch = Mock()
+    close = Mock()
+    register = Mock()
+    monkeypatch.setattr(runner, "get_current_desktop_name", get_name)
+    monkeypatch.setattr(runner, "create_hidden_desktop", create)
+    monkeypatch.setattr(runner, "switch_thread_to_desktop", switch)
+    monkeypatch.setattr(runner, "close_desktop", close)
+    monkeypatch.setattr(atexit, "register", register)
+
+    desktop = desktop_module.Desktop(hidden=True)
+    desktop._ensure_hidden_mode()
+    desktop._ensure_hidden_mode()
+
+    assert desktop._hDesk == 456
+    create.assert_called_once_with()
+    switch.assert_called_once_with(456)
+    register.assert_called_once_with(close, 456)
+    get_name.assert_called_once_with()
+
+
+def test_ensure_hidden_mode_skips_setup_when_already_on_hidden_desktop(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    monkeypatch.setattr(runner, "get_current_desktop_name", lambda: runner.DESKTOP_NAME)
+    create = Mock()
+    register = Mock()
+    monkeypatch.setattr(runner, "create_hidden_desktop", create)
+    monkeypatch.setattr(atexit, "register", register)
+
+    desktop = desktop_module.Desktop(hidden=True)
+    desktop._ensure_hidden_mode()
+    assert desktop._hidden_initialized is True
+    create.assert_not_called()
+    register.assert_not_called()
+
+
+def test_ensure_hidden_mode_warns_but_continues_after_switch_failure(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    monkeypatch.setattr(runner, "get_current_desktop_name", lambda: "Default")
+    monkeypatch.setattr(runner, "create_hidden_desktop", lambda: 99)
+    monkeypatch.setattr(
+        runner,
+        "switch_thread_to_desktop",
+        Mock(side_effect=OSError("windows already exist")),
+    )
+    register = Mock()
+    monkeypatch.setattr(atexit, "register", register)
+
+    desktop = desktop_module.Desktop(hidden=True)
+    with pytest.warns(UserWarning, match="SetThreadDesktop failed"):
+        desktop._ensure_hidden_mode()
+    register.assert_called_once()
+
+
+def test_launch_visible_success_and_application_failure(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    process_app = Mock(process=321)
+    pywin_app = Mock(return_value=process_app)
+    events: list[str] = []
+    application = Mock(
+        side_effect=lambda *args, **kwargs: events.append("application") or "wrapped"
+    )
+    launcher = Mock(side_effect=lambda *args, **kwargs: events.append("launch") or (321, 987))
+    sleep = Mock(side_effect=lambda _seconds: events.append("sleep"))
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(runner, "close_process_handle", Mock())
+    monkeypatch.setattr(runner, "terminate_process_handle", Mock())
+    monkeypatch.setattr(desktop_module, "_PyWinApp", pywin_app)
+    monkeypatch.setattr(desktop_module, "Application", application)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda _pid: "demo.exe")
+    monkeypatch.setattr(desktop_module.time, "sleep", sleep)
+
+    desktop = desktop_module.Desktop(backend="win32", hidden=False, default_timeout_ms=777)
+    assert desktop.launch("demo.exe", timeout=2, work_dir="C:\\tmp", startup_delay=0.25) == (
+        "wrapped"
+    )
+    pywin_app.assert_called_once_with(backend="win32")
+    launcher.assert_called_once_with(
+        "demo.exe", None, timeout=2, wait_for_idle=False, work_dir="C:\\tmp", env=None
+    )
+    process_app.start.assert_not_called()
+    sleep.assert_called_once_with(0.25)
+    assert events == ["launch", "sleep", "application"]
+    application.assert_called_once_with(
+        process_app,
+        backend="win32",
+        default_timeout_ms=777,
+        desktop=desktop,
+        image_path="demo.exe",
+        owned_process_handle=987,
+    )
+
+    launcher.side_effect = RuntimeError("bad command")
+    with pytest.raises(ApplicationError, match=r"Failed to launch 'broken\.exe'"):
+        desktop.launch("broken.exe", startup_delay=0)
+
+
+def test_launch_passes_env_to_child_without_mutating_parent(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    process_app = Mock(process=654)
+    observed: dict[str, object] = {}
+    process_app.connect.side_effect = RuntimeError("launcher PID already handed off")
+
+    def launch(command, desktop_name, *, timeout, wait_for_idle, work_dir, env):
+        observed["command"] = command
+        observed["desktop_name"] = desktop_name
+        observed["timeout"] = timeout
+        observed["wait_for_idle"] = wait_for_idle
+        observed["work_dir"] = work_dir
+        observed["env"] = dict(env)
+        observed["parent_value"] = os.environ.get("DOLPHIN_TEST_ENV")
+        return 654, 987
+
+    launcher = Mock(side_effect=launch)
+    close_handle = Mock()
+    application = Mock(return_value="wrapped")
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(runner, "close_process_handle", close_handle)
+    monkeypatch.delenv("DOLPHIN_TEST_ENV", raising=False)
+    monkeypatch.setattr(desktop_module, "_PyWinApp", Mock(return_value=process_app))
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
+    monkeypatch.setattr(desktop_module.time, "sleep", Mock())
+    monkeypatch.setattr(desktop_module, "Application", application)
+
+    desktop = desktop_module.Desktop(hidden=False)
+    assert (
+        desktop.launch(
+            "probe.exe",
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+            startup_delay=0.25,
+        )
+        == "wrapped"
+    )
+
+    assert observed == {
+        "command": "probe.exe",
+        "desktop_name": None,
+        "timeout": 10.0,
+        "wait_for_idle": False,
+        "work_dir": None,
+        "env": {"DOLPHIN_TEST_ENV": "expected-value"},
+        "parent_value": None,
+    }
+    launcher.assert_called_once_with(
+        "probe.exe",
+        None,
+        timeout=10.0,
+        wait_for_idle=False,
+        work_dir=None,
+        env={"DOLPHIN_TEST_ENV": "expected-value"},
+    )
+    close_handle.assert_not_called()
+    desktop_module.time.sleep.assert_called_once_with(0.25)
+    assert process_app.process == 654
+    process_app.connect.assert_not_called()
+    application.assert_called_once_with(
+        process_app,
+        backend="uia",
+        default_timeout_ms=10_000,
+        desktop=desktop,
+        image_path="probe.exe",
+        owned_process_handle=987,
+    )
+    assert "DOLPHIN_TEST_ENV" not in os.environ
+
+
+def test_launch_with_environment_closes_spawn_handle_if_configuration_fails(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    launcher = Mock(return_value=(654, 987))
+    close_handle = Mock(side_effect=OSError("already closed"))
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(runner, "close_process_handle", close_handle)
+    monkeypatch.setattr(runner, "terminate_process_handle", Mock(side_effect=OSError("gone")))
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "probe.exe")
+    monkeypatch.setattr(
+        desktop_module,
+        "_PyWinApp",
+        Mock(side_effect=RuntimeError("pywinauto setup failed")),
+    )
+
+    with pytest.raises(ApplicationError, match=r"Failed to launch 'probe\.exe'"):
+        Desktop(hidden=False).launch(
+            "probe.exe",
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+            startup_delay=0,
+        )
+
+    close_handle.assert_called_once_with(987)
+
+
+def test_launch_cleans_the_original_handle_when_application_wrapping_fails(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", Mock(return_value=(321, 987)))
+    terminate = Mock()
+    close = Mock()
+    monkeypatch.setattr(runner, "terminate_process_handle", terminate)
+    monkeypatch.setattr(runner, "close_process_handle", close)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda _pid: "demo.exe")
+    monkeypatch.setattr(desktop_module, "_PyWinApp", Mock(return_value=Mock()))
+    monkeypatch.setattr(
+        desktop_module,
+        "Application",
+        Mock(side_effect=RuntimeError("wrapper failed")),
+    )
+
+    with pytest.raises(ApplicationError, match="Failed to launch"):
+        Desktop(hidden=False).launch("demo.exe", startup_delay=0)
+
+    terminate.assert_called_once_with(987)
+    close.assert_called_once_with(987)
+
+
+def test_launch_swallows_cleanup_failures_after_wrapping_fails(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    terminate = Mock(side_effect=OSError("already gone"))
+    close = Mock(side_effect=OSError("already closed"))
+    monkeypatch.setattr(runner, "terminate_process_handle", terminate)
+    monkeypatch.setattr(runner, "close_process_handle", close)
+    desktop = desktop_module.Desktop(hidden=False)
+    monkeypatch.setattr(
+        desktop,
+        "_launch_with_environment",
+        Mock(return_value=(Mock(process=321), "demo.exe", 987)),
+    )
+    monkeypatch.setattr(desktop_module, "Application", Mock(side_effect=RuntimeError("wrapper")))
+
+    with pytest.raises(ApplicationError, match="Failed to launch"):
+        desktop.launch("demo.exe", startup_delay=0)
+
+    terminate.assert_called_once_with(987)
+    close.assert_called_once_with(987)
+
+
+def test_raw_launch_cleans_the_original_handle_when_wrapping_fails(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    terminate = Mock(side_effect=OSError("already gone"))
+    close = Mock(side_effect=OSError("already closed"))
+    monkeypatch.setattr(runner, "terminate_process_handle", terminate)
+    monkeypatch.setattr(runner, "close_process_handle", close)
+    desktop = desktop_module.Desktop(hidden=False)
+    monkeypatch.setattr(
+        desktop,
+        "_launch_with_environment",
+        Mock(return_value=(Mock(process=321), "demo.exe", 987)),
+    )
+    monkeypatch.setattr(desktop_module, "Application", Mock(side_effect=RuntimeError("wrapper")))
+
+    with pytest.raises(ApplicationError, match="Failed to launch"):
+        desktop._launch_raw("demo.exe", backend="uia", startup_delay=0)
+
+    terminate.assert_called_once_with(987)
+    close.assert_called_once_with(987)
+
+
+def test_raw_launch_passes_env_to_private_child(monkeypatch) -> None:
+    process_app = Mock(process=654)
+    application = Mock(return_value="wrapped")
+    launch_with_environment = Mock(return_value=(process_app, "probe.exe", 987))
+    monkeypatch.setattr(desktop_module, "Application", application)
+    monkeypatch.setattr(desktop_module.time, "sleep", Mock())
+
+    desktop = desktop_module.Desktop(hidden=False)
+    monkeypatch.setattr(desktop, "_launch_with_environment", launch_with_environment)
+
+    assert (
+        desktop._launch_raw(
+            "probe.exe",
+            backend="win32",
+            timeout=3,
+            work_dir="C:\\tmp",
+            startup_delay=0.25,
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+        )
+        == "wrapped"
+    )
+    launch_with_environment.assert_called_once_with(
+        "probe.exe",
+        backend="win32",
+        timeout=3,
+        wait_for_idle=False,
+        work_dir="C:\\tmp",
+        env={"DOLPHIN_TEST_ENV": "expected-value"},
+    )
+    desktop_module.time.sleep.assert_called_once_with(0.25)
+    application.assert_called_once_with(
+        process_app,
+        backend="win32",
+        default_timeout_ms=10_000,
+        desktop=desktop,
+        image_path="probe.exe",
+        owned_process_handle=987,
+    )
+
+
+def test_launch_and_raw_launch_use_hidden_path_or_explicit_backend(monkeypatch) -> None:
+    desktop = desktop_module.Desktop(backend="win32", hidden=False)
+    hidden_result = object()
+    hidden = Mock(return_value=hidden_result)
+    monkeypatch.setattr(desktop, "_launch_hidden", hidden)
+    desktop._resolved_hidden = True
+
+    assert (
+        desktop.launch("hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1) is hidden_result
+    )
+    hidden.assert_called_once_with(
+        "hidden.exe", timeout=3, work_dir="wd", startup_delay=0.1, env=None, wait_for_idle=False
+    )
+    hidden.reset_mock()
+    assert (
+        desktop._launch_raw(
+            "raw-hidden.exe", backend="uia", timeout=4, work_dir="raw", startup_delay=0
+        )
+        is hidden_result
+    )
+    hidden.assert_called_once_with(
+        "raw-hidden.exe", timeout=4, work_dir="raw", startup_delay=0, env=None, wait_for_idle=False
+    )
+
+
+def test_raw_launch_and_connect_success_and_errors(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    process_app = Mock(process=12)
+    pywin_app = Mock(return_value=process_app)
+    application = Mock(return_value="raw")
+    launcher = Mock(return_value=(12, 222))
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(runner, "close_process_handle", Mock())
+    monkeypatch.setattr(runner, "terminate_process_handle", Mock())
+    monkeypatch.setattr(desktop_module, "_PyWinApp", pywin_app)
+    monkeypatch.setattr(desktop_module, "Application", application)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda _pid: "raw.exe")
+    monkeypatch.setattr(desktop_module.time, "sleep", Mock())
+    desktop = desktop_module.Desktop(hidden=False, default_timeout_ms=55)
+
+    assert desktop._launch_raw("raw.exe", backend="uia", startup_delay=0.1) == "raw"
+    launcher.assert_called_once_with(
+        "raw.exe", None, timeout=10.0, wait_for_idle=False, work_dir=None, env=None
+    )
+    process_app.start.assert_not_called()
+    application.assert_called_with(
+        process_app,
+        backend="uia",
+        default_timeout_ms=55,
+        desktop=desktop,
+        image_path="raw.exe",
+        owned_process_handle=222,
+    )
+
+    launcher.side_effect = RuntimeError("cannot start")
+    with pytest.raises(ApplicationError, match=r"Failed to launch 'raw-broken\.exe'"):
+        desktop._launch_raw("raw-broken.exe", backend="uia", startup_delay=0)
+
+    attached = Mock()
+    monkeypatch.setattr(desktop_module, "_PyWinApp", Mock(return_value=attached))
+    application.reset_mock()
+    assert desktop._connect_raw(backend="win32", timeout=3, title="Demo") == "raw"
+    attached.connect.assert_called_once_with(timeout=3, title="Demo")
+    application.assert_called_once_with(
+        attached,
+        backend="win32",
+        default_timeout_ms=55,
+        desktop=desktop,
+        owns_process=False,
+    )
+
+    attached.connect.side_effect = RuntimeError("not found")
+    with pytest.raises(ApplicationError, match="Failed to connect"):
+        desktop._connect_raw(backend="win32", timeout=3, process=8)
+
+
+def test_build_attach_criteria_filters_selectors_and_uses_custom_error() -> None:
+    criteria = desktop_module.Desktop._build_attach_criteria(
+        title="Demo",
+        title_re=".*Demo.*",
+        process=8,
+        path="demo.exe",
+        class_name="Window",
+        method_name="attach_demo",
+        accepts=("title", "process", "class_name"),
+    )
+    assert criteria == {
+        "title": "Demo",
+        "process": 8,
+        "class_name": "Window",
+    }
+
+    with pytest.raises(ApplicationError, match="attach_demo") as exc_info:
+        desktop_module.Desktop._build_attach_criteria(
+            class_name="ignored-by-default",
+            method_name="attach_demo",
+        )
+    assert "pick the identifier" in str(exc_info.value)
+
+    with pytest.raises(DolphinError, match="attach_custom"):
+        desktop_module.Desktop._build_attach_criteria(
+            method_name="attach_custom",
+            error_class=DolphinError,
+            accepts=("title",),
+        )
+
+
+def test_hidden_launch_success_and_both_failure_points(monkeypatch) -> None:
+    import dolphin_desktop._runner as runner
+
+    monkeypatch.setattr(runner, "_hidden_launch_job", lambda: 999)
+    observed_environment: list[tuple[str | None, dict[str, str] | None]] = []
+
+    def launch(
+        command: str,
+        *,
+        timeout: float,
+        wait_for_idle: bool,
+        work_dir: str | None = None,
+        env: dict[str, str] | None = None,
+        job_handle: int | None = None,
+    ) -> tuple[int, int]:
+        assert job_handle == 999
+        observed_environment.append((os.environ.get("DOLPHIN_TEST_ENV"), env))
+        return 333, 444
+
+    launcher = Mock(side_effect=launch)
+    close_handle = Mock()
+    py_app = Mock()
+    py_app.connect = Mock()
+    application = Mock(return_value="hidden-app")
+    monkeypatch.setattr(runner, "launch_cmd_on_desktop", launcher)
+    monkeypatch.setattr(runner, "close_process_handle", close_handle)
+    monkeypatch.setattr(desktop_module, "_process_image_path", lambda pid: "hidden.exe")
+    monkeypatch.setattr(desktop_module, "_PyWinApp", Mock(return_value=py_app))
+    monkeypatch.setattr(desktop_module, "Application", application)
+    monkeypatch.setattr(desktop_module.time, "sleep", Mock())
+
+    desktop = desktop_module.Desktop(hidden=True, default_timeout_ms=42)
+    ensure = Mock()
+    monkeypatch.setattr(desktop, "_ensure_hidden_mode", ensure)
+    monkeypatch.delenv("DOLPHIN_TEST_ENV", raising=False)
+    assert (
+        desktop._launch_hidden(
+            "hidden.exe",
+            timeout=4,
+            work_dir="wd",
+            startup_delay=0.2,
+            env={"DOLPHIN_TEST_ENV": "expected-value"},
+        )
+        == "hidden-app"
+    )
+    ensure.assert_called_once_with()
+    launcher.assert_called_once_with(
+        "hidden.exe",
+        timeout=4,
+        wait_for_idle=False,
+        work_dir="wd",
+        env={"DOLPHIN_TEST_ENV": "expected-value"},
+        job_handle=999,
+    )
+    close_handle.assert_not_called()
+    assert observed_environment == [(None, {"DOLPHIN_TEST_ENV": "expected-value"})]
+    assert "DOLPHIN_TEST_ENV" not in os.environ
+    py_app.connect.assert_called_once_with(process=333, timeout=4)
+    application.assert_called_once_with(
+        py_app,
+        backend="uia",
+        default_timeout_ms=42,
+        desktop=desktop,
+        image_path="hidden.exe",
+        owned_process_handle=444,
+    )
+
+    launcher.side_effect = OSError("CreateProcess failed")
+    with pytest.raises(ApplicationError, match="hidden desktop"):
+        desktop._launch_hidden("broken.exe", timeout=1, work_dir=None, startup_delay=0)
+
+    launcher.side_effect = None
+    launcher.return_value = (555, 666)
+    py_app.connect.side_effect = RuntimeError("attach failed")
+    terminate = Mock(side_effect=OSError("gone"))
+    monkeypatch.setattr(runner, "terminate_process_handle", terminate)
+    close_handle.side_effect = OSError("already closed")
+    with pytest.raises(ApplicationError, match="pid=555"):
+        desktop._launch_hidden("unattachable.exe", timeout=1, work_dir=None, startup_delay=0)
+    terminate.assert_called_once_with(666)
+    close_handle.assert_called_once_with(666)
+
+
+def test_connect_builds_all_criteria_and_handles_failures(monkeypatch) -> None:
+    py_app = Mock()
+    pywin_app = Mock(return_value=py_app)
+    application = Mock(return_value="connected")
+    monkeypatch.setattr(desktop_module, "_PyWinApp", pywin_app)
+    monkeypatch.setattr(desktop_module, "Application", application)
+    desktop = desktop_module.Desktop(backend="uia", hidden=False, default_timeout_ms=11)
+
+    assert (
+        desktop.connect(
+            title="Demo",
+            title_re=".*Demo.*",
+            class_name="Window",
+            found_index=2,
+            timeout=3,
+        )
+        == "connected"
+    )
+    py_app.connect.assert_called_once_with(
+        timeout=3,
+        title="Demo",
+        title_re=".*Demo.*",
+        class_name="Window",
+        found_index=2,
+    )
+    application.assert_called_once_with(
+        py_app,
+        backend="uia",
+        default_timeout_ms=11,
+        desktop=desktop,
+        owns_process=False,
+    )
+
+    py_app.reset_mock()
+    desktop.connect(process=3, path="demo.exe", found_index=9)
+    assert py_app.connect.call_args.kwargs == {
+        "timeout": 10.0,
+        "process": 3,
+        "path": "demo.exe",
+    }
+    py_app.reset_mock()
+    desktop.connect(handle=4, title="ignored-for-index")
+    assert py_app.connect.call_args.kwargs == {
+        "timeout": 10.0,
+        "handle": 4,
+        "title": "ignored-for-index",
+    }
+
+    with pytest.raises(ValueError, match="At least one"):
+        desktop.connect()
+    pywin_app.side_effect = RuntimeError("connection failed")
+    with pytest.raises(ApplicationError, match="Failed to connect"):
+        desktop.connect(title="Broken")
+
+
+def test_legacy_factory_qt_launch_and_script_builders(monkeypatch) -> None:
+    legacy = desktop_module.Desktop.for_legacy_apps(default_timeout_ms=123, hidden=False)
+    assert legacy._backend == "win32"
+    assert legacy._default_timeout_ms == 123
+
+    launch = Mock(return_value="qt-app")
+    monkeypatch.setattr(legacy, "launch", launch)
+    monkeypatch.setenv("QT_ACCESSIBILITY", "old")
+    monkeypatch.delenv("QT_LOGGING_RULES", raising=False)
+    assert (
+        legacy.launch_qt(
+            "qt.exe",
+            timeout=2,
+            work_dir="qt-wd",
+            startup_delay=0,
+            qt_env={"QT_LOGGING_RULES": "*.debug=true"},
+        )
+        == "qt-app"
+    )
+    assert launch.call_args.args == ("qt.exe",)
+    assert launch.call_args.kwargs == {
+        "timeout": 2,
+        "work_dir": "qt-wd",
+        "startup_delay": 0,
+        "env": {
+            "QT_ACCESSIBILITY": "1",
+            "QT_LOGGING_RULES": "*.debug=true",
+        },
+    }
+    assert os.environ["QT_ACCESSIBILITY"] == "old"
+    assert "QT_LOGGING_RULES" not in os.environ
+
+    monkeypatch.setattr(
+        "dolphin_desktop._helpers.python_executable",
+        lambda: r"C:\Python\python.exe",
+    )
+    launch.reset_mock()
+    assert legacy.launch_python_script("my file.py") == "qt-app"
+    assert launch.call_args.args[0] == '"C:\\Python\\python.exe" "my file.py"'
+    launch.reset_mock()
+    assert legacy.launch_python_script("my file.py", args=["A B"]) == "qt-app"
+    assert launch.call_args.args[0] == '"C:\\Python\\python.exe" "my file.py" "A B"'
+
+    launch_qt = Mock(return_value="qt-script")
+    monkeypatch.setattr(legacy, "launch_qt", launch_qt)
+    assert legacy.launch_qt_python_script("qt.py", args=["--flag", "two words"]) == "qt-script"
+    assert launch_qt.call_args.args[0] == ('"C:\\Python\\python.exe" "qt.py" "--flag" "two words"')
+
+
+def test_launch_qt_passes_environment_without_mutating_parent(monkeypatch) -> None:
+    desktop = desktop_module.Desktop(hidden=False)
+    launch = Mock(side_effect=RuntimeError("spawn failed"))
+    monkeypatch.setattr(desktop, "launch", launch)
+    monkeypatch.setenv("QT_ACCESSIBILITY", "parent-value")
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        desktop.launch_qt("qt.exe", qt_env={"QT_ACCESSIBILITY": "custom"})
+    launch.assert_called_once_with(
+        "qt.exe",
+        timeout=10.0,
+        work_dir=None,
+        startup_delay=0.5,
+        env={"QT_ACCESSIBILITY": "custom"},
+    )
+    assert os.environ["QT_ACCESSIBILITY"] == "parent-value"
+
+
+def test_process_lookup_and_semantic_launch_wrappers(monkeypatch) -> None:
+    import dolphin_desktop._helpers as helpers
+
+    desktop = desktop_module.Desktop(hidden=False)
+    monkeypatch.setattr(helpers, "find_pid_by_image_name", Mock(return_value=None))
+    assert desktop.find_process_by_image("missing.exe") is None
+
+    find_pid = Mock(return_value=808)
+    monkeypatch.setattr(helpers, "find_pid_by_image_name", find_pid)
+    connect = Mock(return_value="attached")
+    monkeypatch.setattr(desktop, "connect", connect)
+    assert desktop.find_process_by_image("demo.exe") == "attached"
+    connect.assert_called_once_with(process=808, timeout=5.0)
+
+    connect.side_effect = ApplicationError("gone")
+    assert desktop.find_process_by_image("gone.exe") is None
+
+    launch = Mock(return_value="app")
+    monkeypatch.setattr(desktop, "launch", launch)
+    assert desktop.launch_electron("electron.exe") == "app"
+    assert launch.call_args.args[0] == "electron.exe --force-renderer-accessibility"
+    desktop.launch_electron("electron.exe --force-renderer-accessibility")
+    assert launch.call_args.args[0] == "electron.exe --force-renderer-accessibility"
+
+    desktop.launch_powerbuilder("pb.exe", timeout=2)
+    desktop.launch_cef("cef.exe")
+    desktop.launch_webview2("webview.exe")
+    assert launch.call_args_list[-3:] == [
+        call("pb.exe", timeout=2),
+        call("cef.exe --force-renderer-accessibility"),
+        call("webview.exe"),
+    ]
+
+
+def test_java_launch_initializes_bridge_pumps_messages_and_returns_app(monkeypatch) -> None:
+    import dolphin_desktop._java as java
+
+    desktop = desktop_module.Desktop(hidden=False)
+    app = object()
+    bridge = Mock()
+    session = Mock()
+    monkeypatch.setattr(java.JavaAccessBridge, "ensure_enabled", bridge.ensure_enabled)
+    monkeypatch.setattr(java._JABSession, "get_or_create", Mock(return_value=session))
+    monkeypatch.setattr(desktop, "launch", Mock(return_value=app))
+    assert desktop.launch_java("java.exe", timeout=4) is app
+    bridge.ensure_enabled.assert_called_once_with()
+    session.pump.assert_called_once_with(60, 0.05)
+
+
+def test_cdp_launch_polling_succeeds_and_timeout_kills_process(monkeypatch) -> None:
+    import dolphin_desktop._cdp as cdp
+
+    desktop = desktop_module.Desktop(hidden=False)
+    app = Mock()
+    app.process_id = 1234
+    monkeypatch.setattr(desktop, "launch", Mock(return_value=app))
+    response = Mock(status=200)
+    response_cm = MagicMock()
+    response_cm.__enter__.return_value = response
+    response_cm.__exit__.return_value = None
+    urlopen = Mock(return_value=response_cm)
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr(desktop_module.time, "monotonic", Mock(side_effect=[0.0, 0.0, 0.0]))
+    session = object()
+    connect = Mock(return_value=session)
+    monkeypatch.setattr(cdp.CDPSession, "connect", connect)
+    # Sequenced: empty (pre-launch collision check) then {own pid} (post-launch
+    # ownership check) for the success call, then empty (pre-launch only —
+    # the two timeout calls below never reach the ownership check).
+    monkeypatch.setattr(
+        "dolphin_desktop._netinfo.loopback_listener_pids",
+        Mock(side_effect=[set(), {1234}, set(), set()]),
+    )
+
+    result = desktop._launch_with_cdp_flag(
+        "app.exe",
+        port_flag="--debug=1",
+        debug_port=9222,
+        timeout=5,
+        work_dir="wd",
+        startup_delay=0.2,
+        runtime_label="TestRuntime",
+    )
+    assert result == (app, session)
+    desktop.launch.assert_called_once_with(
+        "app.exe --debug=1", timeout=5, work_dir="wd", startup_delay=0.2
+    )
+    urlopen.assert_called_once_with("http://127.0.0.1:9222/json/version", timeout=1.0)
+    connect.assert_called_once_with("http://127.0.0.1:9222", timeout=5.0)
+
+    urlopen.side_effect = urllib.error.URLError("not live")
+    app.kill.reset_mock()
+    monkeypatch.setattr(desktop_module.time, "monotonic", Mock(side_effect=[0.0, 0.0, 1.0]))
+    monkeypatch.setattr(desktop_module.time, "sleep", Mock())
+    with pytest.raises(RuntimeError, match="TestRuntime CDP debug port 9223"):
+        desktop._launch_with_cdp_flag(
+            "app.exe --debug=2",
+            port_flag="--debug=2",
+            debug_port=9223,
+            timeout=0.5,
+            work_dir=None,
+            startup_delay=0,
+            runtime_label="TestRuntime",
+        )
+    app.kill.assert_called_once_with()
+
+    app.kill.side_effect = RuntimeError("already gone")
+    monkeypatch.setattr(desktop_module.time, "monotonic", Mock(side_effect=[0.0, 0.0, 1.0]))
+    with pytest.raises(RuntimeError, match="TestRuntime CDP debug port 9224"):
+        desktop._launch_with_cdp_flag(
+            "app.exe",
+            port_flag="--debug=4",
+            debug_port=9224,
+            timeout=0.5,
+            work_dir=None,
+            startup_delay=0,
+            runtime_label="TestRuntime",
+        )
+
+
+def test_cdp_rejects_preexisting_port_collision_before_launch(monkeypatch) -> None:
+    """A loopback listener already on the debug port must abort before spawning."""
+    desktop = desktop_module.Desktop(hidden=False)
+    launch = Mock()
+    monkeypatch.setattr(desktop, "launch", launch)
+    monkeypatch.setattr(
+        "dolphin_desktop._netinfo.loopback_listener_pids",
+        Mock(return_value={4321, 4322}),
+    )
+
+    with pytest.raises(
+        RuntimeError, match=r"TestRuntime CDP debug port 9222 is already in use by PID\(s\)"
+    ):
+        desktop._launch_with_cdp_flag(
+            "app.exe",
+            port_flag="--debug=1",
+            debug_port=9222,
+            timeout=5,
+            work_dir=None,
+            startup_delay=0,
+            runtime_label="TestRuntime",
+        )
+
+    launch.assert_not_called()
+
+
+def test_cdp_public_launchers_forward_their_runtime_specific_options(monkeypatch) -> None:
+    desktop = desktop_module.Desktop(hidden=False)
+    helper = Mock(return_value=("app", "session"))
+    monkeypatch.setattr(desktop, "_launch_with_cdp_flag", helper)
+
+    assert desktop.launch_electron_cdp("electron.exe", debug_port=9333, timeout=4) == (
+        "app",
+        "session",
+    )
+    assert helper.call_args == call(
+        "electron.exe",
+        port_flag="--remote-debugging-port=9333",
+        debug_port=9333,
+        timeout=4,
+        work_dir=None,
+        startup_delay=0.5,
+        runtime_label="Electron",
+    )
+
+    assert desktop.launch_cef_cdp(
+        "steam.exe -cef-enable-debugging", debug_port=8080, debug_flag="-cef-enable-debugging"
+    ) == ("app", "session")
+    assert helper.call_args.kwargs == {
+        "port_flag": "-cef-enable-debugging",
+        "debug_port": 8080,
+        "timeout": 20.0,
+        "work_dir": None,
+        "startup_delay": 1.0,
+        "runtime_label": "CEF",
+    }
+
+
+def test_cdp_rejects_http_endpoint_owned_by_foreign_pid(monkeypatch) -> None:
+    """DESKTOP-205 / KAN-475: CDP cannot bind to a foreign listener."""
+    import dolphin_desktop._cdp as cdp
+
+    desktop = desktop_module.Desktop(hidden=False)
+    app = Mock()
+    app.process_id = 1234
+    monkeypatch.setattr(desktop, "launch", Mock(return_value=app))
+    response_cm = MagicMock()
+    response_cm.__enter__.return_value = Mock(status=200)
+    response_cm.__exit__.return_value = None
+    monkeypatch.setattr("urllib.request.urlopen", Mock(return_value=response_cm))
+    monkeypatch.setattr(desktop_module.time, "monotonic", Mock(return_value=0.0))
+    # Sequenced: empty (pre-launch collision check), {foreign pid} (post-launch
+    # ownership check), {foreign pid} again (describe_owners() building the
+    # error message).
+    monkeypatch.setattr(
+        "dolphin_desktop._netinfo.loopback_listener_pids",
+        Mock(side_effect=[set(), {9876}, {9876}]),
+    )
+    app.kill.side_effect = RuntimeError("already gone")
+    connect = Mock()
+    monkeypatch.setattr(cdp.CDPSession, "connect", connect)
+
+    with pytest.raises(RuntimeError, match="not the application dolphin launched"):
+        desktop._launch_with_cdp_flag(
+            "app.exe",
+            port_flag="--debug=1",
+            debug_port=9222,
+            timeout=5,
+            work_dir=None,
+            startup_delay=0,
+            runtime_label="TestRuntime",
+        )
+
+    app.kill.assert_called_once_with()
+    connect.assert_not_called()
+
+
+def test_cdp_connect_failure_kills_launched_application(monkeypatch) -> None:
+    import dolphin_desktop._cdp as cdp
+
+    desktop = desktop_module.Desktop(hidden=False)
+    app = Mock()
+    app.process_id = 1234
+    monkeypatch.setattr(desktop, "launch", Mock(return_value=app))
+    response_cm = MagicMock()
+    response_cm.__enter__.return_value = Mock(status=200)
+    response_cm.__exit__.return_value = None
+    monkeypatch.setattr("urllib.request.urlopen", Mock(return_value=response_cm))
+    monkeypatch.setattr(desktop_module.time, "monotonic", Mock(return_value=0.0))
+    # Sequenced: empty (pre-launch collision check), {own pid} (post-launch
+    # ownership check passes, so no describe_owners() call follows).
+    monkeypatch.setattr(
+        "dolphin_desktop._netinfo.loopback_listener_pids",
+        Mock(side_effect=[set(), {1234}]),
+    )
+    app.kill.side_effect = RuntimeError("already gone")
+    monkeypatch.setattr(
+        cdp.CDPSession,
+        "connect",
+        Mock(side_effect=RuntimeError("fake CDP handshake failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="fake CDP handshake failure"):
+        desktop._launch_with_cdp_flag(
+            "app.exe",
+            port_flag="--debug=2",
+            debug_port=9223,
+            timeout=5,
+            work_dir=None,
+            startup_delay=0,
+            runtime_label="TestRuntime",
+        )
+
+    app.kill.assert_called_once_with()
+
+
+def test_stack_factories_delegate_all_arguments(monkeypatch) -> None:
+    import dolphin_desktop._delphi as delphi
+    import dolphin_desktop._mainframe as mainframe
+    import dolphin_desktop._oracle_forms as oracle
+    import dolphin_desktop._sap as sap
+
+    desktop = desktop_module.Desktop(hidden=False)
+    monkeypatch.setattr(delphi, "_launch_delphi", Mock(return_value="delphi"))
+    monkeypatch.setattr(delphi, "_attach_delphi", Mock(return_value="delphi-attached"))
+    monkeypatch.setattr(oracle, "_launch_oracle_forms", Mock(return_value="forms"))
+    monkeypatch.setattr(oracle, "_attach_oracle_forms", Mock(return_value="forms-attached"))
+    monkeypatch.setattr(sap.SapGui, "connect", Mock(return_value="sap"))
+    build_terminal = Mock(return_value=Mock())
+    monkeypatch.setattr(mainframe, "_build_terminal", build_terminal)
+
+    assert (
+        desktop.launch_delphi(
+            "demo.exe", timeout=2, work_dir="wd", startup_delay=0.3, title_re="Demo"
+        )
+        == "delphi"
+    )
+    delphi._launch_delphi.assert_called_once_with(
+        desktop, "demo.exe", timeout=2, startup_delay=0.3, work_dir="wd", title_re="Demo"
+    )
+    assert desktop.attach_delphi(
+        title="Demo", title_re=".*", process=5, path="demo.exe", timeout=3
+    ) == ("delphi-attached")
+    delphi._attach_delphi.assert_called_once_with(
+        desktop, title="Demo", title_re=".*", process=5, path="demo.exe", timeout=3
+    )
+
+    assert desktop.sap(timeout=6) == "sap"
+    sap.SapGui.connect.assert_called_once_with(timeout=6)
+
+    assert (
+        desktop.launch_oracle_forms(
+            jar="client.jar",
+            classpath="libs",
+            main_class="Main",
+            java_args=["-Xmx1g"],
+            title_re="Forms",
+            timeout=8,
+            startup_delay=1,
+        )
+        == "forms"
+    )
+    oracle._launch_oracle_forms.assert_called_once_with(
+        desktop,
+        jnlp=None,
+        jar="client.jar",
+        main_class="Main",
+        classpath="libs",
+        java_args=["-Xmx1g"],
+        title_re="Forms",
+        timeout=8,
+        startup_delay=1,
+    )
+    assert desktop.attach_oracle_forms(title_re="Forms", process=9, timeout=4) == "forms-attached"
+    oracle._attach_oracle_forms.assert_called_once_with(
+        desktop, title=None, title_re="Forms", process=9, timeout=4
+    )
+
+
+def test_mainframe_factory_connects_only_when_requested(monkeypatch) -> None:
+    import dolphin_desktop._mainframe as mainframe
+
+    desktop = desktop_module.Desktop(hidden=False)
+    term = Mock()
+    build = Mock(return_value=term)
+    monkeypatch.setattr(mainframe, "_build_terminal", build)
+    result = desktop.mainframe(
+        host="example.test",
+        port=992,
+        session_type="5250",
+        backend="hllapi",
+        connect=True,
+        timeout=7,
+        ws3270_path="ws3270.exe",
+        model="3279-2",
+        codepage="german",
+        session_id="B",
+        hllapi_dll_path="hllapi.dll",
+        extra_args=["-trace"],
+        trace=True,
+    )
+    assert result is term
+    build.assert_called_once_with(
+        backend="hllapi",
+        ws3270_path="ws3270.exe",
+        model="3279-2",
+        codepage="german",
+        session_id="B",
+        hllapi_dll_path="hllapi.dll",
+        extra_args=["-trace"],
+        trace=True,
+        tls=False,
+        tls_cafile=None,
+        tls_context=None,
+        allow_plaintext=False,
+    )
+    term.connect.assert_called_once_with("example.test", 992, session_type="5250", timeout=7)
+
+    term.connect.reset_mock()
+    assert desktop.mainframe(connect=False) is term
+    term.connect.assert_not_called()
+
+
+def test_mainframe_factory_forwards_tls_options(monkeypatch) -> None:
+    import dolphin_desktop._mainframe as mainframe
+
+    term = Mock()
+    build = Mock(return_value=term)
+    monkeypatch.setattr(mainframe, "_build_terminal", build)
+
+    assert (
+        desktop_module.Desktop().mainframe(
+            backend="tn5250",
+            connect=False,
+            tls=True,
+            tls_cafile="company-root.pem",
+            allow_plaintext=False,
+        )
+        is term
+    )
+    build.assert_called_once_with(
+        backend="tn5250",
+        ws3270_path=None,
+        model="3279-4",
+        codepage=None,
+        session_id="A",
+        hllapi_dll_path=None,
+        extra_args=None,
+        trace=False,
+        tls=True,
+        tls_cafile="company-root.pem",
+        tls_context=None,
+        allow_plaintext=False,
+    )
+
+
+def test_mainframe_factory_accepts_tls_options_in_real_terminal_factory(monkeypatch) -> None:
+    import dolphin_desktop._mainframe as mainframe
+
+    implementation = object()
+    tn5250 = Mock(return_value=implementation)
+    monkeypatch.setattr(mainframe, "_Tn5250Backend", tn5250)
+
+    terminal = desktop_module.Desktop().mainframe(
+        backend="tn5250",
+        connect=False,
+        tls=True,
+        tls_cafile="company-root.pem",
+    )
+
+    assert terminal._backend is implementation
+    tn5250.assert_called_once_with(
+        codepage="cp037",
+        trace=False,
+        tls=True,
+        tls_cafile="company-root.pem",
+        tls_context=None,
+        allow_plaintext=False,
+    )
+
+
+def test_find_process_builds_criteria_and_returns_none_on_attach_error(monkeypatch) -> None:
+    desktop = desktop_module.Desktop(hidden=False)
+    connect = Mock(return_value="found")
+    monkeypatch.setattr(desktop, "connect", connect)
+    assert desktop.find_process(name="demo.exe", pid=7, title="Demo", title_re=".*Demo.*") == (
+        "found"
+    )
+    connect.assert_called_once_with(path="demo.exe", process=7, title="Demo", title_re=".*Demo.*")
+
+    with pytest.raises(ValueError, match="At least one"):
+        desktop.find_process()
+    connect.side_effect = ApplicationError("gone")
+    assert desktop.find_process(pid=99) is None
+
+
+def test_capability_methods_delegate_to_selected_backend(monkeypatch) -> None:
+    capability = object()
+    backend = Mock()
+    backend.supports.return_value = True
+    monkeypatch.setattr("dolphin_desktop._backend.resolve", Mock(return_value=backend))
+    desktop = desktop_module.Desktop(hidden=False)
+    assert desktop.backend_supports(capability) is True
+    assert desktop.require_capability(capability) is None
+    backend.supports.assert_called_once_with(capability)
+    backend.require_capability.assert_called_once_with(capability)
+
+
+def test_desktop_capability_queries_delegate_to_the_selected_backend(monkeypatch) -> None:
+    from dolphin_desktop._capabilities import Capability
+    from dolphin_desktop._desktop import Desktop
+
+    desktop = Desktop.__new__(Desktop)
+    desktop._backend = "fake"
+    backend = Mock()
+    backend.supports.return_value = True
+    monkeypatch.setattr("dolphin_desktop._backend.resolve", lambda _: backend)
+    assert desktop.backend_supports(Capability.CLICK) is True
+    desktop.require_capability(Capability.CLICK)
+    backend.require_capability.assert_called_once_with(Capability.CLICK)
+
+
+def test_desktop_and_application_process_helpers_handle_selection_and_cycles(monkeypatch) -> None:
+    assert Desktop._build_attach_criteria(title="Calculator", method_name="attach_delphi") == {
+        "title": "Calculator"
+    }
+    with pytest.raises(ApplicationError, match="attach_delphi requires at least one"):
+        Desktop._build_attach_criteria(method_name="attach_delphi")
+
+    monkeypatch.setattr(
+        "dolphin_desktop._application._process_parent_map",
+        lambda: {1: [2, 3], 2: [4], 3: [1], 4: [2]},
+    )
+    assert _enumerate_descendant_pids(1) == {2, 3, 4}
+
+    def modules(pid: int, *, use_extended: bool = False) -> list[str]:
+        by_pid = {
+            10: ["libcef.dll"],
+            11: ["libcef.dll", "electron.exe"],
+            20: [],
+            21: ["qt6core.dll"],
+        }
+        return by_pid[pid]
+
+    monkeypatch.setattr("dolphin_desktop._application._list_modules", modules)
+    monkeypatch.setattr("dolphin_desktop._application._enumerate_child_pids", lambda pid: [21])
+    assert _cef_by_modules(10) is True
+    assert _cef_by_modules(11) is False
+    assert _qt_module_info(20) == (True, "6")
+
+
+def test_desktop_hidden_mode_is_lazy_and_warns_when_thread_switch_fails(monkeypatch) -> None:
+    import dolphin_desktop._desktop as desktop_module
+    import dolphin_desktop._runner as runner
+
+    register = Mock()
+    monkeypatch.setattr(atexit, "register", register)
+    monkeypatch.setattr(runner, "DESKTOP_NAME", "DolphinHidden")
+    monkeypatch.setattr(runner, "get_current_desktop_name", lambda: "WinSta0")
+    monkeypatch.setattr(runner, "create_hidden_desktop", lambda: 77)
+    monkeypatch.setattr(runner, "switch_thread_to_desktop", Mock(side_effect=OSError("busy")))
+    monkeypatch.setattr(runner, "close_desktop", Mock())
+
+    desktop = desktop_module.Desktop(hidden=True)
+    with pytest.warns(UserWarning, match="SetThreadDesktop failed"):
+        desktop._ensure_hidden_mode()
+    desktop._ensure_hidden_mode()
+    assert desktop._hDesk == 77
+    assert register.call_count == 1
+
+    same_desktop = desktop_module.Desktop(hidden=True)
+    monkeypatch.setattr(runner, "get_current_desktop_name", lambda: "DolphinHidden")
+    same_desktop._ensure_hidden_mode()
+    assert same_desktop._hDesk is None
+    with pytest.raises(ValueError, match="default_timeout_ms"):
+        desktop_module.Desktop(default_timeout_ms=-1)

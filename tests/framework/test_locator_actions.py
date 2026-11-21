@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from pywinauto.uia_defines import NoPatternInterfaceError
 
-from dolphin_desktop import ElementNotFoundError, UnsupportedPatternError, _locator
+from dolphin_desktop import DolphinError, ElementNotFoundError, UnsupportedPatternError, _locator
 from dolphin_desktop._locator import (
     _QtObjectNameLocator,
     _read_text_via_clipboard,
@@ -18,9 +20,9 @@ from dolphin_desktop._locator import (
 from dolphin_desktop._window import Window
 
 
-def _window(spec: MagicMock) -> Window:
+def _window(spec: MagicMock, *, application: object | None = None) -> Window:
     """Return a Window backed by *spec*."""
-    return Window(spec)
+    return Window(spec, application=application)
 
 
 def _spec_with(child: MagicMock) -> MagicMock:
@@ -140,9 +142,46 @@ class TestKeySyntaxEscaping:
 class TestTreeWalkFallbackCriteria:
     def test_refuses_criteria_it_cannot_evaluate(self):
         parent = MagicMock()
-        result = _tree_walk_find(parent, {"control_type": "Button", "auto_id": "btnDelete"})
+        result = _tree_walk_find(parent, {"control_type": "Button", "class_name": "Toolbar"})
         assert result is None
         parent.wrapper_object.assert_not_called()
+
+    def test_matches_auto_id_for_virtualized_tree_items(self):
+        wanted = MagicMock()
+        wanted.name = "Item 450"
+        wanted.control_type = "TreeItem"
+        wanted.automation_id = "item_450"
+        wanted.children.return_value = []
+        other = MagicMock()
+        other.name = "Item 449"
+        other.control_type = "TreeItem"
+        other.automation_id = "item_449"
+        other.children.return_value = []
+        parent = MagicMock()
+        parent.wrapper_object.return_value.element_info.children.return_value = [other, wanted]
+        wrapper_cls = Mock(side_effect=lambda info: info)
+        fake_pw = sys.modules["pywinauto"]
+        with patch.object(
+            fake_pw,
+            "Application",
+            return_value=SimpleNamespace(
+                backend=SimpleNamespace(generic_wrapper_class=wrapper_cls)
+            ),
+        ):
+            assert (
+                _tree_walk_find(
+                    parent,
+                    {"control_type": "TreeItem", "auto_id": "item_450"},
+                )
+                is wanted
+            )
+        assert (
+            _tree_walk_find(
+                parent,
+                {"control_type": "TreeItem", "auto_id": "missing"},
+            )
+            is None
+        )
 
     def test_refuses_title_re(self):
         parent = MagicMock()
@@ -438,6 +477,94 @@ class TestDragReleasesTheButton:
         assert mouse.release.call_args.kwargs["coords"] == (100, 60)
 
 
+class TestHiddenPhysicalInputErrors:
+    @staticmethod
+    def _application() -> SimpleNamespace:
+        return SimpleNamespace(_desktop=SimpleNamespace(_is_hidden=True))
+
+    @staticmethod
+    def _draggable() -> MagicMock:
+        child = MagicMock()
+        child.rectangle.return_value = SimpleNamespace(left=0, top=0, right=10, bottom=10)
+        return child
+
+    def test_click_wraps_set_cursor_pos_error_and_preserves_cause(self):
+        import pywintypes
+
+        low_level = pywintypes.error(2, "SetCursorPos", "No error message is available")
+        child = MagicMock()
+        child.click_input.side_effect = low_level
+        locator = _window(_spec_with(child), application=self._application()).button(name="OK")
+
+        with patch.object(locator, "_focus_for_input"), pytest.raises(DolphinError) as raised:
+            locator.click()
+
+        assert raised.value.__cause__ is low_level
+        assert "click()" in str(raised.value)
+        assert "hidden desktop" in str(raised.value)
+
+    def test_hover_wraps_no_active_desktop_error_and_preserves_cause(self):
+        import pywinauto.mouse as py_mouse
+
+        low_level = RuntimeError("There is no active desktop")
+        child = self._draggable()
+        locator = _window(_spec_with(child), application=self._application()).button(name="OK")
+
+        with (
+            patch.object(py_mouse, "move", side_effect=low_level),
+            pytest.raises(DolphinError) as raised,
+        ):
+            locator.hover()
+
+        assert raised.value.__cause__ is low_level
+        assert "hover()" in str(raised.value)
+
+    def test_unrelated_pywintypes_error_is_not_rewritten(self):
+        import pywintypes
+
+        low_level = pywintypes.error(5, "OpenProcess", "Access is denied")
+        child = MagicMock()
+        child.click_input.side_effect = low_level
+        locator = _window(_spec_with(child), application=self._application()).button(name="OK")
+
+        with patch.object(locator, "_focus_for_input"), pytest.raises(pywintypes.error) as raised:
+            locator.click()
+
+        assert raised.value is low_level
+
+    def test_drag_wraps_no_active_desktop_error_and_releases_button(self):
+        import pywinauto.mouse as py_mouse
+
+        low_level = RuntimeError("There is no active desktop")
+        child = self._draggable()
+        locator = _window(_spec_with(child), application=self._application()).button(name="Src")
+
+        with (
+            patch.object(locator, "_focus_for_input"),
+            patch.object(_locator.time, "sleep"),
+            patch.object(py_mouse, "press"),
+            patch.object(py_mouse, "move", side_effect=low_level),
+            patch.object(py_mouse, "release") as release,
+            pytest.raises(DolphinError) as raised,
+        ):
+            locator.drag_to((100, 100), duration=0.01)
+
+        assert raised.value.__cause__ is low_level
+        release.assert_called_once()
+        assert "drag_to()" in str(raised.value)
+
+    def test_unrelated_hidden_mouse_error_is_not_rewritten(self):
+        low_level = RuntimeError("control provider failed")
+        child = MagicMock()
+        child.click_input.side_effect = low_level
+        locator = _window(_spec_with(child), application=self._application()).button(name="OK")
+
+        with patch.object(locator, "_focus_for_input"), pytest.raises(RuntimeError) as raised:
+            locator.click()
+
+        assert raised.value is low_level
+
+
 # Physical-input actions treat focus the same way
 
 
@@ -518,8 +645,8 @@ class TestTimeoutMsDoesNotLeak:
     def test_next_action_keeps_the_locator_timeout(self, monkeypatch):
         """A per-action timeout_ms applies to that action only.
 
-        Recorded off the resolve-time wait, which is where the locator's
-        timeout is actually spent.
+        Each candidate is probed once; the locator timeout belongs to the
+        shared resolution loop and must not leak into the next action.
         """
         from dolphin_desktop import _locator
 
@@ -529,7 +656,7 @@ class TestTimeoutMsDoesNotLeak:
         )
         loc = self._loc(MagicMock())
         loc.click(timeout_ms=500).type_text("x")
-        assert seen == [pytest.approx(0.5), pytest.approx(4.0)]
+        assert seen == [0, 0]
 
 
 # select_item must not discard the error that made it fall through
@@ -882,7 +1009,7 @@ class TestPredicatesSeeWhatClickSees:
 
         calls: list = []
 
-        def _spy(*args):
+        def _spy(*args, **kwargs):
             calls.append(args)
             return result
 

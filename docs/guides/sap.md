@@ -65,6 +65,64 @@ def test_sap_from_desktop(desktop):
     session.transaction("VA03")
 ```
 
+## Login without mouse input
+
+`SapGui.keyboard_login(win_title, user, password)` requires the User field to
+have focus and expose the exact UIA automation ID `RSYST-BNAME`, `txtRSYST-BNAME`
+or `ctxtRSYST-BNAME`, optionally as the last segment of a SAP component path.
+Client, Language and unidentified Edit controls are never selected as User.
+UI Automation must expose exactly one password Edit control, and both login
+fields must support writable Value patterns. Credentials are written directly
+to those fields as literal Unicode text, including SendKeys metacharacters.
+Tabs, newlines and other C0/C1 control characters raise `ValueError` before
+any input is sent.
+
+Each credential is set with one Value-pattern write. The method checks focus
+before and after each write. Lost or unrecognizable
+focus, ambiguous password fields and missing Value patterns raise
+`ApplicationError` and abort submission. SAP screens that are opaque to UIA
+must use SAP GUI Scripting with their explicit User and Password component IDs.
+
+### SAP GUI 800 release validation
+
+Run this check on a Windows desktop with SAP GUI 800 and a dedicated test
+account before releasing changes to `keyboard_login()`. The mock unit tests
+do not establish SAP's UIA provider compatibility. Validate both Scripting
+and keyboard login against your client/server configuration.
+
+1. On a fresh login screen, inspect the UIA automation IDs and confirm that
+   User and Password expose writable Value patterns and Password is classified
+   as a password control. Record the client version and supported IDs, without
+   recording field values.
+2. Put focus on User and call `keyboard_login()` using credentials supplied
+   at runtime. Confirm that bringing the dialog forward preserves User focus
+   and that Enter after SetValue produces a successfully authenticated session.
+3. Repeat with a dedicated account whose password includes SendKeys special
+   characters (`%+^{}()` and a literal `{TAB}{ENTER}`), where allowed by the
+   test system's password policy. Confirm successful login and no navigation
+   caused by the credential text.
+4. Repeat with focus initially on Client and Language, then with focus moved
+   to another field or window during login. Confirm an `ApplicationError`, no
+   modification of Client/Language or the other window, and no submission.
+5. If required UIA IDs or Value patterns are unavailable, verify safe rejection
+   and document that this client requires the Scripting login path.
+
+During validation, record the logon screen's UIA inventory (IDs only, no values).
+Run steps 2–4 only where the client exposes the required fields, and check safe
+rejection otherwise. Read back the screen through SAP GUI Scripting so that
+verification does not depend on the UIA path being validated.
+
+Recorded result, SAP GUI for Windows 800 (8000.1.15, default options, no
+accessibility mode): UI Automation exposes a single Edit control on the logon
+screen, the command field with automation id `1001`. The User, Password,
+Client and Language fields are not UIA controls at all, so `keyboard_login()`
+raises `ApplicationError` before touching anything, leaves every field and the
+status bar unchanged and submits nothing. Enabling SAP GUI's accessibility
+mode (Options, Accessibility & Scripting, Accessibility) and restarting SAP
+Logon does not change what UI Automation exposes. On this client the Scripting
+login (`find_by_id("wnd[0]/usr/pwdRSYST-BCODE").set_text(...)`) is the
+supported path.
+
 ## Locators
 
 SAP component IDs are the preferred selector. They are the same IDs visible in
@@ -152,29 +210,12 @@ grid.selectedRows = "0"
 This is useful for ALV grids and custom SAP controls. Dedicated high-level grid
 helpers are intentionally outside the first SAP support version.
 
-## Running the bundled SAP suite
+## SAP acceptance
 
-`tests/sap/` drives a live system and keeps every credential out of the
-repository — it reads them from the environment and skips when they are
-missing:
-
-| Variable | Meaning |
-|---|---|
-| `DOLPHIN_SAP_USER` | logon user |
-| `DOLPHIN_SAP_PASSWORD` | logon password |
-| `DOLPHIN_SAP_CLIENT` | client / mandant, e.g. `001` |
-| `DOLPHIN_SAP_LANG` | logon language (default `EN`) |
-| `DOLPHIN_SAP_CONNECTION` | SAP Logon entry to open when no session is running |
-
-```powershell
-$env:DOLPHIN_SAP_USER = "..."; $env:DOLPHIN_SAP_PASSWORD = "..."
-$env:DOLPHIN_SAP_CLIENT = "001"
-pytest tests/sap -v
-```
-
-The fixtures attach to a running SAP GUI and sign in **only** when the
-session sits on the logon screen, so an already-signed-in session is used
-as-is and never disturbed. Every test in the suite is display-only.
+Real SAP validation requires a prepared SAP GUI environment and a dedicated
+account. Source-level stand-ins
+check the wrapper contract; a passing live run is required to claim compatibility
+with a specific client/server configuration.
 
 ## Notes
 

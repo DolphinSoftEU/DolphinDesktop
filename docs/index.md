@@ -5,7 +5,7 @@ Dolphin Desktop is a Python library for testing Windows desktop applications. It
 It is designed around Windows desktop automation through UIA, Win32, image matching, and selected integrations such as Java Access Bridge and Office COM.
 
 ```bash
-pip install dolphin-desktop
+python -m pip install "dolphin-desktop[pytest]==0.2.0"
 ```
 
 ```python
@@ -16,6 +16,8 @@ app = desktop.launch("notepad.exe")
 win = app.window(class_name="Notepad")
 
 editor = win.get_by_role("Document")
+if not editor.exists():
+    editor = win.get_by_role("Edit")
 editor.click()
 editor.type_text("Hello, Dolphin!")
 
@@ -55,7 +57,7 @@ limitations, supported modes, out-of-scope decisions
 | **Mainframe 3270** (z/OS, CICS) | ws3270 subprocess + mock TN3270 server | [Mainframe](guides/mainframe.md) |
 | **Mainframe 5250** (IBM i, AS/400) | Pure-Python TN5250 (no NVT fallback) | [Mainframe](guides/mainframe.md) |
 | **HLLAPI** (PCOMM, Attachmate, Rocket) | ctypes binding to `EHLAPI32.DLL` | [Mainframe](guides/mainframe.md) |
-| **Delphi / VCL** (RAD Studio, Lazarus) | UIA + `TComponent.Name → AutomationId` locator | [Delphi](guides/delphi.md) |
+| **Delphi / VCL** (RAD Studio, Lazarus) | UIA + provider-published ID / caption / index locator | [Delphi](guides/delphi.md) |
 | **PowerBuilder** (2019+ Appeon) | UIA + OCR fallback for DataWindow | [PowerBuilder](guides/powerbuilder.md) |
 | Image fallback | Template matching + OCR with `dolphin-desktop[vision]` | [Image-based](guides/image-based.md) |
 | pytest | `desktop`/`launch` fixtures, CLI options, traces, screenshots, videos, retries | [FAQ](faq.md) |
@@ -63,4 +65,4 @@ limitations, supported modes, out-of-scope decisions
 
 ## Supported Platform
 
-Dolphin Desktop targets Windows 10/11 with Python 3.11 or newer. The package contains placeholder backend classes for other platforms, but the documented and tested product path is Windows desktop automation.
+Dolphin Desktop targets Windows 10/11 with Python 3.11, 3.12, or 3.13. The package contains placeholder backend classes for other platforms, but the documented and tested product path is Windows desktop automation.

@@ -121,7 +121,7 @@ from ._image import ImageLocator, Screen
 from ._java import JavaAccessBridge
 from ._keyboard import Keyboard
 from ._locator import Locator
-from ._logging import get_logger, setup_logging
+from ._logging import Secret, get_logger, setup_logging
 from ._mainframe import (
     AID,
     FieldInfo,
@@ -141,6 +141,16 @@ from ._oracle_forms import (
     OracleFormsLov,
     OracleFormsMenu,
     OracleFormsWindow,
+)
+from ._outlook import OutlookApp, OutlookAppointment, OutlookAttachment, OutlookFolder, OutlookMail
+from ._powerpoint import (
+    PowerPointApp,
+    PowerPointChart,
+    PowerPointPresentation,
+    PowerPointShape,
+    PowerPointSlide,
+    PowerPointTable,
+    PowerPointTextRange,
 )
 from ._qt_elements import (
     GraphicsViewElement,
@@ -225,6 +235,18 @@ __all__ = [
     "OracleFormsLov",
     "OracleFormsMenu",
     "OracleFormsWindow",
+    "OutlookApp",
+    "OutlookAppointment",
+    "OutlookAttachment",
+    "OutlookFolder",
+    "OutlookMail",
+    "PowerPointApp",
+    "PowerPointChart",
+    "PowerPointPresentation",
+    "PowerPointShape",
+    "PowerPointSlide",
+    "PowerPointTable",
+    "PowerPointTextRange",
     "QmlElement",
     "QtAgentClient",
     "QtAgentInjectError",
@@ -240,6 +262,7 @@ __all__ = [
     "SapLocator",
     "SapSession",
     "Screen",
+    "Secret",
     "Stopwatch",
     "Tab",
     "TerminalField",

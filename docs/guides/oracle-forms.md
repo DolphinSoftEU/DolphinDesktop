@@ -9,16 +9,15 @@ port cleanly across Forms 10g / 11g / 12c and remain readable.
 
 ## What works
 
-* **Direct JAB API** for reads and writes. `type_text()` uses
-  `setTextContents`; `text()` / `value()` use `getAccessibleTextRange`;
-  buttons and menu items invoke via `doAccessibleActions`. Zero mouse
-  cursor movement, zero global keyboard capture — the tests run
-  reliably from background processes, RDP sessions, and CI machines
-  where `SetForegroundWindow` is blocked by the OS.
-* **Function keys** (F1–F12 + Shift/Ctrl/Alt combinations) delivered
-  via `PostMessage(WM_KEYDOWN)` to the target HWND. Works without
-  foregrounding the window; hits the Swing `InputMap`/`ActionMap`
-  chain the way a real user's keystroke would.
+* **JAB reads and writes.** Item `type_text(clear=True)` first tries
+  `setTextContents`; reads use the target's accessible text/value interfaces.
+  Buttons and menu items first try accessible actions. These paths can avoid
+  physical input, but missing actions or editable-text support can trigger a
+  foreground mouse/keyboard fallback. `clear=False` also uses keyboard input.
+  Verify the selected operations before relying on background execution.
+* **Function keys.** Unmodified keys use window-targeted messages.
+  Shift/Ctrl/Alt combinations require foreground input; see the key-binding
+  and modifier limitations below.
 * **Menu bar** navigation via ALT+first-letter mnemonic and JAB action
   invocation on the resolved menu item.
 * **List of Values (F9)** wrapper — `.lov().select("SMITH")` opens
@@ -33,7 +32,7 @@ port cleanly across Forms 10g / 11g / 12c and remain readable.
 from dolphin_desktop import Desktop, OracleFormsKey
 
 app = Desktop().launch_oracle_forms(
-    jnlp="http://forms.example.com/forms/frmservlet?config=hr",
+    jnlp="https://forms.example.com/forms/frmservlet?config=hr",
 )
 form = app.form()
 form.wait_ready(timeout=30)
@@ -114,7 +113,7 @@ named shortcuts (`app.enter_query()`, `app.execute_query()`, …).
 
 **F10 caveat.** Swing intercepts F10 for menu-bar activation before
 the InputMap fires. In real Forms 12c the Save keybinding still works
-because Forms overrides the default; in the mock we ship, F10 opens
+because Forms overrides the default; a Swing host can instead open
 the menu bar. If your target Forms build has the same limitation, use
 `app.menu("Action").select("Save")` instead.
 
@@ -132,11 +131,18 @@ The JVM the Forms client uses must be launched with
 `-Djava.accessibility=true` (dolphin's `launch_oracle_forms` adds this
 flag by default) so the JVM loads the JAB helper on startup.
 
+The bridge DLL and `jabswitch.exe` are loaded/run only from the absolute
+`JAVA_HOME\bin` location configured explicitly in the environment. Dolphin does not load a
+bare `windowsaccessbridge-64.dll` or `jabswitch.exe` name from the current
+directory or ambient `PATH`; keep `JAVA_HOME` pointed at a trusted JRE/JDK
+installation. If that absolute JDK path or executable is unavailable,
+initialization fails closed.
+
 ## Backend selection
 
 ```python
 # Java Web Start (real Oracle Forms deployment)
-app = desktop.launch_oracle_forms(jnlp="http://forms.example.com/frmservlet")
+app = desktop.launch_oracle_forms(jnlp="https://forms.example.com/frmservlet")
 
 # Forms Standalone Launcher (FSAL) — bundled JAR
 app = desktop.launch_oracle_forms(jar=r"C:\forms\frmsal.jar")
@@ -184,15 +190,15 @@ def test_query_runs(form_app):
     assert "Record 1" in form_app.status_line()
 ```
 
-The `tests/oracle_forms/` directory ships a full
-Swing mock and a 14-test integration suite as a reference.
+For a runnable Java Access Bridge example, see `examples/java_swing/`.
 
 ## Common failure modes
 
 **`OracleFormsError: no top-level window found`**
 : The JVM launched but its window is not surfaced to pywinauto. Check
-  that JAB is enabled (`jabswitch /enable`) and that
-  `windowsaccessbridge-64.dll` is on PATH.
+  that JAB is enabled (`jabswitch /enable`) and that `JAVA_HOME` points to
+  the trusted JRE/JDK containing `bin\windowsaccessbridge-64.dll` and
+  `bin\jabswitch.exe`.
 
 **`Oracle Forms window did not become ready`**
 : JAB never established a root-context handshake. Increase

@@ -31,13 +31,38 @@ config(timeout=20)
 button = win.get_by_title("Save").timeout(5)
 ```
 
+For native Win32 menu clicks, the timeout is one waiting budget shared by
+item lookup, opening parent menus, and waiting for popup geometry. Each phase
+uses the remaining time. `timeout(0)` makes immediate probes without polling.
+The timeout does not interrupt focus changes, native API calls, or mouse input
+already being delivered; their execution time can extend the action's wall time.
+
+Native menu clicks also wait until the screen point belongs to the expected
+owner/menu, checking window, process, GUI thread and popup HMENU. The point must
+also identify the resolved menu index with `MenuItemFromPoint`, retain its
+command ID/submenu/caption identity, and lie inside its freshly read rectangle.
+A final hit-test
+runs immediately before a physical `SendInput` batch, without a cursor-settling
+delay. If ownership changes at that point, the action fails without dispatching
+the click. Hit-testing and window stacking are not an atomic Windows operation;
+another window can still change after the final check.
+
+For popup items, enabled state is evaluated after opening the parent so that
+the application can update it in `WM_INITMENUPOPUP`, and checked again before
+the final hit-test. No further menu-state query runs between that hit-test and
+input. A command that becomes disabled receives no target click; its parent may
+already have been opened. If the menu is reordered during an action, the action
+fails safely; a fresh action resolves the requested caption at its new index.
+
 ## Backends
 
 | Backend | Use for | Notes |
 | --- | --- | --- |
 | `uia` | Modern Windows applications | Default backend, based on Microsoft UI Automation |
 | `win32` | Older Win32, MFC, Delphi, or legacy controls | Use `Desktop(backend="win32")` or `Desktop.for_legacy_apps()` |
+| `qt` | Qt widgets through UIA | Qt-aware window/locator wrappers; native agent APIs also support QObject, QML and graphics |
 | `image` | Visual fallback | Used through `ImageLocator`, `Screen`, or `window.image(...)`; install `dolphin-desktop[vision]` |
+| `sap`, `cdp`, `java`, `delphi`, `mainframe` | Stack-specific facades | Use the corresponding `Desktop` factories and stack guides |
 
 The package also exposes placeholder backend classes for future or plugin use. The documented runtime path is Windows.
 
@@ -85,7 +110,12 @@ def qt_app(desktop):
         yield app
 ```
 
-Then in CI: `QT_APP_PATH=D:/agent/artifacts/app.exe pytest tests/ -v`.
+Set the path in the Windows CI process, for example in PowerShell:
+
+```powershell
+$env:QT_APP_PATH = "D:\agent\artifacts\app.exe"
+pytest tests/ -v
+```
 
 ## pytest Fixtures
 

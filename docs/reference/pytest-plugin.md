@@ -37,10 +37,23 @@ def test_with_args(launch):
 
 ```python
 def test_backend_name(dolphin_backend):
-    assert dolphin_backend in {"uia", "win32"}
+    assert isinstance(dolphin_backend, str)
 ```
 
-Session-scoped value of `--dolphin-backend`.
+Session-scoped value of `--dolphin-backend`. Accepts registered backend IDs,
+including installed `dolphin_desktop.backends` entry points and backends registered
+with `register_backend()` while loading `conftest.py`, plus `auto`. Final
+validation runs after collection, so nested `conftest.py` files discovered
+under the selected test paths can register backends before validation.
+Unknown IDs produce a pytest usage error listing registered backends; there is no
+fallback. Validation does not construct backends or check optional dependencies.
+The `desktop` fixture passes the selected ID to `Desktop`; backend capabilities
+and stack-specific launch requirements still apply. Native `Desktop.launch()`
+and `connect()` use pywinauto; external providers can be called through the public
+`resolve_backend(dolphin_backend)` API.
+With `auto`, `dolphin_backend` retains the requested string, while `Desktop`
+resolves it once during construction (`uia` on Windows) and uses that concrete
+backend for `launch()`, `connect()` and capability queries.
 
 ### `dolphin_timeout`
 
@@ -64,7 +77,7 @@ Session-scoped flag set by `--dolphin-headless` or `DOLPHIN_HEADLESS=1`.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--dolphin-backend {uia,win32}` | `uia` | pywinauto backend |
+| `--dolphin-backend ID` | `uia` | Registered backend ID (including installed plugins), or `auto` |
 | `--dolphin-timeout FLOAT` | `10.0` | Default element wait timeout in seconds |
 | `--dolphin-screenshot-on-fail` | off | Capture a full-screen PNG on test failure |
 | `--dolphin-headless` | off | Create `Desktop(hidden=True)` through the fixture |
@@ -95,6 +108,7 @@ pytest tests/ -v --dolphin-video=keepfailedonly
 | `DOLPHIN_VIDEO` | `keepfailedonly` | Video mode: `keepall`, `keepfailedonly`, `off` |
 | `DOLPHIN_VIDEO_FPS` | `10` | Video frame rate |
 | `DOLPHIN_HEADLESS` | `0` | Headless desktop flag |
+| `DOLPHIN_DESKTOP_LOG_LEVEL` | `INFO` | Logging level; takes precedence over `DOLPHIN_LOG_LEVEL` |
 | `DOLPHIN_LOG_LEVEL` | `INFO` | Logging level |
 | `DOLPHIN_RETRY` | `0` | Retry count for transient Dolphin errors |
 | `DOLPHIN_TELEMETRY` | `off` | Telemetry opt-in flag |
@@ -122,3 +136,35 @@ def test_slow_flow(launch):
 | Traces | `dolphin-traces/` |
 | Videos | `dolphin-videos/` |
 | Fallback HTML report | `dolphin-report.html` when Allure is not installed |
+
+## Stability and diagnostics
+
+### Logging
+
+Dolphin logging accepts only `DEBUG`, `INFO`, and `ERROR`; the default is
+`INFO`. `--dolphin-desktop-log-level` is validated by pytest, while
+`config(log_level=...)` raises `ValueError` for any other value without
+changing the configured defaults or logger state. The same three values are
+accepted case-insensitively by the Python API.
+
+For environment configuration, `DOLPHIN_DESKTOP_LOG_LEVEL` takes precedence
+over `DOLPHIN_LOG_LEVEL`. The selected value is validated after precedence is
+resolved; an invalid value emits a warning and falls back safely to `INFO`,
+even when the lower-priority variable is valid.
+
+In standalone use, `setup_logging()` owns one console handler on the
+`dolphin_desktop` logger and repeated calls reuse it. Under pytest, pytest
+owns the handlers: Dolphin installs none on its logger, leaves propagation
+enabled, and applies the level/redaction configuration so messages reach
+pytest's handlers without duplicate output.
+
+`--dolphin-screenshot-on-fail` is diagnostic support and must not change the
+test result. If the screenshot backend cannot capture an image (for example,
+because the desktop is locked or `ImageGrab` raises), Dolphin logs a warning
+and preserves the original test exception and exit status. It does not emit a
+pytest `INTERNALERROR` caused by the failed capture.
+
+The JUnit/XML, fallback HTML, pytest stdout/stderr and diagnostic log remain
+available for investigating the failure. A successful capture is written under
+`dolphin-screenshots/` and its path is included in the test report; a failed
+capture does not create a misleading or partial PNG.

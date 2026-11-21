@@ -4,8 +4,8 @@ dolphin_desktop ships an in-process **Qt Agent DLL** that extends Qt
 support beyond what UIA can see — primarily Qt Quick / QML and
 `QGraphicsView` custom-paint widgets that are opaque to UIA.
 
-> - `dolphin_qt5_agent.dll` — built against Qt 5.15.2 + MSVC v142.
-> - `dolphin_qt6_agent.dll` — built against Qt 6.11.1 + MSVC v143.
+> - `dolphin_qt5_agent.dll` — built against Qt 5.15.2 + MSVC 19.50.35726.
+> - `dolphin_qt6_agent.dll` — built against Qt 6.10.3 + MSVC 19.50.35726.
 >
 > Both DLLs ship with the Python wheel as prebuilt binaries — no
 > separate install or build step.
@@ -48,10 +48,11 @@ meta-object system, and dispatch actions through
 
 We use `CreateRemoteThread + LoadLibraryW` (standard, well-documented
 Windows pattern). The agent is built as a regular Qt-linked DLL that
-exports a single C entry point:
+exports authenticated start and stop entry points:
 
 ```c
-__declspec(dllexport) int dolphin_qt_agent_start(const char* pipe_name);
+__declspec(dllexport) int dolphin_qt_agent_start_v2(const char* start_config_json);
+__declspec(dllexport) int dolphin_qt_agent_stop_v2(void);
 ```
 
 The injection helper is `src/dolphin_desktop/_qt_inject.py`. It calls
@@ -73,7 +74,9 @@ WaitForSingleObject(hthread, 30_000)               # bounded, never INFINITE
 ```
 
 After `LoadLibraryW` returns, we find the exported
-`dolphin_qt_agent_start` and call it the same way, passing the pipe name.
+`dolphin_qt_agent_start_v2` and pass a startup JSON containing the random pipe
+name, controller PID and a separate session secret. The native start function
+copies these values before returning.
 Its address is `remote_module_base + rva`, where the RVA comes from parsing
 the DLL's PE export table on disk — the agent links against Qt, so loading
 it locally to resolve the export is not an option.
@@ -86,13 +89,11 @@ Two constraints follow from this design:
   `IsWow64Process2`), the agent DLL's PE `machine` field and the host Python,
   and raises `QtAgentInjectError` when they differ instead of starting a
   remote thread at a foreign address (which terminates the target).
-- **Remote allocations are leaked, not freed, once a remote thread has read
-  them.** `VirtualFreeEx` while the remote thread is still running unmaps the
-  argument it is reading and faults the AUT, so on a wait timeout the
-  allocation is deliberately left behind. The pipe-name buffer is never freed
-  at all — not even on success — because the agent's pipe server outlives a
-  client disconnect (which is what `reattach()` relies on) and may re-read
-  the pointer to re-create the pipe.
+- **Remote allocations are retained on timeout.** `VirtualFreeEx` while a
+  remote thread is still running unmaps the argument it is reading and faults
+  the AUT. The v2 start export copies its config before returning, so a
+  completed call releases the temporary page; a timed-out call leaves it in
+  place until the AUT exits.
 
 The client verifies the pipe's server process id
 (`GetNamedPipeServerProcessId`) matches the injected pid before sending
@@ -106,13 +107,15 @@ test user before the pid check ever runs.
 
 ### IPC
 
-A named pipe (`\\.\pipe\dolphin_qt_<pid>`) with line-delimited JSON:
+A per-attach named pipe (`\\.\pipe\dolphin_qt_<pid>_<random>`) with
+line-delimited JSON. The `auth` value is generated for each attach and is sent
+separately from the pipe name:
 
 ```json
-{"id": 1, "op": "tree", "root": "QMainWindow#main_window"}
+{"id": 1, "op": "tree", "auth": "<session-secret>"}
 {"id": 1, "ok": true, "result": [{"obj": "QPushButton", "name": "btn_ok", ...}]}
 
-{"id": 2, "op": "invoke", "target": "QPushButton#btn_ok", "method": "click()"}
+{"id": 2, "op": "invoke", "auth": "<session-secret>", "target": "QPushButton#btn_ok", "method": "click()"}
 {"id": 2, "ok": true}
 
 {"id": 3, "op": "qml_root"}
@@ -142,7 +145,11 @@ continues. That forgiveness window holds the last 256 abandoned ids —
 beyond it a late reply is indistinguishable from a desync and is treated as
 one.
 
-Replies are read with a bounded per-request timeout
+Requests are bounded on both sides of the pipe: the Python client caps each
+serialized request at 8 MiB, JSON nesting at 32 levels, and JSON complexity at
+10,000 nodes; the native server enforces the same byte, depth and node limits.
+The server also caps responses at 16 MiB and closes idle or partial requests
+after a bounded interval. Replies are read with a bounded per-request timeout
 (`QtAgentClient.rpc_timeout`, 30 s) and a 16 MiB size cap. Expiry raises
 `QtAgentTimeoutError` and leaves the connection **usable** — a Qt event loop
 blocked behind a native modal dialog is an ordinary, recoverable condition.
@@ -189,7 +196,8 @@ That first access:
 1. Resolves the bundled `dolphin_qt{5,6}_agent.dll`.
 2. Refuses if the target's architecture does not match the DLL and this Python.
 3. Injects via `CreateRemoteThread` + `LoadLibraryW`.
-4. Calls `dolphin_qt_agent_start` remotely with the pipe name.
+4. Calls `dolphin_qt_agent_start_v2` remotely with the pipe name, secret and
+   controller PID.
 5. Connects to the agent's named pipe (with retry loop) after checking the
    pipe's server pid.
 
@@ -200,21 +208,71 @@ when no agent is attached.
 
 ## Build
 
-The agent DLLs are **prebuilt binaries bundled with the wheel**; their C++
-source is not part of this repository. Both are `IMAGE_FILE_MACHINE_AMD64`
-and export `dolphin_qt_agent_start` and `dolphin_qt_agent_stop`.
+The C++ source and pinned build scripts are in `src_cpp/qt_agent/`. The scripts
+build the Qt 5.15.2 and Qt 6.10.3 variants with MSVC 19.50.35726, verify the v2
+start/stop exports, and record the staged source tree, toolchain, size and
+SHA-256 in `agent_manifest.json`.
+The build also pins Windows SDK package 10.0.26100.7705 (directory
+10.0.26100.0), CMake 3.31.10 and the Ninja
+1.11.1.4 PyPI distribution, normalizes source/build/Qt SDK paths, and requires
+QML support. CI rebuilds both ABIs in two clean locations and compares them
+to the shipped DLLs without updating the manifest. This verification gates
+package creation and release provenance.
+
+CI provisions MSVC independently of the runner's installed Visual Studio.
+The component ID `Microsoft.VisualStudio.Component.VC.14.50.18.0.x86.x64`
+does not pin a servicing revision: it previously delivered compiler
+19.50.35739 while these DLLs require 19.50.35726. CI now downloads the exact
+compiler, resource, header and CRT VSIX payloads, plus Windows SDK NuGet packages, listed in
+`.github/toolchains/msvc.json`, verifies their sizes and SHA-256 values,
+and extracts them into a fresh directory. The MSVC payload URLs/hashes originate
+from Microsoft's Visual Studio 18.4.0 catalog; the SDK comes from Microsoft's
+Microsoft.Windows.SDK.CPP and Microsoft.Windows.SDK.CPP.x64 packages. Installed
+runner compilers and registry-selected Windows SDKs are not used for the Qt build.
+
+For a local reproduction with the same isolated compiler:
+
+```powershell
+uv run --no-sync python .github/scripts/install_msvc.py --destination C:\build-tools\dolphin-msvc
+. .github/scripts/enter_msvc.ps1 -ToolchainRoot C:\build-tools\dolphin-msvc
+```
+
+Put the locked CMake/Ninja executables from `.venv/Scripts` first on PATH, set
+`DOLPHIN_QT5_ROOT` / `DOLPHIN_QT6_ROOT`, then run
+`.github/scripts/verify_qt_agents.ps1`. The initializer replaces compiler,
+include and library search paths with the downloaded toolchain and checks
+the actual compiler banner. A different compiler revision is still rejected;
+DLL/manifest verification remains required.
+
+The SDK directory name does not pin its servicing revision. A controlled
+Qt5 rebuild with SDK package 10.0.26100.9457 reproduced the hosted failure hash
+exactly; SDK package 10.0.26100.7705 reproduces the shipped DLL. The manifest
+therefore records `windows_sdk_package_version` separately from the SDK
+directory version, and CI downloads hash-pinned SDK headers, import libraries,
+rc and mt together with MSVC. System-installed SDK servicing cannot change
+these build inputs.
+Both the shared builder and the verification script normalize the temporary
+parent and deletion target through `build_cleanup.ps1`. Equivalent Windows
+paths, including trailing separators, cannot trigger a false cleanup refusal.
+Cleanup errors fail otherwise successful builds; after a primary build error,
+they produce warnings while preserving that primary error. The CI entry point
+accepts `-Revision (git write-tree)` for validation of a staged source snapshot
+before committing, with `HEAD` remaining the default in CI.
+
+The bundled DLLs are `IMAGE_FILE_MACHINE_AMD64` and use the authenticated v2
+start and stop exports. Python refuses to call the legacy unauthenticated
+start export. The manifest records each DLL's protocol, staged source tree,
+toolchain, size and SHA-256.
 
 | File | Target |
 |---|---|
-| `dolphin_qt6_agent.dll` | Qt 6.11.x processes (e.g. PySide6) |
+| `dolphin_qt6_agent.dll` | Qt 6.10.x processes (e.g. PySide6 6.10.3) |
 | `dolphin_qt5_agent.dll` | Qt 5.15.x processes (e.g. PyQt5 / older apps) |
 
-They live in `src/dolphin_desktop/_qt_agent/` and ship with the wheel, so
-end users need no build toolchain.
-
-Anything that requires a DLL change — the pipe's security descriptor, or
-whether `dolphin_qt_agent_start` copies its `pipe_name` argument — cannot
-be verified or fixed from this repository.
+They live in `src/dolphin_desktop/_qt_agent/` and ship with the wheel, so end
+users need no build toolchain. `agent_dll_for()` now fails closed if the
+manifest is absent, malformed, incomplete, or if the DLL size or SHA-256 does
+not match. Build instructions are in `src_cpp/qt_agent/README.md`.
 
 ## Limitations
 
@@ -224,19 +282,26 @@ be verified or fixed from this repository.
   never injected into; drive those apps with the UIA backend, which
   needs no agent. Adding 32-bit support means building an x86 agent *and*
   running the tests from an x86 Python.
-- **No detach** — the DLL *does* export `dolphin_qt_agent_stop` alongside
-  `dolphin_qt_agent_start`, but dolphin never calls it: nothing in this
-  repository establishes when the agent's own threads are finished with the
-  module, and a remote `FreeLibrary` that unmaps it under a live thread
-  faults the AUT. So the agent stays loaded, with its thread and pipe, for
-  the lifetime of the target process; `QtAgentClient.close()` closes only the
-  client end. This matters for `Desktop.connect(pid=…)` against an app
-  dolphin did not launch: the injection is permanent until that app exits.
-  Use `QtAgentClient.reattach()` to rebuild a wedged connection instead.
-- **Unauthenticated pipe** — `\\.\pipe\dolphin_qt_<pid>` has a predictable
-  name and the agent's security descriptor is whatever the DLL sets. The
-  client verifies the server's process id, so a squatter cannot impersonate
-  the agent. See `SECURITY.md` for what this means for you in practice.
+- **No unload** — `QtAgentClient.close()` asks the v2 agent to stop and join
+  its pipe thread, waiting up to 15 s for the remote stop call. The DLL stays
+  mapped until the AUT exits; the client never calls `FreeLibrary` while Qt
+  callbacks could still be using agent code.
+  `reattach()` starts a new authenticated server with the same per-attach
+  secret.
+- **Authenticated IPC** — the server DACL grants access only to the target
+  process's logon SID and pipe creation includes
+  `PIPE_REJECT_REMOTE_CLIENTS`. The server accepts only the controller PID
+  supplied during injection and authenticates every request with a random
+  per-attach secret transferred through `WriteProcessMemory`, separate from
+  the enumerable pipe name. Unauthorized connections are disconnected before
+  a request is read. Client and server enforce request size, JSON depth and
+  complexity limits; server responses and idle connections are bounded too.
+  The client verifies the server PID and refuses a reused target PID.
+  The server also retains a SYNCHRONIZE handle to the controller process.
+  A Windows thread-pool wait stops the worker if that process exits, including
+  `TerminateProcess`; this expires the old pipe without Python `close()` or
+  unloading the DLL. A new owner can attach to the same running AUT afterward.
+  See `SECURITY.md` for the threat model.
 - **Per-Qt-major-version DLL** — Qt 5 and Qt 6 ABIs differ. We ship both,
   named `dolphin_qt5_agent.dll` and `dolphin_qt6_agent.dll`; the loader
   picks based on `Application.qt_version()`.
@@ -245,6 +310,21 @@ be verified or fixed from this repository.
   short of cooperative integration.
 - **Sandboxed apps** — UWP / packaged apps with isolated containers cannot
   be injected without elevated privileges and AppContainer-aware tooling.
+
+## Validation coverage
+
+The required Qt5/Qt6 component suite includes six abrupt-owner-death scenarios:
+an authenticated idle connection, a disconnected transport waiting for
+reconnection, and an unfinished JSON frame, each with both Qt versions. The
+test checks a real authenticated ping, the actual controller PID, explicit
+Win32 `TerminateProcess`, its exit code, absence of Python cleanup, continued
+AUT liveness, stable disappearance of the old pipe and a new owner's successful
+attach/ping/introspection. These scenarios may not be skipped in CI.
+
+Restricted-token and localhost-SMB tests remain controls for the local security
+boundary. They do not establish results for a second logged-in account or an
+independent remote machine. See [the system isolation checklist](../guides/qt-agent-system-isolation.md)
+for the remaining environment-dependent checks.
 
 ## Python API
 

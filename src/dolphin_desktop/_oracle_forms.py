@@ -296,6 +296,20 @@ class OracleFormsBlock:
                     return OracleFormsItem(jab, name=candidate, app=self._app)
             except ElementNotFoundError:
                 continue
+            except OracleFormsError as exc:
+                # Resolving the JAB locator also resolves the top-level
+                # window — a failure here (e.g. no window found at all) is
+                # not "this candidate name doesn't exist", it's a different
+                # class of failure that won't be fixed by trying the next
+                # candidate name. Surface it with the block/item context
+                # instead of silently falling through to a misleading
+                # "item not found" (same fix as OracleFormsApp.item()).
+                reason = exc.args[0] if exc.args else "lookup failed"
+                raise OracleFormsError(
+                    f"item {name!r} lookup failed in block {self._name!r} for Oracle Forms "
+                    f"app: {reason}",
+                    hint=exc.hint,
+                ) from exc
         raise ElementNotFoundError(
             f"item {name!r} not found in block {self._name!r} (tried names: {candidates})",
             hint=(
@@ -407,6 +421,14 @@ class OracleFormsWindow:
                     if ctx is not None:
                         session.release(*ctx)
                         return
+            except OracleFormsError:
+                # A misconfigured title_re (or no window at all) is not a
+                # transient JAB hiccup that another poll might resolve —
+                # it is the same failure every time, and swallowing it here
+                # would only ever surface the generic timeout below,
+                # discarding the specific, actionable diagnostic
+                # _primary_hwnd() already raised.
+                raise
             except Exception:
                 pass
             time.sleep(0.25)
@@ -477,7 +499,17 @@ class OracleFormsApp:
         Prefer ``block(...).item(...)`` when the block is known; use
         this shortcut for globally-unique items (e.g. header buttons).
         """
-        jab = self._locator(name=name)
+        try:
+            jab = self._locator(name=name)
+        except OracleFormsError as exc:
+            # Resolving the JAB locator also resolves the top-level window.
+            # Keep that domain error, but add the public operation and item
+            # name so a failed facade call remains diagnosable.
+            reason = exc.args[0] if exc.args else "lookup failed"
+            raise OracleFormsError(
+                f"item {name!r} lookup failed for Oracle Forms app: {reason}",
+                hint=exc.hint,
+            ) from exc
         return OracleFormsItem(jab, name=name, app=self)
 
     def menu(self, name: str) -> OracleFormsMenu:
@@ -801,13 +833,20 @@ class OracleFormsApp:
             for w in candidates:
                 if re.search(self._title_re, w.window_text() or ""):
                     return w.handle
+            raise OracleFormsError(
+                f"no top-level window matched title_re={self._title_re!r}",
+                hint=(
+                    "verify the Oracle Forms title selector and wait for the "
+                    "client window to finish starting"
+                ),
+            )
         if candidates:
             return candidates[0].handle
         raise OracleFormsError(
             "no top-level window found for Oracle Forms app",
             hint=(
                 "the JVM window may not be surfaced to JAB yet — increase launch "
-                "startup_delay=, or check that windowsaccessbridge-64.dll is on PATH"
+                "startup_delay=, or check JAVA_HOME for the trusted JAB DLL"
             ),
         )
 

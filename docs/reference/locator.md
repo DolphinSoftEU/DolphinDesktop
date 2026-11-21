@@ -28,6 +28,13 @@ loc.select_text()               # Ctrl+A on the element
 loc.scroll_into_view()
 ```
 
+For UIA, `get_by_automation_id()` maps to the provider's AutomationId and
+`control_type` maps to the UIA role. Prefer both when the application publishes
+them; do not replace them with screen coordinates or an element index. WPF,
+WinForms, and WinUI/UWP controls can expose different subsets of UIA
+properties, so a missing provider property is an application accessibility
+boundary rather than a locator that should silently broaden its search.
+
 ## Mouse actions
 
 ```python
@@ -52,6 +59,16 @@ loc.get_attribute("automation_id")        # raises AttributeError if unpublished
 loc.get_attribute("automation_id", None)  # returns the default instead
 ```
 
+`bounding_box()` returns exactly `{"x": x, "y": y, "width": width, "height": height}`,
+as do `Window`, Delphi and Java Access Bridge wrappers. `x` and `y` are absolute
+screen coordinates and may be negative on a multi-monitor desktop. Width and
+height are dimensions, not right/bottom edges. Queries do not interact with the
+element.
+
+When migrating consumers of the former `left`/`top`/`right`/`bottom` keys, use
+`x` for `left`, `y` for `top`, `x + width` for `right`, and `y + height` for
+`bottom`. Do not require the legacy keys alongside the four current keys.
+
 Attribute names are the snake_case ones pywinauto's `element_info` exposes
 (`automation_id`, `class_name`, `control_type`, `name`, `rich_text`), not the
 PascalCase UIA property names. A name the element does not publish raises
@@ -69,6 +86,21 @@ loc.wait_until_hidden(timeout=10)
 loc.wait_until_enabled(timeout=10)
 ```
 
+Wait after an action for the visible result instead of using a fixed sleep:
+
+```python
+status = win.locator(auto_id="status", control_type="Text")
+save = win.locator(auto_id="btnSave", control_type="Button")
+save.wait_for(state="enabled")
+save.click()
+status.wait_for_text("Saved", contains=False)
+assert status.text() == "Saved"
+```
+
+`exists()` is an immediate probe unless a timeout is passed; it is not a
+replacement for `wait_for()` when the test requires a visible or enabled
+control.
+
 ## Collections
 
 ```python
@@ -82,6 +114,19 @@ third = loc.nth(2)
 # Count
 n = loc.count()
 ```
+
+Negative indices count from the end (`loc.nth(-1)` selects the last match).
+For UIA searches under an already resolved wrapper, selectors using exact
+`title`, `control_type`, and/or `auto_id` resolve negative indices by enumerating
+the entire realized TreeWalker subtree in depth-first order. This includes
+matches omitted by FindAll, but does not realize virtualized items itself.
+Visible searches filter hidden matches before indexing; presence searches
+include them. An interrupted enumeration fails rather than selecting from a
+partial result. Other selectors and backends use pywinauto's search results.
+
+TreeWalker checks a positive timeout's deadline between nodes and provider
+calls. An individual COM call can still block beyond that deadline.
+`timeout(0)` performs one attempt without a wall-clock limit on that attempt.
 
 ## Chaining
 
@@ -112,3 +157,7 @@ loc = win.locator(
 img = loc.screenshot()              # PIL.Image of this element
 img = loc.screenshot("elem.png")    # save to file
 ```
+
+The optional path is written by the caller's process and is not a managed
+artifact. Keep it under the test's temporary directory and unlink it in
+`finally`; this applies on both successful and failed UIA flows.

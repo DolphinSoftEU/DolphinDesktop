@@ -9,132 +9,314 @@ on:
         type: choice
         options:
           - testpypi
-          - pypi
         default: testpypi
   push:
     tags:
       - "v*.*.*"
 
+# Default to read-only for every job. The OIDC token used by Trusted
+# Publishing (id-token: write) is granted per job, only to the two jobs that
+# actually publish — build and the smoke tests never receive it.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  build:
-    name: Build distributions
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.meta.outputs.version }}
-      target: ${{ steps.meta.outputs.target }}
-
+  minimum-dependencies:
+    name: "Minimum dependencies / Python ${{ matrix.python-version }} / ${{ matrix.profile }}"
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        profile: [base, fast, vision, cdp, docs, telemetry, pytest, all, all-extras]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked build and audit tools
+        run: uv sync --locked --only-group build --only-group security
+
+      - name: Build wheel
+        run: uv run --no-sync python -m build --no-isolation --wheel --outdir artifacts/minimum/dist
+
+      - name: Install and audit minimum dependencies from wheel metadata
+        shell: pwsh
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          $wheel = (Get-ChildItem artifacts/minimum/dist/*.whl).FullName
+          $options = @()
+          if ($env:PROFILE -eq "all-extras") { $options += "--all-extras" }
+          elseif ($env:PROFILE -ne "base") { $options += @("--extra", $env:PROFILE) }
+          uv run --no-sync python .github/scripts/check_minimum_dependencies.py --wheel $wheel --output artifacts/minimum/evidence @options
+
+      - name: Upload minimum installation and audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: minimum-dependencies-${{ matrix.python-version }}-${{ matrix.profile }}
+          path: artifacts/minimum/
+          if-no-files-found: error
+
+  security:
+    name: "Security gate (CVE / secrets / SAST) / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
-      - name: Install build tools
-        run: python -m pip install --upgrade build twine
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked security tools
+        run: uv sync --locked --only-group security
+
+      - name: Dependency audit (CVE)
+        shell: bash
+        run: |
+          uv export --locked --no-hashes --format requirements-txt --all-extras --all-groups \
+            --no-emit-project > requirements.audit.txt
+          uv run --no-sync pip-audit -r requirements.audit.txt --no-deps --disable-pip --strict
+
+      - name: Static analysis (SAST)
+        run: uv run --no-sync bandit -r src/dolphin_desktop -ll
+
+      - name: Secret scan
+        run: uv run --no-sync python .github/scripts/scan_secrets.py
+
+  build:
+    name: Prepare verified CI distributions
+    needs: [security, minimum-dependencies]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      target: ${{ steps.meta.outputs.target }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      ci_run_id: ${{ steps.provenance.outputs.ci_run_id }}
+      ci_run_attempt: ${{ steps.provenance.outputs.ci_run_attempt }}
+      manifest_sha256: ${{ steps.hashes.outputs.manifest_sha256 }}
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
 
       - name: Validate release target
         id: meta
         env:
           EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
+          RELEASE_REF: ${{ github.ref }}
           DISPATCH_TARGET: ${{ inputs.target }}
-        run: |
-          python - <<'PY'
-          import os
-          import pathlib
-          import re
-          import sys
+        run: python .github/scripts/validate_release.py
 
-          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
-          version = re.search(r'^version = "([^"]+)"$', text, re.MULTILINE).group(1)
-          event_name = os.environ["EVENT_NAME"]
-          ref_name = os.environ["REF_NAME"]
+      - name: Audit native release policies
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_TARGET: ${{ steps.meta.outputs.target }}
+        run: python .github/scripts/release_preflight.py
 
-          if event_name == "push":
-              rc = re.fullmatch(r"v(\d+\.\d+\.\d+)-rc\.(\d+)", ref_name)
-              prod = re.fullmatch(r"v(\d+\.\d+\.\d+)", ref_name)
-              if rc:
-                  expected_version = f"{rc.group(1)}rc{rc.group(2)}"
-                  target = "testpypi"
-              elif prod:
-                  expected_version = prod.group(1)
-                  target = "pypi"
-              else:
-                  print(f"Unsupported release tag: {ref_name}", file=sys.stderr)
-                  sys.exit(1)
-              if version != expected_version:
-                  print(
-                      f"pyproject.toml version {version!r} does not match tag "
-                      f"{ref_name!r} (expected {expected_version!r})",
-                      file=sys.stderr,
-                  )
-                  sys.exit(1)
-          else:
-              target = os.environ["DISPATCH_TARGET"]
+      - name: Validate exact CI SHA and artifact provenance
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_TARGET: ${{ steps.meta.outputs.target }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: python .github/scripts/release_provenance.py
 
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write(f"version={version}\n")
-              fh.write(f"target={target}\n")
-          PY
+      - name: Download CI artifact and verify archive digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_ARTIFACT_ID: ${{ steps.provenance.outputs.artifact_id }}
+          CI_ARTIFACT_DIGEST: ${{ steps.provenance.outputs.artifact_digest }}
+        run: python .github/scripts/download_ci_artifact.py
 
-      - name: Build wheel and sdist
-        run: python -m build
+      - name: Verify distributions and CI identity
+        id: hashes
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ steps.provenance.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ steps.provenance.outputs.ci_run_attempt }}
+        run: python .github/scripts/distribution_manifest.py verify
 
-      - name: Check distribution metadata
-        run: twine check dist/*
+      - name: Determine exact CI artifact version
+        id: version
+        env:
+          CI_RUN_ID: ${{ steps.provenance.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ steps.provenance.outputs.ci_run_attempt }}
+        run: python .github/scripts/preview_version.py expected
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dolphin-desktop-dist
-          path: dist/
+          name: dolphin-desktop-dist-attempt-${{ github.run_attempt }}
+          path: release-artifact/
           if-no-files-found: error
+
+  smoke-local:
+    name: Smoke exact wheel before publication
+    runs-on: windows-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
+
+      - name: Verify distributions before local smoke
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ needs.build.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ needs.build.outputs.ci_run_attempt }}
+          MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+        run: python .github/scripts/distribution_manifest.py verify
+
+      - name: Export locked runtime dependencies
+        run: >-
+          uv export --locked --no-default-groups --no-emit-project
+          --format requirements-txt --output-file "${{ runner.temp }}/release-requirements.txt"
+
+      - name: Import and CLI smoke on the exact local wheel
+        run: >-
+          python .github/scripts/smoke_wheel.py
+          --wheel-directory release-artifact/dist
+          --requirements "${{ runner.temp }}/release-requirements.txt"
+          --expected-version "${{ needs.build.outputs.version }}"
 
   publish-testpypi:
     name: Publish to TestPyPI
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, smoke-local]
     if: needs.build.outputs.target == 'testpypi'
     environment: testpypi
+    # OIDC token for PyPI Trusted Publishing — only this publishing job.
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
-      - name: Download distributions
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          name: dolphin-desktop-dist
-          path: dist/
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
+
+      - name: Verify approved distributions immediately before upload
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ needs.build.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ needs.build.outputs.ci_run_attempt }}
+          MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+        run: python .github/scripts/distribution_manifest.py verify
 
       - name: Publish distributions
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          packages-dir: dist/
-          skip-existing: true
+          packages-dir: release-artifact/dist/
 
   publish-pypi:
     name: Publish to PyPI
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, smoke-local]
     if: needs.build.outputs.target == 'pypi'
     environment: pypi
+    # OIDC token for PyPI Trusted Publishing — only this publishing job.
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
-      - name: Download distributions
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          name: dolphin-desktop-dist
-          path: dist/
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
+
+      - name: Verify approved distributions immediately before upload
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ needs.build.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ needs.build.outputs.ci_run_attempt }}
+          MANIFEST_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+        run: python .github/scripts/distribution_manifest.py verify
 
       - name: Publish distributions
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
-          packages-dir: dist/
+          packages-dir: release-artifact/dist/
 
   smoke-testpypi:
     name: Smoke TestPyPI package
@@ -143,23 +325,98 @@ jobs:
     if: needs.build.outputs.target == 'testpypi'
 
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
-      - name: Install from TestPyPI
-        run: >
-          python -m pip install
-          --index-url https://test.pypi.org/simple/
-          --extra-index-url https://pypi.org/simple/
-          "dolphin-desktop==${{ needs.build.outputs.version }}"
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
+
+      # --pre because a preview may carry a PEP 440 pre-release segment
+      # (0.2.0.dev1), which pip otherwise filters out of the candidate list.
+      # The retry is for index propagation: the upload above completes before
+      # test.pypi.org/simple/ serves the new file, so the first attempt can
+      # legitimately report "No matching distribution found".
+      #
+      # --no-deps, single --index-url (no --extra-index-url): this step must
+      # fetch ONLY the dolphin-desktop artifact itself from TestPyPI. Mixing
+      # both indexes lets pip consider competing candidates from either index.
+      # Dependencies are installed separately from PyPI with lockfile hashes.
+      - name: Download dolphin-desktop from TestPyPI
+        shell: pwsh
+        run: |
+          # Match the wheel smoke: an explicit index alone does not disable
+          # inherited extra indexes, find-links, or pip configuration files.
+          Get-ChildItem Env: | Where-Object {
+            $_.Name -like 'PIP_*' -or $_.Name -in @('PYTHONPATH', 'PYTHONHOME')
+          } | ForEach-Object {
+            Remove-Item -LiteralPath "Env:$($_.Name)"
+          }
+          $env:PIP_CONFIG_FILE = if ($IsWindows) { 'nul' } else { '/dev/null' }
+          $version = "${{ needs.build.outputs.version }}"
+          # Printed because a Requires-Python mismatch and a missing upload
+          # fail identically -- pip just says "no matching distribution". The
+          # interpreter and the index listing tell the two apart at a glance.
+          python --version
+          python -m pip --version
+          Write-Host "--- what the index offers ---"
+          python -m pip index versions dolphin-desktop --pre --index-url https://test.pypi.org/simple/
+          New-Item -ItemType Directory -Force -Path testpypi-download | Out-Null
+          for ($i = 1; $i -le 6; $i++) {
+            python -m pip download --pre --no-deps --only-binary=:all: `
+              --index-url https://test.pypi.org/simple/ `
+              --dest testpypi-download `
+              "dolphin-desktop==$version"
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Write-Host "attempt $i failed; the index may not have caught up yet, retrying in 20s"
+            Start-Sleep -Seconds 20
+          }
+          Write-Error "dolphin-desktop==$version did not become downloadable from TestPyPI"
+          exit 1
+
+      # The published artifact must be byte-identical to what this workflow
+      # run built and audited above — not a same-version file uploaded by
+      # someone/something else in the window between build and this check.
+      - name: Verify the TestPyPI wheel matches this run's build artifact
+        shell: pwsh
+        run: |
+          $built = Get-ChildItem release-artifact/dist -Filter *.whl | Select-Object -First 1
+          $downloaded = Get-ChildItem testpypi-download -Filter *.whl | Select-Object -First 1
+          $builtHash = (Get-FileHash $built.FullName -Algorithm SHA256).Hash
+          $downloadedHash = (Get-FileHash $downloaded.FullName -Algorithm SHA256).Hash
+          Write-Host "build artifact: $($built.Name) $builtHash"
+          Write-Host "TestPyPI:       $($downloaded.Name) $downloadedHash"
+          if ($builtHash -ne $downloadedHash) {
+            Write-Error "TestPyPI wheel does not match the artifact built in this workflow run"
+            exit 1
+          }
+
+      - name: Export locked runtime dependencies
+        run: >-
+          uv export --locked --no-default-groups --no-emit-project
+          --format requirements-txt --output-file "${{ runner.temp }}/release-requirements.txt"
 
       - name: Import and CLI smoke
-        run: |
-          python -c "import dolphin_desktop; print(dolphin_desktop.__version__)"
-          dolphin --help
-          dolphin info backends
+        run: >-
+          python .github/scripts/smoke_wheel.py
+          --wheel-directory testpypi-download
+          --requirements "${{ runner.temp }}/release-requirements.txt"
+          --expected-version "${{ needs.build.outputs.version }}"
 
   smoke-pypi:
     name: Smoke PyPI package
@@ -168,16 +425,93 @@ jobs:
     if: needs.build.outputs.target == 'pypi'
 
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
-      - name: Install from PyPI
-        run: python -m pip install "dolphin-desktop==${{ needs.build.outputs.version }}"
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Download distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release-artifact/
+          merge-multiple: true
+
+      # The retry is for index propagation: the upload above completes before
+      # pypi.org/simple/ serves the new file, so the first attempt can
+      # legitimately report "No matching distribution found".
+      #
+      # --no-deps, single --index-url (no --extra-index-url): this step must
+      # fetch ONLY the dolphin-desktop artifact itself from PyPI. Mixing
+      # both indexes lets pip consider competing candidates from either index.
+      # Dependencies are installed separately from PyPI with lockfile hashes.
+      - name: Download dolphin-desktop from PyPI
+        shell: pwsh
+        run: |
+          # Match the wheel smoke: an explicit index alone does not disable
+          # inherited extra indexes, find-links, or pip configuration files.
+          Get-ChildItem Env: | Where-Object {
+            $_.Name -like 'PIP_*' -or $_.Name -in @('PYTHONPATH', 'PYTHONHOME')
+          } | ForEach-Object {
+            Remove-Item -LiteralPath "Env:$($_.Name)"
+          }
+          $env:PIP_CONFIG_FILE = if ($IsWindows) { 'nul' } else { '/dev/null' }
+          $version = "${{ needs.build.outputs.version }}"
+          # Printed because a Requires-Python mismatch and a missing upload
+          # fail identically -- pip just says "no matching distribution". The
+          # interpreter and the index listing tell the two apart at a glance.
+          python --version
+          python -m pip --version
+          Write-Host "--- what the index offers ---"
+          python -m pip index versions dolphin-desktop --index-url https://pypi.org/simple/
+          New-Item -ItemType Directory -Force -Path pypi-download | Out-Null
+          for ($i = 1; $i -le 6; $i++) {
+            python -m pip download --no-deps --only-binary=:all: `
+              --index-url https://pypi.org/simple/ `
+              --dest pypi-download `
+              "dolphin-desktop==$version"
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Write-Host "attempt $i failed; the index may not have caught up yet, retrying in 20s"
+            Start-Sleep -Seconds 20
+          }
+          Write-Error "dolphin-desktop==$version did not become downloadable from PyPI"
+          exit 1
+
+      # The published artifact must be byte-identical to what this workflow
+      # run built and audited above — not a same-version file uploaded by
+      # someone/something else in the window between build and this check.
+      - name: Verify the PyPI wheel matches this run's build artifact
+        shell: pwsh
+        run: |
+          $built = Get-ChildItem release-artifact/dist -Filter *.whl | Select-Object -First 1
+          $downloaded = Get-ChildItem pypi-download -Filter *.whl | Select-Object -First 1
+          $builtHash = (Get-FileHash $built.FullName -Algorithm SHA256).Hash
+          $downloadedHash = (Get-FileHash $downloaded.FullName -Algorithm SHA256).Hash
+          Write-Host "build artifact: $($built.Name) $builtHash"
+          Write-Host "PyPI:       $($downloaded.Name) $downloadedHash"
+          if ($builtHash -ne $downloadedHash) {
+            Write-Error "PyPI wheel does not match the artifact built in this workflow run"
+            exit 1
+          }
+
+      - name: Export locked runtime dependencies
+        run: >-
+          uv export --locked --no-default-groups --no-emit-project
+          --format requirements-txt --output-file "${{ runner.temp }}/release-requirements.txt"
 
       - name: Import and CLI smoke
-        run: |
-          python -c "import dolphin_desktop; print(dolphin_desktop.__version__)"
-          dolphin --help
-          dolphin info backends
+        run: >-
+          python .github/scripts/smoke_wheel.py
+          --wheel-directory pypi-download
+          --requirements "${{ runner.temp }}/release-requirements.txt"
+          --expected-version "${{ needs.build.outputs.version }}"

@@ -7,7 +7,7 @@ import webbrowser
 
 import pytest
 
-from dolphin_desktop import _cli
+from dolphin_desktop import _cli, _trace
 
 
 @pytest.fixture
@@ -22,6 +22,16 @@ def _args(trace_dir, run_dir) -> argparse.Namespace:
 
 
 class TestTraceViewWithoutADatabase:
+    def test_invalid_schema_is_reported_without_opening_browser(self, tmp_path, capsys, no_browser):
+        session = _trace.TraceSession("test", tmp_path / "run", mode="always")
+        session._db.execute("DROP TABLE steps")
+        session.finish("passed")
+        with pytest.raises(SystemExit) as exc:
+            _cli._trace_view_cmd(_args(tmp_path, session.run_dir))
+        assert exc.value.code == 1
+        assert "Invalid trace.db" in capsys.readouterr().out
+        assert no_browser == []
+
     def _run_dir(self, tmp_path):
         run_dir = tmp_path / "run"
         run_dir.mkdir()

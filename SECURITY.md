@@ -1,100 +1,133 @@
 # Security Policy
 
-## Supported Versions
-
-Security fixes are provided for the latest public release line.
-
-| Version | Supported |
-| ------- | --------- |
-| 0.2.x   | Yes       |
-| 0.1.x   | No        |
-
-## Security-relevant behavior you should know about
-
-`dolphin-desktop` drives other applications, so by design it does things a
-normal library does not. Three of them open a local attack surface while a
-test session runs, and all three are under your control.
-
-**Chromium remote debugging.** `launch_electron_cdp()` appends
-`--remote-debugging-port` (default `9222`; `launch_cef_cdp()` uses `8080`)
-to the application's command line, and the port stays open for that
-process's lifetime. Chromium binds it to `127.0.0.1` only, so it is not
-reachable from the network — but the CDP protocol has **no
-authentication at all**, so any process running as the same user can
-execute arbitrary JavaScript in the automated application, read its DOM,
-cookies and local storage, and — if the app enables Node integration —
-run arbitrary code as that user. The default port is the well-known
-Chromium one, so it is also guessable and can collide with other tooling.
-Mitigations: pass a unique high `debug_port` per run, automate only
-test or throwaway profiles rather than an app signed in to real
-accounts, avoid shared and multi-user machines, and make sure the
-application is terminated when the test finishes.
-
-**Qt agent DLL injection.** `QtAgentClient.attach(pid, ...)` loads a
-bundled DLL into the target process with `CreateRemoteThread` and talks to
-it over a named pipe (`\\.\pipe\dolphin_qt_<pid>`). The pipe name is
-predictable and the server accepts whichever local process connects
-first; anyone able to open it gets full `QObject` introspection, property
-writes and `QMetaObject` invocation in the target. dolphin's own client
-verifies the pipe server's owning process, so a squatter cannot forge
-responses back to your test, and it connects at
-`SECURITY_IDENTIFICATION` so a squatting server cannot impersonate the
-(possibly elevated) account running the tests. Neither of those protects
-the application itself. Attach only to applications you launched or own. Only 64-bit Qt
-targets are supported; injection into a 32-bit process is refused rather
-than attempted.
-
-**The recorder captures all keyboard input.** `dolphin record` installs a
-low-level keyboard hook. Without an application filter it records every
-keystroke on the machine — including passwords typed into unrelated
-applications — as plain text in the generated script. Run it with a filter,
-and review generated scripts before committing them.
-
-Failure artifacts (screenshots, videos, crash dumps) capture the whole
-desktop, not just the application under test. Treat them as sensitive
-before attaching them to a public issue tracker or CI artifact store.
-
-Traces additionally store the failing test's pytest report, which under
-`pytest -l` (`--showlocals`) contains the values of locals in the failing
-frame. That text is passed through the same redaction as logging: a value
-assigned to a name containing `password`, `passwd`, `passphrase`, `pwd`,
-`secret`, `token`, `api_key`, `private_key`, `credential`, `authorization`,
-`auth`, `signature`, `sessionid` or `sas` is masked, including inside a
-compound name such as `AWS_SECRET_ACCESS_KEY`, and including the credential
-after any HTTP auth scheme.
-
-Redaction is pattern-based and therefore best-effort. It looks for a
-credential *assigned* to a recognised name, so the following are **not**
-covered — this list is illustrative, not exhaustive:
-
-- a secret held in a differently named variable;
-- a value with no `:` or `=` between it and the name — a `.netrc` line, an
-  `argv` list printed by a `subprocess` error, `--password hunter2`, an HTML
-  `<input type="password" value="…">` captured in a DOM snapshot, an AS/400
-  signon screen scrape;
-- a value spanning lines: a PEM or OpenSSH key block, a YAML block scalar,
-  a triple-quoted string;
-- an unquoted value containing a semicolon (`PWD=my;pass`), masked only up
-  to the semicolon, because there the semicolon is the connection-string
-  delimiter;
-- a URL with inline credentials (`https://user:pass@host`).
-
-Treat the filter as a safety net, not a control. Do not publish traces,
-Allure reports or the self-healing journal from a run that had real
-credentials in scope without reading them first; `--dolphin-trace=off`
-disables trace capture entirely, and the surest option remains not putting a
-production credential in a test run.
-
 ## Reporting a Vulnerability
 
-Please report suspected vulnerabilities privately by emailing kontakt@dolphinsoft.pl.
-Do not open a public issue for security-sensitive reports.
+Report suspected vulnerabilities privately to
+[kontakt@dolphinsoft.pl](mailto:kontakt@dolphinsoft.pl). Do not publish exploit
+details or sensitive diagnostics in a public issue or pull request.
 
-Include:
+Include the affected Dolphin/Python/Windows versions, application/backend,
+expected impact, and a minimal reproducer or proof of concept where possible.
+Use test data and remove credentials, personal information and production
+content from attachments.
 
-- A description of the issue and expected impact.
-- Reproduction steps or proof-of-concept code, if available.
-- Affected versions and operating system details.
+We aim to acknowledge reports within **5 business days**. After triage, we
+coordinate fixes and disclosure timing with the reporter; this is not a fixed
+deadline for resolving every report.
 
-We aim to acknowledge reports within 5 business days and will coordinate fixes
-and disclosure timing with the reporter.
+## Supported Versions
+
+Security fixes are prioritized for the latest public release line. Reports
+concerning the current development branch and TestPyPI previews are also
+welcome; previews are testing builds. Older release lines do not receive
+guaranteed backports.
+
+The behavior below describes the **0.2.0 line**. Earlier releases may lack these
+protections; see [CHANGELOG.md](CHANGELOG.md) for release status and changes.
+
+## Application and data access
+
+Dolphin controls applications with the permissions of the test process. Use
+isolated test accounts, profiles and data. Connecting to an existing application
+can expose its open documents, sessions and authenticated content.
+
+### Artifacts and redaction
+
+Screenshots, videos, UI trees, traces, crash dumps and generated recordings can
+contain sensitive data, including content from other windows or monitors.
+Text redaction does not inspect image pixels. Review artifacts before sharing,
+restrict access and retain only what is needed. Disable unnecessary collection
+with `--dolphin-trace=off` and `--dolphin-video=off`; failure screenshots are
+enabled separately with `--dolphin-screenshot-on-fail`.
+
+Dolphin masks recognized sensitive keys and supported sensitive parameter
+values in its managed logs/reports, including pytest failure text, traces,
+self-healing diagnostics, Allure result metadata and captured streams, and
+JUnit XML. This remains best-effort, not a guarantee that arbitrary data is safe
+to publish. Unlabelled values, multiline secrets, credentials inside URLs and
+third-party output may escape pattern-based masking.
+
+Wrap a sensitive value in `Secret(value)` before passing it to a supported
+action or diagnostic. `str()` and `repr()` of the wrapper hide its value.
+Automatic literal masking uses a bounded process-local registry of the most
+recent 512 values, and registers only values of at least four characters. It
+does not guarantee literal masking of shorter values or values already evicted.
+Sensitive pytest parameter values have separate per-test handling; values of
+1–3 characters are masked as standalone tokens, not arbitrary substrings.
+
+The following remain caller-owned:
+
+- Bodies/files passed directly to `allure.attach()` or `allure.attach.file()`;
+  `Secret` registration does not intercept those calls.
+- Direct output that bypasses pytest capture or terminal reporting, including
+  writes with capture disabled (`-s`).
+- Pytest's local `.pytest_cache`, which retains original test IDs.
+
+Publish JUnit XML only after pytest finishes: sanitization runs at session end,
+and a killed process can leave the original XML unprocessed. See the
+[tracing guide](docs/tutorials/tracing.md) for artifact controls.
+
+### Recorder
+
+The recorder installs desktop-wide mouse/keyboard hooks. Choose `--app` or
+`--pid` to filter recorded actions to one process; capture across applications
+requires explicit `--global` (`global_recording=True` in Python).
+
+Password and unclassified controls are masked. Plaintext typing is recorded
+only for stable native Windows Edit controls classified as ordinary text.
+A secret entered into such a control can still appear in the generated Python
+file. Review generated code before committing or sharing it, and stop recording
+before entering real credentials.
+
+### Chromium remote debugging
+
+CDP debugging endpoints provide privileged access to page data, cookies and
+script execution. Dolphin's launch helpers connect through loopback and verify
+listener ownership; they do not add endpoint authentication, configure the
+target's network binding or isolate its user profile.
+
+Use disposable test profiles, restrict access to debugging endpoints, and close
+the application when testing ends. A unique port helps avoid collisions but
+does not provide access control. Do not assume that every Electron/CEF host
+binds only to loopback.
+
+### Qt agent and native libraries
+
+The Qt agent loads a bundled DLL into the target process and can inspect
+objects, write properties and invoke methods. Use it only with applications
+you are authorized to control. Agent DLLs are hash-checked before injection;
+authenticated per-attach IPC restricts the controller and rejects remote pipe
+clients. These checks do not sandbox the application. Only x64 Qt targets are
+supported.
+
+Java Access Bridge requires an explicitly configured absolute `JAVA_HOME`;
+HLLAPI requires an absolute `hllapi_dll_path`. Use trusted runtimes and DLLs:
+an absolute path alone does not make a library trustworthy. See the
+[Java](docs/guides/java.md) and [mainframe](docs/guides/mainframe.md) guides.
+
+### Mainframe connections
+
+For native TN5250 and s3270, `tls=True` selects certificate/host-name-verified
+TLS without silent fallback to plaintext. Remote plaintext requires explicit
+`allow_plaintext=True`; port 992 alone does not enable TLS. Loopback plaintext
+is allowed, so secure any tunnel independently. HLLAPI transport security is
+controlled by the terminal emulator's session configuration.
+
+### Office documents
+
+`ExcelApp.open()`, `WordApp.open()` and `PowerPointApp.open()` disable VBA by
+default; `allow_macros=True` explicitly permits it subject to Office policy.
+Excel/Word also suppress automatic external-link updates during opening.
+These wrappers are not document sandboxes: Excel 4.0/XLM macros, linked content
+and other active content require appropriate Office controls. `connect()` does
+not change security settings for documents already open. See the
+[Office guide](docs/guides/office.md).
+
+### Optional telemetry
+
+Telemetry is off by default. It requires the `telemetry` extra,
+`DOLPHIN_TELEMETRY=on` and a configured Sentry DSN (`SENTRY_DSN`). When enabled,
+Dolphin exception diagnostics can leave the machine for that Sentry service.
+Local-variable collection and default Sentry integrations are disabled, and
+non-Dolphin source context is removed from exception frames. Review the
+telemetry configuration before enabling it with sensitive test data.

@@ -8,7 +8,7 @@ matched more than one element).
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pywinauto.findwindows import ElementAmbiguousError
@@ -57,6 +57,30 @@ def test_ambiguity_beats_fallbacks():
         loc._resolve()
     # child_window was called once for the primary criteria only.
     assert parent._get_spec().child_window.call_count == 1
+
+
+def test_ambiguous_fallback_raises_without_recording_self_healing():
+    """A fallback ambiguity must not become not-found or telemetry."""
+    parent_spec = MagicMock()
+    parent_spec.child_window = MagicMock(
+        side_effect=[
+            RuntimeError("primary missing"),
+            ElementAmbiguousError("2 fallback elements match the criteria"),
+        ]
+    )
+    parent = _FakeWindow(parent_spec)
+    loc = Locator(
+        parent,
+        auto_id="save_missing",
+        fallback=[{"title": "Zapisz", "control_type": "Button"}],
+    ).timeout(0)
+
+    with patch("dolphin_desktop._selfheal.record_fallback") as record_fallback:
+        with pytest.raises(AmbiguousMatchError, match="more than one"):
+            loc._resolve()
+
+    record_fallback.assert_not_called()
+    assert parent_spec.child_window.call_count == 2
 
 
 def test_ambiguous_match_error_is_distinct_dolphin_error():

@@ -2,16 +2,112 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, testpypi-preview]
   pull_request:
-    branches: [master]
+    branches: [master, testpypi-preview]
+
+# Least privilege: the whole workflow only reads the repository. No job here
+# writes contents, and none needs an OIDC token — those are granted per job
+# in release.yml, and only to the jobs that publish.
+permissions:
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  test:
-    name: "Python ${{ matrix.python-version }} / Windows"
+  qt-agent-reproducibility:
+    name: "Qt agent reproducibility / Qt5 and Qt6"
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+
+      - name: Install locked native build tools
+        run: uv sync --locked --only-group native-build --python 3.13
+
+      - name: Download and verify exact MSVC, CRT and Windows SDK payloads
+        shell: pwsh
+        run: uv run --no-sync python .github/scripts/install_msvc.py --destination "$env:RUNNER_TEMP/dolphin-msvc"
+
+      - name: Install pinned Qt SDKs
+        shell: pwsh
+        run: |
+          uv run --no-sync aqt install-qt windows desktop 5.15.2 win64_msvc2019_64 -O "$env:RUNNER_TEMP/qt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run --no-sync aqt install-qt windows desktop 6.10.3 win64_msvc2022_64 -O "$env:RUNNER_TEMP/qt"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Compare clean rebuilds to shipped DLLs in two locations
+        shell: pwsh
+        env:
+          DOLPHIN_MSVC_ROOT: ${{ runner.temp }}\dolphin-msvc
+          DOLPHIN_QT5_ROOT: ${{ runner.temp }}\qt\5.15.2\msvc2019_64
+          DOLPHIN_QT6_ROOT: ${{ runner.temp }}\qt\6.10.3\msvc2022_64
+        run: .github/scripts/verify_qt_agents_ci.ps1
+
+      - name: Upload native reproducibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qt-agent-reproducibility
+          path: artifacts/qt-agent-reproducibility/
+          if-no-files-found: error
+
+  minimum-dependencies:
+    name: "Minimum dependencies / Python ${{ matrix.python-version }} / ${{ matrix.profile }}"
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        profile: [base, fast, vision, cdp, docs, telemetry, pytest, all, all-extras]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked build and audit tools
+        run: uv sync --locked --only-group build --only-group security
+
+      - name: Build wheel
+        run: uv run --no-sync python -m build --no-isolation --wheel --outdir artifacts/minimum/dist
+
+      - name: Install and audit minimum dependencies from wheel metadata
+        shell: pwsh
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          $wheel = (Get-ChildItem artifacts/minimum/dist/*.whl).FullName
+          $options = @()
+          if ($env:PROFILE -eq "all-extras") { $options += "--all-extras" }
+          elseif ($env:PROFILE -ne "base") { $options += @("--extra", $env:PROFILE) }
+          uv run --no-sync python .github/scripts/check_minimum_dependencies.py --wheel $wheel --output artifacts/minimum/evidence @options
+
+      - name: Upload minimum installation and audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: minimum-dependencies-${{ matrix.python-version }}-${{ matrix.profile }}
+          path: artifacts/minimum/
+          if-no-files-found: error
+
+  unit:
+    name: "Unit / Python ${{ matrix.python-version }} / Windows"
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -19,74 +115,587 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.11.9"
           enable-cache: true
 
+      - name: Check lockfile
+        # A lockfile that does not match pyproject fails the build here rather
+        # than letting an inconsistent dependency set install.
+        run: uv lock --check
+
       - name: Install dependencies
-        run: uv sync --group dev
+        run: uv sync --locked --group dev --extra vision
+
+      - name: Check workflow security policy
+        run: uv run --locked pytest tests/framework/test_ci_security.py -q
 
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --locked ruff check .
 
       - name: Format check
-        run: uv run ruff format --check .
+        run: uv run --locked ruff format --check .
 
       - name: Type check
-        run: uv run mypy src/
+        run: uv run --locked mypy src/
 
-      - name: Unit and smoke tests
+      - name: Prepare unit evidence directory
+        run: New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+
+      - name: Unit tests
         run: >
-          uv run pytest
-          -m "not integration"
+          uv run --locked pytest
+          -m unit
           --cov=dolphin_desktop
           --cov-report=xml
           --cov-report=term-missing
+          --junitxml=artifacts/unit-results.xml
+          --basetemp="${{ runner.temp }}/unit-cases"
           -q
 
+      - name: Upload unit reports and reporter subprocess diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unit-evidence-${{ matrix.python-version }}
+          path: |
+            artifacts/unit-results.xml
+            ${{ runner.temp }}/unit-cases/**/terminal.txt
+          if-no-files-found: warn
+
       - name: Upload coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6
         if: always()
         with:
           files: coverage.xml
           flags: windows-py${{ matrix.python-version }}
           fail_ci_if_error: false
 
-  package:
-    name: Build package
+  pytest-compatibility:
+    name: "Pytest compatibility / Python ${{ matrix.python-version }} / pytest ${{ matrix.pytest }}"
     runs-on: windows-latest
-    needs: test
-
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        pytest: ["==9.0.3", "==9.2.0", ">=9.0.3,<10"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+
+      - name: Build wheel with locked tools
+        run: |
+          uv sync --locked --only-group build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv run --no-sync python -m build --no-isolation --wheel --outdir artifacts/pytest-compatibility/dist
+
+      - name: Install wheel with selected pytest in a clean environment
+        shell: pwsh
+        env:
+          PYTEST_SPEC: ${{ matrix.pytest }}
+        run: |
+          uv venv artifacts/pytest-compatibility/venv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheel = (Get-ChildItem artifacts/pytest-compatibility/dist/*.whl).FullName
+          uv pip install --python artifacts/pytest-compatibility/venv/Scripts/python.exe "$wheel" "pytest$env:PYTEST_SPEC" pytest-xdist pytest-timeout
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          uv pip check --python artifacts/pytest-compatibility/venv/Scripts/python.exe
+
+      - name: Verify real plugin collection, reporting and terminal redaction
+        run: >-
+          artifacts/pytest-compatibility/venv/Scripts/python.exe -m pytest
+          tests/framework/test_terminal_redaction.py -q
+          --junitxml=artifacts/pytest-compatibility/results.xml
+
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pytest-compatibility-${{ matrix.python-version }}-${{ strategy.job-index }}
+          path: |
+            artifacts/pytest-compatibility/dist/
+            artifacts/pytest-compatibility/results.xml
+          if-no-files-found: error
+
+  package-linux:
+    name: "Linux package install and import"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked build tools
+        run: uv sync --locked --only-group build
+
+      - name: Build wheel
+        run: uv run --no-sync python -m build --no-isolation --wheel
+
+      - name: Install wheel and verify Windows-only dependencies stay absent
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/dolphin-smoke"
+          "$RUNNER_TEMP/dolphin-smoke/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/dolphin-smoke/bin/python" - <<'PY'
+          import importlib.metadata
+          import warnings
+
+          installed = {
+              distribution.metadata["Name"].lower()
+              for distribution in importlib.metadata.distributions()
+          }
+          assert "pywin32" not in installed
+          assert "comtypes" not in installed
+
+          with warnings.catch_warnings(record=True) as caught:
+              warnings.simplefilter("always")
+              import dolphin_desktop
+
+          assert any(
+              warning.category is RuntimeWarning
+              and "designed for Windows" in str(warning.message)
+              for warning in caught
+          )
+          print("Linux wheel import succeeded without Windows-only dependencies")
+          PY
+
+  runner-console:
+    name: "dolphin-run console / Python ${{ matrix.python-version }}"
+    runs-on: windows-latest
+    needs: unit
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    env:
+      DOLPHIN_VIDEO: "off"
+      DOLPHIN_TRACE: "off"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+      - name: Install locked runner test dependencies
+        run: uv sync --locked --group dev --python ${{ matrix.python-version }}
+      - name: Verify real console events and process cleanup
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP "runner-console"
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $report = Join-Path $evidence "results.xml"
+          $cases = Join-Path $evidence "cases"
+          uv run --no-sync pytest tests/component/test_runner_console.py -q --junitxml $report --basetemp $cases
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$results = Get-Content -Raw -LiteralPath $report
+          foreach ($launcher in @("exe", "python", "nested")) {
+            $name = "test_runner_preserves_result_and_controls_its_tree[interrupt-$launcher]"
+            $cases = $results.SelectNodes("//testcase[@name='$name']")
+            if ($cases.Count -ne 1 -or $cases[0].SelectNodes("skipped|failure|error").Count -ne 0) {
+              throw "Runner console acceptance requires a real passing Ctrl+Break regression: $name"
+            }
+          }
+          if ($results.SelectNodes("//testcase/skipped").Count -ne 0) {
+            throw "Runner console acceptance cannot pass with skipped tests"
+          }
+
+      - name: Upload runner console evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-console-${{ matrix.python-version }}
+          path: ${{ runner.temp }}/runner-console/
+          if-no-files-found: error
+
+  win32-scaled:
+    name: "Win32 physical menus / verified 125% scaling"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+      - name: Install locked test dependencies
+        run: uv sync --locked --group dev
+      - name: Configure and verify 125% scaling and run real menu clicks
+        run: uv run --no-sync python -m tests._win32_scaled_acceptance
+      - name: Upload measured DPI, JUnit and screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: win32-scaled-125
+          path: artifacts/win32-scaled/
+          if-no-files-found: error
+
+  component-windows:
+    name: "Windows component tests"
+    runs-on: windows-latest
+    needs: unit
+    env:
+      DOLPHIN_COMPONENT_PREFLIGHT: "1"
+      DOLPHIN_RECORDER_ACCEPTANCE: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.11.9"
           enable-cache: true
 
+      - name: Install dependencies
+        run: uv sync --locked --group dev --extra vision --extra cdp
+
+      - name: Install Chromium for CDP endpoint identity regression
+        run: uv run --no-sync python -m playwright install chromium
+
+      - name: Install wc3270
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "wc3270-4.5ga6-noinstall-64.zip"
+          $installRoot = Join-Path $env:RUNNER_TEMP "wc3270"
+          Invoke-WebRequest `
+            -Uri "https://x3270.bgp.nu/download/04.05/wc3270-4.5ga6-noinstall-64.zip" `
+            -OutFile $archive
+          $expectedHash = "EB3A7A6AACAA769F00676CA56A5F1718B9068F359A96BDF26477499E4AED7468"
+          $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+          if ($actualHash -ne $expectedHash) {
+            throw "wc3270 archive SHA256 mismatch: $actualHash"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $installRoot -Force
+          $ws3270 = Get-ChildItem -LiteralPath $installRoot -Recurse -Filter "ws3270.exe" |
+            Select-Object -First 1
+          if ($null -eq $ws3270) {
+            throw "wc3270 archive did not contain ws3270.exe"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "DOLPHIN_WS3270_PATH=$($ws3270.FullName)"
+          Add-Content -Path $env:GITHUB_PATH -Value $ws3270.DirectoryName
+
+      - name: Verify wc3270
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath $env:DOLPHIN_WS3270_PATH)) {
+            throw "DOLPHIN_WS3270_PATH does not point to ws3270.exe"
+          }
+          Get-Item -LiteralPath $env:DOLPHIN_WS3270_PATH | Format-List FullName,Length
+
+      - name: Component tests
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "component-results.xml"
+          uv run --locked pytest -m "(component or windows_component) and not (qt_agent or qt_desktop)" -q --junitxml $report --basetemp "$env:RUNNER_TEMP/component-pytest"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          [xml]$results = Get-Content -Raw -LiteralPath $report
+          $cdp = $results.SelectNodes("//testcase[@name='test_parallel_sessions_keep_real_target_and_profile_isolation']")
+          if ($cdp.Count -ne 1 -or $cdp[0].SelectNodes("skipped|failure|error").Count -ne 0) {
+            throw "CDP acceptance requires a passing real Chromium handshake and profile-isolation regression"
+          }
+          foreach ($mode in @("normal-close", "owner-hard-kill", "owner-hard-kill-venv", "normal-exit", "two-owners")) {
+            $name = "test_hidden_owner_lifecycle[$mode]"
+            $cases = $results.SelectNodes("//testcase[@name='$name']")
+            if ($cases.Count -ne 1 -or $cases[0].SelectNodes("skipped|failure|error").Count -ne 0) {
+              throw "Hidden-owner acceptance requires a real passing lifecycle regression: $name"
+            }
+          }
+          foreach ($name in @("test_real_hook_installation_and_cleanup", "test_real_hook_delayed_password_text_transitions", "test_real_record_generate_replay_targets_native_edit", "test_real_hook_delayed_events_stay_in_target_process", "test_real_pointer_readiness_waits_for_native_hit_testing")) {
+            $cases = $results.SelectNodes("//testcase[@name='$name']")
+            if ($cases.Count -ne 1 -or $cases[0].SelectNodes("skipped|failure|error").Count -ne 0) {
+              throw "Recorder acceptance requires a real passing scenario: $name"
+            }
+          }
+
+      - name: Upload component test and recorder replay evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-component-evidence
+          path: |
+            ${{ runner.temp }}/component-results.xml
+            ${{ runner.temp }}/component-pytest/**/test_real_record_generate_repl*/recorded*
+            ${{ runner.temp }}/component-pytest/**/test_hidden_owner_lifecycle*/**
+            ${{ runner.temp }}/component-pytest/**/test_winforms_launch_controls_*/winforms.png
+            ${{ runner.temp }}/component-pytest/**/test_real_hook_delayed_events_*/**
+            ${{ runner.temp }}/component-pytest/**/test_real_pointer_readiness_*/**
+            ${{ runner.temp }}/component-pytest/**/test_real_pointer_guard_*/**
+          if-no-files-found: warn
+
+      - name: Install Qt agent test bindings
+        run: uv sync --locked --group dev --group qt-tests --extra vision
+
+      - name: Verify Qt agent test bindings
+        run: uv run --no-sync python -c "import PyQt5, PySide6"
+
+      - name: Qt UIA component regressions
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "qt-desktop-results.xml"
+          uv run --no-sync pytest tests/qt -m qt_desktop -q --junitxml $report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$results = Get-Content -Raw -LiteralPath $report
+          if ($results.SelectNodes("//testcase").Count -ne 24 -or $results.SelectNodes("//testcase/skipped").Count -ne 0) {
+            throw "Qt UIA acceptance requires all 24 controlled Qt5/Qt6 cases to pass"
+          }
+
+      - name: Qt agent integration and security tests
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP "qt-agent-results.xml"
+          uv run --no-sync pytest tests/qt/test_qt_agent_v2.py -m qt_agent -q --junitxml $report
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          [xml]$results = Get-Content -Raw -LiteralPath $report
+          $cases = $results.SelectNodes("//testcase")
+          $expected = @(
+            "test_authenticated_agent_attach_auth_and_stop_restart[qt5]",
+            "test_authenticated_agent_attach_auth_and_stop_restart[qt6]",
+            "test_native_object_lifetime_overloads_and_bounded_stop[qt5]",
+            "test_native_object_lifetime_overloads_and_bounded_stop[qt6]",
+            "test_agent_pipe_security_boundaries[qt5]",
+            "test_agent_pipe_security_boundaries[qt6]",
+            "test_native_oversized_requests_recover_without_memory_growth[qt5]",
+            "test_native_oversized_requests_recover_without_memory_growth[qt6]",
+            "test_terminated_controller_expires_session[qt5-connected]",
+            "test_terminated_controller_expires_session[qt5-disconnected]",
+            "test_terminated_controller_expires_session[qt5-partial]",
+            "test_terminated_controller_expires_session[qt6-connected]",
+            "test_terminated_controller_expires_session[qt6-disconnected]",
+            "test_terminated_controller_expires_session[qt6-partial]"
+          )
+          $actual = @{}
+          foreach ($case in $cases) {
+            $actual[$case.GetAttribute("name")] = $true
+          }
+          foreach ($name in $expected) {
+            if (-not $actual.ContainsKey($name)) {
+              throw "Required Qt agent scenario did not run: $name"
+            }
+          }
+          $skipped = $results.SelectNodes("//testcase/skipped")
+          if ($skipped.Count -ne 0) {
+            throw "Qt agent integration scenarios may not be skipped (found $($skipped.Count))"
+          }
+
+  package:
+    name: Build package
+    runs-on: windows-latest
+    needs: [unit, runner-console, component-windows, win32-scaled, package-linux, security, minimum-dependencies, qt-agent-reproducibility, pytest-compatibility]
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      version: ${{ steps.version.outputs.version }}
+      manifest_sha256: ${{ steps.manifest.outputs.manifest_sha256 }}
+      build_attempt: ${{ github.run_attempt }}
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked build tools
+        run: uv sync --locked --only-group build
+
+      # Export before assigning a preview version: the checked-in lock describes
+      # the source version. No sync/resolution is allowed after this point.
+      - name: Export locked runtime dependencies
+        run: >-
+          uv export --locked --no-default-groups --no-emit-project
+          --format requirements-txt --output-file "${{ runner.temp }}/release-requirements.txt"
+
+      - name: Assign unique development preview version
+        id: version
+        env:
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python .github/scripts/preview_version.py prepare
+
       - name: Build wheel and sdist
-        run: uv run --with build python -m build
+        run: uv run --no-sync python -m build --no-isolation --outdir release-artifact/dist
 
       - name: Check distribution metadata
-        run: uv run --with twine twine check dist/*
+        run: uv run --no-sync twine check release-artifact/dist/*
+
+      - name: Verify built wheel on Windows
+        run: >-
+          python .github/scripts/smoke_wheel.py
+          --wheel-directory release-artifact/dist
+          --requirements "${{ runner.temp }}/release-requirements.txt"
+          --expected-version "${{ steps.version.outputs.version }}"
+
+      - name: Record distribution hashes and CI identity
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python .github/scripts/distribution_manifest.py create
+
+      - name: Verify recorded distribution hashes
+        id: manifest
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python .github/scripts/distribution_manifest.py verify
 
       - name: Upload package artifacts
-        uses: actions/upload-artifact@v4
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dolphin-desktop-dist
-          path: dist/
+          name: dolphin-desktop-dist-attempt-${{ github.run_attempt }}
+          path: release-artifact/
           if-no-files-found: error
+
+  package-platforms:
+    name: "Wheel install / ${{ matrix.os }} / Python ${{ matrix.python-version }}"
+    needs: package
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked verification tools
+        run: uv sync --locked --only-group build
+
+      - name: Download the exact CI distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          path: release-artifact
+          merge-multiple: true
+
+      - name: Verify distribution identity and hashes
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ needs.package.outputs.build_attempt }}
+          MANIFEST_SHA256: ${{ needs.package.outputs.manifest_sha256 }}
+        run: python .github/scripts/distribution_manifest.py verify
+
+      - name: Install wheel normally and verify native import
+        env:
+          DOLPHIN_DESKTOP_VERSION: ${{ needs.package.outputs.version }}
+        run: >-
+          uv run --no-sync python .github/scripts/check_wheel_platform.py
+          --wheel-directory release-artifact/dist --output artifacts/wheel-platform
+
+      - name: Upload platform installation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel-platform-${{ matrix.os }}-${{ matrix.python-version }}
+          path: artifacts/wheel-platform/
+          if-no-files-found: error
+
+  security:
+    name: "Security gate (CVE / secrets / SAST) / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.9"
+          enable-cache: true
+
+      - name: Install locked security tools
+        run: uv sync --locked --only-group security
+
+      - name: Dependency audit (CVE)
+        shell: bash
+        run: |
+          uv export --locked --no-hashes --format requirements-txt --all-extras --all-groups \
+            --no-emit-project > requirements.audit.txt
+          uv run --no-sync pip-audit -r requirements.audit.txt --no-deps --disable-pip --strict
+
+      - name: Static analysis (SAST)
+        run: uv run --no-sync bandit -r src/dolphin_desktop -ll
+
+      - name: Secret scan
+        run: uv run --no-sync python .github/scripts/scan_secrets.py

@@ -4,17 +4,52 @@ from __future__ import annotations
 
 import copy
 import inspect
+import math
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
-from pywinauto.keyboard import send_keys as _send_keys
+if sys.platform == "win32":
+    from pywinauto.keyboard import send_keys as _send_keys
+else:
+    from ._platform_compat import _unsupported_callable
+
+    _send_keys = _unsupported_callable("pywinauto.keyboard.send_keys")
 
 from ._config import get_poll_interval as _get_poll_interval
 from ._config import get_timeout as _get_timeout
-from ._exceptions import ElementNotFoundError, UnsupportedPatternError, WaitTimeoutError
+from ._exceptions import (
+    AmbiguousMatchError,
+    DolphinError,
+    ElementNotFoundError,
+    UnsupportedCapabilityError,
+    UnsupportedPatternError,
+    WaitTimeoutError,
+)
 from ._helpers import _MISSING, _escape_keys
+from ._keyboard import _post_keys_to_hwnd, _send_keys_on_hidden_desktop
+from ._logging import Secret, unwrap_secret
+from ._win32_criteria import backend_name, criteria_for_backend, find_win32_elements
+
+
+def _backend_fallbacks(
+    scope: Any, fallbacks: list[dict[str, Any]]
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Pair each fallback selector with its backend-translated form.
+
+    A fallback whose control type the backend cannot express can never
+    match, so it is dropped here rather than aborting a lookup whose primary
+    selector may still succeed.
+    """
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for fallback in fallbacks:
+        try:
+            pairs.append((fallback, criteria_for_backend(scope, fallback)))
+        except UnsupportedCapabilityError:
+            continue
+    return pairs
 
 
 def _wrapper_of(element: Any) -> Any:
@@ -34,6 +69,58 @@ def _wrapper_of(element: Any) -> Any:
         return element.wrapper_object()
     except Exception:
         return element
+
+
+def _is_hidden_physical_input_error(exc: Exception) -> bool:
+    """Return whether *exc* is a known failure of the physical mouse API.
+
+    ``pywinauto`` exposes failed ``SetCursorPos`` calls as
+    ``pywintypes.error`` and its mouse helpers can also report the same
+    condition as ``RuntimeError``.  Keep this predicate deliberately narrow:
+    failures from resolution or from an element's own action must not be
+    rewritten merely because the application lives on a hidden desktop.
+    """
+    try:
+        import pywintypes  # type: ignore[import-untyped]
+    except ImportError:
+        pywintypes_error: type[BaseException] | tuple[type[BaseException], ...] = ()
+    else:
+        pywintypes_error = pywintypes.error
+
+    if isinstance(exc, pywintypes_error):
+        function_name = getattr(exc, "funcname", None)
+        if function_name is None and len(exc.args) > 1:
+            function_name = exc.args[1]
+        return str(function_name).casefold() == "setcursorpos"
+    if isinstance(exc, RuntimeError):
+        message = str(exc).casefold()
+        return "active desktop" in message or "desktop is not active" in message
+    return False
+
+
+def _ensure_element_present(element: Any) -> None:
+    """Raise when a previously resolved UIA element is no longer usable.
+
+    ``UIAWrapper.is_visible()`` is not a liveness check: a live hidden element
+    is valid, while a stale element can still be represented by the Python
+    wrapper.  UIA's raw ``IUIAutomationElement`` exposes current properties
+    through COM, and those calls fail with ``ElementNotAvailable`` after the
+    control is destroyed or its provider is torn down.  Probe a non-visual
+    property so hidden controls remain present.
+
+    Non-UIA wrappers and lightweight test doubles do not expose the raw UIA
+    element; their existing behaviour is left unchanged.
+    """
+    element_info = getattr(element, "element_info", None)
+    raw_element = getattr(element_info, "element", None)
+    if raw_element is None:
+        return
+    try:
+        _ = raw_element.CurrentProcessId
+    except Exception as exc:
+        raise ElementNotFoundError(
+            "the previously resolved UIA element is no longer available"
+        ) from exc
 
 
 # comtypes surfaces a pattern that exists but refuses the call as a bare
@@ -134,14 +221,15 @@ def _pattern_action(
             or isinstance(exc, AttributeError)
             or getattr(exc, "hresult", None) == _E_ACCESSDENIED
         ):
-            _trace_step(action_name, self._criteria, element=element, error=str(exc))
-            raise UnsupportedPatternError(
+            pattern_error = UnsupportedPatternError(
                 f"{action_name}() failed — element does not implement "
                 f"{pattern_name} (wrapper {type(target).__name__!r})",
                 hint=hint_extra
                 or "the widget exposes the wrapper but not the pattern; "
                 "use the input-based action (click(), type_text()) in headed mode",
-            ) from exc
+            )
+            _trace_step(action_name, self._criteria, element=element, error=str(pattern_error))
+            raise pattern_error from exc
         _trace_step(action_name, self._criteria, element=element, error=str(exc))
         raise
     _trace_step(action_name, self._criteria, element=element)
@@ -158,6 +246,86 @@ def _set_value_via_iface(wrapper: Any, text: str) -> None:
     wrapper.iface_value.SetValue(text)
 
 
+def _read_text_via_pattern(element: Any) -> str | None:
+    """Read UIA ``TextPattern`` content when the provider exposes it.
+
+    ``pywinauto.UIAElementInfo.rich_text`` normally performs this lookup too,
+    but it falls back to the UIA name when the pattern is unavailable. Keep
+    the pattern read explicit here so a stable accessibility name cannot mask
+    the element's actual text when both values are exposed by the provider.
+
+    ``None`` means that the element has no usable TextPattern; an empty string
+    is a valid value returned by a provider and must not trigger another
+    fallback.
+    """
+    try:
+        pattern = element.iface_text
+        text = pattern.DocumentRange.GetText(-1)
+    except Exception:
+        return None
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        return None
+    return text
+
+
+def _reads_text_by_message(wrapper: Any) -> bool:
+    """Whether ``window_text()`` of *wrapper* is the whole text of a win32 control.
+
+    ``WM_GETTEXT`` is authoritative for a plain edit box or label, so an empty
+    answer means empty. A RichEdit class stays out: Windows 11 Notepad's
+    ``RichEditD2DPT`` keeps its text out of reach of the window text.
+    """
+    if backend_name(wrapper) != "win32":
+        return False
+    try:
+        kind = wrapper.friendly_class_name()
+        class_name = str(wrapper.class_name()).casefold()
+    except Exception:
+        return False
+    return kind in ("Edit", "Static") and "rich" not in class_name
+
+
+def _element_hwnd(element: Any) -> int | None:
+    """Return a wrapper or UIA ancestor's native window handle."""
+    try:
+        handle = getattr(element, "handle", None)
+        if callable(handle):
+            handle = handle()
+    except Exception:
+        handle = None
+    if handle:
+        try:
+            return int(handle)
+        except (TypeError, ValueError):
+            pass
+
+    # WPF child controls commonly expose CurrentNativeWindowHandle == 0;
+    # their top-level Window ancestor still owns the native HwndSource.
+    element_info = getattr(element, "element_info", None)
+    visited: set[int] = set()
+    while element_info is not None:
+        marker = id(element_info)
+        if marker in visited:
+            break
+        visited.add(marker)
+        try:
+            handle = getattr(element_info, "handle", None)
+        except Exception:
+            handle = None
+        if handle:
+            try:
+                return int(handle)
+            except (TypeError, ValueError):
+                pass
+        try:
+            element_info = getattr(element_info, "parent", None)
+        except Exception:
+            break
+    return None
+
+
 def _toggle_via_iface(wrapper: Any) -> None:
     """Flip *wrapper*'s toggle state through ``IUIAutomationTogglePattern``.
 
@@ -165,6 +333,75 @@ def _toggle_via_iface(wrapper: Any) -> None:
     MenuItem / ListItem / TreeItem inherit plain ``UIAWrapper``.
     """
     wrapper.iface_toggle.Toggle()
+
+
+def _wrapper_object_until(spec: Any, deadline: float, timeout: float) -> Any:
+    """Resolve a ``WindowSpecification`` without borrowing pywinauto's 5 s wait.
+
+    ``WindowSpecification.wrapper_object()`` does not expose a timeout and
+    delegates to pywinauto's global ``Timings.window_find_timeout``.  Its
+    private resolver does accept one, so use that path when the object is a
+    real pywinauto ``WindowSpecification``.  The public method remains the
+    fallback for compatible test doubles and other specification-like objects.
+
+    A single COM/UIA search can still take as long as the underlying provider
+    needs; this bounds pywinauto's retry loop and prevents its independent
+    multi-second wait from extending a DolphinDesktop action timeout.
+    """
+    resolve_control = getattr(type(spec), "_WindowSpecification__resolve_control", None)
+    criteria = getattr(spec, "criteria", None)
+    if not callable(resolve_control) or criteria is None:
+        return spec.wrapper_object()
+
+    remaining = max(0.0, deadline - time.monotonic()) if timeout > 0 else 0.0
+    controls = resolve_control(
+        spec,
+        criteria,
+        timeout=remaining,
+        retry_interval=_get_poll_interval(),
+    )
+    return controls[-1]
+
+
+def _deadline_expired(
+    deadline: float,
+    timeout: float,
+    *,
+    enforce: bool | None = None,
+) -> bool:
+    """Return whether a positive timeout's absolute deadline has passed."""
+    if enforce is None:
+        enforce = timeout > 0
+    return enforce and time.monotonic() >= deadline
+
+
+def _remaining_timeout(
+    deadline: float,
+    timeout: float,
+    *,
+    enforce: bool | None = None,
+) -> float:
+    """Return the time left in *deadline*, preserving zero-timeout semantics."""
+    if enforce is None:
+        enforce = timeout > 0
+    if not enforce:
+        return 0.0
+    return max(0.0, deadline - time.monotonic())
+
+
+def _effective_deadline(
+    timeout: float,
+    inherited_deadline: float | None,
+    *,
+    single_attempt: bool,
+) -> tuple[float, bool]:
+    """Return the deadline and whether it should constrain this resolution."""
+    now = time.monotonic()
+    if inherited_deadline is None:
+        return now + timeout, timeout > 0 and not single_attempt
+    if timeout > 0 and not single_attempt:
+        return min(inherited_deadline, now + timeout), True
+    return inherited_deadline, not single_attempt
 
 
 def _wait_until_visible(spec: Any, timeout: float) -> None:
@@ -189,14 +426,25 @@ def _wait_until_visible(spec: Any, timeout: float) -> None:
     deadline = time.monotonic() + timeout
     poll = _get_poll_interval()
     last_exc: Exception | None = None
+    first_attempt = True
     while True:
+        if not first_attempt and timeout > 0 and time.monotonic() >= deadline:
+            break
+        first_attempt = False
         try:
             # Not ``_wrapper_of``: that helper answers a "not found" by
             # returning the WindowSpecification unchanged, whose
             # ``__getattribute__`` would then turn ``is_visible`` into a
             # child_window lookup instead of raising.
-            if spec.wrapper_object().is_visible():
-                return
+            visible = _wrapper_object_until(spec, deadline, timeout).is_visible()
+            if visible:
+                # A zero timeout means "try once" throughout this module.
+                # For a positive timeout, however, the probe itself must also
+                # finish before the deadline; otherwise a slow UIA resolve
+                # silently turns a timed-out action into a successful one.
+                if timeout <= 0 or time.monotonic() < deadline:
+                    return
+                break
             last_exc = None
         except _PwAmbiguousError:
             raise
@@ -206,6 +454,36 @@ def _wait_until_visible(spec: Any, timeout: float) -> None:
             break
         time.sleep(poll)
     raise _PwTimeoutError(f"element did not become visible within {timeout}s") from last_exc
+
+
+def _wait_until_present(spec: Any, timeout: float) -> None:
+    """Block until *spec* yields a wrapper, without checking visibility."""
+    from pywinauto.findwindows import (  # type: ignore[import-untyped]
+        ElementAmbiguousError as _PwAmbiguousError,
+    )
+    from pywinauto.timings import TimeoutError as _PwTimeoutError
+
+    deadline = time.monotonic() + timeout
+    poll = _get_poll_interval()
+    last_exc: Exception | None = None
+    first_attempt = True
+    while True:
+        if not first_attempt and timeout > 0 and time.monotonic() >= deadline:
+            break
+        first_attempt = False
+        try:
+            _wrapper_object_until(spec, deadline, timeout)
+            if timeout <= 0 or time.monotonic() < deadline:
+                return
+            break
+        except _PwAmbiguousError:
+            raise
+        except Exception as exc:
+            last_exc = exc
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll)
+    raise _PwTimeoutError(f"element did not become present within {timeout}s") from last_exc
 
 
 def _is_foreground(spec: Any) -> bool:
@@ -231,10 +509,15 @@ def _trace_step(
     error: str | None = None,
 ) -> None:
     from . import _trace
+    from ._logging import redact_repr
 
     session = _trace.current_session()
     if session is not None:
-        session.record_step(action, repr(criteria), element, error)
+        # Criteria and error text are user-controlled and end up in
+        # trace.db / trace.html / the Allure ZIP. They are redacted
+        # structurally here (a ``password=`` criterion masks its value
+        # whatever it contains) and again by the trace store itself.
+        session.record_step(action, redact_repr(criteria), element, error)
 
 
 if TYPE_CHECKING:
@@ -270,6 +553,38 @@ def _normalize_criteria(criteria: dict[str, Any]) -> dict[str, Any]:
     return criteria
 
 
+def _normalize_fallbacks(value: Any) -> list[dict[str, Any]]:
+    """Validate and normalize the selector fallback list with its index."""
+    if value is None:
+        return []
+    try:
+        fallback_items = iter(value)
+    except TypeError as exc:
+        raise ValueError("fallback must be an iterable of selector mappings") from exc
+
+    normalized: list[dict[str, Any]] = []
+    for index, fallback in enumerate(fallback_items):
+        if not isinstance(fallback, Mapping):
+            raise ValueError(
+                f"fallback[{index}] must be a mapping of selector criteria, "
+                f"got {type(fallback).__name__}"
+            )
+        try:
+            normalized.append(_normalize_criteria(dict(fallback)))
+        except ValueError as exc:
+            raise ValueError(f"invalid fallback[{index}]: {exc}") from exc
+    return normalized
+
+
+def _raise_image_template_error(image_fallback: Any, cause: Exception) -> None:
+    """Re-raise a template loading error with the image-fallback context."""
+    template = getattr(image_fallback, "_template_path", "<unknown>")
+    message = f"image_fallback template {template!s} could not be loaded: {cause}"
+    if isinstance(cause, FileNotFoundError):
+        raise FileNotFoundError(message) from cause
+    raise ValueError(message) from cause
+
+
 class Locator:
     """Represents a way to find one or more UI elements.
 
@@ -297,12 +612,42 @@ class Locator:
         **criteria: Any,
     ) -> None:
         self._parent = parent
-        self._fallback: list[dict[str, Any]] = [
-            _normalize_criteria(dict(fb)) for fb in (criteria.pop("fallback", None) or [])
-        ]
+        # Window.element() attaches these fields after constructing the locator.
+        # Keeping the repository reference on the lazy locator lets a watched
+        # alias refresh immediately before its next resolution.
+        self._object_repository: Any | None = None
+        self._object_alias: str | None = None
+        self._object_parent_alias: str | None = None
+        self._object_selector_keys: set[str] = set()
+        self._fallback = _normalize_fallbacks(criteria.pop("fallback", None))
         self._image_fallback: Any = criteria.pop("image_fallback", None)
         self._criteria = _normalize_criteria(criteria)
         self._timeout: float = _get_timeout()
+
+    def _refresh_object_repository(self) -> None:
+        """Refresh criteria for a locator created from a watched alias.
+
+        Only selector metadata is refreshed here; no UI element is resolved or
+        materialized. Derived criteria such as ``nth()`` remain on the locator.
+        """
+        repository = self._object_repository
+        alias = self._object_alias
+        if repository is None or alias is None:
+            return
+
+        if self._object_parent_alias is None:
+            entry = repository.resolve(alias)
+        else:
+            entry = repository.resolve_child(self._object_parent_alias, alias)
+
+        derived_criteria = {
+            key: value
+            for key, value in self._criteria.items()
+            if key not in self._object_selector_keys
+        }
+        self._criteria = {**entry.selector, **derived_criteria}
+        self._object_selector_keys = set(entry.selector)
+        self._fallback = _normalize_fallbacks(entry.fallback or None)
 
     # Configuration
 
@@ -322,6 +667,10 @@ class Locator:
 
     def timeout(self, seconds: float) -> Self:
         """Return a new Locator with a different timeout (does not mutate self)."""
+        if not math.isfinite(seconds):
+            raise ValueError("timeout must be finite")
+        if seconds < 0:
+            raise ValueError("timeout must be non-negative")
         clone = self._clone()
         clone._timeout = seconds
         return clone
@@ -343,80 +692,279 @@ class Locator:
 
     # Resolution (internal)
 
-    def _get_parent_spec(self) -> Any:
+    def _get_parent_spec(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
         if isinstance(self._parent, Locator):
-            return self._parent._resolve()
+            return self._parent._resolve(deadline=deadline, single_attempt=single_attempt)
         return self._parent._get_spec()
 
-    def _resolve(self) -> Any:
-        """Find and wait for the element, raise on timeout."""
-        parent_spec = self._get_parent_spec()
+    def _get_parent_presence_spec(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        if isinstance(self._parent, Locator):
+            return self._parent._resolve_presence(
+                deadline=deadline,
+                single_attempt=single_attempt,
+            )
+        return self._parent._get_spec()
 
-        # A parent that already resolved to a raw wrapper (a chained
-        # _ResolvedLocator / _QtObjectNameLocator, a fallback or tree-walk
-        # match) has no child_window — that lives on WindowSpecification only.
+    def _application_context(self) -> Any | None:
+        """Return the owning application, including for chained locators."""
+        node: Any = self
+        while isinstance(node, Locator):
+            application = getattr(node, "_application", None)
+            if application is not None:
+                return application
+            node = getattr(node, "_parent", None)
+        return getattr(node, "_application", None)
+
+    def _is_hidden_desktop(self) -> bool:
+        """Return whether this locator belongs to a hidden Dolphin desktop."""
+        application = self._application_context()
+        desktop = getattr(application, "_desktop", None)
+        return bool(getattr(desktop, "_is_hidden", False))
+
+    def _raise_hidden_input_error(self, action: str, exc: Exception) -> None:
+        """Normalize only known physical-input failures in hidden mode."""
+        if not self._is_hidden_desktop() or not _is_hidden_physical_input_error(exc):
+            return
+        hint = (
+            "use invoke()/toggle()/select() for a programmatic action, or run "
+            "this physical action on a visible desktop"
+            if action == "click"
+            else "run this physical action on a visible interactive desktop"
+        )
+        raise DolphinError(
+            f"{action}() cannot perform physical input on a hidden desktop",
+            hint=hint,
+        ) from exc
+
+    def _resolve(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        """Find and wait for the element, raise on timeout."""
+        self._refresh_object_repository()
+        single_attempt = single_attempt or self._timeout <= 0
+        deadline, enforce_deadline = _effective_deadline(
+            self._timeout,
+            deadline,
+            single_attempt=single_attempt,
+        )
+        parent_spec = self._get_parent_spec(deadline, single_attempt=single_attempt)
+        if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
+            raise ElementNotFoundError(_NotFoundMessage(self._criteria, self._timeout, parent_spec))
+
         if not hasattr(parent_spec, "child_window"):
-            return _find_under_wrapper(parent_spec, self._criteria, self._timeout)
+            _wrapper_backend(parent_spec, self._criteria)
 
         from pywinauto.findwindows import (  # type: ignore[import-untyped]
             ElementAmbiguousError as _PwAmbiguousError,
         )
 
         primary_exc: Exception | None = None
-        try:
-            spec = parent_spec.child_window(**self._criteria)
-            _wait_until_visible(spec, self._timeout)
-            return spec
-        except _PwAmbiguousError as exc:
-            # More than one element matched. Falling through to fallbacks
-            # would misreport this as "not found" — the elements are there,
-            # the criteria are under-specified.
-            from ._exceptions import AmbiguousMatchError
-
-            raise AmbiguousMatchError(
-                f"{self._criteria!r} matched more than one element — "
-                f"narrow the criteria or pick one with found_index=N"
-            ) from exc
-        except Exception as exc:
-            primary_exc = exc
-
-        # Try fallbacks in definition order (immediate check — primary already timed out)
         from . import _selfheal
 
-        for fb in self._fallback:
-            try:
-                fb_spec = parent_spec.child_window(**fb)
-                fb_spec.wait("visible", timeout=0)
-                _selfheal.record_fallback(self._criteria, fb)
-                return fb_spec
-            except Exception:
-                continue
+        # Translate once, before polling: a selector the backend cannot
+        # express must fail now, not after the whole timeout (KAN-747).
+        search_criteria = criteria_for_backend(parent_spec, self._criteria)
+        fallbacks = _backend_fallbacks(parent_spec, self._fallback)
 
-        # Last resort: image-based fallback
-        if self._image_fallback is not None:
+        while True:
+            if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
+                break
             try:
-                result = self._image_fallback.find_with_size()
-                if result is not None:
-                    cx, cy, tw, th = result
-                    from ._image import _ImageElement
+                spec = self._find_candidate(
+                    parent_spec,
+                    search_criteria,
+                    deadline,
+                    enforce_deadline,
+                    visible_only=True,
+                )
+                if not _deadline_expired(
+                    deadline,
+                    self._timeout,
+                    enforce=enforce_deadline,
+                ):
+                    return spec
+            except AmbiguousMatchError:
+                raise
+            except _PwAmbiguousError as exc:
+                # More than one element matched. Falling through to fallbacks
+                # would misreport this as "not found" — the elements are there,
+                # the criteria are under-specified.
 
-                    _selfheal.record_fallback(
-                        self._criteria,
-                        {"image": str(self._image_fallback._template_path)},
+                raise AmbiguousMatchError(
+                    f"{self._criteria!r} matched more than one element — "
+                    f"narrow the criteria or pick one with found_index=N"
+                ) from exc
+            except Exception as exc:
+                primary_exc = exc
+
+            for fb, backend_fb in fallbacks:
+                if _deadline_expired(
+                    deadline,
+                    self._timeout,
+                    enforce=enforce_deadline,
+                ):
+                    break
+                try:
+                    fb_spec = self._find_candidate(
+                        parent_spec,
+                        backend_fb,
+                        deadline,
+                        enforce_deadline,
+                        visible_only=True,
                     )
-                    return _ImageElement(cx, cy, tw, th)
-            except Exception:
-                pass
+                    if _deadline_expired(
+                        deadline,
+                        self._timeout,
+                        enforce=enforce_deadline,
+                    ):
+                        break
+                    _selfheal.record_fallback(self._criteria, fb)
+                    if not _deadline_expired(
+                        deadline,
+                        self._timeout,
+                        enforce=enforce_deadline,
+                    ):
+                        return fb_spec
+                except AmbiguousMatchError:
+                    raise
+                except _PwAmbiguousError as exc:
+                    raise AmbiguousMatchError(
+                        f"{fb!r} matched more than one element — "
+                        f"narrow the criteria or pick one with found_index=N"
+                    ) from exc
+                except Exception:
+                    continue
 
-        # TreeWalker fallback: IUIAutomation::FindAll misses some elements exposed
-        # via TreeWalker (e.g. ToolbarWindow32 button children in Notepad++).
-        tree_result = _tree_walk_find(parent_spec, self._criteria)
-        if tree_result is not None:
-            return tree_result
+            if self._image_fallback is not None and not _deadline_expired(
+                deadline,
+                self._timeout,
+                enforce=enforce_deadline,
+            ):
+                try:
+                    result = self._image_fallback.find_with_size()
+                    if result is not None and not _deadline_expired(
+                        deadline,
+                        self._timeout,
+                        enforce=enforce_deadline,
+                    ):
+                        cx, cy, tw, th = result
+                        from ._image import _ImageElement
+
+                        _selfheal.record_fallback(
+                            self._criteria,
+                            {"image": str(self._image_fallback._template_path)},
+                        )
+                        if not _deadline_expired(
+                            deadline,
+                            self._timeout,
+                            enforce=enforce_deadline,
+                        ):
+                            return _ImageElement(cx, cy, tw, th)
+                except (FileNotFoundError, ValueError) as exc:
+                    _raise_image_template_error(self._image_fallback, exc)
+                except Exception:
+                    pass
+
+            # TreeWalker fallback: IUIAutomation::FindAll misses some elements
+            # exposed via TreeWalker (e.g. ToolbarWindow32 button children).
+            if not _deadline_expired(
+                deadline,
+                self._timeout,
+                enforce=enforce_deadline,
+            ):
+                tree_result = _tree_walk_find(
+                    parent_spec,
+                    search_criteria,
+                    visible_only=True,
+                    deadline=deadline if enforce_deadline else None,
+                )
+                if tree_result is not None:
+                    # Recheck readiness after the walk: the provider may have
+                    # changed the control's visibility during enumeration.
+                    try:
+                        visibility_probe = getattr(tree_result, "is_visible", None)
+                        tree_result_is_visible = (
+                            True
+                            if visibility_probe is None
+                            else bool(visibility_probe())
+                            if callable(visibility_probe)
+                            else bool(visibility_probe)
+                        )
+                    except Exception:
+                        tree_result_is_visible = False
+                    if tree_result_is_visible and not _deadline_expired(
+                        deadline,
+                        self._timeout,
+                        enforce=enforce_deadline,
+                    ):
+                        return tree_result
+
+            if single_attempt or _deadline_expired(
+                deadline,
+                self._timeout,
+                enforce=enforce_deadline,
+            ):
+                break
+            time.sleep(_get_poll_interval())
 
         raise ElementNotFoundError(
             _NotFoundMessage(self._criteria, self._timeout, parent_spec)
         ) from primary_exc
+
+    def _find_candidate(
+        self,
+        parent: Any,
+        criteria: dict[str, Any],
+        deadline: float,
+        enforce_deadline: bool,
+        *,
+        visible_only: bool,
+    ) -> Any:
+        """Probe one selector without consuming the fallback loop's retry budget."""
+        if not hasattr(parent, "child_window"):
+            return _find_under_wrapper(
+                parent,
+                criteria,
+                0,
+                deadline=deadline,
+                enforce_deadline=enforce_deadline,
+                visible_only=visible_only,
+            )
+        if _is_negative_found_index(criteria):
+            resolved = _resolve_negative_found_index(
+                parent,
+                criteria,
+                timeout=0,
+                deadline=deadline,
+                enforce_deadline=enforce_deadline,
+                visible_only=visible_only,
+            )
+            if not isinstance(resolved, dict):
+                return resolved
+            criteria = resolved
+        spec = (
+            parent.child_window(**criteria)
+            if visible_only
+            else parent.child_window(visible_only=False, **criteria)
+        )
+        if visible_only:
+            _wait_until_visible(spec, 0)
+        else:
+            _wait_until_present(spec, 0)
+        return spec
 
     def _resolve_readonly(self) -> Any:
         """Resolve without mutating the UI — the path predicates use.
@@ -476,7 +1024,11 @@ class Locator:
         try:
             self._focus_for_input()
             element = self._resolve()
-            element.click_input()
+            try:
+                element.click_input()
+            except Exception as exc:
+                self._raise_hidden_input_error("click", exc)
+                raise
         except Exception as exc:
             _trace_step("click", self._criteria, element=element, error=str(exc))
             raise
@@ -692,7 +1244,7 @@ class Locator:
 
     def type_text(
         self,
-        text: str,
+        text: str | Secret,
         *,
         with_spaces: bool = True,
         pause: float = 0.05,
@@ -707,13 +1259,18 @@ class Locator:
         (``"{ENTER}"``, ``"^c"``) — :meth:`press_key` is the preferred
         spelling for that.
 
+        Pass a :class:`~dolphin_desktop.Secret` to type a password: the real
+        characters are sent, but the value is masked in every trace, log and
+        report.
+
         The default pause of 0.05 s between keystrokes matches pywinauto's own
         default and prevents missed/doubled keys in modern WinUI/XAML controls.
         """
+        raw: str = unwrap_secret(text)
         element = None
         try:
             element = self._resolve()
-            payload = _escape_keys(text) if escape else text
+            payload = _escape_keys(raw) if escape else raw
             # with_tabs / with_newlines are not optional the way with_spaces is:
             # parse_keys silently discards a literal \t or \n when its flag is
             # off, and escaping has already turned pywinauto's "~" newline alias
@@ -732,17 +1289,19 @@ class Locator:
         _trace_step("type_text", self._criteria, element=element)
         return self
 
-    def set_text(self, text: str) -> Locator:
+    def set_text(self, text: str | Secret) -> Locator:
         """Replace the entire text content of an edit control.
 
         Falls back to select-all + keyboard input for Document/RichEdit controls
         (e.g. Windows 11 Notepad) that do not support IValueProvider.SetValue.
+        Accepts a :class:`~dolphin_desktop.Secret` for password fields.
         """
+        raw: str = unwrap_secret(text)
         element = None
         try:
             element = self._resolve()
             try:
-                element.set_edit_text(text)
+                element.set_edit_text(raw)
                 _trace_step("set_text", self._criteria, element=element)
                 return self
             except Exception:
@@ -750,7 +1309,7 @@ class Locator:
             element.set_focus()
             time.sleep(0.05)
             _send_keys("^a")
-            if text:
+            if raw:
                 # All three flags, not just with_spaces: parse_keys drops a
                 # literal \t or \n outright when its flag is off, and escaping
                 # turns pywinauto's own "~" newline alias into a literal "{~}",
@@ -758,7 +1317,7 @@ class Locator:
                 # set_text("line1\nline2") wrote "line1line2" and reported
                 # success.
                 element.type_keys(
-                    _escape_keys(text),
+                    _escape_keys(raw),
                     with_spaces=True,
                     with_tabs=True,
                     with_newlines=True,
@@ -793,14 +1352,34 @@ class Locator:
         return self
 
     def press_key(self, key: str, timeout_ms: int | None = None) -> Locator:
-        """Send a key sequence to the element using pywinauto key syntax."""
+        """Send a key sequence to the element using pywinauto key syntax.
+
+        On a hidden Dolphin desktop, briefly activate the DolphinHidden input
+        desktop so modifier-aware ``SendInput`` sequences reach the AUT. If
+        activation is unavailable, use the element's native window messages.
+        """
         if timeout_ms is not None:
             self.timeout(timeout_ms / 1000.0).press_key(key)
             return self
         element = None
         try:
             element = self._resolve()
-            element.type_keys(key)
+            if self._is_hidden_desktop():
+                if _send_keys_on_hidden_desktop(key, focus=element.set_focus):
+                    _trace_step("press_key", self._criteria, element=element)
+                    return self
+                hwnd = _element_hwnd(element)
+                if hwnd is None:
+                    raise DolphinError(
+                        "press_key() cannot target an element without a native window handle",
+                        hint=(
+                            "use a UIA element backed by a native window or run "
+                            "on a visible desktop"
+                        ),
+                    )
+                _post_keys_to_hwnd(hwnd, key)
+            else:
+                element.type_keys(key)
         except Exception as exc:
             _trace_step("press_key", self._criteria, element=element, error=str(exc))
             raise
@@ -988,7 +1567,8 @@ class Locator:
         # (iface_scroll_item) when available, falling back to set_focus(), which
         # also brings the element into view for most scrollable containers.
         try:
-            element.iface_scroll_item.ScrollIntoView()
+            # On the wrapper, for the reason given in text().
+            _wrapper_of(element).iface_scroll_item.ScrollIntoView()
         except Exception:
             try:
                 element.set_focus()
@@ -1006,9 +1586,22 @@ class Locator:
         an empty string, so we fall back to select-all + clipboard.
         """
         element = self._resolve_readonly()
+        # Probe the pattern on the wrapper, never on a WindowSpecification: a
+        # win32 spec answers an unknown attribute such as ``iface_text`` with a
+        # ``child_window(best_match=...)`` lookup that waits out its default
+        # timeout (~5 s) before failing (KAN-747).
+        wrapper = _wrapper_of(element)
+        pattern_text = _read_text_via_pattern(wrapper)
+        if pattern_text is not None:
+            return pattern_text
         t = element.window_text()
         if t:
             return t
+        # An empty plain win32 Edit/Static really is empty. The clipboard path
+        # below would take focus, send Ctrl+A/Ctrl+C and wipe the user's
+        # clipboard just to confirm that (KAN-747).
+        if _reads_text_by_message(wrapper):
+            return ""
         # IValueProvider.Value works for most edit controls including Qt
         # QLineEdit / QPlainTextEdit. If get_value() succeeds (even returning
         # an empty string for a legitimately-empty field), trust it — falling
@@ -1057,32 +1650,189 @@ class Locator:
         """
         return _require_check_state(self._resolve_readonly(), "is_checked") == 1
 
+    def _resolve_presence(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        """Resolve an element without requiring it to be visible."""
+        self._refresh_object_repository()
+        single_attempt = single_attempt or self._timeout <= 0
+        deadline, enforce_deadline = _effective_deadline(
+            self._timeout,
+            deadline,
+            single_attempt=single_attempt,
+        )
+        parent_spec = self._get_parent_presence_spec(deadline, single_attempt=single_attempt)
+        if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
+            raise ElementNotFoundError(_NotFoundMessage(self._criteria, self._timeout, parent_spec))
+        if not hasattr(parent_spec, "child_window"):
+            _wrapper_backend(parent_spec, self._criteria)
+
+        from pywinauto.findwindows import (  # type: ignore[import-untyped]
+            ElementAmbiguousError as _PwAmbiguousError,
+        )
+
+        primary_exc: Exception | None = None
+        from . import _selfheal
+
+        # Translate once, before polling: a selector the backend cannot
+        # express must fail now, not after the whole timeout (KAN-747).
+        search_criteria = criteria_for_backend(parent_spec, self._criteria)
+        fallbacks = _backend_fallbacks(parent_spec, self._fallback)
+
+        while True:
+            if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
+                break
+            try:
+                spec = self._find_candidate(
+                    parent_spec,
+                    search_criteria,
+                    deadline,
+                    enforce_deadline,
+                    visible_only=False,
+                )
+                if not _deadline_expired(
+                    deadline,
+                    self._timeout,
+                    enforce=enforce_deadline,
+                ):
+                    return spec
+            except AmbiguousMatchError:
+                raise
+            except _PwAmbiguousError as exc:
+                raise AmbiguousMatchError(
+                    f"{self._criteria!r} matched more than one element — "
+                    "narrow the criteria or pick one with found_index=N"
+                ) from exc
+            except Exception as exc:
+                primary_exc = exc
+
+            for fb, backend_fb in fallbacks:
+                if _deadline_expired(
+                    deadline,
+                    self._timeout,
+                    enforce=enforce_deadline,
+                ):
+                    break
+                try:
+                    fb_spec = self._find_candidate(
+                        parent_spec,
+                        backend_fb,
+                        deadline,
+                        enforce_deadline,
+                        visible_only=False,
+                    )
+                    if _deadline_expired(
+                        deadline,
+                        self._timeout,
+                        enforce=enforce_deadline,
+                    ):
+                        break
+                    _selfheal.record_fallback(self._criteria, fb)
+                    if not _deadline_expired(
+                        deadline,
+                        self._timeout,
+                        enforce=enforce_deadline,
+                    ):
+                        return fb_spec
+                except AmbiguousMatchError:
+                    raise
+                except _PwAmbiguousError as exc:
+                    raise AmbiguousMatchError(
+                        f"{fb!r} matched more than one element — "
+                        "narrow the criteria or pick one with found_index=N"
+                    ) from exc
+                except Exception:
+                    continue
+
+            if self._image_fallback is not None and not _deadline_expired(
+                deadline,
+                self._timeout,
+                enforce=enforce_deadline,
+            ):
+                try:
+                    result = self._image_fallback.find_with_size()
+                    if result is not None and not _deadline_expired(
+                        deadline,
+                        self._timeout,
+                        enforce=enforce_deadline,
+                    ):
+                        cx, cy, tw, th = result
+                        from ._image import _ImageElement
+
+                        _selfheal.record_fallback(
+                            self._criteria,
+                            {"image": str(self._image_fallback._template_path)},
+                        )
+                        if not _deadline_expired(
+                            deadline,
+                            self._timeout,
+                            enforce=enforce_deadline,
+                        ):
+                            return _ImageElement(cx, cy, tw, th)
+                except (FileNotFoundError, ValueError) as exc:
+                    _raise_image_template_error(self._image_fallback, exc)
+                except Exception:
+                    pass
+
+            if not _deadline_expired(
+                deadline,
+                self._timeout,
+                enforce=enforce_deadline,
+            ):
+                tree_result = _tree_walk_find(
+                    parent_spec,
+                    search_criteria,
+                    deadline=deadline if enforce_deadline else None,
+                )
+                if tree_result is not None and not _deadline_expired(
+                    deadline,
+                    self._timeout,
+                    enforce=enforce_deadline,
+                ):
+                    return tree_result
+
+            if single_attempt or _deadline_expired(
+                deadline,
+                self._timeout,
+                enforce=enforce_deadline,
+            ):
+                break
+            time.sleep(_get_poll_interval())
+
+        raise ElementNotFoundError(
+            _NotFoundMessage(self._criteria, self._timeout, parent_spec)
+        ) from primary_exc
+
     def exists(self, timeout: float = 0.0) -> bool:
-        """Return True if the element exists (and is visible) within *timeout* seconds.
+        """Return True if the element exists within *timeout* seconds.
 
         Ambiguous criteria (multiple matches) count as *existing* — there
         is at least one such element. Actions on the same locator still
         raise :class:`AmbiguousMatchError` so the ambiguity cannot go
         unnoticed where it matters.
         """
-        from ._exceptions import AmbiguousMatchError
 
         try:
-            self.timeout(timeout)._resolve_readonly()
+            self.timeout(timeout)._resolve_presence()
             return True
         except AmbiguousMatchError:
             return True
+        except (ValueError, UnsupportedCapabilityError):
+            # A selector the backend cannot express is a usage error, not an
+            # absent element (KAN-747): answering False would hide it.
+            raise
         except Exception:
             return False
 
     def bounding_box(self) -> dict[str, int]:
-        """Return {left, top, right, bottom, width, height} in screen coords."""
+        """Return ``{x, y, width, height}`` in absolute screen coordinates."""
         rect = self._resolve_readonly().rectangle()
         return {
-            "left": rect.left,
-            "top": rect.top,
-            "right": rect.right,
-            "bottom": rect.bottom,
+            "x": rect.left,
+            "y": rect.top,
             "width": rect.right - rect.left,
             "height": rect.bottom - rect.top,
         }
@@ -1090,7 +1840,7 @@ class Locator:
     # Waiting
 
     def wait_for(self, *, state: str = "visible", timeout: float | None = None) -> Locator:
-        """Wait until the element reaches *state* ('visible', 'enabled', 'exists').
+        """Wait until the element reaches *state* ('visible', 'enabled', 'exists', 'hidden').
 
         Resolution goes through the same path as every action, so declared
         ``fallback`` selectors and the image fallback count here too — an
@@ -1101,8 +1851,13 @@ class Locator:
         never reaches *state*.
         """
         t = timeout if timeout is not None else self._timeout
+        if state == "hidden":
+            return self.wait_until_hidden(timeout=t)
+        if state == "exists":
+            self.timeout(t)._resolve_presence()
+            return self
         spec = self.timeout(t)._resolve()
-        if state in ("visible", "exists"):
+        if state == "visible":
             return self
         # ``wait`` is a WindowSpecification method; the fallback, image and
         # tree-walk branches of _resolve hand back raw wrappers / _ImageElement
@@ -1113,7 +1868,8 @@ class Locator:
                 waiter(state, timeout=t)
             except Exception as exc:
                 raise WaitTimeoutError(
-                    f"Element {self._criteria!r} did not reach state '{state}' after {t}s"
+                    f"Element {self._criteria!r} did not reach state '{state}' "
+                    f"after {t}s (last seen: {_last_seen_state(spec, state)})"
                 ) from exc
             return self
         probe_name = _STATE_PROBES.get(state)
@@ -1134,7 +1890,8 @@ class Locator:
                 break
             time.sleep(0.05)
         raise WaitTimeoutError(
-            f"Element {self._criteria!r} did not reach state '{state}' after {t}s"
+            f"Element {self._criteria!r} did not reach state '{state}' "
+            f"after {t}s (last seen: {_last_seen_state(spec, state)})"
         )
 
     def wait_until_hidden(self, timeout: float = 10.0) -> Locator:
@@ -1186,7 +1943,7 @@ class Locator:
         text_re: str | None = None,
         contains: bool = True,
         timeout: float | None = None,
-        poll_interval: float = 0.15,
+        poll_interval: float | None = None,
     ) -> Locator:
         """Poll the element until its text matches — the auto-waiting
         counterpart to reading ``.text()`` after a programmatic action.
@@ -1206,7 +1963,8 @@ class Locator:
             timeout: Seconds to wait. Defaults to the locator's own
                 timeout (usually the global ``dolphin_desktop.config``
                 value).
-            poll_interval: Seconds between checks (default 0.15).
+            poll_interval: Seconds between checks. Defaults to the global
+                ``config(poll_interval=...)`` value.
 
         Returns ``self`` for chaining.
 
@@ -1235,6 +1993,7 @@ class Locator:
 
         pat = _re.compile(text_re) if text_re else None
         t = timeout if timeout is not None else self._timeout
+        poll = _get_poll_interval() if poll_interval is None else poll_interval
         deadline = time.monotonic() + t
         current = ""
         while True:
@@ -1257,7 +2016,7 @@ class Locator:
                     return self
             if time.monotonic() >= deadline:
                 break
-            time.sleep(poll_interval)
+            time.sleep(poll)
         target = text if text is not None else f"regex {text_re!r}"
         raise WaitTimeoutError(
             f"Element {self._criteria!r} text did not match {target!r} "
@@ -1301,9 +2060,13 @@ class Locator:
         import pywinauto.mouse as _mouse  # type: ignore[import-untyped]
 
         bb = self.bounding_box()
-        cx = bb["left"] + bb["width"] // 2
-        cy = bb["top"] + bb["height"] // 2
-        _mouse.move(coords=(cx, cy))
+        cx = bb["x"] + bb["width"] // 2
+        cy = bb["y"] + bb["height"] // 2
+        try:
+            _mouse.move(coords=(cx, cy))
+        except Exception as exc:
+            self._raise_hidden_input_error("hover", exc)
+            raise
         return self
 
     def drag_to(
@@ -1318,15 +2081,15 @@ class Locator:
 
         self._focus_for_input()
         bb = self.bounding_box()
-        src_x = bb["left"] + bb["width"] // 2
-        src_y = bb["top"] + bb["height"] // 2
+        src_x = bb["x"] + bb["width"] // 2
+        src_y = bb["y"] + bb["height"] // 2
 
         if isinstance(target, tuple):
             dst_x, dst_y = target
         else:
             tbb = target.bounding_box()
-            dst_x = tbb["left"] + tbb["width"] // 2
-            dst_y = tbb["top"] + tbb["height"] // 2
+            dst_x = tbb["x"] + tbb["width"] // 2
+            dst_y = tbb["y"] + tbb["height"] // 2
 
         steps = 30
         step_sleep = duration / steps
@@ -1335,15 +2098,19 @@ class Locator:
         # release: an exception (or Ctrl-C) inside the move loop must still
         # release it, otherwise every later click on the machine is a drag.
         cur_x, cur_y = src_x, src_y
-        _mouse.press(button=button, coords=(src_x, src_y))
         try:
-            for i in range(1, steps + 1):
-                cur_x = src_x + (dst_x - src_x) * i // steps
-                cur_y = src_y + (dst_y - src_y) * i // steps
-                _mouse.move(coords=(cur_x, cur_y))
-                time.sleep(step_sleep)
-        finally:
-            _mouse.release(button=button, coords=(cur_x, cur_y))
+            _mouse.press(button=button, coords=(src_x, src_y))
+            try:
+                for i in range(1, steps + 1):
+                    cur_x = src_x + (dst_x - src_x) * i // steps
+                    cur_y = src_y + (dst_y - src_y) * i // steps
+                    _mouse.move(coords=(cur_x, cur_y))
+                    time.sleep(step_sleep)
+            finally:
+                _mouse.release(button=button, coords=(cur_x, cur_y))
+        except Exception as exc:
+            self._raise_hidden_input_error("drag_to", exc)
+            raise
         return self
 
     def scroll(
@@ -1361,8 +2128,8 @@ class Locator:
         import pywinauto.mouse as _mouse  # type: ignore[import-untyped]
 
         bb = self.bounding_box()
-        cx = bb["left"] + bb["width"] // 2
-        cy = bb["top"] + bb["height"] // 2
+        cx = bb["x"] + bb["width"] // 2
+        cy = bb["y"] + bb["height"] // 2
 
         if direction == "up":
             wheel_dist = amount
@@ -1414,16 +2181,87 @@ class Locator:
 
         If *depth* is None, only direct children are returned.
         If *depth* is given (including 0), descendants up to that depth are returned.
+        On win32, *depth* of None also lists nested controls, because the window
+        enumeration there walks the whole subtree.
+
+        Raises:
+            TypeError: If the backend rejects the search criteria, except for
+                ``auto_id``, which is filtered locally when unsupported.
         """
+        self._refresh_object_repository()
         parent_spec = self._get_parent_spec()
+        if backend_name(parent_spec) == "win32":
+            return self._all_win32(parent_spec, depth)
         try:
             if depth is None:
                 elements = parent_spec.children(**self._criteria)
             else:
                 elements = parent_spec.descendants(depth=depth, **self._criteria)
+        except TypeError:
+            # UIAElementInfo.build_condition() in some pywinauto versions
+            # does not accept ``auto_id``.  Search with the criteria that the
+            # backend can express and apply AutomationId to the returned
+            # wrappers instead of silently turning a valid selector into an
+            # empty collection.
+            auto_id = self._criteria.get("auto_id")
+            if auto_id is None:
+                raise
+            else:
+                backend_criteria = {
+                    key: value for key, value in self._criteria.items() if key != "auto_id"
+                }
+                try:
+                    if depth is None:
+                        candidates = parent_spec.children(**backend_criteria)
+                    else:
+                        candidates = parent_spec.descendants(depth=depth, **backend_criteria)
+                except TypeError:
+                    raise
+                except Exception:
+                    elements = []
+                else:
+                    elements = []
+                    for element in candidates:
+                        info = getattr(element, "element_info", None)
+                        # ``auto_id`` is the public UIAElementInfo spelling in
+                        # current pywinauto.  Older releases exposed the same
+                        # value as ``automation_id``; keep that alias here so
+                        # this backend-level fallback works across supported
+                        # pywinauto versions.
+                        if (
+                            getattr(info, "auto_id", None) == auto_id
+                            or getattr(info, "automation_id", None) == auto_id
+                        ):
+                            elements.append(element)
         except Exception:
             elements = []
-        return [_ResolvedLocator(el) for el in elements]
+        return [_ResolvedLocator(el, application=self._application_context()) for el in elements]
+
+    def _all_win32(self, parent_spec: Any, depth: int | None) -> list[Locator]:
+        """:meth:`all` on win32: every criterion applies, as in the final lookup.
+
+        Hidden controls are included, as they are for ``children()``. A
+        ``found_index`` from :meth:`nth` narrows the list to that one match.
+        """
+        criteria = criteria_for_backend(parent_spec, self._criteria)
+        search = {key: value for key, value in criteria.items() if key != "found_index"}
+        try:
+            parent = (
+                parent_spec.wrapper_object()
+                if getattr(type(parent_spec), "wrapper_object", None) is not None
+                else parent_spec
+            )
+            found = find_win32_elements(parent, search, visible_only=False, depth=depth)
+            index = criteria.get("found_index")
+            if index is not None:
+                found = [found[index]] if -len(found) <= index < len(found) else []
+            wrapper_cls = parent.backend.generic_wrapper_class
+            elements = [wrapper_cls(info) for info in found]
+        except TypeError:
+            raise
+        except Exception:
+            elements = []
+        return [_ResolvedLocator(el, application=self._application_context()) for el in elements]
 
     def count(self) -> int:
         return len(self.all())
@@ -1576,34 +2414,89 @@ class _QtObjectNameLocator(Locator):
         # Read by ``_resolve`` (``found_index``) and by trace/repr.
         self._criteria = {"qt_object_name": object_name}
 
-    def _resolve(self) -> Any:
-        parent_spec = self._get_parent_spec()
+    def _resolve_presence(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        """Use the Qt objectName scan for presence checks as well as actions."""
+        # The scan does not require visibility. The base implementation would
+        # pass our internal qt_object_name criterion to pywinauto, which cannot
+        # interpret it, so exists() would report even a live widget as absent.
+        return self._resolve_object_name(
+            deadline=deadline, single_attempt=single_attempt, presence_only=True
+        )
+
+    def _resolve(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        return self._resolve_object_name(deadline=deadline, single_attempt=single_attempt)
+
+    def _resolve_object_name(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+        presence_only: bool = False,
+    ) -> Any:
+        single_attempt = single_attempt or self._timeout <= 0
+        deadline, enforce_deadline = _effective_deadline(
+            self._timeout,
+            deadline,
+            single_attempt=single_attempt,
+        )
+        get_parent = self._get_parent_presence_spec if presence_only else self._get_parent_spec
+        parent_spec = get_parent(deadline, single_attempt=single_attempt)
         suffix = f".{self._object_name}"
         index = self._criteria.get("found_index", 0)
-        # ``time.monotonic()`` is immune to wall-clock jumps (NTP, DST)
-        # that would otherwise cause the Qt objectName scan to either
-        # early-abort or loop forever.
-        deadline = time.monotonic() + self._timeout
+        negative_index = isinstance(index, int) and index < 0
         last_exc: Exception | None = None
         while True:
+            if _deadline_expired(deadline, self._timeout, enforce=enforce_deadline):
+                break
             try:
                 descendants = parent_spec.descendants()
             except Exception as exc:
                 last_exc = exc
                 descendants = []
             seen = 0
+            matches: list[Any] = []
             for desc in descendants:
                 try:
                     aid = desc.element_info.automation_id or ""
                 except Exception:
                     continue
                 if aid == self._object_name or aid.endswith(suffix):
-                    if seen == index:
-                        return desc
+                    if negative_index:
+                        matches.append(desc)
+                    elif seen == index:
+                        if not _deadline_expired(
+                            deadline,
+                            self._timeout,
+                            enforce=enforce_deadline,
+                        ):
+                            return desc
+                        break
                     seen += 1
-            if time.monotonic() >= deadline:
+            if negative_index:
+                resolved_index = len(matches) + index
+                if 0 <= resolved_index < len(matches) and not _deadline_expired(
+                    deadline,
+                    self._timeout,
+                    enforce=enforce_deadline,
+                ):
+                    return matches[resolved_index]
+            if single_attempt or _deadline_expired(
+                deadline,
+                self._timeout,
+                enforce=enforce_deadline,
+            ):
                 break
-            time.sleep(0.1)
+            time.sleep(_get_poll_interval())
         raise ElementNotFoundError(
             f"Qt widget with objectName ending in {self._object_name!r} "
             f"(match #{index}) not found after {self._timeout}s"
@@ -1732,22 +2625,131 @@ def _toggle_element(element: Any) -> None:
         element.click_input()
 
 
-_TREE_WALK_KEYS = frozenset({"title", "control_type", "found_index"})
+_TREE_WALK_KEYS = frozenset({"title", "control_type", "auto_id", "found_index"})
 
 # Locator.wait_for state → the wrapper predicate that answers it, for results
 # that are raw wrappers instead of a WindowSpecification with .wait().
 _STATE_PROBES = {"enabled": "is_enabled", "active": "is_active"}
 
 
-def _find_under_wrapper(parent: Any, criteria: dict[str, Any], timeout: float) -> Any:
-    """Find a descendant of an already-resolved pywinauto *wrapper*.
+def _last_seen_state(spec: Any, state: str) -> str:
+    """Return a readable final state for a failed state wait."""
+    probe_name = _STATE_PROBES.get(state)
+    if probe_name is None:
+        return "unavailable"
 
-    ``child_window`` is defined on ``WindowSpecification`` only, so a locator
-    chained off ``_ResolvedLocator`` / ``_QtObjectNameLocator`` — or off any
-    fallback match — has to go through ``find_elements`` instead.
+    target = _wrapper_of(spec)
+    try:
+        probe = getattr(target, probe_name, None)
+        if not callable(probe):
+            return "unavailable"
+        observed = bool(probe())
+    except Exception:
+        return "unavailable"
+
+    if state == "enabled":
+        return "enabled" if observed else "disabled"
+    if state == "active":
+        return "active" if observed else "inactive"
+    return repr(observed)
+
+
+def _is_negative_found_index(criteria: dict[str, Any]) -> bool:
+    index = criteria.get("found_index")
+    return isinstance(index, int) and index < 0
+
+
+def _resolve_negative_found_index(
+    parent_spec: Any,
+    criteria: dict[str, Any],
+    timeout: float,
+    *,
+    deadline: float | None = None,
+    enforce_deadline: bool | None = None,
+    visible_only: bool = True,
+) -> dict[str, Any] | Any:
+    """Resolve a negative index against the complete match set.
+
+    ``pywinauto`` does not consistently handle negative ``found_index`` values
+    across its UIA and wrapper paths. Poll the complete ``descendants()``
+    collection ourselves first, then use the TreeWalker fallback for criteria
+    it can evaluate when FindAll exposes no usable match. This keeps a
+    depth-limited TreeWalker result from changing the requested ordering of the
+    complete descendant set.
+
+    On win32 the index is computed from exactly what the final
+    ``child_window(found_index=N, ...)`` selects from, including *visible_only*:
+    ``descendants()`` there ignores most criteria and returns hidden controls,
+    which would turn ``-1`` into an index past the end of the final matches.
     """
-    from pywinauto.findwindows import find_elements
+    if not _is_negative_found_index(criteria):
+        return criteria
 
+    index = int(criteria["found_index"])
+    match_criteria = {key: value for key, value in criteria.items() if key != "found_index"}
+    is_win32 = backend_name(parent_spec) == "win32"
+    # descendants() never applies predicate_func (pywinauto honours it only in
+    # find_elements), so it is filtered here on the other backends.
+    predicate = None if is_win32 else match_criteria.pop("predicate_func", None)
+    deadline = time.monotonic() + timeout if deadline is None else deadline
+    if enforce_deadline is None:
+        enforce_deadline = timeout > 0
+    last_exc: Exception | None = None
+
+    from pywinauto.timings import TimeoutError as _PwTimeoutError
+
+    while True:
+        if _deadline_expired(deadline, timeout, enforce=enforce_deadline):
+            break
+        try:
+            wrapper = _wrapper_object_until(parent_spec, deadline, timeout)
+            matches = (
+                find_win32_elements(wrapper, match_criteria, visible_only=visible_only)
+                if is_win32
+                else wrapper.descendants(**match_criteria)
+            )
+            if predicate is not None:
+                matches = [match for match in matches if predicate(match.element_info)]
+            resolved_index = len(matches) + index
+            if 0 <= resolved_index < len(matches):
+                return {**criteria, "found_index": resolved_index}
+        except Exception as exc:
+            last_exc = exc
+
+        if (
+            not is_win32
+            and set(match_criteria) <= _TREE_WALK_KEYS
+            and not _deadline_expired(
+                deadline,
+                timeout,
+                enforce=enforce_deadline,
+            )
+        ):
+            tree_result = _tree_walk_find(
+                parent_spec, criteria, deadline=deadline if enforce_deadline else None
+            )
+            if tree_result is not None and not _deadline_expired(
+                deadline,
+                timeout,
+                enforce=enforce_deadline,
+            ):
+                return tree_result
+
+        if timeout <= 0 or _deadline_expired(
+            deadline,
+            timeout,
+            enforce=enforce_deadline,
+        ):
+            break
+        time.sleep(_get_poll_interval())
+
+    raise _PwTimeoutError(
+        f"negative index {index} was not available within {timeout}s"
+    ) from last_exc
+
+
+def _wrapper_backend(parent: Any, criteria: dict[str, Any]) -> tuple[str, Any]:
+    """Validate a resolved parent before entering the selector retry loop."""
     backend_name = getattr(getattr(parent, "backend", None), "name", None)
     wrapper_cls = getattr(getattr(parent, "backend", None), "generic_wrapper_class", None)
     if backend_name is None or wrapper_cls is None:
@@ -1756,22 +2758,99 @@ def _find_under_wrapper(parent: Any, criteria: dict[str, Any], timeout: float) -
             f"{type(parent).__name__!r}: it is not a pywinauto wrapper",
             hint="chain .locator() off a Window or an unresolved Locator instead",
         )
-    deadline = time.monotonic() + timeout
+    return backend_name, wrapper_cls
+
+
+def _find_under_wrapper(
+    parent: Any,
+    criteria: dict[str, Any],
+    timeout: float,
+    *,
+    deadline: float | None = None,
+    enforce_deadline: bool | None = None,
+    visible_only: bool = True,
+) -> Any:
+    """Find a descendant of an already-resolved pywinauto *wrapper*.
+
+    ``child_window`` is defined on ``WindowSpecification`` only, so a locator
+    chained off ``_ResolvedLocator`` / ``_QtObjectNameLocator`` — or off any
+    fallback match — has to go through ``find_elements`` instead. UIA providers
+    can omit realized virtualized items from that search, so use the same
+    TreeWalker fallback as the WindowSpecification path.
+    """
+    from pywinauto.findwindows import ElementAmbiguousError, find_elements
+
+    backend_name, wrapper_cls = _wrapper_backend(parent, criteria)
+    deadline = time.monotonic() + timeout if deadline is None else deadline
+    if enforce_deadline is None:
+        enforce_deadline = timeout > 0
     last_exc: Exception | None = None
+    negative_index = int(criteria["found_index"]) if _is_negative_found_index(criteria) else None
+    # For supported UIA selectors, verify uniqueness and negative indices in
+    # the complete realized TreeWalker tree, even when FindAll finds a match.
+    # Other backends and selectors retain pywinauto's enumeration semantics.
+    tree_authoritative = (
+        (negative_index is not None or "found_index" not in criteria)
+        and backend_name == "uia"
+        and set(criteria) <= _TREE_WALK_KEYS
+        and any(criteria.get(key) for key in ("title", "control_type", "auto_id"))
+        and callable(getattr(getattr(parent, "element_info", None), "children", None))
+    )
+    search_criteria = (
+        {key: value for key, value in criteria.items() if key != "found_index"}
+        if negative_index is not None
+        else criteria
+    )
+    # find_elements() applies predicate_func, so the translated selector goes
+    # straight in. Translating before the loop makes an unsupported control
+    # type fail at once (KAN-747).
+    search_criteria = criteria_for_backend(parent, search_criteria)
     while True:
+        if enforce_deadline and time.monotonic() >= deadline:
+            break
         try:
             found = find_elements(
                 parent=parent,
                 top_level_only=False,
                 backend=backend_name,
                 depth=None,
-                **criteria,
+                visible_only=visible_only,
+                **search_criteria,
             )
-            if found:
+            if len(found) > 1 and "found_index" not in criteria:
+                raise ElementAmbiguousError(f"{criteria!r} matched more than one element")
+            if negative_index is not None and not tree_authoritative:
+                resolved_index = len(found) + negative_index
+                if 0 <= resolved_index < len(found) and (
+                    not enforce_deadline or time.monotonic() < deadline
+                ):
+                    return wrapper_cls(found[resolved_index])
+            elif (
+                negative_index is None
+                and not tree_authoritative
+                and found
+                and (not enforce_deadline or time.monotonic() < deadline)
+            ):
                 return wrapper_cls(found[0])
+        except ElementAmbiguousError:
+            raise
         except Exception as exc:
             last_exc = exc
-        if time.monotonic() >= deadline:
+        if backend_name == "uia" and not _deadline_expired(
+            deadline, timeout, enforce=enforce_deadline
+        ):
+            tree_result = _tree_walk_find(
+                parent,
+                criteria,
+                visible_only=visible_only,
+                deadline=deadline if enforce_deadline else None,
+                max_depth=None if tree_authoritative else 8,
+            )
+            if tree_result is not None and not _deadline_expired(
+                deadline, timeout, enforce=enforce_deadline
+            ):
+                return tree_result
+        if timeout <= 0 or (enforce_deadline and time.monotonic() >= deadline):
             break
         time.sleep(0.1)
     raise ElementNotFoundError(
@@ -1779,76 +2858,161 @@ def _find_under_wrapper(parent: Any, criteria: dict[str, Any], timeout: float) -
     ) from last_exc
 
 
-def _tree_walk_find(parent_spec: Any, criteria: dict[str, Any]) -> Any | None:
+def _tree_walk_find(
+    parent_spec: Any,
+    criteria: dict[str, Any],
+    *,
+    visible_only: bool = False,
+    deadline: float | None = None,
+    max_depth: int | None = 8,
+) -> Any | None:
     """Find an element via UIAElementInfo.children() (IUIAutomation::TreeWalker).
 
     pywinauto's child_window()/descendants() use IUIAutomation::FindAll which
     misses elements only reachable via TreeWalker, e.g. toolbar buttons inside
     Win32 ToolbarWindow32 controls.  This fallback uses UIAElementInfo.children()
     which calls TreeWalker internally and can reach those elements.
+    Filter visibility before indexing matches. A supplied absolute deadline is
+    checked between nodes and provider calls; a single COM call can still block.
+    ``max_depth=None`` enumerates the full realized tree for negative indices.
+    An interrupted enumeration never yields a partial negative-index result.
+    Without found_index, scan the full tree regardless of max_depth and raise
+    AmbiguousMatchError on a second match. Interrupted scans never yield an
+    unverified unique match.
     Returns a pywinauto wrapper on success, or None.
     """
-    # Only ``title`` and ``control_type`` can be evaluated against a raw
-    # UIAElementInfo here. Matching on a subset of the caller's criteria would
-    # return the wrong element (e.g. a stale ``auto_id`` silently degrading to
-    # "the first Button in the window"), so any other key disqualifies this
+    # Only ``title``, ``control_type`` and ``auto_id`` can be evaluated against
+    # a raw UIAElementInfo here. Matching on a subset of the caller's criteria
+    # would return the wrong element, so any other key disqualifies this
     # fallback entirely — the caller must get an ElementNotFoundError instead.
     if not set(criteria) <= _TREE_WALK_KEYS:
         return None
     title = criteria.get("title", "")
     ct = criteria.get("control_type", "")
-    if not title and not ct:
+    auto_id = criteria.get("auto_id", "")
+    if not title and not ct and not auto_id:
         return None
     # ``nth()`` merges found_index into the criteria; skipping that many
     # matches here keeps .nth(N) with the same fallbacks as the bare locator.
-    remaining = [int(criteria.get("found_index", 0) or 0)]
+    found_index = int(criteria.get("found_index", 0) or 0)
+    require_unique = "found_index" not in criteria
+    if require_unique:
+        max_depth = None  # A depth-limited scan cannot establish uniqueness.
+    unique_match: Any = None
+    remaining = found_index
+    negative_matches: list[Any] = []
 
+    def expired() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    if expired() or (max_depth is not None and max_depth <= 0):
+        return None
     try:
-        root_info = parent_spec.wrapper_object().element_info
+        parent = (
+            parent_spec.wrapper_object() if hasattr(parent_spec, "wrapper_object") else parent_spec
+        )
+        root_info = parent.element_info
     except Exception:
         return None
 
-    def _search(info: Any, depth: int) -> Any | None:
-        if depth <= 0:
+    def children_of(info: Any) -> Any:
+        if expired():
+            raise TimeoutError("TreeWalker deadline expired")
+        return iter(info.children())
+
+    try:
+        if expired():
             return None
-        try:
-            children = info.children()
-        except Exception:
-            return None
-        for child in children:
+        import pywinauto as _pw
+
+        wrapper_cls = _pw.Application(backend="uia").backend.generic_wrapper_class
+        stack = [(children_of(root_info), 1)]
+        while stack:
+            if expired():
+                return None
+            children, depth = stack[-1]
+            try:
+                child = next(children)
+            except StopIteration:
+                stack.pop()
+                continue
+            if expired():
+                return None
             try:
                 child_name = (child.name or "").split("\t")[0]
                 child_ct = child.control_type or ""
+                child_auto_id = getattr(child, "automation_id", "") or ""
+                matches = (
+                    (not title or child_name == title)
+                    and (not ct or child_ct == ct)
+                    and (not auto_id or child_auto_id == auto_id)
+                )
+                wrapper = None
+                if matches:
+                    wrapper = wrapper_cls(child)
+                    if visible_only:
+                        probe = getattr(wrapper, "is_visible", None)
+                        matches = (
+                            True
+                            if probe is None
+                            else bool(probe())
+                            if callable(probe)
+                            else bool(probe)
+                        )
             except Exception:
-                continue
-            if (not title or child_name == title) and (not ct or child_ct == ct):
-                if remaining[0] > 0:
-                    remaining[0] -= 1
+                if found_index < 0 or require_unique:
+                    return None
+                matches = False
+            if expired():
+                return None
+            if matches:
+                if require_unique:
+                    if unique_match is not None:
+                        raise AmbiguousMatchError(
+                            f"{criteria!r} matched more than one element — "
+                            "narrow the criteria or pick one with found_index=N"
+                        )
+                    unique_match = wrapper
+                elif found_index < 0:
+                    negative_matches.append(wrapper)
+                elif remaining > 0:
+                    remaining -= 1
                 else:
-                    try:
-                        import pywinauto as _pw
-
-                        wrapper_cls = _pw.Application(backend="uia").backend.generic_wrapper_class
-                        return wrapper_cls(child)
-                    except Exception:
-                        pass
-            result = _search(child, depth - 1)
-            if result is not None:
-                return result
+                    return wrapper
+            if max_depth is None or depth < max_depth:
+                try:
+                    stack.append((children_of(child), depth + 1))
+                except Exception:
+                    if found_index < 0 or require_unique:
+                        return None
+        if found_index < 0 and not expired():
+            return negative_matches[found_index]
+    except AmbiguousMatchError:
+        raise
+    except Exception:
         return None
 
-    return _search(root_info, 8)
+    return unique_match if not expired() else None
 
 
 class _ResolvedLocator(Locator):
     """A Locator wrapping an already-resolved pywinauto element."""
 
-    def __init__(self, element: Any) -> None:
+    def __init__(self, element: Any, *, application: Any | None = None) -> None:
         self._element = element
+        self._application = application
         self._criteria: dict[str, Any] = {}
         self._fallback: list[dict[str, Any]] = []
         self._image_fallback: Any = None
         self._timeout = _get_timeout()
+        # Not overridden by this class, so the base Locator.all()/.count()
+        # it inherits calls _refresh_object_repository() unconditionally —
+        # these must exist even though a resolved locator is never itself
+        # bound to a watched Object Repository alias.
+        self._object_repository: Any | None = None
+        self._object_alias: str | None = None
+        self._object_parent_alias: str | None = None
+        self._object_selector_keys: set[str] = set()
 
     def nth(self, index: int) -> Self:
         """Reject any index but 0 — this locator wraps one resolved element.
@@ -1865,8 +3029,30 @@ class _ResolvedLocator(Locator):
             )
         return self._clone()
 
-    def _get_parent_spec(self) -> Any:
+    def _get_parent_spec(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
         return self._element
 
-    def _resolve(self) -> Any:
+    def _resolve_presence(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        """Return the wrapped element when its resolved handle is usable."""
+        return self._resolve(deadline=deadline, single_attempt=single_attempt)
+
+    def _resolve(
+        self,
+        deadline: float | None = None,
+        *,
+        single_attempt: bool = False,
+    ) -> Any:
+        if deadline is not None and not single_attempt and time.monotonic() >= deadline:
+            raise ElementNotFoundError("resolved element deadline expired")
+        _ensure_element_present(self._element)
         return self._element

@@ -52,6 +52,72 @@ win.get_by_class("Edit").type_text("hello")
 win.get_by_class("Button").click()
 ```
 
+### Convenience controls on the win32 backend
+
+The typed shortcuts locate their controls on `win32` too, for classic HWND
+controls (MFC, VB6, Delphi/VCL) and WinForms alike:
+
+```python
+win = Desktop.for_legacy_apps().launch("LegacyApp.exe").window(title="Main Window")
+
+win.edit().set_text("Dolphin")
+win.combo_box().select_item("Premium")
+win.tree().select_item_by_path("Root", "Child")
+win.list_box().items()                    # ["Alpha", "Beta", ...]
+win.tab().select_tab("Advanced")
+win.check_box(name="Remember").exists()   # a BS_CHECKBOX, not the "Save" button
+win.menu("File").item("Show dialog").click()
+win.locator(title="ready", control_type="Static").wait_for()
+```
+
+The `win32` backend has no UI Automation control types. A UIA-style
+`control_type` (`Edit`, `ComboBox`, `Tree`, `List`, `Button`, `CheckBox`,
+`RadioButton`, `Group`, `Text`, `Tab`, `ToolBar`, `StatusBar`,
+`ProgressBar`, `Slider`, `Spinner`, `Header`, `Calendar`) is matched against
+pywinauto's friendly class name for the window instead. That name covers the
+classic, WinForms (`WindowsForms10.EDIT.*`), VB6 and VCL class spellings, and
+tells check boxes, radio buttons and group boxes apart from push buttons by
+their `BS_*` style. The win32 friendly names themselves (`Static`,
+`TreeView`, `ListBox`, `ListView`, `TabControl`, …) are accepted as
+`control_type` too, and a dotted .NET type such as
+`"System.Windows.Forms.TextBox"` keeps pywinauto's own WinForms meaning.
+
+- `tree()` drives `SysTreeView32` nodes through tree-view messages:
+  `select_item_by_path` selects the node, and the application gets the same
+  selection-changed notification a click produces.
+- `menu()` / `.item()` resolve a native menu bar (`HMENU`) by exact item
+  text, ignoring `&` mnemonics and `\t` shortcuts. `click()` clicks the item
+  with the mouse; `invoke()` sends its `WM_COMMAND` without any input. A
+  WinForms `MenuStrip`/`ToolStrip` is a control, not an `HMENU`; locate it
+  with the `uia` backend instead. `&&` in a caption is a literal ampersand, so
+  `R&&D` is named `R&D`. `exists()` and `is_enabled()` read the menu whether
+  or not it is open. `is_visible()`, `wait_for()` and `wait_until_hidden()`
+  mean on screen, and unlike on `uia` they never open the parent menu.
+  `is_checked()` reads a checkable item the same way, and `check()` /
+  `uncheck()` send its `WM_COMMAND` only when the state differs. An application
+  that sets check marks when the popup opens, as MFC `ON_UPDATE_COMMAND_UI`
+  handlers do, reports the state from the last time the popup was open.
+- A UIA type with no Win32 window class of its own (`MenuItem` outside a
+  menu chain, `TreeItem`, `ListItem`, `Hyperlink`, `Pane`, `Window`, …)
+  raises `UnsupportedCapabilityError` at once, from `wait_for()` and
+  `exists()` alike, instead of timing out. Select such elements by
+  `class_name` / `title`, or use the `uia` backend.
+- `all()` and `count()` apply every criterion, including `control_id`,
+  `title_re` and `class_name_re`, as does the count behind a negative `nth()`.
+  `all()` and `count()` include hidden controls and every nested level. A
+  negative `nth()` counts what its lookup can select: visible controls for
+  actions, hidden ones too for `exists()`.
+- `list_box()` reads `items()` and `selected_items()` from a `LISTBOX` or a
+  `SysListView32` (first column of each row) through their own messages, and
+  `select_item()` selects an entry.
+- `tab().select_tab(name)` selects a `SysTabControl32` tab by exact text,
+  ignoring an `&` mnemonic, including with the `TCS_BUTTONS` style, and the
+  application switches pages as on a click. If the selection does not change,
+  for example because the application refuses it, it raises `WaitTimeoutError`.
+- `text()` on an empty plain edit box or label returns `""` straight away. Only
+  a RichEdit or other control whose text the window text does not carry falls
+  back to select-all and the clipboard.
+
 ## Inspect The UI Tree
 
 ```bash

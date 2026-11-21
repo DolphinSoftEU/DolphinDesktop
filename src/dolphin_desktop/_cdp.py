@@ -35,12 +35,14 @@ Basic usage::
 
 from __future__ import annotations
 
+import threading
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from ._exceptions import DolphinError, ElementNotFoundError, WaitTimeoutError
+from ._logging import Secret, unwrap_secret
 
 if TYPE_CHECKING:  # pragma: no cover — types only, never imported at runtime
     from playwright.sync_api import Browser, BrowserContext, Page, Playwright
@@ -54,6 +56,54 @@ _INSTALL_HINT = (
 
 #: Console entries retained per session; older entries are discarded.
 CONSOLE_BUFFER_LIMIT = 1000
+
+#: Largest screenshot payload accepted from the CDP endpoint (bytes). A
+#: 4K page screenshot is a few MiB; anything far beyond that is not a
+#: screenshot.
+MAX_SCREENSHOT_BYTES = 64 * 1024 * 1024
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+def _decode_screenshot(data: Any) -> Any:
+    """Decode screenshot bytes from the CDP endpoint into a PIL image.
+
+    The endpoint is a local process dolphin launched, but it is still a
+    network peer, and Pillow's ``Image.open`` would otherwise sniff *any* of
+    its ~60 formats — including EPS, whose decoder spawns Ghostscript and
+    hung the process on a malformed payload (CVE fixed in Pillow 12.3.0).
+    Only the two formats Chromium's ``Page.captureScreenshot`` can produce
+    are accepted, identified by their magic bytes, decoded with the format
+    list pinned, and bounded in size.
+    """
+    from io import BytesIO
+
+    from PIL import Image as _PILImage
+
+    if not isinstance(data, (bytes, bytearray)):
+        raise DolphinError(f"CDP screenshot returned {type(data).__name__}, expected bytes")
+    if len(data) > MAX_SCREENSHOT_BYTES:
+        raise DolphinError(
+            f"CDP screenshot payload of {len(data)} bytes exceeds the "
+            f"{MAX_SCREENSHOT_BYTES}-byte limit"
+        )
+    if data.startswith(_PNG_MAGIC):
+        formats = ["PNG"]
+    elif data.startswith(_JPEG_MAGIC):
+        formats = ["JPEG"]
+    else:
+        raise DolphinError(
+            "CDP screenshot payload is neither PNG nor JPEG — refusing to hand an "
+            "unexpected format to the image decoder"
+        )
+    try:
+        img = _PILImage.open(BytesIO(bytes(data)), formats=formats)
+        img.load()
+    except Exception as exc:
+        raise DolphinError(f"CDP screenshot could not be decoded as {formats[0]}: {exc}") from exc
+    return img
+
 
 #: Characters Playwright's text normaliser deletes outright before matching.
 #: A literal that carries one can only match if the selector drops it too.
@@ -292,6 +342,72 @@ def _require_playwright() -> Any:
     return sync_api
 
 
+class _PlaywrightLease:
+    """One thread's sync Playwright driver, shared by the sessions opened on that thread.
+
+    Playwright's sync API refuses a second ``sync_playwright().start()`` on a
+    thread whose first instance is still running ("Sync API inside the asyncio
+    loop"). Every :class:`CDPSession` opened on a thread therefore borrows the
+    same driver, each over its own ``connect_over_cdp`` connection, and the
+    driver stops only when the last of them closes.
+
+    Only the owning thread's ``threading.local`` and the sessions themselves
+    refer to a lease. No module-level registry keeps it, or its driver,
+    alive: once its thread has ended and its sessions are gone, the lease is
+    garbage like any other object. A session left open still keeps its driver
+    running until it is closed or collected, exactly as before drivers were
+    shared.
+    """
+
+    __slots__ = ("__weakref__", "playwright", "users")
+
+    def __init__(self, playwright: Any) -> None:
+        self.playwright = playwright
+        self.users = 1
+
+
+# Per-thread slot for the lease of the thread's running driver. Thread-local
+# rather than a dict keyed by thread ident: a slot dies with its thread, so a
+# new thread can never inherit, or silently overwrite, a finished thread's
+# driver. Not a lock-free counter: close() may run on another thread.
+_THREAD_PLAYWRIGHT = threading.local()
+_LEASE_USERS_LOCK = threading.Lock()
+
+
+def _acquire_playwright(sync_api: Any) -> _PlaywrightLease:
+    """Borrow the calling thread's Playwright driver, starting it on first use.
+
+    Playwright sync objects are bound to the thread that started them, so the
+    lease is per thread. A lease whose last session has closed (``users``
+    is 0) has a stopped driver and is replaced, never revived.
+    """
+    lease: _PlaywrightLease | None = getattr(_THREAD_PLAYWRIGHT, "lease", None)
+    if lease is not None:
+        with _LEASE_USERS_LOCK:
+            if lease.users > 0:
+                lease.users += 1
+                return lease
+    lease = _PlaywrightLease(sync_api.sync_playwright().start())
+    _THREAD_PLAYWRIGHT.lease = lease
+    return lease
+
+
+def _release_playwright(lease: _PlaywrightLease) -> None:
+    """Return one borrow of *lease*; stop the driver after the last one.
+
+    ``users`` drops to 0 before ``stop()`` runs, so even a failing stop marks
+    the lease dead and the thread's next session starts a fresh driver.
+    Releasing a lease that is already at 0 does nothing.
+    """
+    with _LEASE_USERS_LOCK:
+        if lease.users <= 0:
+            return
+        lease.users -= 1
+        if lease.users:
+            return
+    lease.playwright.stop()
+
+
 class CDPSession:
     """Live CDP connection to an Electron process.
 
@@ -336,6 +452,11 @@ class CDPSession:
         endpoint: str,
     ) -> None:
         self._playwright = playwright
+        # Set by connect() when the driver is the thread's shared one; a session
+        # built directly around its own driver keeps stopping it on close().
+        self._playwright_lease: _PlaywrightLease | None = None
+        # The thread connect() ran on: Playwright sync objects only work there.
+        self._owner_thread: threading.Thread | None = None
         self._browser = browser
         self._context = context
         self._page = page
@@ -426,13 +547,28 @@ class CDPSession:
             for a page whose URL is non-blank (i.e. the actual UI
             renderer) so ``session.page`` points at a stable target,
             not a short-lived helper that closes moments later.
+
+            Sessions opened on the same thread share one Playwright driver,
+            each with its own CDP connection, so a second session (for
+            example ``playwright_compat``'s ``connect_over_cdp`` next to a
+            session from :meth:`Desktop.launch_electron_cdp`) does not trip
+            Playwright's one-sync-instance-per-thread rule. Closing one
+            session leaves the others connected; the driver stops with the
+            last of them. Close every session, on the thread that opened it,
+            before that thread ends: a session left open keeps the driver
+            (a ``node`` process) running until it is closed or garbage
+            collected.
         """
         sync_api = _require_playwright()
-        pw = sync_api.sync_playwright().start()
+        lease = _acquire_playwright(sync_api)
+        pw = lease.playwright
+        import time as _t
+
+        deadline = _t.monotonic() + timeout
         try:
             browser = pw.chromium.connect_over_cdp(endpoint, timeout=timeout * 1000)
         except Exception as exc:
-            pw.stop()
+            _release_playwright(lease)
             raise RuntimeError(f"CDP connect_over_cdp({endpoint!r}) failed: {exc}") from exc
 
         # Everything past ``connect_over_cdp`` may still raise — a stale
@@ -442,7 +578,9 @@ class CDPSession:
         # exit, which on long-running test runs shows up as zombie
         # ``node.exe`` processes.
         try:
-            context, page = cls._pick_stable_page(browser, timeout=timeout)
+            context, page = cls._pick_stable_page(
+                browser, timeout=max(0.0, deadline - _t.monotonic())
+            )
             if page is None:
                 # Last-resort fallback: open a fresh page so the caller at least
                 # gets a live target. In Electron this is unusual — the app's
@@ -452,15 +590,18 @@ class CDPSession:
                 else:
                     context = browser.contexts[0]
                 page = context.new_page()
+            session = cls(pw, browser, context, page, endpoint=endpoint)
         except Exception:
             try:
                 browser.close()
             except Exception:
                 pass
-            pw.stop()
+            _release_playwright(lease)
             raise
 
-        return cls(pw, browser, context, page, endpoint=endpoint)
+        session._playwright_lease = lease
+        session._owner_thread = threading.current_thread()
+        return session
 
     @staticmethod
     def _pick_stable_page(browser: Browser, *, timeout: float) -> tuple[Any, Any]:
@@ -479,7 +620,11 @@ class CDPSession:
 
         deadline = _t.monotonic() + timeout
         while _t.monotonic() < deadline:
+            wait_page = None
+            wait_context = None
             for ctx in browser.contexts:
+                if wait_context is None:
+                    wait_context = ctx
                 for p in ctx.pages:
                     try:
                         if p.is_closed():
@@ -489,7 +634,25 @@ class CDPSession:
                         continue
                     if url and url != "about:blank" and not url.startswith("chrome://"):
                         return ctx, p
-            _t.sleep(0.25)
+                    if wait_page is None:
+                        wait_page = p
+            remaining = deadline - _t.monotonic()
+            if remaining <= 0 or wait_context is None:
+                break
+            poll_ms = min(0.25, remaining) * 1000
+            # These sync API calls dispatch navigation/page events. Sleeping
+            # blocks Playwright's event loop and leaves the cached URLs blank.
+            if wait_page is not None:
+                try:
+                    wait_page.wait_for_timeout(poll_ms)
+                except Exception:
+                    if not wait_page.is_closed():
+                        raise
+            else:
+                try:
+                    wait_context.wait_for_event("page", timeout=poll_ms)
+                except _require_playwright().TimeoutError:
+                    pass
         # Fallback: any live page at all, even blank.
         for ctx in browser.contexts:
             for p in ctx.pages:
@@ -657,8 +820,20 @@ class CDPSession:
             return False
 
     def pages(self) -> list[Page]:
-        """Return every non-closed page across every browser context."""
+        """Return every non-closed page across every browser context.
+
+        Playwright's sync API delivers protocol events (a window the app just
+        opened, a page that closed) only while one of its own calls runs. A
+        caller polling this method between plain ``time.sleep`` calls would
+        therefore get the same list forever. Each call first makes one
+        zero-length round trip to the Playwright driver, which delivers every
+        event the driver has already sent. A new window is listed once
+        Playwright has finished attaching to it, which can take a few round
+        trips after it appears: poll this method, or use :meth:`expect_popup`
+        to wait for a popup. The current page is never changed here.
+        """
         self._require_open()
+        self._dispatch_pending_events()
         result: list[Page] = []
         for ctx in self._browser.contexts:
             for p in ctx.pages:
@@ -668,6 +843,38 @@ class CDPSession:
                 except Exception:
                     continue
         return result
+
+    def _dispatch_pending_events(self) -> None:
+        """Let Playwright deliver the protocol events its driver already sent.
+
+        Same technique as :meth:`_pick_stable_page`: a sync API call (here a
+        zero-length ``wait_for_timeout``, a driver-side timer that never
+        reaches the renderer) pumps Playwright's event loop, while
+        ``time.sleep`` blocks it. The round trip rides on the first live page;
+        if that call fails (the page closed meanwhile), the next live page is
+        tried. Only when there is no live page at all does a 1 ms wait for a
+        ``page`` event on the first context pump the loop instead. A failed
+        round trip has already run the loop, so it does not fall back to that
+        wait. Failures are ignored: the caller then reads the state Playwright
+        already has, as before.
+        """
+        contexts = list(self._browser.contexts)
+        tried_a_page = False
+        for ctx in contexts:
+            for p in ctx.pages:
+                try:
+                    if p.is_closed():
+                        continue
+                    tried_a_page = True
+                    p.wait_for_timeout(0)
+                    return
+                except Exception:
+                    continue
+        if contexts and not tried_a_page:
+            try:
+                contexts[0].wait_for_event("page", timeout=1)
+            except Exception:
+                pass
 
     def switch_to_page(self, index: int) -> CDPSession:
         """Switch the "current" page to the *index*-th across all contexts.
@@ -722,15 +929,10 @@ class CDPSession:
         """Capture the current page as a :class:`PIL.Image`.
 
         The result is a PIL image (dolphin already depends on Pillow).
-        Passing *path* saves the image before returning it.
+        Passing *path* saves the image before returning it. Only PNG and
+        JPEG payloads are decoded — see :func:`_decode_screenshot`.
         """
-        from io import BytesIO
-
-        from PIL import Image as _PILImage
-
-        data = self.page.screenshot()
-        img = _PILImage.open(BytesIO(data))
-        img.load()
+        img = _decode_screenshot(self.page.screenshot())
         if path:
             img.save(path)
         return img
@@ -1230,9 +1432,23 @@ class CDPSession:
         session kept in a fixture would otherwise hold the whole dead
         Playwright object graph — pages, contexts, handlers — alive for the
         rest of the run.
+
+        Only this session's CDP connection is closed. The thread's shared
+        Playwright driver keeps serving other open sessions and stops when
+        the last one closes.
+
+        Raises:
+            DolphinError: if called on a thread other than the one that
+                opened the session with :meth:`connect`. Playwright's sync
+                objects are bound to that thread (a foreign thread gets
+                ``greenlet.error`` and the driver keeps running), so closing
+                from elsewhere could only pretend to succeed. Nothing is
+                changed: the session stays open and its owner thread can
+                still close it.
         """
         if self._closed:
             return
+        self._require_owner_thread()
         self._closed = True
         if self._events_page is not None:
             self._unbind_page_events(self._events_page)
@@ -1242,12 +1458,32 @@ class CDPSession:
             self._browser.close()
         except Exception:
             pass
+        lease, self._playwright_lease = self._playwright_lease, None
         try:
-            self._playwright.stop()
+            if lease is not None:
+                _release_playwright(lease)
+            else:
+                self._playwright.stop()
         except Exception:
             pass
         self._page = None  # type: ignore[assignment]
         self._opener_page = None
+
+    def _require_owner_thread(self) -> None:
+        owner = self._owner_thread
+        current = threading.current_thread()
+        if owner is None or owner is current:
+            return
+        state = "is still running" if owner.is_alive() else "has already exited"
+        raise DolphinError(
+            f"CDPSession.close() called on thread {current.name!r}, but the session "
+            f"was opened on thread {owner.name!r}, which {state}",
+            hint=(
+                "Playwright objects only work on the thread that created them: close "
+                "the session on that thread (for example submit session.close to the "
+                "executor that opened it) before the thread ends"
+            ),
+        )
 
     def __enter__(self) -> CDPSession:
         return self
@@ -1344,6 +1580,8 @@ class CDPLocator:
             kwargs["force"] = True
         try:
             self._resolve().click(**kwargs)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP click failed for selector {self._selector!r}: {exc}"
@@ -1353,6 +1591,8 @@ class CDPLocator:
     def double_click(self, *, timeout: float = 10.0) -> CDPLocator:
         try:
             self._resolve().dblclick(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP double_click failed for selector {self._selector!r}: {exc}"
@@ -1363,6 +1603,8 @@ class CDPLocator:
         """Right-click (context menu) the element."""
         try:
             self._resolve().click(button="right", timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP right_click failed for selector {self._selector!r}: {exc}"
@@ -1373,6 +1615,8 @@ class CDPLocator:
         """Move the mouse over the element — reveals tooltips / hover menus."""
         try:
             self._resolve().hover(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP hover failed for selector {self._selector!r}: {exc}"
@@ -1382,6 +1626,8 @@ class CDPLocator:
     def drag_to(self, other: CDPLocator, *, timeout: float = 10.0) -> CDPLocator:
         try:
             self._resolve().drag_to(other._resolve(), timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP drag_to failed for {self._selector!r} → {other._selector!r}: {exc}"
@@ -1394,6 +1640,8 @@ class CDPLocator:
         """Programmatically focus the element (fires focus event)."""
         try:
             self._resolve().focus(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP focus failed for selector {self._selector!r}: {exc}"
@@ -1409,30 +1657,38 @@ class CDPLocator:
         """
         try:
             self._resolve().press(key, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP press_key({key!r}) failed for {self._selector!r}: {exc}"
             ) from exc
         return self
 
-    def type_text(self, text: str, *, timeout: float = 10.0, clear: bool = True) -> CDPLocator:
+    def type_text(
+        self, text: str | Secret, *, timeout: float = 10.0, clear: bool = True
+    ) -> CDPLocator:
         """Fill the element with *text*.
 
         By default clears the field first (``fill`` semantics). Pass
         ``clear=False`` to append instead (``type`` semantics — key-by-key).
+        A :class:`~dolphin_desktop.Secret` is accepted for password fields.
         """
+        text = unwrap_secret(text)
         try:
             if clear:
                 self._resolve().fill(text, timeout=timeout * 1000)
             else:
                 self._resolve().type(text, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP type_text failed for selector {self._selector!r}: {exc}"
             ) from exc
         return self
 
-    def set_text(self, text: str, *, timeout: float = 10.0) -> CDPLocator:
+    def set_text(self, text: str | Secret, *, timeout: float = 10.0) -> CDPLocator:
         """Semantic alias for :meth:`type_text` (clear + fill)."""
         return self.type_text(text, timeout=timeout, clear=True)
 
@@ -1440,6 +1696,8 @@ class CDPLocator:
         """Empty an editable field."""
         try:
             self._resolve().fill("", timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP clear failed for selector {self._selector!r}: {exc}"
@@ -1452,6 +1710,8 @@ class CDPLocator:
         """Ensure a checkbox / radio is checked (idempotent)."""
         try:
             self._resolve().check(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP check failed for selector {self._selector!r}: {exc}"
@@ -1462,6 +1722,8 @@ class CDPLocator:
         """Ensure a checkbox is unchecked (idempotent)."""
         try:
             self._resolve().uncheck(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP uncheck failed for selector {self._selector!r}: {exc}"
@@ -1490,6 +1752,8 @@ class CDPLocator:
             if index is not None:
                 kwargs["index"] = index
             return list(self._resolve().select_option(**kwargs))
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP select_option failed for selector {self._selector!r}: {exc}"
@@ -1501,6 +1765,8 @@ class CDPLocator:
         """Scroll the element into view (Playwright picks the best axis)."""
         try:
             self._resolve().scroll_into_view_if_needed(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP scroll_into_view failed for {self._selector!r}: {exc}"
@@ -1513,15 +1779,19 @@ class CDPLocator:
         """Return the element's rendered text."""
         try:
             return self._resolve().inner_text(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP text() failed for selector {self._selector!r}: {exc}"
             ) from exc
 
     def value(self, *, timeout: float = 5.0) -> str:
-        """Return the ``value`` of an <input>/<textarea>/<select>."""
+        """Return the ``value`` of an ``<input>``, ``<textarea>`` or ``<select>``."""
         try:
             return self._resolve().input_value(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP value() failed for selector {self._selector!r}: {exc}"
@@ -1531,6 +1801,8 @@ class CDPLocator:
         """Return the value of the named attribute, or ``None`` when unset."""
         try:
             return self._resolve().get_attribute(name, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP get_attribute({name!r}) failed for {self._selector!r}: {exc}"
@@ -1540,6 +1812,8 @@ class CDPLocator:
         """Return ``{x, y, width, height}`` in CSS pixels, or ``None`` if unmounted."""
         try:
             return self._resolve().bounding_box(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP bounding_box failed for {self._selector!r}: {exc}"
@@ -1585,6 +1859,8 @@ class CDPLocator:
         """
         try:
             self._resolve().wait_for(state=state, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise WaitTimeoutError(
                 f"CDP selector {self._selector!r} did not reach state "
@@ -1596,18 +1872,15 @@ class CDPLocator:
 
     def screenshot(self, path: str | None = None, *, timeout: float = 10.0) -> Any:
         """Capture the element as a :class:`PIL.Image`; optionally save it."""
-        from io import BytesIO
-
-        from PIL import Image as _PILImage
-
         try:
             data = self._resolve().screenshot(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP screenshot failed for {self._selector!r}: {exc}"
             ) from exc
-        img = _PILImage.open(BytesIO(data))
-        img.load()
+        img = _decode_screenshot(data)
         if path:
             img.save(path)
         return img
@@ -1704,6 +1977,8 @@ class CDPLocator:
         """Return raw ``innerHTML`` of the element."""
         try:
             return self._resolve().inner_html(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP inner_html() failed for {self._selector!r}: {exc}"
@@ -1724,6 +1999,8 @@ class CDPLocator:
         """
         try:
             self._resolve().dispatch_event(event_type, event_init or {}, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP dispatch_event({event_type!r}) failed for {self._selector!r}: {exc}"
@@ -1739,6 +2016,8 @@ class CDPLocator:
         """
         try:
             return self._resolve().evaluate(script, *args)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP locator.evaluate failed for {self._selector!r}: {exc}"
@@ -1758,6 +2037,8 @@ class CDPLocator:
         """
         try:
             self._resolve().press_sequentially(text, delay=delay * 1000, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP press_sequentially failed for {self._selector!r}: {exc}"
@@ -1768,6 +2049,8 @@ class CDPLocator:
         """Select the element's text content (equivalent to Ctrl+A on inputs)."""
         try:
             self._resolve().select_text(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP select_text failed for {self._selector!r}: {exc}"
@@ -1778,6 +2061,8 @@ class CDPLocator:
         """Programmatically blur (unfocus) the element."""
         try:
             self._resolve().blur(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(f"CDP blur failed for {self._selector!r}: {exc}") from exc
         return self
@@ -1786,6 +2071,8 @@ class CDPLocator:
         """Dispatch a touch tap on the element (touch-enabled apps)."""
         try:
             self._resolve().tap(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(f"CDP tap failed for {self._selector!r}: {exc}") from exc
         return self
@@ -1794,6 +2081,8 @@ class CDPLocator:
         """Return the ``textContent`` of every element that matches."""
         try:
             return list(self._resolve().all_text_contents())
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP all_text_contents failed for {self._selector!r}: {exc}"
@@ -1808,6 +2097,8 @@ class CDPLocator:
         """
         try:
             return self._resolve().element_handle(timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP element_handle failed for {self._selector!r}: {exc}"
@@ -1826,6 +2117,8 @@ class CDPLocator:
         """
         try:
             self._resolve().set_input_files(files, timeout=timeout * 1000)
+        except CDPStalePageError:
+            raise
         except Exception as exc:
             raise ElementNotFoundError(
                 f"CDP set_input_files failed for {self._selector!r}: {exc}"

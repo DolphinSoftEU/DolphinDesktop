@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from dolphin_desktop import Desktop, MainframeError, add_import_path, dirname, path_join
-
-# Put the sibling pub400/ folder on sys.path so its modules are
-# importable directly as well as by dotted path.
-add_import_path(path_join(dirname(__file__), "..", "pub400"))
-
-from tests.mainframe.mock_tn3270._mock_server import MockTN3270Server, ScreenField  # noqa: E402
-from tests.mainframe.pub400._mainframe_env import (  # noqa: E402
+from dolphin_desktop import (
+    Desktop,
+    MainframeError,
+    env_var,
+)
+from tests.mainframe._emulator_env import (
     WS3270,  # type: ignore[import-not-found]
 )
+from tests.mainframe.mock_tn3270._mock_server import MockTN3270Server, ScreenField
 
 
 @pytest.fixture
@@ -37,6 +36,8 @@ def mock_server():
 def mock_term(mock_server):
     """MainframeTerminal connected to the mock server via ws3270."""
     if WS3270 is None:
+        if (env_var("DOLPHIN_COMPONENT_PREFLIGHT") or "").strip() == "1":
+            raise RuntimeError("wc3270 is required when DOLPHIN_COMPONENT_PREFLIGHT=1")
         pytest.skip("wc3270 not installed")
     srv, port = mock_server
     try:
@@ -48,6 +49,8 @@ def mock_term(mock_server):
             timeout=10,
         )
     except MainframeError as exc:
+        if (env_var("DOLPHIN_COMPONENT_PREFLIGHT") or "").strip() == "1":
+            raise
         pytest.skip(f"mock connect failed: {exc}")
     try:
         term.wait_ready(timeout=8)

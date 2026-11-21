@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import Any
 
 # Secret redaction.
@@ -51,6 +52,18 @@ from typing import Any
 # connection string) is masked only up to the semicolon, because there the
 # semicolon really is the delimiter. Quote such values, or expect the tail to
 # survive. Redaction is best-effort — see SECURITY.md.
+_SECRET_KEY_PATTERN = (
+    r"password|passwd|passphrase|pwd|secret|token|api[_\-]?key|apikey"
+    r"|private[_\-]?key|credential|authorization|auth(?!or)|signature"
+    r"|sessionid|sas"
+    # PIN is short and also appears inside ordinary words such as "mapping"
+    # and "shipping". Accept separators, numeric suffixes, and camelCase
+    # boundaries, but reject lowercase continuations that would match those words.
+    r"|(?<![A-Za-z0-9])pin(?!(?-i:[a-z]))"
+    r"|(?<=(?-i:[a-z]))(?-i:P)(?i:in)(?!(?-i:[a-z]))"
+)
+_ADDITIONAL_SECRET_KEY_PATTERN = r"login|username|user[_\-]?id|connection[_\-]?string|clipboard"
+
 _SECRET_RE = re.compile(
     r"("
     # No leading ``[A-Za-z0-9_.-]*`` here, deliberately. It looked necessary to
@@ -59,9 +72,7 @@ _SECRET_RE = re.compile(
     # match simply begins at ``SECRET`` and the prefix stays in the output
     # untouched — while the quantifier itself turned an ordinary long log line
     # into quadratic backtracking (2 MB took minutes).
-    r"(?:password|passwd|passphrase|pwd|secret|token|api[_\-]?key|apikey"
-    r"|private[_\-]?key|credential|authorization|auth(?!or)|signature"
-    r"|sessionid|sas)"
+    rf"(?:{_SECRET_KEY_PATTERN})"
     # Possessive. The suffix carries the rest of a compound name (``_ACCESS_KEY``
     # after ``SECRET``), and letting it backtrack made a long run of identifier
     # characters quadratic: 44 KB of them took 1.7 s, so a 500 KB traceback hung
@@ -97,6 +108,41 @@ _SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CONNECTION_STRING_RE = re.compile(
+    r"((?<![A-Za-z0-9_])connection[_\-]?string[\"']?[ \t]*[:=][ \t]*)"
+    r"(?:"
+    r'"(?P<dq>[^"\n]+)"'
+    r"|'(?P<sq>[^'\n]+)'"
+    r"|(?P<bare>(?:(?!,[ \t])(?![}\]])(?!\))[^\r\n]){2,})"
+    r")",
+    re.IGNORECASE,
+)
+
+_ADDITIONAL_SECRET_RE = re.compile(
+    rf"((?<![A-Za-z0-9_])(?:{_ADDITIONAL_SECRET_KEY_PATTERN})"
+    # Optional closing quote before the separator, same as _SECRET_RE — a
+    # dict repr like {'login': 'x'} puts a quote right after the keyword,
+    # and without this the separator match (and therefore the whole
+    # pattern) never starts.
+    r"[\"']?[ \t]*[:=][ \t]*)"
+    r"(?:"
+    r'"(?P<dq>[^"\n]+)"'
+    r"|'(?P<sq>[^'\n]+)'"
+    r"|(?P<bare>(?!(?:True|False|None|self|str|int|bool|float)(?![A-Za-z0-9_])"
+    r"|[\s,;)}\]&])"
+    r"(?:(?!,[ \t])[^\s;)}\]&\"'\n]){2,})"
+    r")",
+    re.IGNORECASE,
+)
+
+# Mainframe command payloads are sensitive even when the caller did not label
+# them as ``password=...``.  A terminal String/SendKey value can be a login,
+# password, or free-form user input, so redact the payload structurally.
+_MAINFRAME_PAYLOAD_RE = re.compile(
+    r"((?:String|SendKey)\(\s*[\"'])([^\"'\r\n]*)([\"']\s*\))",
+    re.IGNORECASE,
+)
+
 
 def _mask(match: re.Match[str]) -> str:
     """Replace the value while preserving the quotes that delimited it."""
@@ -108,8 +154,177 @@ def _mask(match: re.Match[str]) -> str:
     return f"{prefix}***"
 
 
+# Explicitly marked secrets.
+#
+# The pattern above only recognises a credential *assigned to a recognised
+# name*. A password typed into a terminal field, a token passed as a bare
+# positional argument, or a value that reaches a diagnostic through
+# ``repr(criteria)`` carries no such name, so the pattern cannot see it.
+# :class:`Secret` is the explicit alternative: wrapping a value registers its
+# literal text here, and every sink that goes through :func:`_redact` masks
+# that text wherever it appears — independent of any variable name.
+#
+# The registry is bounded (an unbounded one would grow for the lifetime of a
+# long test session) and refuses very short values: masking every occurrence
+# of a one- or two-character string would destroy ordinary text.
+_MARKED_SECRETS_MAX = 512
+_MARKED_SECRET_MIN_LEN = 4
+_marked_secrets: dict[str, None] = {}
+_marked_lock = threading.Lock()
+
+
+def mark_sensitive(value: str) -> None:
+    """Register *value* so that every diagnostic sink masks its literal text.
+
+    Values shorter than four characters are not registered — see the module
+    comment. The registry keeps the most recent 512 values.
+    """
+    if not isinstance(value, str) or len(value) < _MARKED_SECRET_MIN_LEN:
+        return
+    with _marked_lock:
+        _marked_secrets.pop(value, None)
+        _marked_secrets[value] = None
+        while len(_marked_secrets) > _MARKED_SECRETS_MAX:
+            del _marked_secrets[next(iter(_marked_secrets))]
+
+
+def _mask_marked(text: str) -> str:
+    with _marked_lock:
+        if not _marked_secrets:
+            return text
+        # Longest first, so a secret that contains another is masked whole.
+        values = sorted(_marked_secrets, key=len, reverse=True)
+    for value in values:
+        if value in text:
+            text = text.replace(value, "***")
+    return text
+
+
+class Secret:
+    """A value that must never appear in logs, traces, crash dumps or reports.
+
+    Wrap a credential before handing it to an action that types or sends it::
+
+        term.field_after("PASSWORD").type_text(Secret("hunter2"))
+        window.get_by_role("Edit", name="Password").type_text(Secret(pw))
+
+    The action receives the real text through :meth:`reveal`; every
+    Dolphin-managed diagnostic surface — logs, ``trace.db``, crash ZIPs, captured
+    Allure stdout/stderr and pytest failure text — masks the literal value
+    wherever it appears, regardless of what the variable holding it was
+    called. ``str(secret)`` and ``repr(secret)`` never return the value.
+
+    Native ``allure.attach()`` / ``allure.attach.file()`` calls are not
+    intercepted: format this object into the attachment text (which masks it),
+    or sanitize the file before handing it to the Allure SDK.
+    """
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: str) -> None:
+        if isinstance(value, Secret):
+            value = value.reveal()
+        if not isinstance(value, str):
+            raise TypeError(f"Secret expects a str, got {type(value).__name__}")
+        self._value = value
+        mark_sensitive(value)
+
+    def reveal(self) -> str:
+        """Return the wrapped value. Call this only at the point of use."""
+        return self._value
+
+    def __str__(self) -> str:
+        return "***"
+
+    def __repr__(self) -> str:
+        return "Secret('***')"
+
+    def __len__(self) -> int:
+        return len(self._value)
+
+    def __bool__(self) -> bool:
+        return bool(self._value)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Secret):
+            return self._value == other._value
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(("dolphin_desktop.Secret", self._value))
+
+
+def unwrap_secret(value: Any) -> Any:
+    """Return the plain text behind a :class:`Secret`; other values pass through."""
+    if isinstance(value, Secret):
+        return value.reveal()
+    return value
+
+
 def _redact(text: str) -> str:
-    return _SECRET_RE.sub(_mask, text)
+    text = _CONNECTION_STRING_RE.sub(_mask, text)
+    text = _SECRET_RE.sub(_mask, text)
+    text = _ADDITIONAL_SECRET_RE.sub(_mask, text)
+    text = _MAINFRAME_PAYLOAD_RE.sub(r"\1***\3", text)
+    return _mask_marked(text)
+
+
+# Structural redaction.
+#
+# Some sinks receive data with structure — a criteria dict, a crash dump's
+# ``extra`` mapping, the UIA tree JSON. Serialising first and running the
+# pattern over the text catches ``password='x'`` shapes but not a key called
+# ``pin`` or a value under ``credentials`` that happens to be a list. Working
+# on the structure lets a sensitive *key* mask its whole value, whatever its
+# type, before anything is serialised.
+_SENSITIVE_KEY_RE = re.compile(
+    rf"(?:{_SECRET_KEY_PATTERN}|{_ADDITIONAL_SECRET_KEY_PATTERN})",
+    re.IGNORECASE,
+)
+
+
+def is_sensitive_key(key: Any) -> bool:
+    """True when *key* names something that should never be recorded verbatim."""
+    return isinstance(key, str) and _SENSITIVE_KEY_RE.search(key) is not None
+
+
+def redact_value(value: Any, *, _depth: int = 0) -> Any:
+    """Return a copy of *value* with sensitive content masked.
+
+    * strings go through the pattern and the marked-secret registry;
+    * a :class:`Secret` becomes ``"***"``;
+    * a mapping masks the whole value of every sensitive key and recurses
+      into the rest;
+    * lists / tuples / sets recurse element-wise;
+    * anything else is returned as is (numbers, ``None``, booleans).
+    """
+    if _depth > 32:
+        return "***"
+    if isinstance(value, Secret):
+        return "***"
+    if isinstance(value, str):
+        return _redact(value)
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            if is_sensitive_key(key):
+                out[key] = "***"
+            else:
+                out[key] = redact_value(item, _depth=_depth + 1)
+        return out
+    if isinstance(value, (list, tuple, set, frozenset)):
+        items = [redact_value(item, _depth=_depth + 1) for item in value]
+        if isinstance(value, tuple):
+            return tuple(items)
+        if isinstance(value, (set, frozenset)):
+            return type(value)(items)
+        return items
+    return value
+
+
+def redact_repr(value: Any) -> str:
+    """``repr`` of *value* after :func:`redact_value` — for selectors in traces."""
+    return _redact(repr(redact_value(value)))
 
 
 class _RedactingFormatter(logging.Formatter):
@@ -194,11 +409,18 @@ def install_redaction(logger: logging.Logger | None = None) -> None:
 
 
 def _level_int(level: str | None) -> int:
+    from ._config import VALID_LOG_LEVELS
+
     if level is None:
         from ._config import get_log_level
 
         level = get_log_level()
-    return getattr(logging, level.upper(), logging.INFO)
+    normalized = level.upper()
+    if normalized not in VALID_LOG_LEVELS:
+        raise ValueError(
+            f"Invalid log_level: {level!r}; expected one of {', '.join(VALID_LOG_LEVELS)}"
+        )
+    return getattr(logging, normalized)
 
 
 def apply_log_level(level: str | None = None) -> None:

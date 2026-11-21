@@ -30,7 +30,7 @@ version = "0.1.0"
 requires-python = ">={py_version}"
 dependencies = [
     "dolphin-desktop",
-    "pytest>=8.3",
+    "pytest>=9.0.3,<10",
 ]
 
 [tool.pytest.ini_options]
@@ -53,7 +53,7 @@ version = "0.1.0"
 requires-python = ">={py_version}"
 dependencies = [
     "dolphin-desktop",
-    "pytest>=8.3",
+    "pytest>=9.0.3,<10",
     "ruff>=0.8",
 ]
 
@@ -81,7 +81,7 @@ version = "0.1.0"
 requires-python = ">={py_version}"
 dependencies = [
     "dolphin-desktop",
-    "pytest>=8.3",
+    "pytest>=9.0.3,<10",
     "allure-pytest>=2.13",
     "ruff>=0.8",
 ]
@@ -122,6 +122,8 @@ def test_notepad_type_and_read(launch):
     app = launch("notepad.exe")
     win = app.window(class_name="Notepad")
     editor = win.get_by_role("Document")
+    if not editor.exists():
+        editor = win.get_by_role("Edit")
 
     editor.click()
     editor.type_text("Hello, Dolphin!")
@@ -159,6 +161,8 @@ class NotepadPage:
     def __init__(self, window: Window) -> None:
         self._win = window
         self._editor = window.get_by_role("Document")
+        if not self._editor.exists():
+            self._editor = window.get_by_role("Edit")
 
     def type_text(self, text: str) -> "NotepadPage":
         self._editor.click()
@@ -409,13 +413,13 @@ def test_delphi_app_launches():
         assert form.title()  # any non-empty caption
 
 
-def test_lookup_by_component_name():
-    """Resolve a component by TComponent.Name from the Object Inspector."""
+def test_enumerate_visible_components():
+    """Enumerate components exposed by the target UIA provider."""
     with Desktop().launch_delphi(DELPHI_APP_PATH) as app:
         form = app.form(title_re=".*")
         form.wait_ready(timeout=10)
-        # Replace 'Button1' with the real Object Inspector name.
-        # btn = form.component(name="Button1", cls="TButton")
+        # Use name= only for IDs actually published by the UIA provider.
+        # btn = form.component(title="Save", cls="TButton")
         # btn.click()
         assert form.components()  # at least one child component visible
 '''
@@ -541,6 +545,16 @@ def _init_cmd(args: argparse.Namespace) -> None:
 
     py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
     target = Path(name)
+
+    # An absolute name, a ".." segment, or a symlinked intermediate directory
+    # could otherwise scaffold the project outside the current working
+    # directory. Path.resolve() follows symlinks, so this one containment
+    # check catches all three.
+    base = Path.cwd().resolve()
+    resolved = target.resolve()
+    if resolved != base and base not in resolved.parents:
+        print(f"Error: '{name}' resolves outside the current working directory ({base}).")
+        sys.exit(1)
 
     if target.exists():
         print(f"Error: '{name}' already exists.")
@@ -762,7 +776,7 @@ def _trace_view_cmd(args: argparse.Namespace) -> None:
 
     try:
         html_path = generate_html(run_dir)
-    except (FileNotFoundError, sqlite3.DatabaseError) as exc:
+    except (FileNotFoundError, ValueError, sqlite3.DatabaseError) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
 
@@ -808,10 +822,13 @@ def _record_cmd(args: argparse.Namespace) -> None:
     backend: str = args.backend
     func_name: str = args.func_name
 
-    rec = Recorder(app=app, backend=backend)
+    rec = Recorder(app=app, backend=backend, pid=args.pid, global_recording=args.global_recording)
     rec.start()
 
-    if app:
+    if rec.pid is not None:
+        app_hint = f"  process filter: PID {rec.pid}"
+        scope = f"keyboard and mouse input in process PID {rec.pid}"
+    elif app:
         app_hint = f'  app filter: "{app}"'
         scope = f'keyboard and mouse input in windows matching "{app}"'
     else:
@@ -1027,8 +1044,8 @@ def _spy_delphi_cmd(args: argparse.Namespace) -> None:
     """Enumerate a Delphi / VCL app's forms and TComponent tree.
 
     Requires `--pid <delphi-pid>`. Walks the UIA tree via pywinauto,
-    printing each control's AutomationId (which maps to TComponent.Name
-    on Delphi 10.4+), class name, caption, and rectangle.
+    printing each control's provider-published AutomationId, class name,
+    caption, and rectangle. AutomationId need not equal TComponent.Name.
     """
     if not args.pid:
         print("Error: --delphi requires --pid <delphi-process-id>")
@@ -1111,11 +1128,19 @@ def _spy_cmd(args: argparse.Namespace) -> None:
     if args.image_pick:
         from dolphin_desktop._spy import image_pick
 
-        image_pick(output_dir=args.output_dir, backend=backend)
+        try:
+            image_pick(output_dir=args.output_dir, backend=backend)
+        except PermissionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
         return
 
     if args.pick:
-        result = pick(backend=backend)
+        try:
+            result = pick(backend=backend)
+        except PermissionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
         chain = result["chain"]
         if result["message"]:
             print(f"  {result['message']}")
@@ -1320,7 +1345,7 @@ def main() -> None:
         help="Record interactions and generate a Python test",
         description=(
             "Record interactions and generate a Python test. "
-            "Recording installs a low-level keyboard hook: without --app it "
+            "Choose --app, --pid or explicitly --global. Global recording "
             "captures every keystroke on the desktop, including text typed "
             "into other applications, and writes it to the generated script "
             "in plain text. Password fields are redacted best-effort only. "
@@ -1334,12 +1359,20 @@ def main() -> None:
         metavar="FILE",
         help="Output .py file path",
     )
-    record_p.add_argument(
+    record_scope = record_p.add_mutually_exclusive_group(required=True)
+    record_scope.add_argument("--pid", type=int, help="Record only this process ID")
+    record_scope.add_argument(
+        "--global",
+        dest="global_recording",
+        action="store_true",
+        help="Explicitly record input across all applications",
+    )
+    record_scope.add_argument(
         "--app",
         "-a",
         default=None,
         metavar="TITLE",
-        help="Filter: record only events in windows whose title contains TITLE",
+        help="Resolve TITLE to one running process and record only its PID",
     )
     record_p.add_argument(
         "--backend",

@@ -13,7 +13,8 @@ Common entry points:
 | `Keyboard` and `Mouse` | [Keyboard](keyboard.md), [Mouse](mouse.md) |
 | `Clipboard`, `FileDialog`, `MessageBox` | [Clipboard](clipboard.md), [Dialogs](dialogs.md) |
 | `ImageLocator` and `Screen` | [ImageLocator / Screen](image.md) |
-| `JavaAccessBridge`, `ExcelApp`, `WordApp`, `SapGui` | [Java](java.md), [Office](office.md), [SAP](sap.md) |
+| `JavaAccessBridge`, `SapGui` | [Java](java.md), [SAP](sap.md) |
+| `ExcelApp`, `WordApp`, `PowerPointApp`, `OutlookApp` | [Office COM](office.md) |
 | **CDP** (Electron / CEF): `CDPSession`, `CDPLocator`, `CDPFrameLocator`, `CDPRequest`, `CDPRoute`, `CDPDownload` | [CDP](cdp.md) |
 | **Mainframe**: `MainframeTerminal`, `TerminalScreen`, `TerminalField`, `FieldInfo`, `AID` | [Mainframe](mainframe.md) |
 | **Oracle Forms**: `OracleFormsApp`, `OracleFormsKey`, `OracleFormsBlock`, `OracleFormsItem`, `OracleFormsMenu`, `OracleFormsLov` | [Oracle Forms](oracle-forms.md) |
@@ -23,7 +24,22 @@ Common entry points:
 
 ## Public Package API
 
-The package exports these names through `dolphin_desktop.__all__`.
+The package exports these objects through `dolphin_desktop.__all__`.
+The `spy` and `objects` modules are documented separately below.
+
+`Secret` marks a value for Dolphin's diagnostic redaction. Pass it to APIs that
+explicitly accept it, such as `Locator.type_text()`, `CDPLocator.type_text()`
+and `TerminalField.type_text()`:
+
+```python
+import os
+from dolphin_desktop import Secret
+
+password = Secret(os.environ["APP_PASSWORD"])
+```
+
+Transport encryption is configured separately by the selected backend; see
+[Mainframe transport security](../guides/mainframe.md#transport-security).
 
 ::: dolphin_desktop
     options:
@@ -31,6 +47,7 @@ The package exports these names through `dolphin_desktop.__all__`.
         - AID
         - ALL_CAPABILITIES
         - AliasNotFoundError
+        - AmbiguousMatchError
         - Application
         - ApplicationError
         - Backend
@@ -86,6 +103,18 @@ The package exports these names through `dolphin_desktop.__all__`.
         - OracleFormsLov
         - OracleFormsMenu
         - OracleFormsWindow
+        - OutlookApp
+        - OutlookAppointment
+        - OutlookAttachment
+        - OutlookFolder
+        - OutlookMail
+        - PowerPointApp
+        - PowerPointChart
+        - PowerPointPresentation
+        - PowerPointShape
+        - PowerPointSlide
+        - PowerPointTable
+        - PowerPointTextRange
         - QmlElement
         - QtAgentClient
         - QtAgentInjectError
@@ -102,6 +131,7 @@ The package exports these names through `dolphin_desktop.__all__`.
         - SapLocator
         - SapSession
         - Screen
+        - Secret
         - Stopwatch
         - Tab
         - TerminalField

@@ -9,11 +9,12 @@
     translated to real characters and written **in plaintext** into the generated
     ``.py`` file.
 
-    * Always pass ``app=`` (CLI: ``--app``) so keystrokes outside the matching window
-      are discarded before they are ever turned into text.
-    * Password fields are redacted via the UI Automation "is password" flag, and a
-      field the platform cannot classify at all is redacted too. A password typed
-      into a control the platform reports as ordinary text is still recorded verbatim.
+    * Pass ``app=`` (CLI: ``--app``) or ``pid=`` (CLI: ``--pid``) to pin the
+      recording to one process. Global capture requires ``global_recording=True``
+      (CLI: ``--global``).
+    * Only stable native Windows Edit fields without ES_PASSWORD release text.
+      Password and unknown fields (including UIA-only controls) are redacted.
+      A secret typed in a native ordinary text field is still recorded verbatim.
     * Review the generated file before committing or sharing it.
 
 Usage (headless)::
@@ -38,13 +39,16 @@ import ctypes.wintypes as _wt
 import datetime
 import queue
 import re
+import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ._logging import get_logger
+from ._platform_compat import _UnavailableObject
 
 # Windows constants
 
@@ -142,7 +146,7 @@ class _MSLLHOOKSTRUCT(ctypes.Structure):
         ("mouseData", _wt.DWORD),
         ("flags", _wt.DWORD),
         ("time", _wt.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(_wt.ULONG)),
+        ("dwExtraInfo", ctypes.c_size_t),
     ]
 
 
@@ -152,13 +156,51 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
         ("scanCode", _wt.DWORD),
         ("flags", _wt.DWORD),
         ("time", _wt.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(_wt.ULONG)),
+        ("dwExtraInfo", ctypes.c_size_t),
     ]
 
 
-_HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, _wt.WPARAM, _wt.LPARAM)
+_HOOKPROC = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(
+    ctypes.c_ssize_t, ctypes.c_int, _wt.WPARAM, _wt.LPARAM
+)
 
-_user32 = ctypes.windll.user32
+_user32: Any = (
+    ctypes.WinDLL("user32", use_last_error=True)
+    if sys.platform == "win32"
+    else _UnavailableObject("recorder")
+)
+
+if sys.platform == "win32":
+    # ctypes otherwise defaults to C int arguments/results, truncating HWND,
+    # LPARAM and LRESULT on x64. Bind before any callback can run.
+    _user32.CallNextHookEx.argtypes = (_wt.HANDLE, ctypes.c_int, _wt.WPARAM, _wt.LPARAM)
+    _user32.CallNextHookEx.restype = ctypes.c_ssize_t
+    _user32.SetWindowsHookExW.argtypes = (ctypes.c_int, _HOOKPROC, _wt.HINSTANCE, _wt.DWORD)
+    _user32.SetWindowsHookExW.restype = _wt.HANDLE
+    _user32.UnhookWindowsHookEx.argtypes = (_wt.HANDLE,)
+    _user32.UnhookWindowsHookEx.restype = _wt.BOOL
+    _user32.GetMessageW.argtypes = (ctypes.POINTER(_wt.MSG), _wt.HWND, _wt.UINT, _wt.UINT)
+    _user32.GetMessageW.restype = _wt.BOOL
+    _user32.PeekMessageW.argtypes = (
+        ctypes.POINTER(_wt.MSG),
+        _wt.HWND,
+        _wt.UINT,
+        _wt.UINT,
+        _wt.UINT,
+    )
+    _user32.PeekMessageW.restype = _wt.BOOL
+    _user32.TranslateMessage.argtypes = (ctypes.POINTER(_wt.MSG),)
+    _user32.TranslateMessage.restype = _wt.BOOL
+    _user32.DispatchMessageW.argtypes = (ctypes.POINTER(_wt.MSG),)
+    _user32.DispatchMessageW.restype = ctypes.c_ssize_t
+    _user32.PostThreadMessageW.argtypes = (_wt.DWORD, _wt.UINT, _wt.WPARAM, _wt.LPARAM)
+    _user32.PostThreadMessageW.restype = _wt.BOOL
+    _user32.PostQuitMessage.argtypes = (ctypes.c_int,)
+    _user32.PostQuitMessage.restype = None
+    _user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+    _user32.GetAsyncKeyState.restype = ctypes.c_short
+    _user32.GetGUIThreadInfo.argtypes = (_wt.DWORD, ctypes.c_void_p)
+    _user32.GetGUIThreadInfo.restype = _wt.BOOL
 
 _log = get_logger("recorder")
 
@@ -167,6 +209,8 @@ _PASSWORD_PLACEHOLDER = "<REDACTED-PASSWORD>"
 
 # Seconds stop()/wait() give the processor thread to drain the event queue
 _PROC_JOIN_TIMEOUT = 2.0
+_STOP_POST_ATTEMPTS = 3
+_STOP_POST_RETRY_DELAY = 0.01
 
 # Data model
 
@@ -474,11 +518,148 @@ def _focused_element_selector() -> dict[str, str]:
         return {}
 
 
+class _GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", _wt.DWORD),
+        ("flags", _wt.DWORD),
+        ("hwndActive", _wt.HWND),
+        ("hwndFocus", _wt.HWND),
+        ("hwndCapture", _wt.HWND),
+        ("hwndMenuOwner", _wt.HWND),
+        ("hwndMoveSize", _wt.HWND),
+        ("hwndCaret", _wt.HWND),
+        ("rcCaret", _wt.RECT),
+    ]
+
+
+def _native_focus(thread: int) -> tuple[int, int]:
+    info = _GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(info)
+    if not _user32.GetGUIThreadInfo(thread, ctypes.byref(info)):
+        raise OSError("GetGUIThreadInfo failed")
+    return int(info.hwndActive or 0), int(info.hwndFocus or 0)
+
+
+@dataclass(frozen=True)
+class _InputContext:
+    """Immutable native focus snapshot; no queued event consults live UIA focus."""
+
+    hwnd: int = 0
+    pid: int = 0
+    focus: int = 0
+    title: str = ""
+    window_class: str = ""
+    password: bool | None = None
+    selector_items: tuple[tuple[str, str], ...] = ()
+    target: int = 0  # Native child HWND under the mouse, independent of focus.
+
+    @property
+    def selector(self) -> dict[str, str]:
+        return dict(self.selector_items)
+
+
+def _capture_context(hwnd: int | None = None) -> _InputContext:
+    """Use bounded native queries only. Non-native/UIA-only fields fail closed.
+
+    UIA's current focused element cannot classify a past input event. Until a
+    trusted UIA focus history is available, only standard native Edit controls
+    with stable foreground/focus/PID and style can release plaintext.
+    """
+    try:
+        import win32gui
+        import win32process
+
+        root = _get_root_hwnd(hwnd or win32gui.GetForegroundWindow())
+        thread, pid = win32process.GetWindowThreadProcessId(root)
+        active, focus = _native_focus(thread)
+        title, cls = _get_window_info(root)
+        password = None
+        if (
+            focus
+            and active == root
+            and _get_root_hwnd(focus) == root
+            and win32process.GetWindowThreadProcessId(focus)[1] == pid
+            and win32gui.GetClassName(focus) == "Edit"
+        ):
+            style = win32gui.GetWindowLong(focus, -16)  # GWL_STYLE
+            again_active, again_focus = _native_focus(thread)
+            if (
+                again_focus == focus
+                and again_active == root
+                and win32gui.GetForegroundWindow() == root
+                and win32gui.GetWindowLong(focus, -16) == style
+                # pywin32 returns a list; compare IDs independently of sequence type.
+                and tuple(win32process.GetWindowThreadProcessId(root)) == (thread, pid)
+                and win32process.GetWindowThreadProcessId(focus)[1] == pid
+            ):
+                password = bool(style & 0x20)  # ES_PASSWORD
+        target = int(hwnd or 0)
+        if target and (
+            _get_root_hwnd(target) != root
+            or win32process.GetWindowThreadProcessId(target)[1] != pid
+        ):
+            return _InputContext()
+        return _InputContext(root, pid, focus, title, cls, password, target=target)
+    except Exception:
+        return _InputContext()
+
+
+def _capture_mouse_context(x: int, y: int) -> _InputContext:
+    try:
+        import win32gui
+
+        return _capture_context(win32gui.WindowFromPoint((x, y)))
+    except Exception:
+        return _InputContext()
+
+
+def _same_mouse_target(first: _InputContext, second: _InputContext) -> bool:
+    return bool(first.hwnd and first.pid and first.target) and (
+        first.hwnd,
+        first.pid,
+        first.target,
+        first.window_class,
+    ) == (second.hwnd, second.pid, second.target, second.window_class)
+
+
+def _mouse_selector(context: _InputContext, x: int, y: int) -> dict[str, str]:
+    # Hit-testing belongs on the worker. Discard its result if the native
+    # target window/process changed before or during the UIA call. The click
+    # itself may move focus, which does not change the hit-tested target.
+    if not _same_mouse_target(context, _capture_mouse_context(x, y)):
+        return {}
+    selector = _element_at_point(x, y)
+    return selector if _same_mouse_target(context, _capture_mouse_context(x, y)) else {}
+
+
+def _resolve_app_pid(app: str) -> int:
+    """Resolve a title fragment once, refusing missing or ambiguous processes."""
+    import win32gui
+    import win32process
+
+    pids: set[int] = set()
+
+    def visit(hwnd: int, extra: Any) -> None:
+        if (
+            win32gui.IsWindowVisible(hwnd)
+            and app.casefold() in win32gui.GetWindowText(hwnd).casefold()
+        ):
+            pids.add(win32process.GetWindowThreadProcessId(hwnd)[1])
+
+    win32gui.EnumWindows(visit, None)
+    if len(pids) != 1 or 0 in pids:
+        raise ValueError("--app must identify exactly one running process; use --pid")
+    return pids.pop()
+
+
 # Recorder
 
 
 class Recorder:
     """Records mouse/keyboard interactions and generates dolphin Python test code.
+
+    Instances are single-use: create a new Recorder for each recording attempt,
+    including retries after a failed start. Completed actions remain readable.
 
     Captures input globally — read the privacy warning at the top of this module
     before using it.  :meth:`start` restates it on the recorder's own output.
@@ -486,9 +667,12 @@ class Recorder:
     Parameters
     ----------
     app:
-        Optional title fragment — only events in windows whose title contains
-        this string are recorded.  If ``None``, **all** windows are captured,
-        including every keystroke typed outside the application under test.
+        Title fragment resolved to exactly one running process at start. All
+        subsequent events are filtered by that PID, irrespective of title changes.
+    pid:
+        Explicit process ID to capture instead of resolving a title.
+    global_recording:
+        Explicit opt-in to capture every process (default False).
     backend:
         pywinauto backend used in the generated code (default ``"uia"``).
     stop_key:
@@ -502,7 +686,14 @@ class Recorder:
         *,
         backend: str = "uia",
         stop_key: int = 0x7B,
+        pid: int | None = None,
+        global_recording: bool = False,
     ) -> None:
+        if pid is not None and (isinstance(pid, bool) or pid <= 0):
+            raise ValueError("pid must be a positive process ID")
+        self.pid = pid
+        self._explicit_pid = pid
+        self.global_recording = global_recording
         self.app = app
         self.backend = backend
         self._stop_vk = stop_key
@@ -513,6 +704,10 @@ class Recorder:
         self._pending_win_title: str = ""
         self._pending_win_class: str = ""
         self._pending_is_password: bool = False
+        self._pending_context: _InputContext | None = None
+        self._last_mouse_context: _InputContext | None = None
+        self._clicked_context: _InputContext | None = None
+        self._clicked_selector: dict[str, str] = {}
         self._dbl_click_interval: float = _double_click_interval()
 
         self._evt_queue: queue.Queue[tuple[Any, ...] | None] = queue.Queue()
@@ -524,6 +719,15 @@ class Recorder:
         self._proc_idle = threading.Event()
         self._stopped = threading.Event()
         self._hook_thread_id: int = 0
+        self._hook_ready = threading.Event()
+        self._hook_error: Exception | None = None
+        self._processor_error: Exception | None = None
+        self._start_error: Exception | None = None
+        self._stop_request_error: OSError | None = None
+        self._stop_lock = threading.Lock()
+        self._quit_posted = False
+        self._start_lock = threading.Lock()
+        self._started = False
 
         # Strong references — prevent GC while hooks are active
         self._mouse_cb: Any = None
@@ -539,12 +743,37 @@ class Recorder:
 
         Emits the privacy warning first — the hooks are system-wide, so this is the
         one point at which the user is told what is about to be captured.
+        Initialization failures trigger shutdown and make the session unavailable
+        to completion and read operations.
+
+        Raises:
+            RuntimeError: start() was already attempted on this instance. Create
+                a new Recorder to retry, even if the first attempt failed.
         """
-        scope = (
-            f"windows whose title contains {self.app!r}"
-            if self.app
-            else "EVERY window on this desktop — no app filter was given"
-        )
+        with self._start_lock:
+            if self._started:
+                raise RuntimeError("Recorder instances are single-use; create a new Recorder")
+            self._started = True
+            try:
+                self._start_session()
+            except Exception as exc:
+                try:
+                    self._request_stop()
+                    self._join_processor()
+                except Exception as cleanup_error:
+                    exc.add_note(f"Recorder startup cleanup failed: {cleanup_error}")
+                self._start_error = exc
+                raise
+
+    def _start_session(self) -> None:
+        """Initialize the session while lifecycle operations hold the start lock."""
+        if not self.app and self.pid is None and not self.global_recording:
+            raise ValueError("Recording requires app, pid, or explicit global_recording=True")
+        if self.global_recording and (self.app or self.pid is not None):
+            raise ValueError("global_recording cannot be combined with app or pid")
+        if self.app and self.pid is None:
+            self.pid = _resolve_app_pid(self.app)
+        scope = f"process PID {self.pid}" if self.pid else "EVERY window on this desktop"
         _log.warning(
             "RECORDING GLOBAL INPUT. Mouse actions and keystrokes are captured from %s "
             "and written as plaintext into the generated .py file. Password fields are "
@@ -553,29 +782,107 @@ class Recorder:
             scope,
         )
         self._stopped.clear()
+        self._hook_ready.clear()
+        self._hook_error = None
+        self._processor_error = None
         self._hook_thread = threading.Thread(
             target=self._hook_loop, daemon=True, name="dolphin-rec-hook"
         )
-        self._hook_thread.start()
+        try:
+            self._hook_thread.start()
+        except Exception:
+            self._hook_thread = None  # An unstarted thread cannot be joined.
+            raise
+        if not self._hook_ready.wait(5.0):
+            raise TimeoutError("Recorder hooks did not initialize")
+        if self._hook_error is not None:
+            raise OSError("Could not install recorder hooks") from self._hook_error
         self._proc_thread = threading.Thread(
             target=self._process_loop, daemon=True, name="dolphin-rec-proc"
         )
-        self._proc_thread.start()
+        try:
+            self._proc_thread.start()
+        except Exception:
+            self._proc_thread = None
+            raise
 
     def stop(self) -> None:
-        """Stop recording, unhook, and wait for the queued events to be processed."""
-        if not self._stopped.is_set():
-            if self._hook_thread_id:
-                _user32.PostThreadMessageW(self._hook_thread_id, _WM_QUIT, 0, 0)
-            self._evt_queue.put(None)
-            self._stopped.set()
+        """Stop the hook producer, then drain all events queued before it exited.
+
+        Before the first start attempt, this is a no-op.
+        Callbacks stop queueing input when shutdown is requested; events already
+        queued are drained before this method returns.
+        Failed hook shutdown messages are retried up to three times per call.
+        A later call can retry again if all attempts fail.
+        A hook shutdown timeout retains the WinAPI failure as its cause.
+
+        Raises:
+            OSError: Hook recording or cleanup failed.
+            TimeoutError: The hook thread or event drain did not finish.
+            RuntimeError: Initialization or event processing failed.
+        """
+        with self._start_lock:
+            if not self._started:
+                return
+            self._request_stop()
         self._join_processor()
 
+    def _request_stop(self) -> None:
+        """Signal shutdown without joining either thread (safe for the worker)."""
+        with self._stop_lock:
+            first_request = not self._stopped.is_set()
+            self._stopped.set()
+            producer = self._hook_thread
+            # The stop signal wakes callers even if posting fails. Track message
+            # delivery separately so another stop can retry a still-live producer.
+            for attempt in range(_STOP_POST_ATTEMPTS):
+                if (
+                    self._quit_posted
+                    or not self._hook_thread_id
+                    or producer is None
+                    or not producer.is_alive()
+                ):
+                    break
+                if _user32.PostThreadMessageW(self._hook_thread_id, _WM_QUIT, 0, 0):
+                    self._quit_posted = True
+                    break
+                else:
+                    self._stop_request_error = ctypes.WinError(ctypes.get_last_error())
+                    _log.error(
+                        "Could not request recorder hook shutdown: %s", self._stop_request_error
+                    )
+                if attempt + 1 < _STOP_POST_ATTEMPTS:
+                    time.sleep(_STOP_POST_RETRY_DELAY)
+            # A running producer owns the final sentinel. In-flight callbacks
+            # recheck the stop signal before enqueueing.
+            if producer is None and first_request:
+                self._evt_queue.put(None)
+
     def wait(self, timeout: float | None = None) -> bool:
-        """Block until ``stop()`` is called or the stop key is pressed."""
+        """Wait for a stop signal, then finish shutdown and drain queued events.
+
+        ``timeout`` limits only the wait for the stop signal; ``None`` waits
+        indefinitely. Return False if that signal does not arrive within the
+        limit. Once signaled, synchronize with initialization, wait for the hook
+        thread to exit, and drain the event queue before returning True.
+
+        The total call duration can exceed ``timeout``, including when it is zero.
+        Hook shutdown and stalled event processing have separate internal limits.
+        A processor that continues making progress may drain for longer than
+        those limits so that queued actions are preserved.
+
+        Raises:
+            OSError: The hook thread failed during recording. The original
+                exception is retained as the cause, after queued events drain.
+            TimeoutError: Hook shutdown or the event drain stalled; recording
+                completion could not be confirmed.
+            RuntimeError: Initialization or event processing failed. The original
+                exception is retained as the cause; the recording must not be used.
+        """
         if not self._stopped.wait(timeout):
             return False
-        self._join_processor()
+        with self._start_lock:
+            self._join_processor()
         return True
 
     def _join_processor(self, timeout: float = _PROC_JOIN_TIMEOUT) -> None:
@@ -587,16 +894,30 @@ class Recorder:
 
         *timeout* bounds a stalled drain, not the whole drain: a processor that is
         still consuming events keeps the wait alive, so a long recording is never
-        truncated, while a wedged one is abandoned — with a warning, because the
-        recording it produced is then incomplete.
+        truncated. A stalled shutdown raises before readers can flush pending
+        text or generate an incomplete script alongside the worker.
 
         An empty queue is not the idle signal: an event leaves the queue before it is
         interpreted, so a processor wedged inside the UIA focus probe of the keystroke
         it just dequeued also leaves it empty.  Only ``_proc_idle`` says the processor
         is parked in ``get()`` holding nothing.
         """
+        if not self._stopped.is_set():
+            if self._started:
+                raise RuntimeError("Stop recording before reading actions or generating code")
+            return
+        producer = self._hook_thread
+        if producer is not None:
+            if producer is threading.current_thread():
+                raise RuntimeError("Cannot drain recorder events from the hook thread")
+            producer.join(timeout)
+            if producer.is_alive():
+                raise TimeoutError(
+                    "Recorder hook thread did not stop; recording is incomplete"
+                ) from self._stop_request_error
         thread = self._proc_thread
-        if thread is None or not self._stopped.is_set():
+        if thread is None:
+            self._raise_recording_error()
             return
         if thread is threading.current_thread():
             return
@@ -606,17 +927,14 @@ class Recorder:
             thread.join(timeout)
             if not thread.is_alive():
                 self._proc_thread = None
+                self._raise_recording_error()
                 return
             if self._processed != processed:
                 processed = self._processed
                 grace = True
                 continue
             if self._proc_idle.is_set():
-                if self._evt_queue.empty():
-                    # Parked with nothing left to hand over — the hook thread has not
-                    # posted its sentinel yet, which is not a stalled drain.
-                    return
-                if grace:
+                if not self._evt_queue.empty() and grace:
                     # An event landed as the wait expired; the get() about to return it
                     # gets one more pass before the drain is called stalled.
                     grace = False
@@ -628,12 +946,32 @@ class Recorder:
             timeout,
             self._evt_queue.qsize(),
         )
+        raise TimeoutError("Recorder event drain stalled; recording is incomplete")
+
+    def _raise_recording_error(self) -> None:
+        if self._start_error is not None:
+            raise RuntimeError(
+                "Recorder initialization failed; recording is unavailable"
+            ) from self._start_error
+        if self._processor_error is not None:
+            raise RuntimeError(
+                "Recorder event processor failed; recording is incomplete"
+            ) from self._processor_error
+        if self._hook_error is not None:
+            raise OSError("Recorder hook loop failed during recording") from self._hook_error
 
     def actions(self) -> list[RecordedAction]:
-        """Return a copy of recorded actions (flushes any pending text first)."""
-        self._join_processor()
-        self._flush_text()
-        return list(self._actions)
+        """Return recorded actions, flushing pending text after a successful drain.
+
+        Raises:
+            OSError: Hook recording or cleanup failed; partial actions are unavailable.
+            RuntimeError: Recording is active, or initialization or event processing failed.
+            TimeoutError: Recording shutdown or the event drain stalled.
+        """
+        with self._start_lock:
+            self._join_processor()
+            self._flush_text()
+            return list(self._actions)
 
     def generate_code(
         self,
@@ -654,13 +992,24 @@ class Recorder:
         -------
         str
             The generated Python source (also written to *output* if provided).
+
+        Raises
+        ------
+        OSError
+            Hook recording or cleanup failed; no output file is written.
+        RuntimeError
+            Recording is active, or initialization or event processing failed;
+            no output is written.
+        TimeoutError
+            Recording shutdown or the event drain stalled.
         """
-        self._join_processor()
-        self._flush_text()
-        code = "\n".join(self._build_code(self._actions, func_name)) + "\n"
-        if output is not None:
-            Path(output).write_text(code, encoding="utf-8")
-        return code
+        with self._start_lock:
+            self._join_processor()
+            self._flush_text()
+            code = "\n".join(self._build_code(self._actions, func_name)) + "\n"
+            if output is not None:
+                Path(output).write_text(code, encoding="utf-8")
+            return code
 
     # Hook thread
 
@@ -670,27 +1019,58 @@ class Recorder:
         stop_vk = self._stop_vk
         stopped = self._stopped
 
-        def _mouse_proc(n_code: int, w_param: int, l_param: int) -> int:
+        def log_error(message: str, *args: Any) -> None:
+            try:
+                _log.error(message, *args)
+            except Exception:
+                # User-configured handlers must not interrupt input forwarding,
+                # remaining hook cleanup or completion signaling.
+                pass
+
+        def queue_input(event: tuple[Any, ...]) -> None:
+            # Serialize the final enqueue with the stop signal. Context capture
+            # stays outside this lock so stop never waits for a native probe.
+            with self._stop_lock:
+                if not stopped.is_set():
+                    try:
+                        evt_queue.put_nowait(event)
+                    except queue.Full:
+                        pass
+
+        def _mouse_proc(n_code: int, w_param: int, l_param: int) -> None:
+            if stopped.is_set():
+                # This runs on the installing thread and can wake its message
+                # loop even when another thread could not post WM_QUIT.
+                _user32.PostQuitMessage(0)
+                return
             if n_code == _HC_ACTION and w_param in (_WM_LBUTTONDOWN, _WM_RBUTTONDOWN):
                 ms = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
                 kind = {
                     _WM_LBUTTONDOWN: "click",
                     _WM_RBUTTONDOWN: "right_click",
                 }[w_param]
-                try:
-                    evt_queue.put_nowait(("mouse", kind, ms.pt.x, ms.pt.y, time.time()))
-                except queue.Full:
-                    pass
-            return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+                queue_input(
+                    (
+                        "mouse",
+                        kind,
+                        ms.pt.x,
+                        ms.pt.y,
+                        time.time(),
+                        _capture_mouse_context(ms.pt.x, ms.pt.y),
+                    )
+                )
 
-        def _kbd_proc(n_code: int, w_param: int, l_param: int) -> int:
+        def _kbd_proc(n_code: int, w_param: int, l_param: int) -> None:
+            if stopped.is_set():
+                _user32.PostQuitMessage(0)
+                return
             if n_code == _HC_ACTION and w_param in (_WM_KEYDOWN, _WM_SYSKEYDOWN):
                 kb = ctypes.cast(l_param, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
                 vk = int(kb.vkCode)
                 if vk == stop_vk and bool(_user32.GetAsyncKeyState(_VK_CONTROL) & 0x8000):
                     stopped.set()
                     _user32.PostQuitMessage(0)
-                    return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+                    return
                 shift = bool(_user32.GetAsyncKeyState(_VK_SHIFT) & 0x8000)
                 ctrl = bool(_user32.GetAsyncKeyState(_VK_CONTROL) & 0x8000)
                 alt = bool(_user32.GetAsyncKeyState(_VK_MENU) & 0x8000)
@@ -699,78 +1079,152 @@ class Recorder:
                 # the side the recorder cannot tell a third-level character
                 # from a genuine Ctrl+Alt shortcut pressed with the left Alt.
                 ralt = bool(_user32.GetAsyncKeyState(_VK_RMENU) & 0x8000)
+                # Capture native process/focus/classification before queueing.
+                # No UIA or COM work runs in the low-level hook.
+                context = _capture_context()
+                queue_input(
+                    ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time(), context)
+                )
+
+        def forwarding_callback(handler: Callable[[int, int, int], None]) -> Any:
+            def callback(n_code: int, w_param: int, l_param: int) -> int:
                 try:
-                    evt_queue.put_nowait(
-                        ("key", vk, int(kb.scanCode), shift, ctrl, alt, ralt, time.time())
-                    )
-                except queue.Full:
-                    pass
-            return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+                    handler(n_code, w_param, l_param)
+                except Exception as exc:
+                    # ctypes swallows callback exceptions and returns an undefined
+                    # result. Preserve the failure for completion methods, but
+                    # always let the next hook deliver input to the application.
+                    if self._hook_error is None:
+                        self._hook_error = exc
+                    stopped.set()
+                    # Exception payloads may contain captured input.
+                    log_error("Recorder input callback failed; recording is incomplete")
+                    try:
+                        _user32.PostQuitMessage(0)
+                    except Exception:
+                        # Even a shutdown error must not break the hook chain.
+                        pass
+                return _user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+            return _HOOKPROC(callback)
 
         # Keep strong references on self so GC won't collect while hook is alive
-        self._mouse_cb = _HOOKPROC(_mouse_proc)
-        self._kbd_cb = _HOOKPROC(_kbd_proc)
+        self._mouse_cb = forwarding_callback(_mouse_proc)
+        self._kbd_cb = forwarding_callback(_kbd_proc)
 
-        mouse_hook = _user32.SetWindowsHookExW(_WH_MOUSE_LL, self._mouse_cb, None, 0)
-        kbd_hook = _user32.SetWindowsHookExW(_WH_KEYBOARD_LL, self._kbd_cb, None, 0)
+        mouse_hook = kbd_hook = None
+        try:
+            mouse_hook = _user32.SetWindowsHookExW(_WH_MOUSE_LL, self._mouse_cb, None, 0)
+            if not mouse_hook:
+                raise ctypes.WinError(ctypes.get_last_error())
+            kbd_hook = _user32.SetWindowsHookExW(_WH_KEYBOARD_LL, self._kbd_cb, None, 0)
+            if not kbd_hook:
+                raise ctypes.WinError(ctypes.get_last_error())
 
-        msg = _wt.MSG()
-        while not stopped.is_set():
-            ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-            if ret <= 0:
-                break
-            _user32.TranslateMessage(ctypes.byref(msg))
-            _user32.DispatchMessageW(ctypes.byref(msg))
-
-        if mouse_hook:
-            _user32.UnhookWindowsHookEx(mouse_hook)
-        if kbd_hook:
-            _user32.UnhookWindowsHookEx(kbd_hook)
-
-        stopped.set()
-        evt_queue.put(None)
+            # Create the message queue before start()/stop() may post WM_QUIT.
+            msg = _wt.MSG()
+            _user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+            self._hook_ready.set()
+            while not stopped.is_set():
+                ret = _user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret == -1:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if ret == 0:
+                    break
+                _user32.TranslateMessage(ctypes.byref(msg))
+                _user32.DispatchMessageW(ctypes.byref(msg))
+        except Exception as exc:
+            if self._hook_error is None:
+                self._hook_error = exc
+            else:
+                self._hook_error.add_note(f"Additional hook loop failure: {exc}")
+            log_error("Recorder hook loop failed: %s", exc)
+        finally:
+            try:
+                for handle in (mouse_hook, kbd_hook):
+                    if not handle:
+                        continue
+                    try:
+                        if not _user32.UnhookWindowsHookEx(handle):
+                            raise ctypes.WinError(ctypes.get_last_error())
+                    except Exception as exc:
+                        if self._hook_error is None:
+                            self._hook_error = exc
+                        else:
+                            self._hook_error.add_note(f"Additional hook cleanup failure: {exc}")
+                        log_error("Could not remove recorder hook: %s", exc)
+            finally:
+                # Low-level callbacks run on this installing thread. Its message
+                # loop has returned, so no callback can enqueue behind this marker.
+                try:
+                    evt_queue.put(None)
+                finally:
+                    stopped.set()
+                    self._hook_ready.set()
 
     # Processor thread
 
     def _process_loop(self) -> None:
-        while True:
-            self._proc_idle.set()
-            try:
-                evt = self._evt_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            finally:
-                self._proc_idle.clear()
-            if evt is None:
-                break
-            if evt[0] == "mouse":
-                _, kind, x, y, ts = evt
-                self._flush_text()
-                self._handle_mouse(kind, x, y, ts)
-            elif evt[0] == "key":
-                _, vk, scan, shift, ctrl, alt, ralt, ts = evt
-                self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt)
-            self._processed += 1
-
-    def _handle_mouse(self, kind: str, x: int, y: int, ts: float) -> None:
         try:
-            import win32gui
+            while True:
+                self._proc_idle.set()
+                try:
+                    evt = self._evt_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                finally:
+                    self._proc_idle.clear()
+                if evt is None:
+                    break
+                if evt[0] == "mouse":
+                    _, kind, x, y, ts, context = evt
+                    self._flush_text()
+                    self._handle_mouse(kind, x, y, ts, context=context)
+                elif evt[0] == "key":
+                    _, vk, scan, shift, ctrl, alt, ralt, ts, context = evt
+                    self._handle_key(vk, scan, shift, ctrl, alt, ts, ralt=ralt, context=context)
+                self._processed += 1
+        except Exception as exc:
+            self._processor_error = exc
+            self._request_stop()
+            # Handler exceptions may contain captured text. Keep the cause for
+            # callers, but never copy its payload to the recorder's log.
+            _log.error("Recorder event processor failed; recording is incomplete")
 
-            hwnd = win32gui.WindowFromPoint((x, y))
-            root = _get_root_hwnd(hwnd)
-            win_title, win_class = _get_window_info(root)
-        except Exception:
-            win_title, win_class = "", ""
+    def _in_scope(self, context: _InputContext) -> bool:
+        if not context.hwnd or not context.pid:
+            return False
+        if self.pid is not None:
+            return context.pid == self.pid
+        return self.global_recording
 
-        if self.app and self.app.lower() not in win_title.lower():
+    def _handle_mouse(
+        self, kind: str, x: int, y: int, ts: float, *, context: _InputContext | None = None
+    ) -> None:
+        context = context or _InputContext()
+        if not self._in_scope(context):
+            self._clicked_context = None
+            self._clicked_selector = {}
             return
-
-        selector = _element_at_point(x, y)
+        win_title, win_class = context.title, context.window_class
+        # Resolve selectors only while the captured native context remains stable.
+        selector = _mouse_selector(context, x, y)
+        self._clicked_context = context if selector else None
+        self._clicked_selector = dict(selector)
 
         # Upgrade the preceding single-click to double_click when this press
         # completes a double-click the low-level hook cannot report as one.
         prev = self._actions[-1] if self._actions else None
-        if prev is not None and _is_double_click(prev, kind, x, y, ts, self._dbl_click_interval):
+        same_context = self._last_mouse_context == context or (
+            self._last_mouse_context is not None
+            and _same_mouse_target(self._last_mouse_context, context)
+        )
+        self._last_mouse_context = context
+        if (
+            same_context
+            and prev is not None
+            and _is_double_click(prev, kind, x, y, ts, self._dbl_click_interval)
+        ):
             self._actions[-1] = RecordedAction(
                 kind="double_click",
                 window_title=win_title,
@@ -811,21 +1265,34 @@ class Recorder:
         ts: float,
         *,
         ralt: bool = True,
+        context: _InputContext | None = None,
     ) -> None:
-        try:
-            import win32gui
-
-            hwnd = win32gui.GetForegroundWindow()
-            root = _get_root_hwnd(hwnd)
-            win_title, win_class = _get_window_info(root)
-        except Exception:
-            win_title, win_class = "", ""
-
-        # Resolve scope before translating: a keystroke in a window outside the app
-        # filter must never be turned into a character in the first place.
-        if self.app and self.app.lower() not in win_title.lower():
+        context = context or _InputContext()
+        win_title, win_class = context.title, context.window_class
+        if not self._in_scope(context):
             self._flush_text()
+            self._clicked_context = None
+            self._clicked_selector = {}
             return
+        clicked = self._clicked_context
+        same_clicked_focus = (
+            clicked is not None
+            and context.password is not None
+            and (context.hwnd, context.pid, context.focus)
+            == (clicked.hwnd, clicked.pid, clicked.target)
+            and bool(context.focus)
+        )
+        if not same_clicked_focus:
+            self._clicked_context = None
+            self._clicked_selector = {}
+        selector = context.selector or self._clicked_selector
+        if self._pending_context is not None and (context.hwnd, context.pid, context.focus) != (
+            self._pending_context.hwnd,
+            self._pending_context.pid,
+            self._pending_context.focus,
+        ):
+            self._flush_text()
+            self._pending_selector = {}
 
         # AltGr is reported as Ctrl+Alt, so the layout — not the modifier flags —
         # decides whether this keystroke is typed text or a shortcut.
@@ -836,8 +1303,8 @@ class Recorder:
 
         if not altgr and (ctrl or alt or vk in _SPECIAL_KEY_MAP):
             # Shortcut or focus-changing key → flush accumulated text, emit press_key.
-            # The selector is read before the flush, which clears the pending context.
-            sel = self._pending_selector or _focused_element_selector()
+            # The selector belongs to the original event, independent of live focus.
+            sel = selector
             self._flush_text()
             self._actions.append(
                 RecordedAction(
@@ -852,44 +1319,35 @@ class Recorder:
             # _flush_text() clears nothing when no text had accumulated, so the pending
             # context is dropped here as well: this key moved focus, and the next run
             # must re-resolve it instead of inheriting the previous control's selector.
-            #
-            # Only for keys that actually move focus. This branch also handles
-            # Backspace, the arrows and F-keys now, and those leave the caret
-            # where it is — dropping the selector for them made the run after a
-            # corrected typo re-resolve through _focused_element_selector(),
-            # which answers {} on any failure, so a Qt or JAB control with weak
-            # UIA focus reporting lost the known-good clicked-element selector
-            # and the generated script got a bare locator().
             if ctrl or alt or vk in _FOCUS_CHANGING_VKS:
+                self._clicked_context = None
+                self._clicked_selector = {}
                 self._pending_selector = {}
                 self._pending_win_title = ""
                 self._pending_win_class = ""
             return
 
-        # Printable character → accumulate for type_text. The password flag is sampled
-        # on every keystroke, not once per run: a run that starts in a plain field can
-        # end in a password field, and that is the flow redaction exists for.
-        is_password = _focused_is_password()
+        # Classify from the immutable event snapshot, never from current UIA focus.
+        is_password = context.password is not False
         if self._pending_text:
             if is_password and not self._pending_is_password:
-                # Focus is sampled on this thread, one queue hop behind the keystroke,
-                # so a run that turns out to reach a password field is redacted whole
-                # rather than split at a boundary that may already be too late.
+                # Uncertainty within a run masks the whole pending sequence.
                 self._pending_is_password = True
                 self._flush_text()
             elif win_title != self._pending_win_title or is_password != self._pending_is_password:
                 self._flush_text()
 
         if not self._pending_text:
-            # A fresh run inherits the clicked element's selector only when the
-            # keystroke landed in the window that click belonged to.
-            if win_title != self._pending_win_title or not self._pending_selector:
-                self._pending_selector = _focused_element_selector()
+            # Reuse a click selector only when this native event proves that
+            # focus still belongs to the same captured child HWND and process.
+            self._pending_selector = selector
             self._pending_win_title = win_title
             self._pending_win_class = win_class
             self._pending_is_password = is_password
 
-        self._pending_text.append(char)
+        self._pending_context = context
+        # Never retain secret characters in the pending text buffer.
+        self._pending_text.append(_PASSWORD_PLACEHOLDER if is_password else char)
 
     def _flush_text(self) -> None:
         if not self._pending_text:
@@ -908,6 +1366,7 @@ class Recorder:
             )
         )
         self._pending_text.clear()
+        self._pending_context = None
         self._pending_is_password = False
         self._pending_win_title = ""
         self._pending_win_class = ""
@@ -917,12 +1376,13 @@ class Recorder:
 
     def _build_code(self, actions: list[RecordedAction], func_name: str) -> list[str]:
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        parameters = "process_id: int" if self._explicit_pid is not None else ""
         lines = [
             f"# Generated by dolphin recorder on {now}",
             "from dolphin_desktop import Desktop",
             "",
             "",
-            f"def {func_name}() -> None:",
+            f"def {func_name}({parameters}) -> None:",
             f'    """Recorded test — generated by dolphin on {now}."""',
         ]
 
@@ -937,7 +1397,10 @@ class Recorder:
 
         # Connection boilerplate
         lines.append(f"    desktop = Desktop(backend={self.backend!r})")
-        if self.app:
+        if self._explicit_pid is not None:
+            lines.append("    # Supply the current process_id at runtime or via a pytest fixture.")
+            lines.append("    app = desktop.connect(process=process_id)")
+        elif self.app:
             lines.append(f"    app = desktop.connect(title_re={_title_re_literal(self.app)})")
         elif windows:
             title, cls = windows[0]
