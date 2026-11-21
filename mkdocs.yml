@@ -1,6 +1,6 @@
 site_name: Dolphin Desktop
 site_description: Windows desktop test automation for pytest
-site_url: https://dolphinsoft.pl/
+site_url: https://dolphinsoft.pl/docs/
 repo_url: https://github.com/DolphinSoftEU/DolphinDesktop
 repo_name: DolphinSoftEU/DolphinDesktop
 edit_uri: edit/master/docs/
@@ -8,6 +8,7 @@ copyright: Copyright &copy; 2026 DolphinSoft Kamil Gluszek
 
 theme:
   name: material
+  custom_dir: overrides
   palette:
     - scheme: slate
       primary: teal
@@ -70,6 +71,8 @@ markdown_extensions:
       permalink: true
 
 extra:
+  documentation_version: "0.2.0"
+  documentation_preview: true
   social:
     - icon: fontawesome/solid/globe
       link: https://dolphinsoft.pl
@@ -78,6 +81,12 @@ extra:
       link: https://github.com/DolphinSoftEU/DolphinDesktop
   version:
     provider: mike
+
+validation:
+  nav:
+    omitted_files: warn
+  links:
+    anchors: warn
 
 nav:
   - Home: index.md
@@ -121,6 +130,7 @@ nav:
       - Backend Architecture: architecture.md
       - Backend Capabilities: backend-capabilities.md
       - Qt Agent: architecture/qt-agent.md
+      - Qt Isolation Validation: guides/qt-agent-system-isolation.md
   - API Reference:
       - Overview: reference/index.md
       - Desktop: reference/desktop.md

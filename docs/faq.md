@@ -26,7 +26,7 @@ dolphin init my-tests --yes
 Install Dolphin in the same environment that runs pytest:
 
 ```bash
-pip install dolphin-desktop pytest
+python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
 ```
 
 The plugin is loaded through the `pytest11` package entry point. You do not need to import it in `conftest.py`.

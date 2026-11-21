@@ -16,7 +16,7 @@ pipeline {
     stages {
         stage('Install') {
             steps {
-                bat 'pip install "dolphin-desktop[fast]" pytest'
+                bat 'python -m pip install "dolphin-desktop[fast,pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"'
             }
         }
 
@@ -49,7 +49,7 @@ silently and `dolphin-videos/**` archives nothing. The `fast` extra installs
 
 ## Agent Checklist
 
-- Windows Server 2019/2022 or Windows 10/11.
+- Windows 10/11 or a prepared Windows Server 2022+ desktop session.
 - Python 3.11, 3.12, or 3.13 in `PATH`.
 - Agent process runs as the same Windows user that owns the desktop.
 - Test process has the same elevation level as the application under test.

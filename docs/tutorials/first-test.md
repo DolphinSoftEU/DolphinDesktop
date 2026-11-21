@@ -7,11 +7,6 @@ This tutorial writes a Notepad test from scratch. It introduces the four objects
 Create `tests/test_notepad.py` in a Dolphin test project:
 
 ```python title="tests/test_notepad.py"
-import pytest
-
-pytestmark = pytest.mark.integration
-
-
 def test_notepad_type_and_read(launch):
     app = launch("notepad.exe")
     win = app.window(class_name="Notepad")

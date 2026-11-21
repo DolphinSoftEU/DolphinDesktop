@@ -5,7 +5,7 @@ Dolphin Desktop is a Python library for testing Windows desktop applications. It
 It is designed around Windows desktop automation through UIA, Win32, image matching, and selected integrations such as Java Access Bridge and Office COM.
 
 ```bash
-pip install dolphin-desktop
+python -m pip install "dolphin-desktop[pytest] @ git+https://github.com/DolphinSoftEU/DolphinDesktop.git@testpypi-preview"
 ```
 
 ```python

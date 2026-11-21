@@ -43,30 +43,34 @@ Full guidance: [backend-capabilities.md](backend-capabilities.md).
 
 ## Two Action Paths — Input Simulation vs Programmatic
 
-Every `Locator` (and every `JABLocator`) exposes actions along two
-parallel families:
+Native UIA `Locator` actions offer two paths:
 
 | Family                 | Dispatches                                     | Requires an input desktop | Fires hover/keystroke handlers | Fails when unsupported                       |
 | ---------------------- | ---------------------------------------------- | ------------------------- | ------------------------------ | -------------------------------------------- |
 | **Input simulation**   | `click()`, `type_text()`, `hover()`, `drag_to()` | Yes                       | Yes                            | Underlying `SetCursorPos`/`SendInput` error  |
 | **Programmatic**       | `invoke()`, `toggle()`, `expand()`, `collapse()`, `select()`, `set_value()` | No                | No                             | `UnsupportedPatternError` — no silent fallback |
 
-The two families exist so headless mode is usable for smoke tests
-without lying to the caller about how the click was delivered. Selection of the right primitive
-is a **test-author decision**, not a library fallback — the
-programmatic family raises `UnsupportedPatternError` cleanly rather
-than reaching for the mouse in the background.
+Choose programmatic methods for a validated hidden-desktop smoke subset.
+They raise `UnsupportedPatternError` when the target lacks the required pattern.
+`JABLocator` offers the same explicit programmatic family, while its generic
+`click()` / `set_text()` can try JAB actions before falling back to physical
+input. Check the method and target rather than assuming every Java action has
+the same input requirements as a native UIA locator.
 
 Full guidance in [tutorials/headless-mode.md](tutorials/headless-mode.md#headless-safe-api-invoke-and-friends).
 
 ## Backend selection
 
-`Desktop` passes its `backend` value to pywinauto. The documented values for application automation are:
+`Desktop` validates the registered backend ID and resolves `auto` during
+construction. Native launch/connect use pywinauto's `win32` backend for `win32`,
+and `uia` otherwise. Qt adds its own window/locator wrappers. Common choices are:
 
 | Value | Meaning |
 | --- | --- |
 | `uia` | Microsoft UI Automation. This is the default. |
 | `win32` | Win32 HWND backend for older controls and legacy applications. |
+| `qt` | Qt-aware wrappers over UIA, with separate native agent operations. |
+| `auto` | Resolves to `uia` on Windows; does not turn non-Windows stubs into desktop support. |
 
 Image matching is not selected with `Desktop(backend="image")`. Use `ImageLocator`, `Screen`, `window.image(...)`, or a locator `image_fallback` for that path.
 
@@ -79,12 +83,14 @@ Image matching is not selected with `Desktop(backend="image")`. Use `ImageLocato
 | `Backend` | Abstract interface for backend experiments and plugins |
 | `UIABackend` | Wrapper implementation for UIA operations |
 | `Win32Backend` | Wrapper implementation for Win32 operations |
-| `ImageBackend` | Template-matching backend object used by registry experiments |
+| `ImageBackend` | Template-matching provider and capability declaration; use the explicit image APIs |
 | `register_backend` | Register a backend class in-process |
 | `resolve_backend` | Instantiate a backend by ID |
 | `list_backends` | Return metadata shown by `dolphin info backends` |
 
-The registry is public API, but the current `Desktop` implementation does not route normal locator actions through `resolve_backend`.
+The registry is public API. Native locators use their stack wrappers rather than
+automatically dispatching every action to a third-party provider. Call plugin
+operations through `resolve_backend()`; see [Backend capabilities](backend-capabilities.md).
 
 ## Built-In Backend IDs
 
@@ -114,6 +120,9 @@ The command prints backend ID, target platform, availability on the current mach
 
 ## Registering A Backend In Process
 
+This is an adapter skeleton. Implement the method bodies and declare their
+capabilities before using it for automation.
+
 ```python
 from dolphin_desktop import Backend, register_backend
 
@@ -122,6 +131,10 @@ from dolphin_desktop import Backend, register_backend
 class MyBackend(Backend):
     id = "my_backend"
     platform = "windows"
+
+    def capabilities(self):
+        # Declare only operations implemented by the completed adapter.
+        return frozenset()
 
     def find_element(self, parent, criteria):
         ...

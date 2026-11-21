@@ -151,9 +151,8 @@ If a test uses many physical mouse actions, run it on a visible interactive desk
 
 ## Headless-Safe API — `invoke()` and Friends
 
-Under the hood, `Locator.click()`, `.hover()`, `.drag_to()`, and other
-"input-simulation" actions call pywinauto's `click_input()`, which
-uses `win32api.SetCursorPos` to move the physical cursor. That
+Native UIA `Locator.click()`, `.hover()` and `.drag_to()` use
+physical mouse operations, including moving the cursor with `SetCursorPos`. That
 requires an **input desktop** — a desktop currently attached to the
 hardware mouse/keyboard — which `DolphinHidden` is not. Under
 `dolphin-run` those calls explode with `pywintypes.error: (2,
@@ -196,8 +195,9 @@ JAB's `doAccessibleActions("click" / "toggle" / "expand" / …)` and
 - Fires only the "action" event — the button's `OnClick`, the
   checkbox's state-change, the text field's `Text` property. No hover,
   no keystrokes, no focus dance.
-- Better for **smoke tests + state assertions** — runs anywhere,
-  including `dolphin-run` and CI hosts without a display.
+- Useful for **smoke tests + state assertions** on a prepared Windows
+  desktop, including a validated `dolphin-run` subset. A working accessibility
+  provider and application session are still required.
 - Fails with `UnsupportedPatternError` if the element does not
   implement the required UIA pattern (no silent fallback to
   mouse — the difference between "programmatic worked" and "we

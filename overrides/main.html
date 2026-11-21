@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+
+{% block announce -%}
+  {%- if config.extra.documentation_preview -%}
+    This documentation describes the upcoming <strong>{{ config.extra.documentation_version }}</strong> release.
+    See <a href="{{ 'installation/' | url }}">preview installation instructions</a>.
+  {%- endif -%}
+{%- endblock %}

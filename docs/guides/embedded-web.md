@@ -31,14 +31,17 @@ and has no extra dependency.
 ## Install
 
 ```powershell
-pip install "dolphin-desktop[cdp]"
-playwright install chromium
+# First install the preview described in Installation, then add the extra:
+python -m pip install "dolphin-desktop[cdp]"
 ```
 
-The `[cdp]` extra pulls in Playwright; `playwright install chromium`
-downloads a browser used for Playwright's protocol implementation.
-Attempting to use CDP without the extra raises a `RuntimeError`
-with these exact install instructions (never a bare `ImportError`).
+The `[cdp]` extra installs Playwright's client and driver. Connecting to an
+existing Electron, CEF or WebView2 debug endpoint uses that application's
+Chromium engine; a separate Playwright browser download is not required.
+Run `python -m playwright install chromium` only for a test or fixture that
+launches Playwright's own Chromium, such as the local `examples/cdp/` demo.
+See [Preview installation](../installation.md#preview-installation) before
+adding extras. Missing CDP dependencies produce an installation hint.
 
 ## Quick start
 

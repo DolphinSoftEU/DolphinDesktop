@@ -60,7 +60,9 @@ fails safely; a fresh action resolves the requested caption at its new index.
 | --- | --- | --- |
 | `uia` | Modern Windows applications | Default backend, based on Microsoft UI Automation |
 | `win32` | Older Win32, MFC, Delphi, or legacy controls | Use `Desktop(backend="win32")` or `Desktop.for_legacy_apps()` |
+| `qt` | Qt widgets through UIA | Qt-aware window/locator wrappers; native agent APIs also support QObject, QML and graphics |
 | `image` | Visual fallback | Used through `ImageLocator`, `Screen`, or `window.image(...)`; install `dolphin-desktop[vision]` |
+| `sap`, `cdp`, `java`, `delphi`, `mainframe` | Stack-specific facades | Use the corresponding `Desktop` factories and stack guides |
 
 The package also exposes placeholder backend classes for future or plugin use. The documented runtime path is Windows.
 
@@ -108,7 +110,12 @@ def qt_app(desktop):
         yield app
 ```
 
-Then in CI: `QT_APP_PATH=D:/agent/artifacts/app.exe pytest tests/ -v`.
+Set the path in the Windows CI process, for example in PowerShell:
+
+```powershell
+$env:QT_APP_PATH = "D:\agent\artifacts\app.exe"
+pytest tests/ -v
+```
 
 ## pytest Fixtures
 
