@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/tutorials/first-test/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/tutorials/first-test/">
       
       
         <link rel="prev" href="../">
@@ -1930,6 +1930,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2453,7 +2481,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2728,20 +2756,17 @@
 <p>This tutorial writes a Notepad test from scratch. It introduces the four objects you will use most often: <code>Desktop</code>, <code>Application</code>, <code>Window</code>, and <code>Locator</code>.</p>
 <h2 id="create-the-test-file">Create The Test File<a class="headerlink" href="#create-the-test-file" title="Permanent link">&para;</a></h2>
 <p>Create <code>tests/test_notepad.py</code> in a Dolphin test project:</p>
-<div class="highlight"><span class="filename">tests/test_notepad.py</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">pytestmark</span> <span class="o">=</span> <span class="n">pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">integration</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_notepad_type_and_read</span><span class="p">(</span><span class="n">launch</span><span class="p">):</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">app</span> <span class="o">=</span> <span class="n">launch</span><span class="p">(</span><span class="s2">&quot;notepad.exe&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">class_name</span><span class="o">=</span><span class="s2">&quot;Notepad&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Document&quot;</span><span class="p">)</span>
+<div class="highlight"><span class="filename">tests/test_notepad.py</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_notepad_type_and_read</span><span class="p">(</span><span class="n">launch</span><span class="p">):</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">app</span> <span class="o">=</span> <span class="n">launch</span><span class="p">(</span><span class="s2">&quot;notepad.exe&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">class_name</span><span class="o">=</span><span class="s2">&quot;Notepad&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Document&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">editor</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Edit&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">editor</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">editor</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;Hello, Dolphin!&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">editor</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">editor</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;Hello, Dolphin!&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="k">assert</span> <span class="s2">&quot;Hello, Dolphin!&quot;</span> <span class="ow">in</span> <span class="n">editor</span><span class="o">.</span><span class="n">text</span><span class="p">()</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="k">assert</span> <span class="s2">&quot;Hello, Dolphin!&quot;</span> <span class="ow">in</span> <span class="n">editor</span><span class="o">.</span><span class="n">text</span><span class="p">()</span>
 </code></pre></div>
 <p>Run it:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pytest<span class="w"> </span>tests/test_notepad.py<span class="w"> </span>-v
@@ -2751,6 +2776,8 @@
 <p><code>Application</code> represents a running process. The <code>launch</code> fixture returns an <code>Application</code> and registers cleanup.</p>
 <p><code>Window</code> wraps a top-level window or dialog. <code>app.window(class_name="Notepad")</code> waits for a matching Notepad window.</p>
 <p><code>Locator</code> is a lazy reference to an element inside a window. <code>win.get_by_role("Document")</code> does not search immediately. The search happens when <code>click()</code>, <code>type_text()</code>, <code>text()</code>, or another action/query is called.</p>
+<p>The examples check <code>Document</code> first and fall back to <code>Edit</code> for classic Windows 10 Notepad.
+Unlike creating a locator, <code>exists()</code> queries the accessibility tree.</p>
 <h2 id="lazy-locators-and-auto-waiting">Lazy Locators And Auto-Waiting<a class="headerlink" href="#lazy-locators-and-auto-waiting" title="Permanent link">&para;</a></h2>
 <p>This line only creates a locator:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Document&quot;</span><span class="p">)</span>
@@ -2764,7 +2791,10 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_example</span><span class="p">(</span><span class="n">launch</span><span class="p">):</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">app</span> <span class="o">=</span> <span class="n">launch</span><span class="p">(</span><span class="s2">&quot;notepad.exe&quot;</span><span class="p">)</span>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">class_name</span><span class="o">=</span><span class="s2">&quot;Notepad&quot;</span><span class="p">)</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Document&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;temporary text&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Document&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">editor</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        <span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Edit&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="n">editor</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;temporary text&quot;</span><span class="p">)</span>
 </code></pre></div>
 <p>After the test, the fixture calls <code>Application.kill()</code> for every app it launched. This is deliberate: desktop applications often show save prompts or custom close dialogs, so test teardown should be deterministic.</p>
 <p>If you are not using pytest, use the <code>Application</code> context manager or call <code>kill()</code> yourself:</p>
@@ -2774,7 +2804,10 @@
 <a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
 <a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">with</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="s2">&quot;notepad.exe&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">app</span><span class="p">:</span>
 <a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">class_name</span><span class="o">=</span><span class="s2">&quot;Notepad&quot;</span><span class="p">)</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Document&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;Hello&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Document&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">editor</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>        <span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Edit&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="n">editor</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;Hello&quot;</span><span class="p">)</span>
 </code></pre></div>
 <h2 id="finding-better-selectors">Finding Better Selectors<a class="headerlink" href="#finding-better-selectors" title="Permanent link">&para;</a></h2>
 <p>Use the spy command to inspect a window:</p>
@@ -2796,14 +2829,16 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">NotepadPage</span><span class="p">:</span>
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">window</span><span class="p">):</span>
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_editor</span> <span class="o">=</span> <span class="n">window</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Document&quot;</span><span class="p">)</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">type_text</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">text</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_editor</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_editor</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="n">text</span><span class="p">)</span>
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>        <span class="k">return</span> <span class="bp">self</span>
-<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>
-<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">read_text</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_editor</span><span class="o">.</span><span class="n">text</span><span class="p">()</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_editor</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">_editor</span> <span class="o">=</span> <span class="n">window</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Edit&quot;</span><span class="p">)</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">type_text</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">text</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_editor</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">_editor</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="n">text</span><span class="p">)</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>        <span class="k">return</span> <span class="bp">self</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">read_text</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_editor</span><span class="o">.</span><span class="n">text</span><span class="p">()</span>
 </code></pre></div>
 <p>The test becomes:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_notepad_with_page_object</span><span class="p">(</span><span class="n">launch</span><span class="p">):</span>

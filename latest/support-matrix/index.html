@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/support-matrix/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/support-matrix/">
       
       
         <link rel="prev" href="../core-concepts/">
@@ -839,10 +839,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#java-swing-javafx-oracle-forms-12c" class="md-nav__link">
+  <a href="#java-swing-awt-oracle-forms" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Java Swing / JavaFX / Oracle Forms 12c
+        Java Swing / AWT / Oracle Forms
       
     </span>
   </a>
@@ -872,10 +872,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#office-excel-word-powerpoint-outlook" class="md-nav__link">
+  <a href="#office-com-excel-word-powerpoint-classic-outlook" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Office (Excel / Word / PowerPoint / Outlook)
+        Office COM (Excel / Word / PowerPoint / classic Outlook)
       
     </span>
   </a>
@@ -910,52 +910,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#out-of-scope-dead-technologies-intentional-non-support" class="md-nav__link">
+  <a href="#other-runtimes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Out-of-scope: dead technologies (intentional non-support)
+        Other runtimes
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Out-of-scope: dead technologies (intentional non-support)">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#adobe-flash-flex-air" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adobe Flash / Flex (AIR)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#microsoft-silverlight" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Microsoft Silverlight
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#also-deliberately-out-of-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Also deliberately out-of-scope
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -2121,6 +2082,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2644,7 +2633,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2919,10 +2908,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#java-swing-javafx-oracle-forms-12c" class="md-nav__link">
+  <a href="#java-swing-awt-oracle-forms" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Java Swing / JavaFX / Oracle Forms 12c
+        Java Swing / AWT / Oracle Forms
       
     </span>
   </a>
@@ -2952,10 +2941,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#office-excel-word-powerpoint-outlook" class="md-nav__link">
+  <a href="#office-com-excel-word-powerpoint-classic-outlook" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Office (Excel / Word / PowerPoint / Outlook)
+        Office COM (Excel / Word / PowerPoint / classic Outlook)
       
     </span>
   </a>
@@ -2990,52 +2979,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#out-of-scope-dead-technologies-intentional-non-support" class="md-nav__link">
+  <a href="#other-runtimes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Out-of-scope: dead technologies (intentional non-support)
+        Other runtimes
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Out-of-scope: dead technologies (intentional non-support)">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#adobe-flash-flex-air" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adobe Flash / Flex (AIR)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#microsoft-silverlight" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Microsoft Silverlight
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#also-deliberately-out-of-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Also deliberately out-of-scope
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -3162,17 +3112,17 @@ backend to target, and where the sharp edges are.</p>
 </tr>
 <tr>
 <td><code>mainframe</code></td>
-<td>s3270 subprocess <strong>or</strong> HLLAPI DLL binding</td>
+<td>s3270 subprocess, native TN5250 <strong>or</strong> HLLAPI DLL binding</td>
 <td><code>MainframeBackend</code> marker → <code>MainframeTerminal</code></td>
 </tr>
 <tr>
 <td><code>delphi</code></td>
-<td>UIA + <code>TComponent.Name → AutomationId</code> name resolution</td>
+<td>UIA + provider-published ID / caption / index resolution</td>
 <td><code>DelphiBackend</code> marker → <code>DelphiApp</code></td>
 </tr>
 <tr>
 <td><code>java</code></td>
-<td>Java Access Bridge (JAB) — Swing / Oracle Forms / JavaFX</td>
+<td>Java Access Bridge (JAB) — Swing / AWT / Oracle Forms</td>
 <td><code>JavaBackend</code> marker → <code>OracleFormsApp</code> / <code>JavaAccessBridge</code></td>
 </tr>
 </tbody>
@@ -3334,7 +3284,7 @@ the headline <strong>capabilities</strong> it exposes (against the
 </tr>
 <tr>
 <td>Alt</td>
-<td><code>win32</code> — for pre-VCL-10.4 Delphi that does not publish <code>TComponent.Name</code> as UIA AutomationId</td>
+<td><code>win32</code> — standard HWND controls through the generic API; does not recover <code>TComponent.Name</code></td>
 </tr>
 <tr>
 <td>Alt</td>
@@ -3346,11 +3296,11 @@ the headline <strong>capabilities</strong> it exposes (against the
 </tr>
 <tr>
 <td>Capabilities</td>
-<td>Full accessibility set + SCREENSHOT + DRAG + SCROLL</td>
+<td>Operations depend on the target UIA provider and exposed patterns</td>
 </tr>
 <tr>
 <td>Limitations</td>
-<td>Lazarus LCL does not publish AutomationId — falls back to class + role matching. VCL 10.4+ works out-of-the-box; earlier VCL requires the <code>win32</code> alt.</td>
+<td><code>TForm.Name</code> / <code>TComponent.Name</code> lookup is unsupported on stock VCL (including Delphi 12 / delphivcl 1.0.7) and LCL unless an application-supplied UIA provider publishes matching AutomationIds. Dolphin ships no such provider or RTTI agent. Use inspected UIA captions/indices; non-windowed <code>TLabel</code> can be absent. See <a href="../guides/delphi/">Delphi prerequisites and reference</a>.</td>
 </tr>
 </tbody>
 </table>
@@ -3385,7 +3335,7 @@ the headline <strong>capabilities</strong> it exposes (against the
 </tr>
 </tbody>
 </table>
-<h3 id="java-swing-javafx-oracle-forms-12c">Java Swing / JavaFX / Oracle Forms 12c<a class="headerlink" href="#java-swing-javafx-oracle-forms-12c" title="Permanent link">&para;</a></h3>
+<h3 id="java-swing-awt-oracle-forms">Java Swing / AWT / Oracle Forms<a class="headerlink" href="#java-swing-awt-oracle-forms" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -3400,11 +3350,11 @@ the headline <strong>capabilities</strong> it exposes (against the
 </tr>
 <tr>
 <td>Alt</td>
-<td><code>uia</code> — JavaFX 8+ apps that set <code>-Djavafx.accessible=true</code> register in UIA</td>
+<td><code>uia</code> when the target toolkit publishes a usable Windows UI Automation provider</td>
 </tr>
 <tr>
 <td>Modes</td>
-<td>Requires JAB enabled (<code>jabswitch /enable</code> — Windows switch style) and <code>WindowsAccessBridge-64.dll</code> reachable on PATH</td>
+<td>Requires JAB enabled (<code>jabswitch /enable</code> — Windows switch style) and a trusted absolute <code>JAVA_HOME</code> containing <code>bin\WindowsAccessBridge-64.dll</code> and <code>bin\jabswitch.exe</code></td>
 </tr>
 <tr>
 <td>Capabilities</td>
@@ -3412,7 +3362,7 @@ the headline <strong>capabilities</strong> it exposes (against the
 </tr>
 <tr>
 <td>Limitations</td>
-<td>JAB does not expose a native drag pattern (DRAG omitted from <code>java</code> cap set). Oracle Forms applet in a browser needs <code>-Djavafx.accessible=true</code> on the JRE and the browser applet plugin.</td>
+<td>JAB does not expose a native drag pattern (DRAG omitted from <code>java</code> cap set). The target must expose its controls through JAB; browser/applet availability and other Java UI toolkits require separate runtime validation.</td>
 </tr>
 </tbody>
 </table>
@@ -3474,11 +3424,11 @@ the headline <strong>capabilities</strong> it exposes (against the
 </tr>
 <tr>
 <td>Limitations</td>
-<td>Read-side full; write-side WSF handshake missing on some IBM i releases.</td>
+<td>Screen/field reading and negotiation are available. The native write/submit path is unverified against live IBM i hosts; use an appropriate HLLAPI emulator for write-critical flows.</td>
 </tr>
 </tbody>
 </table>
-<h3 id="office-excel-word-powerpoint-outlook">Office (Excel / Word / PowerPoint / Outlook)<a class="headerlink" href="#office-excel-word-powerpoint-outlook" title="Permanent link">&para;</a></h3>
+<h3 id="office-com-excel-word-powerpoint-classic-outlook">Office COM (Excel / Word / PowerPoint / classic Outlook)<a class="headerlink" href="#office-com-excel-word-powerpoint-classic-outlook" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
@@ -3489,7 +3439,7 @@ the headline <strong>capabilities</strong> it exposes (against the
 <tbody>
 <tr>
 <td>Primary</td>
-<td>Office COM automation (in-process, not a <code>Backend</code> registry entry)</td>
+<td>Office COM automation through public <code>ExcelApp</code>, <code>WordApp</code>, <code>PowerPointApp</code>, <code>OutlookApp</code> facades (not <code>Backend</code> registry entries)</td>
 </tr>
 <tr>
 <td>Alt</td>
@@ -3501,14 +3451,22 @@ the headline <strong>capabilities</strong> it exposes (against the
 </tr>
 <tr>
 <td>Capabilities</td>
-<td>LOCATE (workbook / worksheet / range), READ_TEXT, TYPE_TEXT (cell values), SET_VALUE, INVOKE (macros), SCREENSHOT via UIA</td>
+<td>Excel: workbook / worksheet / cell / range access, values and formulas, save. Word: document text, find and replace, save. PowerPoint: create/open/connect, slides (add, reorder, delete, layout title, speaker notes), shapes with text formatting (bold/italic/underline, font, size, colour, character ranges, hyperlinks), geometry, embedded pictures, tables, charts, save, PDF export. Outlook: create/read mail and appointments, recipients, attachments, folders, save MSG, explicit mail send. SCREENSHOT via UIA.</td>
 </tr>
 <tr>
 <td>Limitations</td>
-<td>Office COM is a domain API — not exposed via the generic <code>Backend</code> interface. Uses its own <code>ExcelApp.open(path)</code> / <code>ExcelApp.connect()</code> / <code>WordApp</code> facades. Modeless dialogs (e.g. AutoCorrect prompts) still routed through UIA.</td>
+<td>Domain API, separate from generic <code>Backend</code> capabilities. Shared PowerPoint/Outlook sessions are preserved. Opt-in <code>exclusive=True</code> requires no existing application process, owns the verified new process and quits/waits for it during cleanup. Outlook requires classic Outlook and an accessible MAPI profile/store; new Outlook has no supported COM facade. Draft move/delete requires item ownership. Dialogs and ribbon UI use UIA/Win32.</td>
 </tr>
 </tbody>
 </table>
+<p>See the <a href="../guides/office/">Office guide</a> and <a href="../reference/office/">COM API reference</a>.
+Validate PowerPoint against the installed Office version, including
+create/open/connect, formatting, tables, charts, save/reopen, PDF output and
+process ownership. For Outlook, validate drafts, folders, attachments, MSG
+files, appointments and shared/exclusive ownership using an isolated profile
+with one local PST and no account. Repeat acceptance for each supported
+Office/version/architecture combination. Missing COM servers or profiles are
+incomplete verification; source stand-ins verify the wrapper contract.</p>
 <h3 id="image-fallback">Image fallback<a class="headerlink" href="#image-fallback" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -3542,76 +3500,22 @@ the headline <strong>capabilities</strong> it exposes (against the
 </table>
 <h2 id="cross-cutting-mode-notes">Cross-cutting mode notes<a class="headerlink" href="#cross-cutting-mode-notes" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Hidden mode</strong> — every UIA-backed row supports the hidden-desktop
-  session mode (<code>Desktop(hidden=True)</code>), used to avoid stealing
-  focus during CI runs. Does not apply to <code>cdp</code> (Playwright has its
-  own headless mode) or <code>mainframe</code> (terminals are headless by
-  definition).</li>
+<li><strong>Hidden mode</strong> — <code>Desktop(hidden=True)</code> starts supported applications on
+  a hidden Windows desktop. Verify the target and chosen operations first;
+  physical input and screen capture still depend on the input desktop. See
+  <a href="../tutorials/headless-mode/">Headless Mode</a>. CDP controls a separate browser
+  target; mainframe backends operate on terminal buffers.</li>
 <li><strong>Attach vs Launch</strong> — every row supports attach-to-running.
   <code>mainframe</code> HLLAPI is <em>attach-only</em> (the emulator process owns the
   session).</li>
 <li><strong>Multi-monitor / DPI</strong> — <code>image</code> and <code>screenshot</code>-based verbs
   respect per-monitor DPI awareness set by the target process.</li>
 </ul>
-<h2 id="out-of-scope-dead-technologies-intentional-non-support">Out-of-scope: dead technologies (intentional non-support)<a class="headerlink" href="#out-of-scope-dead-technologies-intentional-non-support" title="Permanent link">&para;</a></h2>
-<p>The following are <strong>deliberately unsupported</strong>. They are listed
-here so their absence reads as a decision, not an oversight.</p>
-<h3 id="adobe-flash-flex-air">Adobe Flash / Flex (AIR)<a class="headerlink" href="#adobe-flash-flex-air" title="Permanent link">&para;</a></h3>
-<ul>
-<li><strong>Adobe end-of-life 2020-12-31</strong> — Flash Player removed from
-  every major browser; Flash Player itself blocks execution as of
-  the January 2021 kill-switch. AIR moved to Harman with a paid
-  licence and near-zero user base.</li>
-<li><strong>Automation surface never existed</strong> — Flex's browser-based
-  automation bindings relied on the Flash Player plugin
-  intercepting JS-to-ActionScript bridges. That plugin is gone.</li>
-<li><strong>Dolphin decision</strong> — no <code>flash</code> / <code>flex</code> backend will ship. Migrate
-  legacy Flex apps to Angular/React (CDP-backed) or a
-  Delphi/VCL desktop port; both are in-scope.</li>
-</ul>
-<h3 id="microsoft-silverlight">Microsoft Silverlight<a class="headerlink" href="#microsoft-silverlight" title="Permanent link">&para;</a></h3>
-<ul>
-<li><strong>Microsoft end-of-life 2021-10-12</strong> — pulled from Windows
-  Update; unsupported on any current browser (last surviving path
-  was IE11 mode in Edge Legacy, itself EOL 2022-06-15).</li>
-<li><strong>No modern automation path</strong> — the <code>UIAutomationSilverlight</code>
-  bridge required the Silverlight runtime, which no longer
-  installs cleanly on Windows 10 22H2 / Windows 11.</li>
-<li><strong>Dolphin decision</strong> — no <code>silverlight</code> backend. Migration path is
-  Blazor WebAssembly (CDP-backed) or a WPF desktop rewrite (<code>uia</code>).</li>
-</ul>
-<h3 id="also-deliberately-out-of-scope">Also deliberately out-of-scope<a class="headerlink" href="#also-deliberately-out-of-scope" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Tech</th>
-<th>Status</th>
-<th>Migration path</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Java Applets in browser</td>
-<td>JRE plugin removed</td>
-<td>JavaFX (<code>uia</code> or JNLP + <code>java</code>)</td>
-</tr>
-<tr>
-<td>Internet Explorer 11 shell</td>
-<td>EOL 2022-06-15</td>
-<td>Edge (CDP)</td>
-</tr>
-<tr>
-<td>Windows Forms 1.x on .NET Fx</td>
-<td>Runs but no roadmap</td>
-<td>WinForms .NET 6+ (<code>uia</code>)</td>
-</tr>
-<tr>
-<td>MFC via UIA proxy DLL</td>
-<td>Works partially</td>
-<td>Officially <code>win32</code> backend</td>
-</tr>
-</tbody>
-</table>
+<h2 id="other-runtimes">Other runtimes<a class="headerlink" href="#other-runtimes" title="Permanent link">&para;</a></h2>
+<p>Dolphin ships no dedicated Flash/Flex, Silverlight, Java browser-applet or
+Internet Explorer backend. Do not infer support for these runtimes from the
+native Windows or CDP rows. Inspect the actual accessibility surface before
+choosing a generic UIA, Win32 or image fallback.</p>
 <h2 id="capability-checklist">Capability checklist<a class="headerlink" href="#capability-checklist" title="Permanent link">&para;</a></h2>
 <p>Coverage is measured against a <strong>fixed operation checklist</strong>, not a
 vague "the stack is supported" claim. A dolphin_desktop stack counts
@@ -3705,8 +3609,8 @@ as fully covered iff <strong>every row below is supported</strong> for that stac
 <td><code>dolphin spy</code> / <code>dolphin record</code></td>
 </tr>
 <tr>
-<td><strong>Multi-user / RDP</strong></td>
-<td><code>Desktop(hidden=True)</code> for parallel sessions</td>
+<td><strong>Hidden desktop</strong></td>
+<td><code>Desktop(hidden=True)</code>; input/session isolation requires separate verification</td>
 </tr>
 </tbody>
 </table>
@@ -3717,7 +3621,7 @@ as fully covered iff <strong>every row below is supported</strong> for that stac
 <li><strong>Mainframe TN3270 / TN5250 / HLLAPI</strong>: three interchangeable
   backends behind one <code>MainframeTerminal</code> API.</li>
 <li><strong>Serializable capability introspection</strong>:
-  <code>list_backends()</code> returns JSON — downstream tooling can build a
+  <code>list_backends()</code> returns JSON-serializable dictionaries — downstream tooling can build a
   live compatibility map without parsing docs.</li>
 </ul>
 <h3 id="known-limitations">Known limitations<a class="headerlink" href="#known-limitations" title="Permanent link">&para;</a></h3>
@@ -3735,8 +3639,8 @@ as fully covered iff <strong>every row below is supported</strong> for that stac
 <li><strong>Mobile (iOS / Android)</strong> — use a dedicated mobile-automation framework.</li>
 <li><strong>macOS-native apps</strong> — the <code>macos</code> backend is a reserved stub.</li>
 <li><strong>Linux X11 / Wayland</strong> — the <code>linux</code> backend is a reserved stub.</li>
-<li><strong>Anything Flash / Silverlight-based</strong> — see the out-of-scope
-  section above.</li>
+<li><strong>Flash / Silverlight applications</strong> — no dedicated backend; see
+  <a href="#other-runtimes">Other runtimes</a>.</li>
 </ul>
 
 

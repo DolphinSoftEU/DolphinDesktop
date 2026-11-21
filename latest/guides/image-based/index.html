@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/guides/image-based/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/guides/image-based/">
       
       
         <link rel="prev" href="../sap/">
@@ -1952,6 +1952,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2475,7 +2503,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2808,6 +2836,10 @@
 <a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">image_fallback</span><span class="o">=</span><span class="n">ImageLocator</span><span class="p">(</span><span class="s2">&quot;templates/submit.png&quot;</span><span class="p">,</span> <span class="n">threshold</span><span class="o">=</span><span class="mf">0.9</span><span class="p">),</span>
 <a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
 </code></pre></div>
+<p>The image fallback must point to a readable template. A missing template raises
+<code>FileNotFoundError</code>, and a corrupt or undecodable template raises <code>ValueError</code>, both with
+the <code>image_fallback</code> path in the diagnostic. When a valid template is not visible on the
+screen, normal locator resolution still reports <code>ElementNotFoundError</code>.</p>
 <h2 id="ocr-and-screen-helpers">OCR And Screen Helpers<a class="headerlink" href="#ocr-and-screen-helpers" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Screen</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>

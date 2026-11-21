@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/reference/pytest-plugin/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/reference/pytest-plugin/">
       
       
         <link rel="prev" href="../exceptions/">
@@ -1814,6 +1814,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2340,7 +2368,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2592,6 +2620,34 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#stability-and-diagnostics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stability and diagnostics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Stability and diagnostics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2804,6 +2860,34 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#stability-and-diagnostics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stability and diagnostics
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Stability and diagnostics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2847,9 +2931,22 @@
 </code></pre></div>
 <h3 id="dolphin_backend"><code>dolphin_backend</code><a class="headerlink" href="#dolphin_backend" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_backend_name</span><span class="p">(</span><span class="n">dolphin_backend</span><span class="p">):</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="k">assert</span> <span class="n">dolphin_backend</span> <span class="ow">in</span> <span class="p">{</span><span class="s2">&quot;uia&quot;</span><span class="p">,</span> <span class="s2">&quot;win32&quot;</span><span class="p">}</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="k">assert</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">dolphin_backend</span><span class="p">,</span> <span class="nb">str</span><span class="p">)</span>
 </code></pre></div>
-<p>Session-scoped value of <code>--dolphin-backend</code>.</p>
+<p>Session-scoped value of <code>--dolphin-backend</code>. Accepts registered backend IDs,
+including installed <code>dolphin_desktop.backends</code> entry points and backends registered
+with <code>register_backend()</code> while loading <code>conftest.py</code>, plus <code>auto</code>. Final
+validation runs after collection, so nested <code>conftest.py</code> files discovered
+under the selected test paths can register backends before validation.
+Unknown IDs produce a pytest usage error listing registered backends; there is no
+fallback. Validation does not construct backends or check optional dependencies.
+The <code>desktop</code> fixture passes the selected ID to <code>Desktop</code>; backend capabilities
+and stack-specific launch requirements still apply. Native <code>Desktop.launch()</code>
+and <code>connect()</code> use pywinauto; external providers can be called through the public
+<code>resolve_backend(dolphin_backend)</code> API.
+With <code>auto</code>, <code>dolphin_backend</code> retains the requested string, while <code>Desktop</code>
+resolves it once during construction (<code>uia</code> on Windows) and uses that concrete
+backend for <code>launch()</code>, <code>connect()</code> and capability queries.</p>
 <h3 id="dolphin_timeout"><code>dolphin_timeout</code><a class="headerlink" href="#dolphin_timeout" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_timeout_value</span><span class="p">(</span><span class="n">dolphin_timeout</span><span class="p">):</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="k">assert</span> <span class="n">dolphin_timeout</span> <span class="o">&gt;=</span> <span class="mi">0</span>
@@ -2871,9 +2968,9 @@
 </thead>
 <tbody>
 <tr>
-<td><code>--dolphin-backend {uia,win32}</code></td>
+<td><code>--dolphin-backend ID</code></td>
 <td><code>uia</code></td>
-<td>pywinauto backend</td>
+<td>Registered backend ID (including installed plugins), or <code>auto</code></td>
 </tr>
 <tr>
 <td><code>--dolphin-timeout FLOAT</code></td>
@@ -2970,6 +3067,11 @@
 <td>Headless desktop flag</td>
 </tr>
 <tr>
+<td><code>DOLPHIN_DESKTOP_LOG_LEVEL</code></td>
+<td><code>INFO</code></td>
+<td>Logging level; takes precedence over <code>DOLPHIN_LOG_LEVEL</code></td>
+</tr>
+<tr>
 <td><code>DOLPHIN_LOG_LEVEL</code></td>
 <td><code>INFO</code></td>
 <td>Logging level</td>
@@ -3023,6 +3125,31 @@
 </tr>
 </tbody>
 </table>
+<h2 id="stability-and-diagnostics">Stability and diagnostics<a class="headerlink" href="#stability-and-diagnostics" title="Permanent link">&para;</a></h2>
+<h3 id="logging">Logging<a class="headerlink" href="#logging" title="Permanent link">&para;</a></h3>
+<p>Dolphin logging accepts only <code>DEBUG</code>, <code>INFO</code>, and <code>ERROR</code>; the default is
+<code>INFO</code>. <code>--dolphin-desktop-log-level</code> is validated by pytest, while
+<code>config(log_level=...)</code> raises <code>ValueError</code> for any other value without
+changing the configured defaults or logger state. The same three values are
+accepted case-insensitively by the Python API.</p>
+<p>For environment configuration, <code>DOLPHIN_DESKTOP_LOG_LEVEL</code> takes precedence
+over <code>DOLPHIN_LOG_LEVEL</code>. The selected value is validated after precedence is
+resolved; an invalid value emits a warning and falls back safely to <code>INFO</code>,
+even when the lower-priority variable is valid.</p>
+<p>In standalone use, <code>setup_logging()</code> owns one console handler on the
+<code>dolphin_desktop</code> logger and repeated calls reuse it. Under pytest, pytest
+owns the handlers: Dolphin installs none on its logger, leaves propagation
+enabled, and applies the level/redaction configuration so messages reach
+pytest's handlers without duplicate output.</p>
+<p><code>--dolphin-screenshot-on-fail</code> is diagnostic support and must not change the
+test result. If the screenshot backend cannot capture an image (for example,
+because the desktop is locked or <code>ImageGrab</code> raises), Dolphin logs a warning
+and preserves the original test exception and exit status. It does not emit a
+pytest <code>INTERNALERROR</code> caused by the failed capture.</p>
+<p>The JUnit/XML, fallback HTML, pytest stdout/stderr and diagnostic log remain
+available for investigating the failure. A successful capture is written under
+<code>dolphin-screenshots/</code> and its path is included in the test report; a failed
+capture does not create a misleading or partial PNG.</p>
 
 
 

@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/guides/qt/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/guides/qt/">
       
       
         <link rel="prev" href="../native/">
@@ -1269,6 +1269,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#trees-select_item_by_path-and-expand_item" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trees — select_item_by_path and expand_item
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1297,10 +1308,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#real-world-qt-apps-validated" class="md-nav__link">
+  <a href="#real-world-qt-detection-targets" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Real-world Qt apps validated
+        Real-world Qt detection targets
       
     </span>
   </a>
@@ -2097,6 +2108,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2620,7 +2659,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2928,6 +2967,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#trees-select_item_by_path-and-expand_item" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trees — select_item_by_path and expand_item
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2956,10 +3006,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#real-world-qt-apps-validated" class="md-nav__link">
+  <a href="#real-world-qt-detection-targets" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Real-world Qt apps validated
+        Real-world Qt detection targets
       
     </span>
   </a>
@@ -3363,9 +3413,32 @@ and supports more matching strategies.</p>
 </code></pre></div>
 <p><code>Locator.text()</code> on Qt no longer falls through to a clipboard read, so it
 never hangs on empty values (a previous bug fixed during Qt 6 support work).</p>
+<h3 id="trees-select_item_by_path-and-expand_item">Trees — <code>select_item_by_path</code> and <code>expand_item</code><a class="headerlink" href="#trees-select_item_by_path-and-expand_item" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">tree</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">tree</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;Files&quot;</span><span class="p">)</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">tree</span><span class="o">.</span><span class="n">expand_item</span><span class="p">(</span><span class="s2">&quot;Project&quot;</span><span class="p">,</span> <span class="s2">&quot;src&quot;</span><span class="p">)</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">tree</span><span class="o">.</span><span class="n">select_item_by_path</span><span class="p">(</span><span class="s2">&quot;Project&quot;</span><span class="p">,</span> <span class="s2">&quot;src&quot;</span><span class="p">,</span> <span class="s2">&quot;main.py&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>UIA lists a <code>QTreeWidget</code> / <code>QTreeView</code> flat: every cell of every row is a
+sibling <code>TreeItem</code>, and only rows around the viewport are listed. The UIA
+patterns do not drive it either. Qt 5 has no <code>ExpandCollapse</code> or <code>SelectionItem</code>,
+and on Qt 6 <code>Select</code> picks the wrong row for a nested node. So these calls read
+the rows and use the pointer, like a user:</p>
+<ul>
+<li><code>select_item_by_path</code> clicks the row, so <code>itemClicked</code> fires. Closed ancestors
+  open through their branch arrow, which selects nothing, and rows outside the
+  viewport are scrolled to with the wheel.</li>
+<li>They need a visible desktop. On a hidden desktop they raise <code>DolphinError</code>.</li>
+<li>Levels are read from the indentation of the first column, and only that column
+  names a node. A tree without indentation (<code>setIndentation(0)</code>) cannot be walked
+  by path. A cell indented past the width of its column reports no position, so
+  it raises <code>UnsupportedCapabilityError</code> until the column is wider.</li>
+<li>A root without an arrow (<code>setRootIsDecorated(False)</code>) cannot be opened.</li>
+<li>A path that continues below a leaf clicks that leaf once, because Qt 5 does not
+  tell a closed branch from a leaf, and then raises <code>ElementNotFoundError</code>.</li>
+</ul>
 <h2 id="menus-submenus">Menus &amp; submenus<a class="headerlink" href="#menus-submenus" title="Permanent link">&para;</a></h2>
 <p>Top-level menubar items are found like any other element:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;File&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>   <span class="c1"># opens the File popup</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;File&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>   <span class="c1"># opens the File popup</span>
 </code></pre></div>
 <p>When the popup opens, Qt creates a <strong>top-level <code>QMenu</code> window</strong> detached
 from the main window. Dolphin's menu resolver handles this by searching:</p>
@@ -3374,13 +3447,13 @@ from the main window. Dolphin's menu resolver handles this by searching:</p>
 <li>The main window scope.</li>
 <li><strong>Every visible top-level window of the same process</strong> (Qt popups).</li>
 </ol>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;File&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;Open...&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;View&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;Zoom&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;100%&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>    <span class="c1"># nested submenu</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;File&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;Open...&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;View&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;Zoom&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;100%&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>    <span class="c1"># nested submenu</span>
 </code></pre></div>
 <p>If the submenu still isn't reachable (some Qt apps render menus on a
 separate-process out-of-tree), fall back to keyboard accelerators:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">win</span><span class="o">.</span><span class="n">focus</span><span class="p">()</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">Keyboard</span><span class="o">.</span><span class="n">press</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%f</span><span class="s2">o&quot;</span><span class="p">)</span>   <span class="c1"># Alt+F, O for File → Open</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">win</span><span class="o">.</span><span class="n">focus</span><span class="p">()</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">Keyboard</span><span class="o">.</span><span class="n">press</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%f</span><span class="s2">o&quot;</span><span class="p">)</span>   <span class="c1"># Alt+F, O for File → Open</span>
 </code></pre></div>
 <h2 id="uia-limitations-when-to-use-the-qt-agent">UIA limitations — when to use the Qt agent<a class="headerlink" href="#uia-limitations-when-to-use-the-qt-agent" title="Permanent link">&para;</a></h2>
 <p>The following are opaque to UIA. They are handled by the Qt agent DLL,
@@ -3397,19 +3470,19 @@ which ships with the library and is injected automatically on first use
 </ul>
 <p>Use <code>Application.uses_qt_quick()</code> to detect QML targets at launch time and
 route those screens through the agent API instead of UIA selectors:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="s2">&quot;trading_app.exe&quot;</span><span class="p">)</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">if</span> <span class="n">app</span><span class="o">.</span><span class="n">uses_qt_quick</span><span class="p">():</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">&quot;Trading&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;loginButton&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="s2">&quot;trading_app.exe&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="k">if</span> <span class="n">app</span><span class="o">.</span><span class="n">uses_qt_quick</span><span class="p">():</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>    <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">&quot;Trading&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;loginButton&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
 </code></pre></div>
-<h2 id="real-world-qt-apps-validated">Real-world Qt apps validated<a class="headerlink" href="#real-world-qt-apps-validated" title="Permanent link">&para;</a></h2>
-<p>The library is exercised against these production Qt apps in
-<code>tests/qt/test_qt_real_apps.py</code>:</p>
+<h2 id="real-world-qt-detection-targets">Real-world Qt detection targets<a class="headerlink" href="#real-world-qt-detection-targets" title="Permanent link">&para;</a></h2>
+<p>Examples of Qt applications for checking detection in your environment:</p>
 <ul>
 <li><strong>AMD Radeon Software</strong> (Qt 6) — GPU control panel.</li>
 <li><strong>AMD Ryzen Master</strong> (Qt 6) — CPU monitoring.</li>
 <li><strong>Logitech G HUB</strong> (Qt 5) — gaming peripheral software.</li>
 </ul>
-<p>Tests are skipped automatically when the target app isn't running.</p>
+<p>Verify detection against the installed application version. Successful detection
+does not establish full UI compatibility.</p>
 <h2 id="examples">Examples<a class="headerlink" href="#examples" title="Permanent link">&para;</a></h2>
 <p>Working demos under <code>examples/qt_demo/</code>:</p>
 <ul>
@@ -3429,47 +3502,47 @@ small native DLL that gets injected into the AUT and exposes the live
 <code>QObject</code> meta-object tree over a named-pipe JSON protocol. The agent
 DLLs are bundled with the library — no separate install or build step.</p>
 <h3 id="recommended-high-level-element-api">Recommended: high-level Element API<a class="headerlink" href="#recommended-high-level-element-api" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="sa">r</span><span class="s1">&#39;&quot;python&quot; &quot;trading_app.py&quot;&#39;</span><span class="p">)</span>
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">&quot;Trading&quot;</span><span class="p">)</span>
-<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>
-<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="c1"># QML — found by objectName, returned as QmlElement</span>
-<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="n">btn</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;loginButton&quot;</span><span class="p">)</span>
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="n">btn</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>                      <span class="c1"># synthetic Qt MouseEvent (no real cursor)</span>
-<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="n">btn</span><span class="o">.</span><span class="n">set_property</span><span class="p">(</span><span class="s2">&quot;enabled&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
-<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>
-<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="c1"># QML reactive — wait until binding propagates</span>
-<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="n">field</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;usernameField&quot;</span><span class="p">)</span>
-<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="n">field</span><span class="o">.</span><span class="n">set_text</span><span class="p">(</span><span class="s2">&quot;Alice&quot;</span><span class="p">)</span>
-<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a><span class="n">field</span><span class="o">.</span><span class="n">wait_for_property</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;Alice&quot;</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
-<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>
-<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="c1"># QGraphicsView — walk its scene</span>
-<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a><span class="n">view</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">graphics_view</span><span class="p">(</span><span class="n">object_name</span><span class="o">=</span><span class="s2">&quot;priceChart&quot;</span><span class="p">)</span>
-<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a><span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">view</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">item</span><span class="p">[</span><span class="s2">&quot;type&quot;</span><span class="p">],</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;x&quot;</span><span class="p">],</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;y&quot;</span><span class="p">])</span>
-<a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a><span class="n">top_hit</span> <span class="o">=</span> <span class="n">view</span><span class="o">.</span><span class="n">item_at</span><span class="p">(</span><span class="mi">120</span><span class="p">,</span> <span class="mi">80</span><span class="p">)</span>
-<a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a>
-<a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a><span class="c1"># Plain QObject / QWidget — via meta-object (more granular than UIA)</span>
-<a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a><span class="n">label</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">qt_widget</span><span class="p">(</span><span class="n">object_name</span><span class="o">=</span><span class="s2">&quot;connectionStatus&quot;</span><span class="p">)</span>
-<a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a><span class="k">assert</span> <span class="n">label</span><span class="o">.</span><span class="n">get_property</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;Connected&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="sa">r</span><span class="s1">&#39;&quot;python&quot; &quot;trading_app.py&quot;&#39;</span><span class="p">)</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">&quot;Trading&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="c1"># QML — found by objectName, returned as QmlElement</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="n">btn</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;loginButton&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="n">btn</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>                      <span class="c1"># synthetic Qt MouseEvent (no real cursor)</span>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="n">btn</span><span class="o">.</span><span class="n">set_property</span><span class="p">(</span><span class="s2">&quot;enabled&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="c1"># QML reactive — wait until binding propagates</span>
+<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a><span class="n">field</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">qml</span><span class="p">(</span><span class="s2">&quot;usernameField&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="n">field</span><span class="o">.</span><span class="n">set_text</span><span class="p">(</span><span class="s2">&quot;Alice&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a><span class="n">field</span><span class="o">.</span><span class="n">wait_for_property</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;Alice&quot;</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
+<a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>
+<a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a><span class="c1"># QGraphicsView — walk its scene</span>
+<a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a><span class="n">view</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">graphics_view</span><span class="p">(</span><span class="n">object_name</span><span class="o">=</span><span class="s2">&quot;priceChart&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a><span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">view</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+<a id="__codelineno-12-19" name="__codelineno-12-19" href="#__codelineno-12-19"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">item</span><span class="p">[</span><span class="s2">&quot;type&quot;</span><span class="p">],</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;x&quot;</span><span class="p">],</span> <span class="n">item</span><span class="p">[</span><span class="s2">&quot;y&quot;</span><span class="p">])</span>
+<a id="__codelineno-12-20" name="__codelineno-12-20" href="#__codelineno-12-20"></a><span class="n">top_hit</span> <span class="o">=</span> <span class="n">view</span><span class="o">.</span><span class="n">item_at</span><span class="p">(</span><span class="mi">120</span><span class="p">,</span> <span class="mi">80</span><span class="p">)</span>
+<a id="__codelineno-12-21" name="__codelineno-12-21" href="#__codelineno-12-21"></a>
+<a id="__codelineno-12-22" name="__codelineno-12-22" href="#__codelineno-12-22"></a><span class="c1"># Plain QObject / QWidget — via meta-object (more granular than UIA)</span>
+<a id="__codelineno-12-23" name="__codelineno-12-23" href="#__codelineno-12-23"></a><span class="n">label</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">qt_widget</span><span class="p">(</span><span class="n">object_name</span><span class="o">=</span><span class="s2">&quot;connectionStatus&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-24" name="__codelineno-12-24" href="#__codelineno-12-24"></a><span class="k">assert</span> <span class="n">label</span><span class="o">.</span><span class="n">get_property</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;Connected&quot;</span>
 </code></pre></div>
 <h3 id="raw-agent-api-advanced">Raw agent API (advanced)<a class="headerlink" href="#raw-agent-api-advanced" title="Permanent link">&para;</a></h3>
 <p>The <code>Application.qt_agent</code> property returns a <code>QtAgentClient</code> for full
 JSON-RPC access — needed when you want to bypass the Element wrappers:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">qt_agent</span>  <span class="c1"># lazy injection on first access</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="c1"># Find by objectName in the QML scene graph</span>
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="n">btn</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlClickButton&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
-<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="n">agent</span><span class="o">.</span><span class="n">qml_click</span><span class="p">(</span><span class="n">btn</span><span class="p">[</span><span class="s2">&quot;handle&quot;</span><span class="p">])</span>
-<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>
-<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="c1"># Read/write any Q_PROPERTY</span>
-<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="n">field</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlNameField&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
-<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="n">agent</span><span class="o">.</span><span class="n">set_property</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;Alice&quot;</span><span class="p">)</span>
-<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>
-<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="c1"># Invoke any Q_INVOKABLE / slot with typed args</span>
-<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a><span class="n">spin</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">className</span><span class="o">=</span><span class="s2">&quot;QSpinBox&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
-<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="n">agent</span><span class="o">.</span><span class="n">invoke</span><span class="p">(</span><span class="n">spin</span><span class="p">,</span> <span class="s2">&quot;setValue&quot;</span><span class="p">,</span> <span class="mi">42</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">qt_agent</span>  <span class="c1"># lazy injection on first access</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="c1"># Find by objectName in the QML scene graph</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="n">btn</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlClickButton&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="n">agent</span><span class="o">.</span><span class="n">qml_click</span><span class="p">(</span><span class="n">btn</span><span class="p">[</span><span class="s2">&quot;handle&quot;</span><span class="p">])</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="c1"># Read/write any Q_PROPERTY</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="n">field</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlNameField&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="n">agent</span><span class="o">.</span><span class="n">set_property</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;Alice&quot;</span><span class="p">)</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="c1"># Invoke any Q_INVOKABLE / slot with typed args</span>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a><span class="n">spin</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">className</span><span class="o">=</span><span class="s2">&quot;QSpinBox&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
+<a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a><span class="n">agent</span><span class="o">.</span><span class="n">invoke</span><span class="p">(</span><span class="n">spin</span><span class="p">,</span> <span class="s2">&quot;setValue&quot;</span><span class="p">,</span> <span class="mi">42</span><span class="p">)</span>
 </code></pre></div>
 <p>See <a href="../../architecture/qt-agent/"><code>docs/architecture/qt-agent.md</code></a> for
 the full agent API, IPC protocol, and security model.</p>

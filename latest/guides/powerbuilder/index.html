@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/guides/powerbuilder/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/guides/powerbuilder/">
       
       
         <link rel="prev" href="../delphi/">
@@ -1263,17 +1263,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#scope-decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Scope decision
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -1936,6 +1925,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2459,7 +2476,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2705,17 +2722,6 @@
   
 </li>
       
-        <li class="md-nav__item">
-  <a href="#scope-decision" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Scope decision
-      
-    </span>
-  </a>
-  
-</li>
-      
     </ul>
   
 </nav>
@@ -2781,13 +2787,8 @@ chrome resolve through the same locators as any native Windows app
 </code></pre></div>
 <p><code>Desktop.launch_powerbuilder()</code> is a <strong>semantic wrapper</strong> over
 <code>Desktop.launch()</code> — same UIA backend, same locator surface. The
-wrapper exists so:</p>
-<ul>
-<li>Tests self-document intent (<code>launch_powerbuilder(...)</code> reads better
-  than <code>launch(...)</code>).</li>
-<li>Future PB-specific launch prep (PBNI hook injection, PowerScript
-  recorder handshake) has a stable API to hang off.</li>
-</ul>
+wrapper makes the application's intended stack explicit while using the same
+launch and locator behavior.</p>
 <h3 id="common-appeon-pb-control-classes">Common Appeon PB control classes<a class="headerlink" href="#common-appeon-pb-control-classes" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -2890,7 +2891,7 @@ on a live PB 2025 runtime (older versions use <code>PBWindow&lt;version&gt;</cod
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Keyboard</span><span class="p">,</span> <span class="n">Mouse</span><span class="p">,</span> <span class="n">Screen</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">bb</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">locator</span><span class="p">(</span><span class="n">class_name</span><span class="o">=</span><span class="s2">&quot;pbdw&quot;</span><span class="p">,</span> <span class="n">found_index</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">bounding_box</span><span class="p">()</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">region</span> <span class="o">=</span> <span class="p">(</span><span class="n">bb</span><span class="p">[</span><span class="s2">&quot;left&quot;</span><span class="p">],</span> <span class="n">bb</span><span class="p">[</span><span class="s2">&quot;top&quot;</span><span class="p">],</span> <span class="n">bb</span><span class="p">[</span><span class="s2">&quot;right&quot;</span><span class="p">],</span> <span class="n">bb</span><span class="p">[</span><span class="s2">&quot;bottom&quot;</span><span class="p">])</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">region</span> <span class="o">=</span> <span class="p">(</span><span class="n">bb</span><span class="p">[</span><span class="s2">&quot;x&quot;</span><span class="p">],</span> <span class="n">bb</span><span class="p">[</span><span class="s2">&quot;y&quot;</span><span class="p">],</span> <span class="n">bb</span><span class="p">[</span><span class="s2">&quot;x&quot;</span><span class="p">]</span> <span class="o">+</span> <span class="n">bb</span><span class="p">[</span><span class="s2">&quot;width&quot;</span><span class="p">],</span> <span class="n">bb</span><span class="p">[</span><span class="s2">&quot;y&quot;</span><span class="p">]</span> <span class="o">+</span> <span class="n">bb</span><span class="p">[</span><span class="s2">&quot;height&quot;</span><span class="p">])</span>
 <a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
 <a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">pt</span> <span class="o">=</span> <span class="n">Screen</span><span class="o">.</span><span class="n">find_text</span><span class="p">(</span><span class="s2">&quot;Alberta&quot;</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="n">region</span><span class="p">)</span>   <span class="c1"># OCR-locate the cell</span>
 <a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">Mouse</span><span class="o">.</span><span class="n">double_click</span><span class="p">(</span><span class="o">*</span><span class="n">pt</span><span class="p">)</span>                           <span class="c1"># select its content</span>
@@ -2907,7 +2908,7 @@ on a live PB 2025 runtime (older versions use <code>PBWindow&lt;version&gt;</cod
 <li>Full field-level automation would require <strong>PBNI</strong> (PowerBuilder
   Native Interface) or a PowerScript instrumentation script inside
   the PB IDE. Both need an Appeon licence and are outside the
-  0.2.0 scope. Tracked as follow-up (v0.3+).</li>
+  implemented scope; no PB instrumentation agent is bundled.</li>
 </ul>
 <h2 id="which-version-am-i-targeting">Which version am I targeting?<a class="headerlink" href="#which-version-am-i-targeting" title="Permanent link">&para;</a></h2>
 <p>Check the exe's manifest:</p>
@@ -2957,15 +2958,6 @@ on a live PB 2025 runtime (older versions use <code>PBWindow&lt;version&gt;</cod
 </tr>
 </tbody>
 </table>
-<h2 id="scope-decision">Scope decision<a class="headerlink" href="#scope-decision" title="Permanent link">&para;</a></h2>
-<ul>
-<li><strong>In 0.2.0:</strong> semantic wrapper <code>Desktop.launch_powerbuilder()</code>,
-  documentation of standard-controls path for Appeon PB, image-based
-  fallback path for classic PB. <strong>No proprietary framework
-  introspection.</strong></li>
-<li><strong>Deferred to v0.3+:</strong> PBNI-based DataWindow row/column extraction
-  (requires Appeon licence + trial account for verification).</li>
-</ul>
 
 
 

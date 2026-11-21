@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/">
       
       
       
@@ -1892,6 +1892,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2415,7 +2443,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2656,7 +2684,7 @@
 <h1 id="dolphin-desktop">Dolphin Desktop<a class="headerlink" href="#dolphin-desktop" title="Permanent link">&para;</a></h1>
 <p>Dolphin Desktop is a Python library for testing Windows desktop applications. It gives pytest tests a small, readable API for launching apps, finding windows, interacting with controls, and collecting artifacts when a test fails.</p>
 <p>It is designed around Windows desktop automation through UIA, Win32, image matching, and selected integrations such as Java Access Bridge and Office COM.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>dolphin-desktop
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[pytest]==0.2.0&quot;</span>
 </code></pre></div>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
@@ -2665,12 +2693,14 @@
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">class_name</span><span class="o">=</span><span class="s2">&quot;Notepad&quot;</span><span class="p">)</span>
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Document&quot;</span><span class="p">)</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="n">editor</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">editor</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;Hello, Dolphin!&quot;</span><span class="p">)</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="k">assert</span> <span class="s2">&quot;Hello, Dolphin!&quot;</span> <span class="ow">in</span> <span class="n">editor</span><span class="o">.</span><span class="n">text</span><span class="p">()</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">if</span> <span class="ow">not</span> <span class="n">editor</span><span class="o">.</span><span class="n">exists</span><span class="p">():</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    <span class="n">editor</span> <span class="o">=</span> <span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;Edit&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="n">editor</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="n">editor</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;Hello, Dolphin!&quot;</span><span class="p">)</span>
 <a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="n">app</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="k">assert</span> <span class="s2">&quot;Hello, Dolphin!&quot;</span> <span class="ow">in</span> <span class="n">editor</span><span class="o">.</span><span class="n">text</span><span class="p">()</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="n">app</span><span class="o">.</span><span class="n">kill</span><span class="p">()</span>
 </code></pre></div>
 <h2 id="start-here">Start Here<a class="headerlink" href="#start-here" title="Permanent link">&para;</a></h2>
 <ul>
@@ -2742,7 +2772,7 @@ limitations, supported modes, out-of-scope decisions
 </tr>
 <tr>
 <td><strong>Delphi / VCL</strong> (RAD Studio, Lazarus)</td>
-<td>UIA + <code>TComponent.Name → AutomationId</code> locator</td>
+<td>UIA + provider-published ID / caption / index locator</td>
 <td><a href="guides/delphi/">Delphi</a></td>
 </tr>
 <tr>
@@ -2768,7 +2798,7 @@ limitations, supported modes, out-of-scope decisions
 </tbody>
 </table>
 <h2 id="supported-platform">Supported Platform<a class="headerlink" href="#supported-platform" title="Permanent link">&para;</a></h2>
-<p>Dolphin Desktop targets Windows 10/11 with Python 3.11 or newer. The package contains placeholder backend classes for other platforms, but the documented and tested product path is Windows desktop automation.</p>
+<p>Dolphin Desktop targets Windows 10/11 with Python 3.11, 3.12, or 3.13. The package contains placeholder backend classes for other platforms, but the documented and tested product path is Windows desktop automation.</p>
 
 
 

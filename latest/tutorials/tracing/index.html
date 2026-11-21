@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/tutorials/tracing/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/tutorials/tracing/">
       
       
         <link rel="prev" href="../fallback-selectors/">
@@ -1024,10 +1024,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#video-recording" class="md-nav__link">
+  <a href="#92-nagrywanie-wideo" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Video Recording
+        9.2 — Nagrywanie wideo
       
     </span>
   </a>
@@ -1039,6 +1039,17 @@
     <span class="md-ellipsis">
       
         Screenshots On Failure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#93-warstwa-stabilnosci" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3 — Warstwa stabilności
       
     </span>
   </a>
@@ -1930,6 +1941,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2453,7 +2492,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2661,10 +2700,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#video-recording" class="md-nav__link">
+  <a href="#92-nagrywanie-wideo" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Video Recording
+        9.2 — Nagrywanie wideo
       
     </span>
   </a>
@@ -2676,6 +2715,17 @@
     <span class="md-ellipsis">
       
         Screenshots On Failure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#93-warstwa-stabilnosci" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3 — Warstwa stabilności
       
     </span>
   </a>
@@ -2761,11 +2811,36 @@
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>dolphin<span class="w"> </span>trace<span class="w"> </span>view<span class="w"> </span>--last
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>dolphin<span class="w"> </span>trace<span class="w"> </span>view<span class="w"> </span>RUN_ID
 </code></pre></div>
+<p><code>RUN_ID</code> is the name of a trace-run directory under the trace directory, or a
+path to that directory; it is not the SQLite <code>runs.id</code> value. <code>--last</code> selects
+the run with the newest recorded start time. A run with status <code>RUNNING</code> is an
+incomplete trace (for example, after an interrupted test) and its viewer shows
+an unknown duration. Directories without a readable <code>trace.db</code>, including a
+corrupted trace copy, are skipped by <code>trace list</code>; <code>trace view</code> reports an
+error and does not create a viewer for them.</p>
+<p>The viewer checks v1 table names, column types, NOT NULL and primary key
+constraints, the steps-to-runs foreign key target, and stored column types before
+rendering. It does not compare every DDL property, such as AUTOINCREMENT or
+foreign key deletion actions. Invalid values (including nonfinite numbers) produce an
+<code>Invalid trace.db</code> error. Screenshot references must be flat filenames inside
+<code>screenshots/</code>; unsafe paths and links outside that directory are omitted.
+Generated HTML includes a Content Security Policy allowing only the fixed viewer
+script. UIA tree depths must be integers; displayed indentation is limited to
+32 levels. Malformed trees are displayed as escaped JSON text.
+When publishing traces received from others, serve them from a separate
+origin without application cookies or access to other sensitive reports.</p>
 <p>Use <code>--dir PATH</code> if your project writes traces somewhere else:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>dolphin<span class="w"> </span>trace<span class="w"> </span>list<span class="w"> </span>--dir<span class="w"> </span>artifacts/traces
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>dolphin<span class="w"> </span>trace<span class="w"> </span>view<span class="w"> </span>--last<span class="w"> </span>--dir<span class="w"> </span>artifacts/traces
 </code></pre></div>
-<h2 id="video-recording">Video Recording<a class="headerlink" href="#video-recording" title="Permanent link">&para;</a></h2>
+<h2 id="92-nagrywanie-wideo">9.2 — Nagrywanie wideo<a class="headerlink" href="#92-nagrywanie-wideo" title="Permanent link">&para;</a></h2>
+<p>Video recording supports the <code>off</code>, <code>keepfailedonly</code> and <code>keepall</code> modes. The
+requested frame rate is controlled with <code>config(video_fps=...)</code> or
+<code>DOLPHIN_VIDEO_FPS</code> and must be an integer from 1 through 30. In
+<code>keepfailedonly</code>, a successful test's recording is removed while a failed
+test's recording is retained; <code>keepall</code> retains both, and <code>off</code> creates no
+recording. Encoding requires the external <code>ffmpeg</code> binary (and <code>ffprobe</code> for
+validation); it is not installed by a Python extra.</p>
 <p>Video recording is on by default (<code>keepfailedonly</code>) and is controlled
 with <code>--dolphin-video</code> or <code>DOLPHIN_VIDEO</code>. It requires an external
 <code>ffmpeg</code> binary on <code>PATH</code> (or pointed to by <code>DOLPHIN_FFMPEG</code>); without
@@ -2801,9 +2876,70 @@ per-step trace screenshots below, not video encoding.)</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pytest<span class="w"> </span>tests/<span class="w"> </span>-v<span class="w"> </span>--dolphin-screenshot-on-fail
 </code></pre></div>
 <p>Screenshots are written to <code>dolphin-screenshots/</code> and attached to the pytest report.</p>
+<h2 id="93-warstwa-stabilnosci">9.3 — Warstwa stabilności<a class="headerlink" href="#93-warstwa-stabilnosci" title="Permanent link">&para;</a></h2>
+<p>Diagnostic collection is best-effort. A failure in
+<code>--dolphin-screenshot-on-fail</code> — for example because the desktop is locked or
+screen capture is unavailable — is logged as a warning and cannot replace the
+original test exception, change its exit status, or create a pytest
+<code>INTERNALERROR</code>.</p>
+<p>The same rule applies to trace, video, Allure, and fallback HTML collection.
+The original failure remains available in the terminal and JUnit/XML report;
+captured stdout/stderr and diagnostic logs remain available after secret
+redaction. A failed screenshot capture does not leave a partial PNG or a
+misleading artifact link.</p>
+<p>For Allure, redaction runs before result/container serialization, covering test
+and fixture exception messages, tracebacks, nested steps and parameters or
+labels named by sensitive keys such as <code>pin</code>. Captured stdout/stderr is masked
+before attachment. This applies with automatic or explicit plugin loading;
+Allure remains an optional dependency. Test statuses and attachment references
+are preserved.</p>
+<p>Sensitive parameter values are also removed from Allure display names with
+default pytest IDs or custom <code>ids=</code>, including IDs extracted from nested
+dictionary/list parameters. Captured stdout/stderr uses a snapshot of the
+sensitive parameters taken before fixtures run, so bare printed values are
+masked even without <code>pin=</code> or a <code>Secret</code> wrapper. Sensitive values added through
+<code>allure.dynamic.parameter()</code> also extend this test's redaction context.
+Sensitive dictionary keys are detected inside public parameters too (for example
+<code>payload={"pin": value, "operation": "public"}</code>); public siblings stay readable.
+The snapshot includes <code>Path</code>, <code>UUID</code>, <code>Decimal</code> and <code>Enum</code> values (including
+enum payloads), also when nested in standard containers. Other custom objects
+must expose a supported scalar representation and use safe <code>ids=</code>.
+Values of 1–3 characters are masked as standalone Unicode tokens to preserve
+unrelated words and numbers; sanitize concatenated short secrets explicitly
+or wrap them in <code>Secret</code> for unconditional masking.
+With <code>--junitxml</code>, the completed XML is sanitized after pytest writes it,
+including test names and captured streams from xdist workers. Publish it only
+after pytest exits normally; forced termination can prevent this final pass.
+Parameter values apply only to their own testcase, including its custom XML
+attributes, so unrelated test names and messages remain intact. Temporary opaque
+properties link reports to testcases and are removed from the finished XML.
+JUnit properties with sensitive names, such as <code>record_property("password", value)</code>,
+have their complete <code>value</code> masked without requiring <code>Secret</code> registration.
+HTML rows and trace SQLite identifiers use per-test masking too. Trace text
+retains its test's sensitive-value context for actions executed on other threads.
+Trace directories and screenshot/video files use opaque random names.
+Verbose terminal and collection displays mask recognized sensitive identifiers;
+xdist start lines wait for the report's parameter snapshot. Pytest's internal IDs
+remain unchanged, including those in its local <code>.pytest_cache</code> (do not publish
+that cache). Use safe <code>ids=</code> when sharing execution metadata. Direct writes with
+capture disabled (<code>-s</code>) are outside pytest terminal-writer redaction.</p>
+<p>Direct <code>allure.attach()</code> and <code>allure.attach.file()</code> calls bypass Dolphin's text
+redaction. Their caller must sanitize the body or file first. For example:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">allure</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Secret</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">allure</span><span class="o">.</span><span class="n">attach</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;pin=</span><span class="si">{</span><span class="n">Secret</span><span class="p">(</span><span class="n">pin</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;diagnostics&quot;</span><span class="p">,</span> <span class="n">attachment_type</span><span class="o">=</span><span class="n">allure</span><span class="o">.</span><span class="n">attachment_type</span><span class="o">.</span><span class="n">TEXT</span><span class="p">)</span>
+</code></pre></div>
+<p>The formatted text contains <code>pin=***</code>. Attaching the raw value or a file that
+contains it remains outside automatic redaction, even if the value was
+previously registered through <code>Secret</code>.</p>
+<p>Redaction applies to text, not screenshot or video pixels. A captured desktop
+can show credentials or other private information, including in windows outside
+the application under test. Limit access to these artifacts and set CI
+retention to the shortest period needed; delete local copies after debugging.</p>
 <h2 id="fallback-html-report">Fallback HTML Report<a class="headerlink" href="#fallback-html-report" title="Permanent link">&para;</a></h2>
 <p>When <code>allure-pytest</code> is not installed, Dolphin writes <code>dolphin-report.html</code> at session finish. Set a custom path with:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>pytest<span class="w"> </span>tests/<span class="w"> </span>-v<span class="w"> </span>--dolphin-html<span class="w"> </span>artifacts/dolphin-report.html
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>pytest<span class="w"> </span>tests/<span class="w"> </span>-v<span class="w"> </span>--dolphin-html<span class="w"> </span>artifacts/dolphin-report.html
 </code></pre></div>
 <h2 id="what-to-check-first">What To Check First<a class="headerlink" href="#what-to-check-first" title="Permanent link">&para;</a></h2>
 <p>When a selector fails:</p>

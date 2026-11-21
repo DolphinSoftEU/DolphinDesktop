@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/ci/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/ci/">
       
       
         <link rel="prev" href="../guides/image-based/">
@@ -1908,6 +1908,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2431,7 +2459,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2684,7 +2712,7 @@
 <p>Dolphin tests need Windows. The most reliable CI setup is an agent running as a logged-in user with access to an interactive desktop.</p>
 <h2 id="recommended-baseline">Recommended Baseline<a class="headerlink" href="#recommended-baseline" title="Permanent link">&para;</a></h2>
 <p>Start with visible mode:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>dolphin-desktop<span class="w"> </span>pytest
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[pytest]==0.2.0&quot;</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>pytest<span class="w"> </span>tests/<span class="w"> </span>-v<span class="w"> </span>--dolphin-backend<span class="o">=</span>uia
 </code></pre></div>
 <p>Use <code>dolphin-run</code> only after you have verified that your target application and test actions work on a hidden Windows desktop:</p>
@@ -2700,11 +2728,11 @@
 </thead>
 <tbody>
 <tr>
-<td>Windows Server 2019/2022 or Windows 10/11</td>
+<td>Windows 10/11 or a prepared Windows Server 2022+ desktop session</td>
 <td>Dolphin depends on Windows UIA, Win32, and COM</td>
 </tr>
 <tr>
-<td>Python 3.11+</td>
+<td>Python 3.11, 3.12, or 3.13</td>
 <td>Package requirement</td>
 </tr>
 <tr>

@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/architecture/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/architecture/">
       
       
         <link rel="prev" href="../migration/">
@@ -1963,6 +1963,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2486,7 +2514,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2824,8 +2852,7 @@ entry-point group; capability queries flow through the registry
 automatically.</p>
 <p>Full guidance: <a href="../backend-capabilities/">backend-capabilities.md</a>.</p>
 <h2 id="two-action-paths-input-simulation-vs-programmatic">Two Action Paths — Input Simulation vs Programmatic<a class="headerlink" href="#two-action-paths-input-simulation-vs-programmatic" title="Permanent link">&para;</a></h2>
-<p>Every <code>Locator</code> (and every <code>JABLocator</code>) exposes actions along two
-parallel families:</p>
+<p>Native UIA <code>Locator</code> actions offer two paths:</p>
 <table>
 <thead>
 <tr>
@@ -2853,14 +2880,17 @@ parallel families:</p>
 </tr>
 </tbody>
 </table>
-<p>The two families exist so headless mode is usable for smoke tests
-without lying to the caller about how the click was delivered. Selection of the right primitive
-is a <strong>test-author decision</strong>, not a library fallback — the
-programmatic family raises <code>UnsupportedPatternError</code> cleanly rather
-than reaching for the mouse in the background.</p>
+<p>Choose programmatic methods for a validated hidden-desktop smoke subset.
+They raise <code>UnsupportedPatternError</code> when the target lacks the required pattern.
+<code>JABLocator</code> offers the same explicit programmatic family, while its generic
+<code>click()</code> / <code>set_text()</code> can try JAB actions before falling back to physical
+input. Check the method and target rather than assuming every Java action has
+the same input requirements as a native UIA locator.</p>
 <p>Full guidance in <a href="../tutorials/headless-mode/#headless-safe-api-invoke-and-friends">tutorials/headless-mode.md</a>.</p>
 <h2 id="backend-selection">Backend selection<a class="headerlink" href="#backend-selection" title="Permanent link">&para;</a></h2>
-<p><code>Desktop</code> passes its <code>backend</code> value to pywinauto. The documented values for application automation are:</p>
+<p><code>Desktop</code> validates the registered backend ID and resolves <code>auto</code> during
+construction. Native launch/connect use pywinauto's <code>win32</code> backend for <code>win32</code>,
+and <code>uia</code> otherwise. Qt adds its own window/locator wrappers. Common choices are:</p>
 <table>
 <thead>
 <tr>
@@ -2876,6 +2906,14 @@ than reaching for the mouse in the background.</p>
 <tr>
 <td><code>win32</code></td>
 <td>Win32 HWND backend for older controls and legacy applications.</td>
+</tr>
+<tr>
+<td><code>qt</code></td>
+<td>Qt-aware wrappers over UIA, with separate native agent operations.</td>
+</tr>
+<tr>
+<td><code>auto</code></td>
+<td>Resolves to <code>uia</code> on Windows; does not turn non-Windows stubs into desktop support.</td>
 </tr>
 </tbody>
 </table>
@@ -2904,7 +2942,7 @@ than reaching for the mouse in the background.</p>
 </tr>
 <tr>
 <td><code>ImageBackend</code></td>
-<td>Template-matching backend object used by registry experiments</td>
+<td>Template-matching provider and capability declaration; use the explicit image APIs</td>
 </tr>
 <tr>
 <td><code>register_backend</code></td>
@@ -2920,7 +2958,9 @@ than reaching for the mouse in the background.</p>
 </tr>
 </tbody>
 </table>
-<p>The registry is public API, but the current <code>Desktop</code> implementation does not route normal locator actions through <code>resolve_backend</code>.</p>
+<p>The registry is public API. Native locators use their stack wrappers rather than
+automatically dispatching every action to a third-party provider. Call plugin
+operations through <code>resolve_backend()</code>; see <a href="../backend-capabilities/">Backend capabilities</a>.</p>
 <h2 id="built-in-backend-ids">Built-In Backend IDs<a class="headerlink" href="#built-in-backend-ids" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -2994,6 +3034,8 @@ than reaching for the mouse in the background.</p>
 </code></pre></div>
 <p>The command prints backend ID, target platform, availability on the current machine, source, and description.</p>
 <h2 id="registering-a-backend-in-process">Registering A Backend In Process<a class="headerlink" href="#registering-a-backend-in-process" title="Permanent link">&para;</a></h2>
+<p>This is an adapter skeleton. Implement the method bodies and declare their
+capabilities before using it for automation.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Backend</span><span class="p">,</span> <span class="n">register_backend</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
@@ -3002,20 +3044,24 @@ than reaching for the mouse in the background.</p>
 <a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="nb">id</span> <span class="o">=</span> <span class="s2">&quot;my_backend&quot;</span>
 <a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">platform</span> <span class="o">=</span> <span class="s2">&quot;windows&quot;</span>
 <a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">find_element</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">parent</span><span class="p">,</span> <span class="n">criteria</span><span class="p">):</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        <span class="o">...</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">click</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">element</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">button</span><span class="o">=</span><span class="s2">&quot;left&quot;</span><span class="p">):</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>        <span class="o">...</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">type_text</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">element</span><span class="p">,</span> <span class="n">text</span><span class="p">):</span>
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>        <span class="o">...</span>
-<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>
-<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">get_tree</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">root</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">depth</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
-<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>        <span class="o">...</span>
-<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>
-<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">screenshot</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">element</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
-<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>        <span class="o">...</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">capabilities</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        <span class="c1"># Declare only operations implemented by the completed adapter.</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>        <span class="k">return</span> <span class="nb">frozenset</span><span class="p">()</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">find_element</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">parent</span><span class="p">,</span> <span class="n">criteria</span><span class="p">):</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>        <span class="o">...</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">click</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">element</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">button</span><span class="o">=</span><span class="s2">&quot;left&quot;</span><span class="p">):</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>        <span class="o">...</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">type_text</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">element</span><span class="p">,</span> <span class="n">text</span><span class="p">):</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>        <span class="o">...</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">get_tree</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">root</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">depth</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>        <span class="o">...</span>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">screenshot</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">element</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>        <span class="o">...</span>
 </code></pre></div>
 <h2 id="registering-through-package-metadata">Registering Through Package Metadata<a class="headerlink" href="#registering-through-package-metadata" title="Permanent link">&para;</a></h2>
 <p>Third-party packages can expose backends through the <code>dolphin_desktop.backends</code> entry-point group:</p>
@@ -3023,6 +3069,10 @@ than reaching for the mouse in the background.</p>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">my_backend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;my_backend_pkg.my_backend:MyBackend&quot;</span>
 </code></pre></div>
 <p>Installed entry points are discovered by <code>list_backends()</code> and <code>resolve_backend()</code>.</p>
+<p>Backend IDs are unique within a process. Registering the same class twice is
+idempotent; attempting to register a different class under an existing ID
+raises <code>ValueError</code> and leaves the original backend unchanged. The class-level
+<code>platform</code> value must be one of <code>windows</code>, <code>macos</code>, <code>linux</code>, or <code>any</code>.</p>
 
 
 

@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/getting-started/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/getting-started/">
       
       
         <link rel="prev" href="../installation/">
@@ -2043,6 +2043,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2566,7 +2594,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2966,7 +2994,7 @@ targets — pull requests welcome, but not part of the current release.</p>
 <p>Requirements:</p>
 <ul>
 <li>Windows 10 (build 19041+) or Windows 11</li>
-<li>Python <strong>3.11 or newer</strong> (<code>python --version</code>)</li>
+<li>Python <strong>3.11, 3.12, or 3.13</strong> (<code>python --version</code>)</li>
 <li>A shell running as the same Windows user as the app under test</li>
 </ul>
 <p>Recommended: create a dedicated virtual environment so dolphin's
@@ -2977,16 +3005,15 @@ optional dependencies don't leak into your other Python projects.</p>
 </code></pre></div>
 <h2 id="2-install">2 — Install<a class="headerlink" href="#2-install" title="Permanent link">&para;</a></h2>
 <p>Base install — always required:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">pip</span> <span class="n">install</span> <span class="n">dolphin-desktop</span> <span class="n">pytest</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">python</span> <span class="n">-m</span> <span class="n">pip</span> <span class="n">install</span> <span class="s2">&quot;dolphin-desktop[pytest]==0.2.0&quot;</span>
 </code></pre></div>
 <p>Verify the install:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">dolphin</span> <span class="n">doctor</span>
 </code></pre></div>
-<p><code>dolphin doctor</code> prints a table of every automation subsystem (UIA,
-Win32, JAB, CDP, SAP, image OCR) and whether each is functional. For
-rows that name an extra (<code>[cdp]</code>, <code>[vision]</code>), a ❌ tells you which
-extra to install (see next step); the other stacks work from the base
-install once their external prerequisite is in place.</p>
+<p><code>dolphin doctor</code> reports Python, package dependencies and local accessibility
+prerequisites. A successful probe does not establish compatibility with your
+application or a remote service. Install the optional extra and external
+runtime required by your stack, then run a focused test against that target.</p>
 <h2 id="3-install-the-extra-for-your-stack">3 — Install the extra for your stack<a class="headerlink" href="#3-install-the-extra-for-your-stack" title="Permanent link">&para;</a></h2>
 <p>Pick the row that matches the app you want to test:</p>
 <table>
@@ -3015,12 +3042,12 @@ install once their external prerequisite is in place.</p>
 </tr>
 <tr>
 <td><strong>Electron / CEF</strong> (VS Code, Steam, Spotify…)</td>
-<td><code>pip install "dolphin-desktop[cdp]"</code> + <code>playwright install chromium</code></td>
+<td>Add <code>[cdp]</code>; enable remote debugging on the target app</td>
 <td><a href="../guides/embedded-web/">Embedded web</a></td>
 </tr>
 <tr>
 <td><strong>Java Swing / Oracle Forms</strong></td>
-<td><em>(base install; JAB is auto-enabled)</em></td>
+<td><em>(base install; configure an absolute <code>JAVA_HOME</code> with JAB)</em></td>
 <td><a href="../guides/oracle-forms/">Oracle Forms</a></td>
 </tr>
 <tr>
@@ -3054,10 +3081,10 @@ install once their external prerequisite is in place.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">pip</span> <span class="n">install</span> <span class="s2">&quot;dolphin-desktop[cdp,vision]&quot;</span>
 </code></pre></div>
 <h2 id="4-your-first-test-per-stack">4 — Your first test, per stack<a class="headerlink" href="#4-your-first-test-per-stack" title="Permanent link">&para;</a></h2>
-<p>Each snippet is a <strong>runnable pytest file</strong> — save it as
-<code>test_first.py</code>, then <code>pytest test_first.py -v</code>. Every example returns
-<code>assert True</code> on success so you can confirm dolphin talks to the
-platform correctly before wiring your own selectors.</p>
+<p>Each snippet is a minimal pytest pattern for a prepared application. Replace
+example paths, hosts and selectors with your own settings before running it.
+For local demos that need no business-system credentials, see <code>examples/</code> in
+the source checkout. A skipped test means its target was not verified.</p>
 <blockquote>
 <p><strong>You supply the path to your app.</strong> dolphin_desktop never
 hardcodes a location for your executable — every <code>launch_*(...)</code>
@@ -3073,7 +3100,8 @@ parametrisation pattern, see
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="k">with</span> <span class="n">Desktop</span><span class="p">()</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="s2">&quot;notepad.exe&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">app</span><span class="p">:</span>
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>        <span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">class_name</span><span class="o">=</span><span class="s2">&quot;Notepad&quot;</span><span class="p">)</span>
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>        <span class="n">win</span><span class="o">.</span><span class="n">wait_until_ready</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>        <span class="k">assert</span> <span class="s2">&quot;Notepad&quot;</span> <span class="ow">in</span> <span class="n">win</span><span class="o">.</span><span class="n">title</span><span class="p">()</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>        <span class="k">assert</span> <span class="n">win</span><span class="o">.</span><span class="n">is_visible</span><span class="p">()</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>        <span class="k">assert</span> <span class="n">win</span><span class="o">.</span><span class="n">title</span><span class="p">()</span>
 </code></pre></div>
 <h3 id="sap-gui">SAP GUI<a class="headerlink" href="#sap-gui" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
@@ -3135,30 +3163,22 @@ parametrisation pattern, see
 <a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>    <span class="k">finally</span><span class="p">:</span>
 <a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>        <span class="n">app</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
 </code></pre></div>
-<p>For local testing without a Forms server, see the working Java Swing
-mock in <code>tests/oracle_forms/</code>.</p>
+<p>For a public Java Access Bridge example, see <code>examples/java_swing/</code>.</p>
 <h3 id="mainframe-3270-zos-tso-cics">Mainframe 3270 (z/OS TSO, CICS)<a class="headerlink" href="#mainframe-3270-zos-tso-cics" title="Permanent link">&para;</a></h3>
-<p>Install <a href="https://x3270.miraheze.org/wiki/Download">wc3270</a> first —
+<p>Install <a href="https://x3270.bgp.nu/">wc3270</a> first —
 dolphin auto-detects <code>ws3270.exe</code> in <code>%LOCALAPPDATA%\wc3270\</code> and
 <code>C:\Program Files\wc3270\</code>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span><span class="p">,</span> <span class="n">MainframeError</span><span class="p">,</span> <span class="n">which</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_3270_reachable</span><span class="p">():</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="k">if</span> <span class="n">which</span><span class="p">(</span><span class="s2">&quot;ws3270&quot;</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>        <span class="n">pytest</span><span class="o">.</span><span class="n">skip</span><span class="p">(</span><span class="s2">&quot;install wc3270: see docs/guides/mainframe.md&quot;</span><span class="p">)</span>
-<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>    <span class="k">try</span><span class="p">:</span>
-<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>        <span class="n">term</span> <span class="o">=</span> <span class="n">Desktop</span><span class="p">()</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
-<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>            <span class="n">host</span><span class="o">=</span><span class="s2">&quot;your.3270.host&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>            <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;3270&quot;</span><span class="p">,</span>
-<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>        <span class="p">)</span>
-<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="k">except</span> <span class="n">MainframeError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
-<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>        <span class="n">pytest</span><span class="o">.</span><span class="n">skip</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;host unreachable: </span><span class="si">{</span><span class="n">exc</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
-<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>    <span class="k">try</span><span class="p">:</span>
-<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>        <span class="n">term</span><span class="o">.</span><span class="n">wait_ready</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
-<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a>        <span class="k">assert</span> <span class="n">term</span><span class="o">.</span><span class="n">screen</span><span class="p">()</span><span class="o">.</span><span class="n">rows</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">24</span><span class="p">,</span> <span class="mi">43</span><span class="p">)</span>
-<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a>    <span class="k">finally</span><span class="p">:</span>
-<a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a>        <span class="n">term</span><span class="o">.</span><span class="n">disconnect</span><span class="p">()</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_3270_reachable</span><span class="p">():</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="k">with</span> <span class="n">Desktop</span><span class="p">()</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>        <span class="n">host</span><span class="o">=</span><span class="s2">&quot;your.3270.host&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>        <span class="n">port</span><span class="o">=</span><span class="mi">992</span><span class="p">,</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>        <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;3270&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>        <span class="n">tls</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="p">)</span> <span class="k">as</span> <span class="n">term</span><span class="p">:</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>        <span class="n">term</span><span class="o">.</span><span class="n">wait_ready</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>        <span class="k">assert</span> <span class="n">term</span><span class="o">.</span><span class="n">screen</span><span class="p">()</span><span class="o">.</span><span class="n">rows</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">24</span><span class="p">,</span> <span class="mi">43</span><span class="p">)</span>
 </code></pre></div>
 <h3 id="delphi-vcl-lazarus-rad-studio">Delphi / VCL (Lazarus, RAD Studio)<a class="headerlink" href="#delphi-vcl-lazarus-rad-studio" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
@@ -3169,8 +3189,9 @@ dolphin auto-detects <code>ws3270.exe</code> in <code>%LOCALAPPDATA%\wc3270\</co
 <a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>        <span class="n">form</span><span class="o">.</span><span class="n">wait_ready</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
 <a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>        <span class="k">assert</span> <span class="n">form</span><span class="o">.</span><span class="n">title</span><span class="p">()</span>
 </code></pre></div>
-<p>For component lookups by <code>TComponent.Name</code>, see the
-<a href="../guides/delphi/">Delphi guide</a>.</p>
+<p>For UIA selectors and the provider prerequisite for <code>TComponent.Name</code> lookup,
+see the <a href="../guides/delphi/">Delphi guide</a>. Stock VCL does not automatically
+publish component Names as AutomationIds, including on Delphi 12.</p>
 <h3 id="powerbuilder-appeon-2019">PowerBuilder (Appeon 2019+)<a class="headerlink" href="#powerbuilder-appeon-2019" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
 <a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
@@ -3184,20 +3205,21 @@ dolphin auto-detects <code>ws3270.exe</code> in <code>%LOCALAPPDATA%\wc3270\</co
 <a href="../guides/powerbuilder/">PowerBuilder guide</a> — DataWindow grids require
 image-based fallback in 0.2.0.</p>
 <h3 id="mainframe-5250-ibm-i">Mainframe 5250 (IBM i)<a class="headerlink" href="#mainframe-5250-ibm-i" title="Permanent link">&para;</a></h3>
-<p>Pure-Python — no external binary required.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span><span class="p">,</span> <span class="n">tcp_reachable</span>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_ibm_i_reachable</span><span class="p">():</span>
-<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">tcp_reachable</span><span class="p">(</span><span class="s2">&quot;pub400.com&quot;</span><span class="p">,</span> <span class="mi">23</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">3</span><span class="p">):</span>
-<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>        <span class="n">pytest</span><span class="o">.</span><span class="n">skip</span><span class="p">(</span><span class="s2">&quot;no network to pub400.com&quot;</span><span class="p">)</span>
-<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>    <span class="k">with</span> <span class="n">Desktop</span><span class="p">()</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
-<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>        <span class="n">host</span><span class="o">=</span><span class="s2">&quot;pub400.com&quot;</span><span class="p">,</span>
-<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>        <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;5250&quot;</span><span class="p">,</span>
-<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>        <span class="n">backend</span><span class="o">=</span><span class="s2">&quot;tn5250&quot;</span><span class="p">,</span>
-<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>    <span class="p">)</span> <span class="k">as</span> <span class="n">term</span><span class="p">:</span>
-<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>        <span class="n">term</span><span class="o">.</span><span class="n">wait_ready</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
-<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a>        <span class="k">assert</span> <span class="s2">&quot;PUB400&quot;</span> <span class="ow">in</span> <span class="n">term</span><span class="o">.</span><span class="n">text</span><span class="p">()</span>
+<p>Pure Python, with no emulator binary required. Supply a prepared IBM i host,
+its verified TLS endpoint and expected sign-on text. See the native TN5250
+limitations in the <a href="../guides/mainframe/#native-tn5250-backend-status">mainframe guide</a>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="k">def</span><span class="w"> </span><span class="nf">test_ibm_i_reachable</span><span class="p">():</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>    <span class="k">with</span> <span class="n">Desktop</span><span class="p">()</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>        <span class="n">host</span><span class="o">=</span><span class="s2">&quot;your.ibmi.host&quot;</span><span class="p">,</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>        <span class="n">port</span><span class="o">=</span><span class="mi">992</span><span class="p">,</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>        <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;5250&quot;</span><span class="p">,</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>        <span class="n">backend</span><span class="o">=</span><span class="s2">&quot;tn5250&quot;</span><span class="p">,</span>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>        <span class="n">tls</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>    <span class="p">)</span> <span class="k">as</span> <span class="n">term</span><span class="p">:</span>
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>        <span class="n">term</span><span class="o">.</span><span class="n">wait_ready</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>        <span class="k">assert</span> <span class="s2">&quot;Sign On&quot;</span> <span class="ow">in</span> <span class="n">term</span><span class="o">.</span><span class="n">text</span><span class="p">()</span>  <span class="c1"># Adapt to your host&#39;s sign-on screen.</span>
 </code></pre></div>
 <h2 id="5-run">5 — Run<a class="headerlink" href="#5-run" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="n">pytest</span> <span class="n">test_first</span><span class="p">.</span><span class="n">py</span> <span class="n">-v</span>
@@ -3218,12 +3240,12 @@ image-based fallback in 0.2.0.</p>
 <tr>
 <td><code>dolphin: command not found</code></td>
 <td>Not in the venv's PATH</td>
-<td>Reactivate the venv, then <code>pip install --upgrade dolphin-desktop</code></td>
+<td>Reactivate the venv, then reinstall Dolphin from <a href="../installation/#pypi-installation">Installation</a></td>
 </tr>
 <tr>
 <td><code>RuntimeError: dolphin_desktop[cdp] is not installed</code></td>
 <td>Playwright missing</td>
-<td><code>pip install "dolphin-desktop[cdp]" &amp;&amp; playwright install chromium</code></td>
+<td>Add the <code>cdp</code> extra to the installed release; browser downloads are needed only when launching Playwright's own browser</td>
 </tr>
 <tr>
 <td><code>MainframeError: No ws3270/s3270 binary found</code></td>
@@ -3232,8 +3254,8 @@ image-based fallback in 0.2.0.</p>
 </tr>
 <tr>
 <td><code>Java Access Bridge not enabled</code></td>
-<td>JAB switch off</td>
-<td>Run <code>jabswitch /enable</code> in an admin PowerShell, then relaunch the test</td>
+<td>JAB configuration incomplete</td>
+<td>Set a trusted absolute <code>JAVA_HOME</code> with the bridge DLL and <code>jabswitch.exe</code>; follow the <a href="../guides/java/">Java guide</a></td>
 </tr>
 <tr>
 <td><code>SapConnection: could not attach</code></td>
@@ -3262,7 +3284,7 @@ Troubleshooting section of each guide under <code>docs/guides/</code>.</p>
 <li>Per-stack guides linked in the install table above.</li>
 </ul>
 <p>Contributing a stack that isn't listed here? PRs welcome —
-the per-stack suites under <code>tests/</code> show the pattern.</p>
+the public demos under <code>examples/</code> show the pattern.</p>
 
 
 

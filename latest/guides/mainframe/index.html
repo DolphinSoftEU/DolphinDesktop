@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/guides/mainframe/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/guides/mainframe/">
       
       
         <link rel="prev" href="../oracle-forms/">
@@ -1410,6 +1410,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#transport-security" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport security
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Transport security">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#migrating-from-the-previous-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migrating from the previous API
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#install" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1472,6 +1500,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#s3270-input-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        s3270 input safety
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#terminalscreen" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1510,10 +1549,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#pub400com-public-ibm-i-demo-host" class="md-nav__link">
+  <a href="#choosing-a-live-ibm-i-host" class="md-nav__link">
     <span class="md-ellipsis">
       
-        pub400.com — public IBM i demo host
+        Choosing a live IBM i host
       
     </span>
   </a>
@@ -1525,17 +1564,6 @@
     <span class="md-ellipsis">
       
         Native TN5250 backend status
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pub400-through-the-s3270-backend-nvt-fallback-caveat" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        pub400 through the s3270 backend — NVT fallback caveat
       
     </span>
   </a>
@@ -2028,6 +2056,34 @@
     
   
     Qt Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
   
 
     
@@ -2564,7 +2620,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2761,6 +2817,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#transport-security" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport security
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Transport security">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#migrating-from-the-previous-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migrating from the previous API
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#install" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2823,6 +2907,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#s3270-input-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        s3270 input safety
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#terminalscreen" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2861,10 +2956,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#pub400com-public-ibm-i-demo-host" class="md-nav__link">
+  <a href="#choosing-a-live-ibm-i-host" class="md-nav__link">
     <span class="md-ellipsis">
       
-        pub400.com — public IBM i demo host
+        Choosing a live IBM i host
       
     </span>
   </a>
@@ -2876,17 +2971,6 @@
     <span class="md-ellipsis">
       
         Native TN5250 backend status
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pub400-through-the-s3270-backend-nvt-fallback-caveat" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        pub400 through the s3270 backend — NVT fallback caveat
       
     </span>
   </a>
@@ -2979,40 +3063,97 @@ backends:</p>
 <p>All three backends implement the same <code>MainframeTerminal</code> surface — user
 code is portable between them.</p>
 <h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span><span class="p">,</span> <span class="n">AID</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span><span class="p">,</span> <span class="n">AID</span><span class="p">,</span> <span class="n">Secret</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">with</span> <span class="n">Desktop</span><span class="p">()</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;tso.host.example&quot;</span><span class="p">,</span> <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;3270&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">term</span><span class="p">:</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">with</span> <span class="n">Desktop</span><span class="p">()</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;tso.host.example&quot;</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="mi">992</span><span class="p">,</span> <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;3270&quot;</span><span class="p">,</span> <span class="n">tls</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="k">as</span> <span class="n">term</span><span class="p">:</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">term</span><span class="o">.</span><span class="n">wait_ready</span><span class="p">()</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">term</span><span class="o">.</span><span class="n">field_after</span><span class="p">(</span><span class="s2">&quot;USERID&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;MYUSER&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">term</span><span class="o">.</span><span class="n">field_after</span><span class="p">(</span><span class="s2">&quot;PASSWORD&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;s3cret&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">term</span><span class="o">.</span><span class="n">field_after</span><span class="p">(</span><span class="s2">&quot;PASSWORD&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="n">Secret</span><span class="p">(</span><span class="s2">&quot;s3cret&quot;</span><span class="p">))</span>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">term</span><span class="o">.</span><span class="n">press</span><span class="p">(</span><span class="n">AID</span><span class="o">.</span><span class="n">ENTER</span><span class="p">)</span>
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">term</span><span class="o">.</span><span class="n">wait_change</span><span class="p">()</span>
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="k">assert</span> <span class="n">term</span><span class="o">.</span><span class="n">screen</span><span class="p">()</span><span class="o">.</span><span class="n">contains</span><span class="p">(</span><span class="s2">&quot;READY&quot;</span><span class="p">)</span>
 </code></pre></div>
+<p>Two habits worth adopting from the start:</p>
+<ul>
+<li><strong><code>tls=True</code></strong> — a terminal session carries the sign-on in the clear
+  otherwise (see <a href="#transport-security">Transport security</a>).</li>
+<li><strong><code>Secret(...)</code></strong> around a password — marks the value for Dolphin's
+  diagnostic redaction while sending the actual value to the host.</li>
+</ul>
+<h2 id="transport-security">Transport security<a class="headerlink" href="#transport-security" title="Permanent link">&para;</a></h2>
+<h3 id="migrating-from-the-previous-api">Migrating from the previous API<a class="headerlink" href="#migrating-from-the-previous-api" title="Permanent link">&para;</a></h3>
+<p>This release changes <code>Desktop.mainframe()</code> transport defaults and arguments.
+Replace <code>tls_ca_file=</code> with <code>tls_cafile=</code>. Use the certificate's DNS name as
+<code>host</code>; <code>server_hostname=</code> is no longer accepted. <code>insecure_tls=</code> is also
+removed: unverified TLS is unavailable, and an intentional remote plaintext
+session must use <code>allow_plaintext=True</code>. Existing remote plaintext calls need
+that explicit opt-in or <code>tls=True</code>. Port 992 does not enable TLS by itself.</p>
+<p>A 3270/5250 session sends the user id and password in the same
+unencrypted byte stream as the rest of the screen; neither EBCDIC nor
+Telnet provides confidentiality. dolphin therefore <strong>refuses a plaintext
+connection to a remote host</strong> and asks you to choose:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Verified TLS — certificate chain AND host name are checked. No fallback:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># a failed handshake raises, it never silently drops to plaintext.</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;mf.example&quot;</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="mi">992</span><span class="p">,</span> <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;3270&quot;</span><span class="p">,</span> <span class="n">tls</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="c1"># Native TN5250 with an explicit trusted CA bundle.</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;ibmi.example&quot;</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="mi">992</span><span class="p">,</span> <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;5250&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>                         <span class="n">backend</span><span class="o">=</span><span class="s2">&quot;tn5250&quot;</span><span class="p">,</span> <span class="n">tls</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>                         <span class="n">tls_cafile</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;C:\ca\corp-root.pem&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="c1"># Native TN5250 with a caller-built context (must still verify the peer).</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="kn">import</span><span class="w"> </span><span class="nn">ssl</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">ssl</span><span class="o">.</span><span class="n">create_default_context</span><span class="p">(</span><span class="n">cafile</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;C:\ca\corp-root.pem&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;ibmi.example&quot;</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="mi">992</span><span class="p">,</span> <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;5250&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>                         <span class="n">backend</span><span class="o">=</span><span class="s2">&quot;tn5250&quot;</span><span class="p">,</span> <span class="n">tls</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">tls_context</span><span class="o">=</span><span class="n">ctx</span><span class="p">)</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="c1"># An SSH/stunnel tunnel terminated on localhost is exempt (loopback).</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;127.0.0.1&quot;</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="mi">3271</span><span class="p">,</span> <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;3270&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="c1"># Knowingly unencrypted (logged as a warning) — only through a channel</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="c1"># you have secured by other means.</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;mf.example&quot;</span><span class="p">,</span> <span class="n">allow_plaintext</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</code></pre></div>
+<p>The port number is <strong>never</strong> treated as a substitute for TLS — connecting
+to port 992 without <code>tls=True</code> is still refused. For the <code>s3270</code> backend,
+<code>tls=True</code> opens the emulator's supported <code>L:</code> TLS tunnel (you may also
+write <code>host="L:mf.example"</code>); dolphin passes <code>-verifycert</code> explicitly and
+pins <code>-accepthostname</code> to the connected host after user arguments. It rejects
+switches and <code>-xrm</code> resources that disable verification or substitute another
+accepted hostname (<code>-noverifycert</code>, <code>-noverifyhostcert</code>, <code>acceptHostname</code>,
+<code>verifyHostCert</code>, <code>selfSignedOk</code>). The
+<code>hllapi</code> backend delegates the network side to the emulator, so configure
+TLS in the emulator's own session profile.</p>
+<p>Unlike <code>tn5250</code>, where dolphin owns the TLS handshake and verifies it
+directly, <code>s3270</code>/<code>ws3270</code> is an external process: dolphin can confirm the
+<code>-cafile</code> flag was accepted by the build, but the certificate verification
+itself happens inside the emulator, not in Python. dolphin explicitly passes
+<code>-verifycert</code>, but treats <code>s3270</code> TLS as
+trustworthy as the installed emulator build, not as independently verified
+by dolphin — use <code>backend="tn5250"</code> when that independent verification
+matters.</p>
 <h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
 <h3 id="s3270-backend-open-source-default">s3270 backend (open source, default)<a class="headerlink" href="#s3270-backend-open-source-default" title="Permanent link">&para;</a></h3>
-<p><strong>Windows</strong> — download the wc3270 portable ZIP:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c"># from a browser or:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nb">Invoke-WebRequest</span> <span class="p">`</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  <span class="n">https</span><span class="p">://</span><span class="n">downloads</span><span class="p">.</span><span class="n">sourceforge</span><span class="p">.</span><span class="n">net</span><span class="p">/</span><span class="n">project</span><span class="p">/</span><span class="n">x3270</span><span class="p">/</span><span class="n">x3270</span><span class="p">/</span><span class="n">4</span><span class="p">.</span><span class="n">5ga5</span><span class="p">/</span><span class="n">wc3270</span><span class="p">-</span><span class="n">4</span><span class="p">.</span><span class="n">5ga5-noinstall</span><span class="p">-</span><span class="n">64</span><span class="p">.</span><span class="n">zip</span> <span class="p">`</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>  <span class="n">-OutFile</span> <span class="nv">$env:TEMP</span><span class="p">\</span><span class="n">wc3270</span><span class="p">.</span><span class="n">zip</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nb">Expand-Archive</span> <span class="nv">$env:TEMP</span><span class="p">\</span><span class="n">wc3270</span><span class="p">.</span><span class="n">zip</span> <span class="n">-DestinationPath</span> <span class="s2">&quot;$env:LOCALAPPDATA\wc3270&quot;</span>
-</code></pre></div>
-<p>The <code>_find_s3270()</code> probe auto-detects <code>%LOCALAPPDATA%\wc3270\ws3270.exe</code>
-and the standard Program Files paths. Pass <code>ws3270_path=</code> explicitly to
-<code>Desktop.mainframe()</code> for non-standard installs.</p>
-<p><strong>Linux/macOS</strong> — dolphin itself runs on Windows only; use these
-instructions to prepare a remote/CI host or to work with the
-pure-protocol pieces. Install via package manager:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Debian/Ubuntu</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>x3270
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># macOS</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>brew<span class="w"> </span>install<span class="w"> </span>x3270
-</code></pre></div>
+<p>On Windows, obtain wc3270 from the <a href="https://x3270.bgp.nu/">upstream x3270 project</a>
+and locate its <code>ws3270.exe</code>. Pass its absolute path as <code>ws3270_path=</code> for a
+non-standard installation. The library also checks PATH and well-known wc3270
+installation directories.</p>
+<p>For a reproducible build, use the archive version and SHA-256 check pinned in
+the source checkout's <code>.github/workflows/ci.yml</code>. A public network host is not
+needed for the controlled protocol example in <code>examples/mainframe/</code>.</p>
+<p>TLS trust follows the installed emulator build. In particular, Windows
+Schannel builds use the Windows certificate store; do not assume that passing
+a PEM CA file configures the same trust behavior as native Python TN5250 TLS.
+Configure the emulator's supported verified trust mechanism for the test host.</p>
+<p>The native <code>tn5250</code> backend needs no emulator executable. Its live-host
+write/submit limitation is described below.</p>
 <h3 id="hllapi-backend-enterprise-emulators">HLLAPI backend (enterprise emulators)<a class="headerlink" href="#hllapi-backend-enterprise-emulators" title="Permanent link">&para;</a></h3>
 <p>The emulator vendor ships an <code>EHLAPI32.DLL</code> (or <code>PCSHLL32.DLL</code> for IBM
-PCOMM). dolphin_desktop auto-loads any of these:</p>
+PCOMM). For security, dolphin_desktop does not search CWD, the application
+directory, or the ambient <code>PATH</code> for these names. Pass the vendor DLL through
+<code>hllapi_dll_path</code> as an existing absolute path. This argument is required for
+<code>backend="hllapi"</code>; no DLL is automatically discovered in Program Files or
+System32. Missing, relative or unusable paths raise <code>MainframeError</code>:</p>
 <table>
 <thead>
 <tr>
@@ -3033,16 +3174,12 @@ PCOMM). dolphin_desktop auto-loads any of these:</p>
 <td><code>WHLAPI32.DLL</code></td>
 <td>Older Rocket versions</td>
 </tr>
-<tr>
-<td><code>PCSHLL.DLL</code></td>
-<td>Legacy 16-bit shims</td>
-</tr>
 </tbody>
 </table>
-<p>If none load, pass <code>hllapi_dll_path=r"C:\path\to\your\DLL"</code>. The DLL
+<p>If the configured path cannot be loaded, the backend raises a clear error. The DLL
 must be a <strong>32-bit or 64-bit build matching the Python interpreter</strong>
-(a 64-bit Python cannot load a 32-bit DLL). PCOMM historically ships
-32-bit only — use a 32-bit Python for those installs.</p>
+(a 64-bit Python cannot load a 32-bit DLL). Check the configured vendor DLL's
+architecture rather than inferring it from the filename.</p>
 <h2 id="api-surface">API surface<a class="headerlink" href="#api-surface" title="Permanent link">&para;</a></h2>
 <h3 id="mainframeterminal"><code>MainframeTerminal</code><a class="headerlink" href="#mainframeterminal" title="Permanent link">&para;</a></h3>
 <table>
@@ -3054,7 +3191,7 @@ must be a <strong>32-bit or 64-bit build matching the Python interpreter</strong
 </thead>
 <tbody>
 <tr>
-<td><code>connect(host, port, session_type, timeout)</code></td>
+<td><code>connect(host, port, *, session_type, timeout)</code></td>
 <td>Open the session. Called automatically by <code>Desktop.mainframe(connect=True)</code>.</td>
 </tr>
 <tr>
@@ -3115,6 +3252,15 @@ must be a <strong>32-bit or 64-bit build matching the Python interpreter</strong
 </tr>
 </tbody>
 </table>
+<h3 id="s3270-input-safety">s3270 input safety<a class="headerlink" href="#s3270-input-safety" title="Permanent link">&para;</a></h3>
+<p>The <code>s3270</code> backend sends one action per line to the emulator process.  For
+that reason, <code>host</code> and <code>type_text()</code> values containing carriage returns,
+line feeds, NULs, or other control characters are rejected with
+<code>MainframeError</code> before the process is started or stdin is written. Host
+values containing s3270 action delimiters such as parentheses, semicolons,
+commas, equals signs, or spaces are rejected as well. Printable quotes and
+backslashes in text are escaped and remain a single literal <code>String(...)</code>
+action; text such as <code>Quit()</code> is not executed as an emulator command.</p>
 <h3 id="terminalscreen"><code>TerminalScreen</code><a class="headerlink" href="#terminalscreen" title="Permanent link">&para;</a></h3>
 <p>Immutable 24×80 or 43×80 grid snapshot.</p>
 <table>
@@ -3202,119 +3348,68 @@ must be a <strong>32-bit or 64-bit build matching the Python interpreter</strong
 </tr>
 </tbody>
 </table>
-<h2 id="pub400com-public-ibm-i-demo-host">pub400.com — public IBM i demo host<a class="headerlink" href="#pub400com-public-ibm-i-demo-host" title="Permanent link">&para;</a></h2>
-<p>pub400.com is a public <strong>IBM i</strong> (formerly AS/400) host on port 23. It
-accepts free sign-ups and is safe for automation experiments.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">with</span> <span class="n">Desktop</span><span class="p">()</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;pub400.com&quot;</span><span class="p">,</span> <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;3270&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">term</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">term</span><span class="o">.</span><span class="n">wait_ready</span><span class="p">()</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">term</span><span class="o">.</span><span class="n">text</span><span class="p">())</span>
-</code></pre></div>
+<h2 id="choosing-a-live-ibm-i-host">Choosing a live IBM i host<a class="headerlink" href="#choosing-a-live-ibm-i-host" title="Permanent link">&para;</a></h2>
+<p>An IBM i host uses TN5250. A successful NVT banner through a TN3270 emulator
+is not evidence of 5250 support. Select <code>backend="tn5250"</code> for the native
+read/negotiation path, or an appropriate HLLAPI emulator for write-critical
+flows. Configure the host, port and verified TLS trust for your environment.</p>
+<p>For a reproducible local protocol example without an external IBM system,
+use <code>examples/mainframe/test_mainframe.py</code> in the source checkout.</p>
 <h2 id="native-tn5250-backend-status">Native TN5250 backend status<a class="headerlink" href="#native-tn5250-backend-status" title="Permanent link">&para;</a></h2>
-<p>The pure-Python TN5250 backend (<code>backend="tn5250"</code>) provides:</p>
-<ul>
-<li><strong>Correct TN5250 telnet negotiation</strong> (BINARY + EOR + TERMINAL-TYPE as
-  IBM-3477-FC + NEW-ENVIRON). No NVT fallback.</li>
-<li><strong>Complete WriteToDisplay parser</strong>: SBA, IC, RA, SF orders, plus
-  inline display-attribute bytes (0x20-0x3F range), each of which
-  consumes one screen cell.</li>
-<li><strong>Start-Field parsing</strong> with correct writable classification: an SF
-  order marks an INPUT field by definition (5250 protocol); only the
-  bypass bit (FFW hi 0x80) marks a display-only field. Pub400's user
-  and password inputs are correctly detected as writable.</li>
-<li><strong>Screen buffer read</strong> with pixel-perfect alignment on pub400's
-  sign-on: <code>Your user name:</code> is contiguous on row 5 col 1,
-  <code>Password (max. 128):</code> on row 6 col 1, etc.</li>
-</ul>
-<p>The read side — screens, fields, cursor — is production-ready.</p>
+<p>The pure-Python TN5250 backend (<code>backend="tn5250"</code>) implements Telnet
+negotiation (BINARY, EOR, TERMINAL-TYPE and NEW-ENVIRON), WriteToDisplay
+parsing for SBA/IC/RA/SF orders and inline display attributes, field detection
+and screen/cursor reads. It does not use NVT as a 5250 fallback.</p>
 <p><strong>Known limitations:</strong></p>
 <ul>
-<li><strong>The write/submit path is unverified against live IBM i hosts.</strong>
-  Client-to-host input records (RIF response with typed field data)
-  build correctly at the byte level and follow RFC 1205 (GDS record
-  type, opcode, payload structure), but live hosts such as pub400 do
-  not visibly react to Enter/PF keys — there may be a flags or
-  Save/Restore Screen precondition specific to IBM i's TN5250 server
-  that the current implementation does not satisfy. For write-critical
-  5250 flows, use the <code>hllapi</code> backend with an enterprise emulator.</li>
-<li><strong>No Write Structured Field (WSF) support</strong> — Query, Set Reply Mode,
-  Read Partition Query all fall through as unhandled. This means
-  advanced Forms features (queries at cursor position, dynamic menus)
-  are not driven, but they are not required for the standard sign-on
-  and menu-navigation flow.</li>
+<li><strong>The write/submit path is unverified against live IBM i hosts.</strong> Unit
+  checks of generated input records do not establish that a host processes
+  Enter/PF keys or updates the intended fields. Use HLLAPI with a prepared
+  enterprise emulator for write-critical 5250 flows and validate that setup.</li>
+<li><strong>Write Structured Field (WSF) support is absent.</strong> Hosts requiring those
+  commands need a different backend or additional implementation.</li>
 </ul>
-<h2 id="pub400-through-the-s3270-backend-nvt-fallback-caveat">pub400 through the s3270 backend — NVT fallback caveat<a class="headerlink" href="#pub400-through-the-s3270-backend-nvt-fallback-caveat" title="Permanent link">&para;</a></h2>
-<p>IBM i speaks <strong>TN5250</strong> natively. ws3270 only speaks <strong>TN3270</strong>, so
-the negotiation degrades to <strong>NVT</strong> (raw telnet). In NVT mode:</p>
-<ul>
-<li>Reading the screen works — <code>screen()</code>, <code>text()</code>, <code>field_after()</code>,
-  <code>contains()</code>, <code>find()</code> all behave normally.</li>
-<li>Writing single characters works — the host echoes them back and the
-  cursor advances.</li>
-<li><strong>Positional <code>move_cursor</code>, field-level <code>TerminalField.type_text</code>,
-  and AID keys (Enter/PF) do NOT trigger form submissions</strong> — pub400
-  ignores them because there is no 5250 record-descriptor to respond
-  to.</li>
-</ul>
-<p>For field-level 5250 <strong>read</strong> automation against pub400 use the shipped
-<strong>native TN5250 backend</strong> (<code>backend="tn5250"</code> — see
-<a href="#native-tn5250-backend-status">Native TN5250 backend status</a> above);
-for write-critical 5250 flows use the <code>hllapi</code> backend with an
-enterprise emulator, since the native backend's write/submit path is
-unverified against live IBM i hosts.
-Against a real 3270 host (z/OS TSO, CICS) all positional operations
-work through s3270 — the NVT degradation is pub400-specific.</p>
-<p>The test suite in <code>tests/mainframe/pub400/</code> exercises
-what NVT-mode <em>does</em> support:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>test_ws3270_installed                          PASS
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>test_session_is_connected                      PASS
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>test_screen_size                               PASS
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>test_sign_on_screen_contains_pub400_banner     PASS
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>test_sign_on_screen_has_user_prompt            PASS
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>test_cursor_starts_in_user_field               PASS
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>test_field_after_user_name_label               PASS
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>test_screen_snapshots_are_stable               PASS
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>test_typed_char_is_echoed                      PASS
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>test_terminal_screen_line_and_text_at          PASS
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>test_terminal_screen_find                      PASS
-</code></pre></div>
+<p>The <code>s3270</code> backend supports 3270 only. <code>session_type="5250"</code> is rejected;
+select <code>tn5250</code> or HLLAPI for IBM i rather than relying on raw Telnet/NVT.</p>
+<p>Controlled local round trips are available in <code>tests/mainframe/mock_tn3270/</code> and are also used by
+<code>examples/mainframe/test_mainframe.py</code>. A local protocol run does not establish
+compatibility with a particular external IBM host or emulator configuration.</p>
 <h2 id="backend-selection">Backend selection<a class="headerlink" href="#backend-selection" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Default — s3270 subprocess (3270 hosts)</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;host.example&quot;</span><span class="p">,</span> <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;3270&quot;</span><span class="p">)</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Explicit s3270 with custom binary path</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">host</span><span class="o">=</span><span class="s2">&quot;host.example&quot;</span><span class="p">,</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="n">ws3270_path</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;D:\tools\wc3270\ws3270.exe&quot;</span><span class="p">,</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="n">model</span><span class="o">=</span><span class="s2">&quot;3279-2&quot;</span><span class="p">,</span>           <span class="c1"># 24x80 instead of 43x80</span>
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="p">)</span>
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>
-<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="c1"># Native TN5250 — for IBM i / AS400 hosts (pub400, banks, ERP AS400)</span>
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
-<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>    <span class="n">host</span><span class="o">=</span><span class="s2">&quot;pub400.com&quot;</span><span class="p">,</span>
-<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>    <span class="n">port</span><span class="o">=</span><span class="mi">23</span><span class="p">,</span>
-<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>    <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;5250&quot;</span><span class="p">,</span>
-<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>    <span class="n">backend</span><span class="o">=</span><span class="s2">&quot;tn5250&quot;</span><span class="p">,</span>
-<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="p">)</span>
-<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="c1"># Pure-Python client, zero external dependency. Negotiates real 5250</span>
-<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="c1"># (not NVT fallback like s3270). Parses WriteToDisplay commands into</span>
-<a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="c1"># a 24×80 EBCDIC screen buffer with field detection.</span>
-<a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>
-<a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="c1"># HLLAPI — attach to a running PCOMM session &quot;A&quot;</span>
-<a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">backend</span><span class="o">=</span><span class="s2">&quot;hllapi&quot;</span><span class="p">,</span> <span class="n">session_id</span><span class="o">=</span><span class="s2">&quot;A&quot;</span><span class="p">)</span>
-<a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>
-<a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a><span class="c1"># HLLAPI — explicit DLL</span>
-<a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
-<a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a>    <span class="n">backend</span><span class="o">=</span><span class="s2">&quot;hllapi&quot;</span><span class="p">,</span>
-<a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a>    <span class="n">session_id</span><span class="o">=</span><span class="s2">&quot;A&quot;</span><span class="p">,</span>
-<a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>    <span class="n">hllapi_dll_path</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;C:\Program Files\IBM\Personal Communications\PCSHLL32.DLL&quot;</span><span class="p">,</span>
-<a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Default — s3270 subprocess (3270 hosts)</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s2">&quot;host.example&quot;</span><span class="p">,</span> <span class="n">tls</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;3270&quot;</span><span class="p">)</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Explicit s3270 with custom binary path</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">host</span><span class="o">=</span><span class="s2">&quot;host.example&quot;</span><span class="p">,</span> <span class="n">tls</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">ws3270_path</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;D:\tools\wc3270\ws3270.exe&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="n">model</span><span class="o">=</span><span class="s2">&quot;3279-2&quot;</span><span class="p">,</span>           <span class="c1"># 24x80 instead of 43x80</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">)</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="c1"># Native TN5250 — for IBM i / AS400 hosts (pub400, banks, ERP AS400)</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>    <span class="n">host</span><span class="o">=</span><span class="s2">&quot;ibmi.example&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="n">port</span><span class="o">=</span><span class="mi">992</span><span class="p">,</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>    <span class="n">session_type</span><span class="o">=</span><span class="s2">&quot;5250&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>    <span class="n">backend</span><span class="o">=</span><span class="s2">&quot;tn5250&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>    <span class="n">tls</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="p">)</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="c1"># Pure-Python client, zero external dependency. Negotiates real 5250</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="c1"># (not NVT fallback like s3270). Parses WriteToDisplay commands into</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="c1"># a 24×80 EBCDIC screen buffer with field detection.</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="c1"># HLLAPI — attach to a running PCOMM session &quot;A&quot;</span>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="n">term</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">mainframe</span><span class="p">(</span>
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>    <span class="n">backend</span><span class="o">=</span><span class="s2">&quot;hllapi&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>    <span class="n">session_id</span><span class="o">=</span><span class="s2">&quot;A&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a>    <span class="n">hllapi_dll_path</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;C:\Program Files\IBM\Personal Communications\PCSHLL32.DLL&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a><span class="p">)</span>
 </code></pre></div>
 <p>The <code>host</code>, <code>port</code>, and <code>session_type</code> arguments are recorded on the
 <code>MainframeTerminal</code> but ignored by the HLLAPI backend — the emulator
 manages the network side there.</p>
 <h2 id="common-failure-modes">Common failure modes<a class="headerlink" href="#common-failure-modes" title="Permanent link">&para;</a></h2>
 <p><strong><code>No ws3270/s3270 binary found</code></strong>
-: Install wc3270 (Windows) or <code>x3270</code> (Linux/macOS) — see install
+: Install wc3270 on Windows — see the install
   section. Pass <code>ws3270_path=</code> for non-standard installs.</p>
 <p><strong><code>No HLLAPI-compatible DLL found</code></strong>
 : The emulator either is not installed or exposes a differently-named
@@ -3328,12 +3423,12 @@ manages the network side there.</p>
 <p><strong><code>MoveCursor() is not valid in NVT mode</code></strong>
 : The host did not accept TN3270/TN3270E negotiation — connection
   fell back to plain telnet. <code>move_cursor()</code> and positional AID keys
-  are unavailable; only sequential typing works. Almost always means
-  the target is a 5250-only IBM i host (see pub400 caveat above).</p>
+  are unavailable; only sequential typing works. Check the host's protocol;
+  a 5250-only IBM i host requires <code>tn5250</code> or HLLAPI.</p>
 <h2 id="see-also">See also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>tests/mainframe/pub400/</code> — live integration tests.</li>
-<li><a href="http://x3270.bgp.nu/">x3270 project</a> — upstream emulator suite.</li>
+<li><code>tests/mainframe/mock_tn3270/</code> — controlled local protocol regressions.</li>
+<li><a href="https://x3270.bgp.nu/">x3270 project</a> — upstream emulator suite.</li>
 <li><a href="https://www.ibm.com/docs/en/personal-communications">EHLLAPI reference (IBM)</a> — HLLAPI function-code table.</li>
 </ul>
 

@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/reference/cli/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/reference/cli/">
       
       
         <link rel="prev" href="../pytest-plugin/">
@@ -1814,6 +1814,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2337,7 +2365,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2862,7 +2890,7 @@
 </tbody>
 </table>
 <h2 id="dolphin-init"><code>dolphin init</code><a class="headerlink" href="#dolphin-init" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>dolphin init [NAME] [--template {minimal,standard,enterprise}] [--yes] [--install] [--git]
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>dolphin init [NAME] [--template {minimal,standard,enterprise,sap,qt,electron,mainframe,oracle-forms,delphi}] [--yes] [--install] [--git]
 </code></pre></div>
 <table>
 <thead>
@@ -2877,7 +2905,7 @@
 <td>Project directory to create. If omitted, Dolphin prompts for a name.</td>
 </tr>
 <tr>
-<td><code>--template {minimal,standard,enterprise}</code></td>
+<td><code>--template {minimal,standard,enterprise,sap,qt,electron,mainframe,oracle-forms,delphi}</code></td>
 <td>Choose the scaffold template.</td>
 </tr>
 <tr>
@@ -2918,6 +2946,10 @@
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>            [--jab] [--cdp URL] [--delphi]
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>            [--mainframe HOST:PORT] [--session-type {3270,5250}]
 </code></pre></div>
+<p>For remote terminal TLS or custom trust settings, use the Python
+<a href="../../guides/mainframe/#transport-security">Mainframe API</a>. The CLI has no TLS
+configuration flags. Its loopback endpoint can also be the local end of a
+separately verified tunnel.</p>
 <p>Stack-specific flags:</p>
 <table>
 <thead>
@@ -2968,14 +3000,38 @@
 <a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>dolphin<span class="w"> </span>spy<span class="w"> </span>--image-pick<span class="w"> </span>--output-dir<span class="w"> </span>templates
 </code></pre></div>
 <p>Use <code>--pick</code> to select an element interactively. Use <code>--image-pick</code> to capture a template PNG for image fallback.</p>
+<p>If UI Automation denies access during <code>--pick</code> or <code>--image-pick</code>, the picker removes its highlight,
+prints an access-denied diagnostic to stderr and exits with code 1. Check the target
+application's permissions and integrity level. Transient element disappearance
+remains tolerated, and pressing Escape normally cancels the picker.
+For <code>--pick</code>, access denial also fails the command during owner checks and after selection,
+including selector construction and verification; it is not reported as cancellation
+or an unverified locator.</p>
 <h2 id="dolphin-record"><code>dolphin record</code><a class="headerlink" href="#dolphin-record" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>dolphin record --output FILE [--app TITLE] [--backend {uia,win32}] [--func-name NAME]
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>dolphin record --output FILE (--app TITLE | --pid PID | --global) [--backend {uia,win32}] [--func-name NAME]
 </code></pre></div>
 <p>Examples:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>dolphin<span class="w"> </span>record<span class="w"> </span>--output<span class="w"> </span>tests/test_recorded.py
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>dolphin<span class="w"> </span>record<span class="w"> </span>--output<span class="w"> </span>tests/test_recorded.py<span class="w"> </span>--global
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>dolphin<span class="w"> </span>record<span class="w"> </span>--output<span class="w"> </span>tests/test_login.py<span class="w"> </span>--app<span class="w"> </span><span class="s2">&quot;Login&quot;</span><span class="w"> </span>--func-name<span class="w"> </span>test_login_workflow
 </code></pre></div>
 <p>The recorder prints a generated pytest function. Press <code>Ctrl+F12</code> to stop recording.</p>
+<p><code>--app</code> resolves the title fragment to exactly one running process before installing
+hooks. Missing or ambiguous matches fail; use <code>--pid</code> to select a process directly.
+Subsequent events are filtered by the captured PID, even if window titles change.
+The generated <code>--app</code> test reconnects using the title fragment, so restarting the
+application does not leave a stale PID in the script. With <code>--pid</code>, the generated
+function accepts <code>process_id: int</code>; pass the current PID when calling it, or supply
+a <code>process_id</code> pytest fixture.
+Recording across applications requires explicit <code>--global</code> (Python:
+<code>Recorder(global_recording=True)</code>); <code>Recorder()</code> alone cannot start.</p>
+<p>Keyboard events carry their original window, PID, native focus and password status.
+Only stable native Windows <code>Edit</code> controls without <code>ES_PASSWORD</code> release plaintext.
+Password fields, focus-query failures and other controls (including UIA-only fields)
+produce <code>&lt;REDACTED-PASSWORD&gt;</code>. The worker never classifies old input using live UIA
+focus. A preceding click selector can be reused when the native event confirms
+the same process, window and focused child control. Focus changes or unverifiable
+targets discard it; unresolved selectors require manual completion in the script.
+Review the generated file before sharing it.</p>
 <h2 id="dolphin-trace-list"><code>dolphin trace list</code><a class="headerlink" href="#dolphin-trace-list" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>dolphin<span class="w"> </span>trace<span class="w"> </span>list
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>dolphin<span class="w"> </span>trace<span class="w"> </span>list<span class="w"> </span>--last<span class="w"> </span><span class="m">50</span>

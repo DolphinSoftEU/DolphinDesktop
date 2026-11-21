@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/guides/java/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/guides/java/">
       
       
         <link rel="prev" href="../webview2/">
@@ -1919,6 +1919,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2442,7 +2470,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2707,8 +2735,12 @@
 <h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
 <ul>
 <li>A JRE or JDK with Java Access Bridge tools.</li>
-<li><code>jabswitch.exe</code> available through <code>JAVA_HOME</code> or <code>PATH</code>, or Java Access Bridge already enabled.</li>
-<li>A 64-bit Java runtime is recommended.</li>
+<li><code>JAVA_HOME</code> must be explicitly set to a trusted absolute JRE/JDK path
+  containing <code>bin\windowsaccessbridge-64.dll</code>, even when Java Access Bridge
+  is already enabled. Enabling it also requires <code>bin\jabswitch.exe</code>.
+  Dolphin loads JAB exclusively from this <code>JAVA_HOME\bin</code>: registry discovery,
+  <code>System32</code>, the working directory and <code>PATH</code> do not supply a fallback DLL.</li>
+<li>A 64-bit Python interpreter is required to load this 64-bit bridge DLL.</li>
 </ul>
 <h2 id="launch">Launch<a class="headerlink" href="#launch" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
@@ -2717,7 +2749,14 @@
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_java</span><span class="p">(</span><span class="s2">&quot;java -jar MySwingApp.jar&quot;</span><span class="p">)</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">win</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">class_name</span><span class="o">=</span><span class="s2">&quot;SunAwtFrame&quot;</span><span class="p">)</span>
 </code></pre></div>
-<p><code>launch_java()</code> calls <code>JavaAccessBridge.ensure_enabled()</code> before starting the process and initializes the JAB client session.</p>
+<p><code>launch_java()</code> calls <code>JavaAccessBridge.ensure_enabled()</code> before starting the
+process and initializes the JAB client session. <code>ensure_enabled()</code> first validates
+<code>JAVA_HOME</code> and the bridge DLL, even when Windows reports JAB as already enabled.</p>
+<p><code>JavaAccessBridge.java_home()</code> discovers a Java installation from <code>JAVA_HOME</code> or
+the registry without executing a search program or inspecting <code>PATH</code>. Discovery
+does not configure JAB. Use <code>JavaAccessBridge.validate_configuration()</code> to check
+the required explicit <code>JAVA_HOME</code> and DLL without loading or enabling the bridge;
+it returns the configured home or raises <code>RuntimeError</code>.</p>
 <h2 id="selectors">Selectors<a class="headerlink" href="#selectors" title="Permanent link">&para;</a></h2>
 <p>For Java windows, <code>Window.get_by_*</code> returns a JAB-backed locator.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">win</span><span class="o">.</span><span class="n">get_by_role</span><span class="p">(</span><span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;Username&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;admin&quot;</span><span class="p">)</span>
@@ -2780,7 +2819,8 @@
 </code></pre></div>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <ul>
-<li>If <code>jabswitch.exe</code> is missing, set <code>JAVA_HOME</code> or install a JDK that includes Java Access Bridge.</li>
+<li>If <code>jabswitch.exe</code> or <code>windowsaccessbridge-64.dll</code> is missing, set
+  <code>JAVA_HOME</code> to a trusted absolute JDK path that includes both files.</li>
 <li>If the tree is empty immediately after launch, increase the app startup delay or wait for idle.</li>
 <li>If roles differ from the table, inspect the app and use the exact role/name exposed by Java Access Bridge.</li>
 </ul>

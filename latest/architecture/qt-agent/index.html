@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/architecture/qt-agent/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/architecture/qt-agent/">
       
       
         <link rel="prev" href="../../backend-capabilities/">
       
       
-        <link rel="next" href="../../reference/">
+        <link rel="next" href="../../guides/qt-agent-system-isolation/">
       
       
         
@@ -1950,6 +1950,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#validation-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation coverage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#python-api" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1964,6 +1975,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -2492,7 +2531,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2772,6 +2811,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#validation-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation coverage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#python-api" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2808,8 +2858,8 @@ support beyond what UIA can see — primarily Qt Quick / QML and
 <code>QGraphicsView</code> custom-paint widgets that are opaque to UIA.</p>
 <blockquote>
 <ul>
-<li><code>dolphin_qt5_agent.dll</code> — built against Qt 5.15.2 + MSVC v142.</li>
-<li><code>dolphin_qt6_agent.dll</code> — built against Qt 6.11.1 + MSVC v143.</li>
+<li><code>dolphin_qt5_agent.dll</code> — built against Qt 5.15.2 + MSVC 19.50.35726.</li>
+<li><code>dolphin_qt6_agent.dll</code> — built against Qt 6.10.3 + MSVC 19.50.35726.</li>
 </ul>
 <p>Both DLLs ship with the Python wheel as prebuilt binaries — no
 separate install or build step.</p>
@@ -2846,8 +2896,9 @@ meta-object system, and dispatch actions through
 <h3 id="injection">Injection<a class="headerlink" href="#injection" title="Permanent link">&para;</a></h3>
 <p>We use <code>CreateRemoteThread + LoadLibraryW</code> (standard, well-documented
 Windows pattern). The agent is built as a regular Qt-linked DLL that
-exports a single C entry point:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kr">__declspec</span><span class="p">(</span><span class="n">dllexport</span><span class="p">)</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">dolphin_qt_agent_start</span><span class="p">(</span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">pipe_name</span><span class="p">);</span>
+exports authenticated start and stop entry points:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kr">__declspec</span><span class="p">(</span><span class="n">dllexport</span><span class="p">)</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">dolphin_qt_agent_start_v2</span><span class="p">(</span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">start_config_json</span><span class="p">);</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kr">__declspec</span><span class="p">(</span><span class="n">dllexport</span><span class="p">)</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">dolphin_qt_agent_stop_v2</span><span class="p">(</span><span class="kt">void</span><span class="p">);</span>
 </code></pre></div>
 <p>The injection helper is <code>src/dolphin_desktop/_qt_inject.py</code>. It calls
 kernel32 through <code>ctypes</code> (<code>pywin32</code> is used only to enumerate the target's
@@ -2865,7 +2916,9 @@ module list), and asks for the five rights it actually needs rather than
 <a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">WaitForSingleObject</span><span class="p">(</span><span class="n">hthread</span><span class="p">,</span> <span class="mi">30_000</span><span class="p">)</span>               <span class="c1"># bounded, never INFINITE</span>
 </code></pre></div>
 <p>After <code>LoadLibraryW</code> returns, we find the exported
-<code>dolphin_qt_agent_start</code> and call it the same way, passing the pipe name.
+<code>dolphin_qt_agent_start_v2</code> and pass a startup JSON containing the random pipe
+name, controller PID and a separate session secret. The native start function
+copies these values before returning.
 Its address is <code>remote_module_base + rva</code>, where the RVA comes from parsing
 the DLL's PE export table on disk — the agent links against Qt, so loading
 it locally to resolve the export is not an option.</p>
@@ -2877,13 +2930,11 @@ it locally to resolve the export is not an option.</p>
   <code>IsWow64Process2</code>), the agent DLL's PE <code>machine</code> field and the host Python,
   and raises <code>QtAgentInjectError</code> when they differ instead of starting a
   remote thread at a foreign address (which terminates the target).</li>
-<li><strong>Remote allocations are leaked, not freed, once a remote thread has read
-  them.</strong> <code>VirtualFreeEx</code> while the remote thread is still running unmaps the
-  argument it is reading and faults the AUT, so on a wait timeout the
-  allocation is deliberately left behind. The pipe-name buffer is never freed
-  at all — not even on success — because the agent's pipe server outlives a
-  client disconnect (which is what <code>reattach()</code> relies on) and may re-read
-  the pointer to re-create the pipe.</li>
+<li><strong>Remote allocations are retained on timeout.</strong> <code>VirtualFreeEx</code> while a
+  remote thread is still running unmaps the argument it is reading and faults
+  the AUT. The v2 start export copies its config before returning, so a
+  completed call releases the temporary page; a timed-out call leaves it in
+  place until the AUT exits.</li>
 </ul>
 <p>The client verifies the pipe's server process id
 (<code>GetNamedPipeServerProcessId</code>) matches the injected pid before sending
@@ -2895,11 +2946,13 @@ defaults named pipes to impersonation level, which would let a process
 squatting the pipe name call <code>ImpersonateNamedPipeClient()</code> and act as the
 test user before the pid check ever runs.</p>
 <h3 id="ipc">IPC<a class="headerlink" href="#ipc" title="Permanent link">&para;</a></h3>
-<p>A named pipe (<code>\\.\pipe\dolphin_qt_&lt;pid&gt;</code>) with line-delimited JSON:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;op&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tree&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;root&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;QMainWindow#main_window&quot;</span><span class="p">}</span>
+<p>A per-attach named pipe (<code>\\.\pipe\dolphin_qt_&lt;pid&gt;_&lt;random&gt;</code>) with
+line-delimited JSON. The <code>auth</code> value is generated for each attach and is sent
+separately from the pipe name:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;op&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tree&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;auth&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;session-secret&gt;&quot;</span><span class="p">}</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;ok&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;result&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;obj&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;QPushButton&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;btn_ok&quot;</span><span class="p">,</span><span class="w"> </span><span class="err">...</span><span class="p">}]}</span>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;op&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;invoke&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;target&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;QPushButton#btn_ok&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;method&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;click()&quot;</span><span class="p">}</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;op&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;invoke&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;auth&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;session-secret&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;target&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;QPushButton#btn_ok&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;method&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;click()&quot;</span><span class="p">}</span>
 <a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;ok&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">}</span>
 <a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
 <a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;op&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;qml_root&quot;</span><span class="p">}</span>
@@ -2960,7 +3013,11 @@ request that an earlier timeout abandoned is simply discarded and the read
 continues. That forgiveness window holds the last 256 abandoned ids —
 beyond it a late reply is indistinguishable from a desync and is treated as
 one.</p>
-<p>Replies are read with a bounded per-request timeout
+<p>Requests are bounded on both sides of the pipe: the Python client caps each
+serialized request at 8 MiB, JSON nesting at 32 levels, and JSON complexity at
+10,000 nodes; the native server enforces the same byte, depth and node limits.
+The server also caps responses at 16 MiB and closes idle or partial requests
+after a bounded interval. Replies are read with a bounded per-request timeout
 (<code>QtAgentClient.rpc_timeout</code>, 30 s) and a 16 MiB size cap. Expiry raises
 <code>QtAgentTimeoutError</code> and leaves the connection <strong>usable</strong> — a Qt event loop
 blocked behind a native modal dialog is an ordinary, recoverable condition.
@@ -3000,7 +3057,8 @@ That first access:</p>
 <li>Resolves the bundled <code>dolphin_qt{5,6}_agent.dll</code>.</li>
 <li>Refuses if the target's architecture does not match the DLL and this Python.</li>
 <li>Injects via <code>CreateRemoteThread</code> + <code>LoadLibraryW</code>.</li>
-<li>Calls <code>dolphin_qt_agent_start</code> remotely with the pipe name.</li>
+<li>Calls <code>dolphin_qt_agent_start_v2</code> remotely with the pipe name, secret and
+   controller PID.</li>
 <li>Connects to the agent's named pipe (with retry loop) after checking the
    pipe's server pid.</li>
 </ol>
@@ -3008,9 +3066,54 @@ That first access:</p>
 <p>UIA selectors continue to work unchanged — <code>Locator</code> falls back to UIA
 when no agent is attached.</p>
 <h2 id="build">Build<a class="headerlink" href="#build" title="Permanent link">&para;</a></h2>
-<p>The agent DLLs are <strong>prebuilt binaries bundled with the wheel</strong>; their C++
-source is not part of this repository. Both are <code>IMAGE_FILE_MACHINE_AMD64</code>
-and export <code>dolphin_qt_agent_start</code> and <code>dolphin_qt_agent_stop</code>.</p>
+<p>The C++ source and pinned build scripts are in <code>src_cpp/qt_agent/</code>. The scripts
+build the Qt 5.15.2 and Qt 6.10.3 variants with MSVC 19.50.35726, verify the v2
+start/stop exports, and record the staged source tree, toolchain, size and
+SHA-256 in <code>agent_manifest.json</code>.
+The build also pins Windows SDK package 10.0.26100.7705 (directory
+10.0.26100.0), CMake 3.31.10 and the Ninja
+1.11.1.4 PyPI distribution, normalizes source/build/Qt SDK paths, and requires
+QML support. CI rebuilds both ABIs in two clean locations and compares them
+to the shipped DLLs without updating the manifest. This verification gates
+package creation and release provenance.</p>
+<p>CI provisions MSVC independently of the runner's installed Visual Studio.
+The component ID <code>Microsoft.VisualStudio.Component.VC.14.50.18.0.x86.x64</code>
+does not pin a servicing revision: it previously delivered compiler
+19.50.35739 while these DLLs require 19.50.35726. CI now downloads the exact
+compiler, resource, header and CRT VSIX payloads, plus Windows SDK NuGet packages, listed in
+<code>.github/toolchains/msvc.json</code>, verifies their sizes and SHA-256 values,
+and extracts them into a fresh directory. The MSVC payload URLs/hashes originate
+from Microsoft's Visual Studio 18.4.0 catalog; the SDK comes from Microsoft's
+Microsoft.Windows.SDK.CPP and Microsoft.Windows.SDK.CPP.x64 packages. Installed
+runner compilers and registry-selected Windows SDKs are not used for the Qt build.</p>
+<p>For a local reproduction with the same isolated compiler:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">uv</span> <span class="n">run</span> <span class="p">-</span><span class="n">-no-sync</span> <span class="n">python</span> <span class="p">.</span><span class="n">github</span><span class="p">/</span><span class="n">scripts</span><span class="p">/</span><span class="n">install_msvc</span><span class="p">.</span><span class="n">py</span> <span class="p">-</span><span class="n">-destination</span> <span class="n">C</span><span class="p">:\</span><span class="n">build-tools</span><span class="p">\</span><span class="n">dolphin-msvc</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="p">.</span> <span class="p">.</span><span class="n">github</span><span class="p">/</span><span class="n">scripts</span><span class="p">/</span><span class="n">enter_msvc</span><span class="p">.</span><span class="n">ps1</span> <span class="n">-ToolchainRoot</span> <span class="n">C</span><span class="p">:\</span><span class="n">build-tools</span><span class="p">\</span><span class="n">dolphin-msvc</span>
+</code></pre></div>
+<p>Put the locked CMake/Ninja executables from <code>.venv/Scripts</code> first on PATH, set
+<code>DOLPHIN_QT5_ROOT</code> / <code>DOLPHIN_QT6_ROOT</code>, then run
+<code>.github/scripts/verify_qt_agents.ps1</code>. The initializer replaces compiler,
+include and library search paths with the downloaded toolchain and checks
+the actual compiler banner. A different compiler revision is still rejected;
+DLL/manifest verification remains required.</p>
+<p>The SDK directory name does not pin its servicing revision. A controlled
+Qt5 rebuild with SDK package 10.0.26100.9457 reproduced the hosted failure hash
+exactly; SDK package 10.0.26100.7705 reproduces the shipped DLL. The manifest
+therefore records <code>windows_sdk_package_version</code> separately from the SDK
+directory version, and CI downloads hash-pinned SDK headers, import libraries,
+rc and mt together with MSVC. System-installed SDK servicing cannot change
+these build inputs.
+Both the shared builder and the verification script normalize the temporary
+parent and deletion target through <code>build_cleanup.ps1</code>. Equivalent Windows
+paths, including trailing separators, cannot trigger a false cleanup refusal.
+Cleanup errors fail otherwise successful builds; after a primary build error,
+they produce warnings while preserving that primary error. The CI entry point
+accepts <code>-Revision (git write-tree)</code> for validation of a staged source snapshot
+before committing, with <code>HEAD</code> remaining the default in CI.</p>
+<p>The bundled DLLs are <code>IMAGE_FILE_MACHINE_AMD64</code> and use the authenticated v2
+start and stop exports. Python refuses to call the legacy unauthenticated
+start export. The manifest records each DLL's protocol, staged source tree,
+toolchain, size and SHA-256.</p>
 <table>
 <thead>
 <tr>
@@ -3021,7 +3124,7 @@ and export <code>dolphin_qt_agent_start</code> and <code>dolphin_qt_agent_stop</
 <tbody>
 <tr>
 <td><code>dolphin_qt6_agent.dll</code></td>
-<td>Qt 6.11.x processes (e.g. PySide6)</td>
+<td>Qt 6.10.x processes (e.g. PySide6 6.10.3)</td>
 </tr>
 <tr>
 <td><code>dolphin_qt5_agent.dll</code></td>
@@ -3029,11 +3132,10 @@ and export <code>dolphin_qt_agent_start</code> and <code>dolphin_qt_agent_stop</
 </tr>
 </tbody>
 </table>
-<p>They live in <code>src/dolphin_desktop/_qt_agent/</code> and ship with the wheel, so
-end users need no build toolchain.</p>
-<p>Anything that requires a DLL change — the pipe's security descriptor, or
-whether <code>dolphin_qt_agent_start</code> copies its <code>pipe_name</code> argument — cannot
-be verified or fixed from this repository.</p>
+<p>They live in <code>src/dolphin_desktop/_qt_agent/</code> and ship with the wheel, so end
+users need no build toolchain. <code>agent_dll_for()</code> now fails closed if the
+manifest is absent, malformed, incomplete, or if the DLL size or SHA-256 does
+not match. Build instructions are in <code>src_cpp/qt_agent/README.md</code>.</p>
 <h2 id="limitations">Limitations<a class="headerlink" href="#limitations" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>x64 only</strong> — both shipped DLLs are <code>IMAGE_FILE_MACHINE_AMD64</code>, and the
@@ -3042,19 +3144,26 @@ be verified or fixed from this repository.</p>
   never injected into; drive those apps with the UIA backend, which
   needs no agent. Adding 32-bit support means building an x86 agent <em>and</em>
   running the tests from an x86 Python.</li>
-<li><strong>No detach</strong> — the DLL <em>does</em> export <code>dolphin_qt_agent_stop</code> alongside
-  <code>dolphin_qt_agent_start</code>, but dolphin never calls it: nothing in this
-  repository establishes when the agent's own threads are finished with the
-  module, and a remote <code>FreeLibrary</code> that unmaps it under a live thread
-  faults the AUT. So the agent stays loaded, with its thread and pipe, for
-  the lifetime of the target process; <code>QtAgentClient.close()</code> closes only the
-  client end. This matters for <code>Desktop.connect(pid=…)</code> against an app
-  dolphin did not launch: the injection is permanent until that app exits.
-  Use <code>QtAgentClient.reattach()</code> to rebuild a wedged connection instead.</li>
-<li><strong>Unauthenticated pipe</strong> — <code>\\.\pipe\dolphin_qt_&lt;pid&gt;</code> has a predictable
-  name and the agent's security descriptor is whatever the DLL sets. The
-  client verifies the server's process id, so a squatter cannot impersonate
-  the agent. See <code>SECURITY.md</code> for what this means for you in practice.</li>
+<li><strong>No unload</strong> — <code>QtAgentClient.close()</code> asks the v2 agent to stop and join
+  its pipe thread, waiting up to 15 s for the remote stop call. The DLL stays
+  mapped until the AUT exits; the client never calls <code>FreeLibrary</code> while Qt
+  callbacks could still be using agent code.
+  <code>reattach()</code> starts a new authenticated server with the same per-attach
+  secret.</li>
+<li><strong>Authenticated IPC</strong> — the server DACL grants access only to the target
+  process's logon SID and pipe creation includes
+  <code>PIPE_REJECT_REMOTE_CLIENTS</code>. The server accepts only the controller PID
+  supplied during injection and authenticates every request with a random
+  per-attach secret transferred through <code>WriteProcessMemory</code>, separate from
+  the enumerable pipe name. Unauthorized connections are disconnected before
+  a request is read. Client and server enforce request size, JSON depth and
+  complexity limits; server responses and idle connections are bounded too.
+  The client verifies the server PID and refuses a reused target PID.
+  The server also retains a SYNCHRONIZE handle to the controller process.
+  A Windows thread-pool wait stops the worker if that process exits, including
+  <code>TerminateProcess</code>; this expires the old pipe without Python <code>close()</code> or
+  unloading the DLL. A new owner can attach to the same running AUT afterward.
+  See <code>SECURITY.md</code> for the threat model.</li>
 <li><strong>Per-Qt-major-version DLL</strong> — Qt 5 and Qt 6 ABIs differ. We ship both,
   named <code>dolphin_qt5_agent.dll</code> and <code>dolphin_qt6_agent.dll</code>; the loader
   picks based on <code>Application.qt_version()</code>.</li>
@@ -3064,36 +3173,48 @@ be verified or fixed from this repository.</p>
 <li><strong>Sandboxed apps</strong> — UWP / packaged apps with isolated containers cannot
   be injected without elevated privileges and AppContainer-aware tooling.</li>
 </ul>
+<h2 id="validation-coverage">Validation coverage<a class="headerlink" href="#validation-coverage" title="Permanent link">&para;</a></h2>
+<p>The required Qt5/Qt6 component suite includes six abrupt-owner-death scenarios:
+an authenticated idle connection, a disconnected transport waiting for
+reconnection, and an unfinished JSON frame, each with both Qt versions. The
+test checks a real authenticated ping, the actual controller PID, explicit
+Win32 <code>TerminateProcess</code>, its exit code, absence of Python cleanup, continued
+AUT liveness, stable disappearance of the old pipe and a new owner's successful
+attach/ping/introspection. These scenarios may not be skipped in CI.</p>
+<p>Restricted-token and localhost-SMB tests remain controls for the local security
+boundary. They do not establish results for a second logged-in account or an
+independent remote machine. See <a href="../../guides/qt-agent-system-isolation/">the system isolation checklist</a>
+for the remaining environment-dependent checks.</p>
 <h2 id="python-api">Python API<a class="headerlink" href="#python-api" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">desktop</span> <span class="o">=</span> <span class="n">Desktop</span><span class="p">()</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;&quot;</span><span class="si">{</span><span class="n">sys</span><span class="o">.</span><span class="n">executable</span><span class="si">}</span><span class="s1">&quot; &quot;examples/qt_demo/qml_widgets.py&quot;&#39;</span><span class="p">)</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="c1"># Triggers DLL injection + named-pipe connect on first access.</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">qt_agent</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="c1"># 1. Pure introspection</span>
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="n">roots</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_root</span><span class="p">()</span>          <span class="c1"># list of QQuickWindow trees</span>
-<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="n">btns</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">className</span><span class="o">=</span><span class="s2">&quot;QPushButton&quot;</span><span class="p">)</span>
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>
-<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="c1"># 2. Property access</span>
-<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="n">nf</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlNameField&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
-<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="n">agent</span><span class="o">.</span><span class="n">set_property</span><span class="p">(</span><span class="n">nf</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;Alice&quot;</span><span class="p">)</span>
-<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="k">assert</span> <span class="n">agent</span><span class="o">.</span><span class="n">get_property</span><span class="p">(</span><span class="n">nf</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;Alice&quot;</span>
-<a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>
-<a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="c1"># 3. Method invocation (no-arg / typed args)</span>
-<a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="n">spin</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">className</span><span class="o">=</span><span class="s2">&quot;QSpinBox&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
-<a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="n">agent</span><span class="o">.</span><span class="n">invoke</span><span class="p">(</span><span class="n">spin</span><span class="p">,</span> <span class="s2">&quot;setValue&quot;</span><span class="p">,</span> <span class="mi">42</span><span class="p">)</span>
-<a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>
-<a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="c1"># 4. QML click simulation (Qt event system, not OS mouse)</span>
-<a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a><span class="n">btn</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlClickButton&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
-<a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a><span class="n">agent</span><span class="o">.</span><span class="n">qml_click</span><span class="p">(</span><span class="n">btn</span><span class="p">)</span>
-<a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>
-<a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a><span class="c1"># 5. QGraphicsView walking</span>
-<a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a><span class="n">view</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">className</span><span class="o">=</span><span class="s2">&quot;QGraphicsView&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
-<a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a><span class="n">items</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">graphics_items</span><span class="p">(</span><span class="n">view</span><span class="p">)</span>
-<a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a><span class="n">hit</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">graphics_item_at</span><span class="p">(</span><span class="n">view</span><span class="p">,</span> <span class="mi">60</span><span class="p">,</span> <span class="mi">40</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">desktop</span> <span class="o">=</span> <span class="n">Desktop</span><span class="p">()</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_qt</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;&quot;</span><span class="si">{</span><span class="n">sys</span><span class="o">.</span><span class="n">executable</span><span class="si">}</span><span class="s1">&quot; &quot;examples/qt_demo/qml_widgets.py&quot;&#39;</span><span class="p">)</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># Triggers DLL injection + named-pipe connect on first access.</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">qt_agent</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># 1. Pure introspection</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="n">roots</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_root</span><span class="p">()</span>          <span class="c1"># list of QQuickWindow trees</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="n">btns</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">className</span><span class="o">=</span><span class="s2">&quot;QPushButton&quot;</span><span class="p">)</span>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="c1"># 2. Property access</span>
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="n">nf</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlNameField&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
+<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a><span class="n">agent</span><span class="o">.</span><span class="n">set_property</span><span class="p">(</span><span class="n">nf</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;Alice&quot;</span><span class="p">)</span>
+<a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a><span class="k">assert</span> <span class="n">agent</span><span class="o">.</span><span class="n">get_property</span><span class="p">(</span><span class="n">nf</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;Alice&quot;</span>
+<a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>
+<a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a><span class="c1"># 3. Method invocation (no-arg / typed args)</span>
+<a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a><span class="n">spin</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">className</span><span class="o">=</span><span class="s2">&quot;QSpinBox&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
+<a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a><span class="n">agent</span><span class="o">.</span><span class="n">invoke</span><span class="p">(</span><span class="n">spin</span><span class="p">,</span> <span class="s2">&quot;setValue&quot;</span><span class="p">,</span> <span class="mi">42</span><span class="p">)</span>
+<a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>
+<a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a><span class="c1"># 4. QML click simulation (Qt event system, not OS mouse)</span>
+<a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a><span class="n">btn</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">qml_find</span><span class="p">(</span><span class="s2">&quot;qmlClickButton&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
+<a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a><span class="n">agent</span><span class="o">.</span><span class="n">qml_click</span><span class="p">(</span><span class="n">btn</span><span class="p">)</span>
+<a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a>
+<a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a><span class="c1"># 5. QGraphicsView walking</span>
+<a id="__codelineno-6-27" name="__codelineno-6-27" href="#__codelineno-6-27"></a><span class="n">view</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">className</span><span class="o">=</span><span class="s2">&quot;QGraphicsView&quot;</span><span class="p">)[</span><span class="mi">0</span><span class="p">][</span><span class="s2">&quot;handle&quot;</span><span class="p">]</span>
+<a id="__codelineno-6-28" name="__codelineno-6-28" href="#__codelineno-6-28"></a><span class="n">items</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">graphics_items</span><span class="p">(</span><span class="n">view</span><span class="p">)</span>
+<a id="__codelineno-6-29" name="__codelineno-6-29" href="#__codelineno-6-29"></a><span class="n">hit</span> <span class="o">=</span> <span class="n">agent</span><span class="o">.</span><span class="n">graphics_item_at</span><span class="p">(</span><span class="n">view</span><span class="p">,</span> <span class="mi">60</span><span class="p">,</span> <span class="mi">40</span><span class="p">)</span>
 </code></pre></div>
 <p>The agent is closed automatically when <code>Application.kill()</code> /
 <code>Application.close()</code> is called. Use <code>app.has_qt_agent()</code> to check

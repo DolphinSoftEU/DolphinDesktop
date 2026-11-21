@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/guides/native/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/guides/native/">
       
       
         <link rel="prev" href="../">
@@ -1149,6 +1149,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Legacy Win32 Example">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#convenience-controls-on-the-win32-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Convenience controls on the win32 backend
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1930,6 +1947,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2453,7 +2498,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2669,6 +2714,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Legacy Win32 Example">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#convenience-controls-on-the-win32-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Convenience controls on the win32 backend
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2788,9 +2850,71 @@
 <a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">win</span><span class="o">.</span><span class="n">get_by_class</span><span class="p">(</span><span class="s2">&quot;Edit&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">type_text</span><span class="p">(</span><span class="s2">&quot;hello&quot;</span><span class="p">)</span>
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">win</span><span class="o">.</span><span class="n">get_by_class</span><span class="p">(</span><span class="s2">&quot;Button&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
 </code></pre></div>
+<h3 id="convenience-controls-on-the-win32-backend">Convenience controls on the win32 backend<a class="headerlink" href="#convenience-controls-on-the-win32-backend" title="Permanent link">&para;</a></h3>
+<p>The typed shortcuts locate their controls on <code>win32</code> too, for classic HWND
+controls (MFC, VB6, Delphi/VCL) and WinForms alike:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">win</span> <span class="o">=</span> <span class="n">Desktop</span><span class="o">.</span><span class="n">for_legacy_apps</span><span class="p">()</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="s2">&quot;LegacyApp.exe&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">window</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">&quot;Main Window&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">win</span><span class="o">.</span><span class="n">edit</span><span class="p">()</span><span class="o">.</span><span class="n">set_text</span><span class="p">(</span><span class="s2">&quot;Dolphin&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">win</span><span class="o">.</span><span class="n">combo_box</span><span class="p">()</span><span class="o">.</span><span class="n">select_item</span><span class="p">(</span><span class="s2">&quot;Premium&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">win</span><span class="o">.</span><span class="n">tree</span><span class="p">()</span><span class="o">.</span><span class="n">select_item_by_path</span><span class="p">(</span><span class="s2">&quot;Root&quot;</span><span class="p">,</span> <span class="s2">&quot;Child&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">win</span><span class="o">.</span><span class="n">list_box</span><span class="p">()</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>                    <span class="c1"># [&quot;Alpha&quot;, &quot;Beta&quot;, ...]</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">win</span><span class="o">.</span><span class="n">tab</span><span class="p">()</span><span class="o">.</span><span class="n">select_tab</span><span class="p">(</span><span class="s2">&quot;Advanced&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">win</span><span class="o">.</span><span class="n">check_box</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;Remember&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">exists</span><span class="p">()</span>   <span class="c1"># a BS_CHECKBOX, not the &quot;Save&quot; button</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">win</span><span class="o">.</span><span class="n">menu</span><span class="p">(</span><span class="s2">&quot;File&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(</span><span class="s2">&quot;Show dialog&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="n">win</span><span class="o">.</span><span class="n">locator</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">&quot;ready&quot;</span><span class="p">,</span> <span class="n">control_type</span><span class="o">=</span><span class="s2">&quot;Static&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">wait_for</span><span class="p">()</span>
+</code></pre></div>
+<p>The <code>win32</code> backend has no UI Automation control types. A UIA-style
+<code>control_type</code> (<code>Edit</code>, <code>ComboBox</code>, <code>Tree</code>, <code>List</code>, <code>Button</code>, <code>CheckBox</code>,
+<code>RadioButton</code>, <code>Group</code>, <code>Text</code>, <code>Tab</code>, <code>ToolBar</code>, <code>StatusBar</code>,
+<code>ProgressBar</code>, <code>Slider</code>, <code>Spinner</code>, <code>Header</code>, <code>Calendar</code>) is matched against
+pywinauto's friendly class name for the window instead. That name covers the
+classic, WinForms (<code>WindowsForms10.EDIT.*</code>), VB6 and VCL class spellings, and
+tells check boxes, radio buttons and group boxes apart from push buttons by
+their <code>BS_*</code> style. The win32 friendly names themselves (<code>Static</code>,
+<code>TreeView</code>, <code>ListBox</code>, <code>ListView</code>, <code>TabControl</code>, …) are accepted as
+<code>control_type</code> too, and a dotted .NET type such as
+<code>"System.Windows.Forms.TextBox"</code> keeps pywinauto's own WinForms meaning.</p>
+<ul>
+<li><code>tree()</code> drives <code>SysTreeView32</code> nodes through tree-view messages:
+  <code>select_item_by_path</code> selects the node, and the application gets the same
+  selection-changed notification a click produces.</li>
+<li><code>menu()</code> / <code>.item()</code> resolve a native menu bar (<code>HMENU</code>) by exact item
+  text, ignoring <code>&amp;</code> mnemonics and <code>\t</code> shortcuts. <code>click()</code> clicks the item
+  with the mouse; <code>invoke()</code> sends its <code>WM_COMMAND</code> without any input. A
+  WinForms <code>MenuStrip</code>/<code>ToolStrip</code> is a control, not an <code>HMENU</code>; locate it
+  with the <code>uia</code> backend instead. <code>&amp;&amp;</code> in a caption is a literal ampersand, so
+  <code>R&amp;&amp;D</code> is named <code>R&amp;D</code>. <code>exists()</code> and <code>is_enabled()</code> read the menu whether
+  or not it is open. <code>is_visible()</code>, <code>wait_for()</code> and <code>wait_until_hidden()</code>
+  mean on screen, and unlike on <code>uia</code> they never open the parent menu.
+  <code>is_checked()</code> reads a checkable item the same way, and <code>check()</code> /
+  <code>uncheck()</code> send its <code>WM_COMMAND</code> only when the state differs. An application
+  that sets check marks when the popup opens, as MFC <code>ON_UPDATE_COMMAND_UI</code>
+  handlers do, reports the state from the last time the popup was open.</li>
+<li>A UIA type with no Win32 window class of its own (<code>MenuItem</code> outside a
+  menu chain, <code>TreeItem</code>, <code>ListItem</code>, <code>Hyperlink</code>, <code>Pane</code>, <code>Window</code>, …)
+  raises <code>UnsupportedCapabilityError</code> at once, from <code>wait_for()</code> and
+  <code>exists()</code> alike, instead of timing out. Select such elements by
+  <code>class_name</code> / <code>title</code>, or use the <code>uia</code> backend.</li>
+<li><code>all()</code> and <code>count()</code> apply every criterion, including <code>control_id</code>,
+  <code>title_re</code> and <code>class_name_re</code>, as does the count behind a negative <code>nth()</code>.
+  <code>all()</code> and <code>count()</code> include hidden controls and every nested level. A
+  negative <code>nth()</code> counts what its lookup can select: visible controls for
+  actions, hidden ones too for <code>exists()</code>.</li>
+<li><code>list_box()</code> reads <code>items()</code> and <code>selected_items()</code> from a <code>LISTBOX</code> or a
+  <code>SysListView32</code> (first column of each row) through their own messages, and
+  <code>select_item()</code> selects an entry.</li>
+<li><code>tab().select_tab(name)</code> selects a <code>SysTabControl32</code> tab by exact text,
+  ignoring an <code>&amp;</code> mnemonic, including with the <code>TCS_BUTTONS</code> style, and the
+  application switches pages as on a click. If the selection does not change,
+  for example because the application refuses it, it raises <code>WaitTimeoutError</code>.</li>
+<li><code>text()</code> on an empty plain edit box or label returns <code>""</code> straight away. Only
+  a RichEdit or other control whose text the window text does not carry falls
+  back to select-all and the clipboard.</li>
+</ul>
 <h2 id="inspect-the-ui-tree">Inspect The UI Tree<a class="headerlink" href="#inspect-the-ui-tree" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>dolphin<span class="w"> </span>spy<span class="w"> </span>--window<span class="w"> </span><span class="s2">&quot;My Application&quot;</span><span class="w"> </span>--depth<span class="w"> </span><span class="m">3</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>dolphin<span class="w"> </span>spy<span class="w"> </span>--pick
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>dolphin<span class="w"> </span>spy<span class="w"> </span>--window<span class="w"> </span><span class="s2">&quot;My Application&quot;</span><span class="w"> </span>--depth<span class="w"> </span><span class="m">3</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>dolphin<span class="w"> </span>spy<span class="w"> </span>--pick
 </code></pre></div>
 <p>Prefer stable selectors:</p>
 <ol>
@@ -2800,16 +2924,16 @@
 <li><code>get_by_class(...)</code></li>
 </ol>
 <h2 id="common-dialogs">Common Dialogs<a class="headerlink" href="#common-dialogs" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileDialog</span><span class="p">,</span> <span class="n">MessageBox</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">win</span><span class="o">.</span><span class="n">get_by_title</span><span class="p">(</span><span class="s2">&quot;Open&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">dlg</span> <span class="o">=</span> <span class="n">FileDialog</span><span class="o">.</span><span class="n">wait_for</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">dlg</span><span class="o">.</span><span class="n">set_path</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;C:\Temp\input.txt&quot;</span><span class="p">)</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">dlg</span><span class="o">.</span><span class="n">confirm</span><span class="p">()</span>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">win</span><span class="o">.</span><span class="n">get_by_title</span><span class="p">(</span><span class="s2">&quot;Delete&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">msg</span> <span class="o">=</span> <span class="n">MessageBox</span><span class="o">.</span><span class="n">wait_for</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="n">msg</span><span class="o">.</span><span class="n">click_yes</span><span class="p">()</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileDialog</span><span class="p">,</span> <span class="n">MessageBox</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">win</span><span class="o">.</span><span class="n">get_by_title</span><span class="p">(</span><span class="s2">&quot;Open&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">dlg</span> <span class="o">=</span> <span class="n">FileDialog</span><span class="o">.</span><span class="n">wait_for</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">dlg</span><span class="o">.</span><span class="n">set_path</span><span class="p">(</span><span class="sa">r</span><span class="s2">&quot;C:\Temp\input.txt&quot;</span><span class="p">)</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="n">dlg</span><span class="o">.</span><span class="n">confirm</span><span class="p">()</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="n">win</span><span class="o">.</span><span class="n">get_by_title</span><span class="p">(</span><span class="s2">&quot;Delete&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">click</span><span class="p">()</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="n">msg</span> <span class="o">=</span> <span class="n">MessageBox</span><span class="o">.</span><span class="n">wait_for</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="n">msg</span><span class="o">.</span><span class="n">click_yes</span><span class="p">()</span>
 </code></pre></div>
 <h2 id="tips">Tips<a class="headerlink" href="#tips" title="Permanent link">&para;</a></h2>
 <ul>

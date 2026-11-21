@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/backend-capabilities/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/backend-capabilities/">
       
       
         <link rel="prev" href="../architecture/">
@@ -1828,6 +1828,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#uia-framework-and-desktop-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UIA framework and desktop contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-capability-enum" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1934,6 +1945,34 @@
     
   
     Qt Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
   
 
     
@@ -2470,7 +2509,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2656,6 +2695,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#uia-framework-and-desktop-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UIA framework and desktop contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-capability-enum" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2772,6 +2822,48 @@ because there is no tree to walk.</p>
 question "does the backend I selected support this operation?"
 BEFORE the test runs and BEFORE the operation fails opaquely at
 runtime.</p>
+<h2 id="uia-framework-and-desktop-contract">UIA framework and desktop contract<a class="headerlink" href="#uia-framework-and-desktop-contract" title="Permanent link">&para;</a></h2>
+<p>The <code>uia</code> backend consumes the Microsoft UI Automation provider exposed by
+the application. The supported application families for the native UIA
+contract are:</p>
+<table>
+<thead>
+<tr>
+<th>Application family</th>
+<th>Stable locator contract</th>
+<th>Boundary</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WPF</td>
+<td><code>AutomationProperties.AutomationId</code> as <code>auto_id</code>, together with the UIA <code>control_type</code></td>
+<td>Custom-rendered content may expose only its parent or a custom provider</td>
+</tr>
+<tr>
+<td>WinForms</td>
+<td>A provider-published <code>auto_id</code>/name and UIA <code>control_type</code></td>
+<td>Older or owner-drawn controls may expose less through UIA; consider <code>win32</code> for legacy-only surfaces</td>
+</tr>
+<tr>
+<td>WinUI / UWP</td>
+<td><code>AutomationProperties.AutomationId</code>/name and UIA <code>control_type</code></td>
+<td>The app must be started or connected through its supported desktop activation path</td>
+</tr>
+</tbody>
+</table>
+<p>An application family is not a promise that every control publishes every
+property. Prefer a stable <code>auto_id</code> plus <code>control_type</code>, wait for the required
+state, and use <code>get_by_role()</code> or <code>get_by_automation_id()</code> rather than screen
+coordinates. Custom drawing that does not publish an accessible provider is
+outside the UIA tree contract; it may require an explicitly configured image
+fallback.</p>
+<p>UIA tests that use physical input or capture pixels require a visible,
+interactive desktop. Construct <code>Desktop(backend="uia", hidden=False)</code> for
+that contract and verify the desktop before launching the AUT. Hidden mode is
+not a substitute for a visible-desktop UAT; use programmatic, headless-safe
+operations only where the selected capability and control pattern support
+them.</p>
 <h2 id="the-capability-enum">The <code>Capability</code> enum<a class="headerlink" href="#the-capability-enum" title="Permanent link">&para;</a></h2>
 <p>Every operation the library exposes is one enum member in
 <code>dolphin_desktop.Capability</code>. Adding a new capability is a public

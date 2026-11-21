@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/reference/mainframe/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/reference/mainframe/">
       
       
         <link rel="prev" href="../oracle-forms/">
@@ -1814,6 +1814,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2824,7 +2852,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -3470,6 +3498,27 @@
 <p>Mainframe terminal automation surface. See
 <a href="../../guides/mainframe/">Mainframe guide</a> for install steps and backend
 selection.</p>
+<p><code>Desktop.mainframe()</code> accepts <code>tls=False</code> (the default), <code>tls_cafile=</code>,
+<code>tls_context=</code>, and <code>allow_plaintext=</code>. Port 992 does not implicitly enable
+TLS. dolphin refuses a plaintext session to a remote host unless <code>tls=True</code>,
+the host is loopback, or <code>allow_plaintext=True</code> is passed explicitly — a port
+number, 992 included, is never treated as a substitute. Native <code>tn5250</code> TLS
+validates the CA and hostname before TN5250 data is sent. <code>s3270</code> uses its
+<code>L:</code> transport prefix, but supported trust-store settings depend on the emulator
+build. Windows Schannel builds use the Windows certificate store. Verification
+happens inside the emulator process, not in Python. dolphin explicitly
+passes <code>-verifycert</code> and rejects arguments that disable verification or
+substitute another hostname — see the
+<a href="../../guides/mainframe/#transport-security">Mainframe guide</a> for that trust
+boundary.</p>
+<p>The previous <code>tls_ca_file</code>, <code>server_hostname</code>, and <code>insecure_tls</code> parameters
+were removed. See the <a href="../../guides/mainframe/#migrating-from-the-previous-api">migration note</a>
+before upgrading an existing terminal integration.</p>
+<p>For the line-oriented <code>s3270</code> backend, <code>connect()</code> and <code>type_text()</code> reject
+control characters before process startup or stdin writes. Host action
+delimiters are rejected too. Printable text is escaped as one literal
+<code>String(...)</code> action; <code>MainframeError</code> identifies invalid host, port, or text
+input.</p>
 
 
 <div class="doc doc-object doc-class">
@@ -3700,12 +3749,18 @@ blank input area does not run the loop to end-of-row.</p>
 
 
 <a href="#dolphin_desktop._mainframe.MainframeTerminal.type_text" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">type_text</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">type_text</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Secret</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Type <em>text</em> at the current cursor position.</p>
+<p>Pass a :class:<code>~dolphin_desktop.Secret</code> for a password: the backend
+receives the real characters, while every log, trace and report masks
+the value.</p>
+<p>The s3270 backend accepts printable text only. Control characters
+raise :class:<code>MainframeError</code> before writing to the emulator. Use
+:meth:<code>press</code> to send an AID key such as Enter.</p>
 
 
     </div>
@@ -4278,7 +4333,7 @@ field or read its current value without recomputing offsets.</p>
 
 
 <a href="#dolphin_desktop._mainframe.TerminalField.type_text" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">type_text</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">clear</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">type_text</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Secret</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">clear</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4287,11 +4342,16 @@ field or read its current value without recomputing offsets.</p>
 <p>Args:
     text: Text to type. Mainframe applications typically accept
         only 7-bit ASCII/EBCDIC-representable characters; use the
-        emulator's translation for accented characters.
+        emulator's translation for accented characters. Wrap a
+        password in :class:<code>~dolphin_desktop.Secret</code> so it is masked
+        in every diagnostic.
     clear: When True (default), overwrite the field with spaces
         before typing so leftover characters do not stay. When
         False, type at the current cursor position without
         clearing — useful for suffixing.</p>
+<p>Raises:
+    MainframeError: If s3270 text contains a control character.
+        Validation happens before moving the cursor or clearing the field.</p>
 
 
     </div>
@@ -4488,9 +4548,9 @@ translates internally to its own wire format (<code>PF(3)</code> for s3270,
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>src\dolphin_desktop\_mainframe.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-66">66</a></span>
-<span class="normal"><a href="#__codelineno-0-67">67</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-66" name="__codelineno-0-66"></a><span class="k">class</span><span class="w"> </span><span class="nc">MainframeError</span><span class="p">(</span><span class="n">DolphinError</span><span class="p">):</span>
-<a id="__codelineno-0-67" name="__codelineno-0-67"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Raised when a mainframe terminal operation fails.&quot;&quot;&quot;</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#dolphin_desktop._mainframe.MainframeError--source--__codelineno-0-69">69</a></span>
+<span class="normal"><a href="#dolphin_desktop._mainframe.MainframeError--source--__codelineno-0-70">70</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="dolphin_desktop._mainframe.MainframeError--source--__codelineno-0-69" name="dolphin_desktop._mainframe.MainframeError--source--__codelineno-0-69"></a><span class="k">class</span><span class="w"> </span><span class="nc">MainframeError</span><span class="p">(</span><span class="n">DolphinError</span><span class="p">):</span>
+<a id="dolphin_desktop._mainframe.MainframeError--source--__codelineno-0-70" name="dolphin_desktop._mainframe.MainframeError--source--__codelineno-0-70"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Raised when a mainframe terminal operation fails.&quot;&quot;&quot;</span>
 </code></pre></div></td></tr></table></div>
               </details>
 

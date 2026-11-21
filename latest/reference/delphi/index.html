@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/reference/delphi/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/reference/delphi/">
       
       
         <link rel="prev" href="../java/">
@@ -1814,6 +1814,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2691,7 +2719,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -3225,8 +3253,8 @@ locator conventions.</p>
 <p>Built by :meth:<code>Desktop.launch_delphi</code> /
 :meth:<code>Desktop.attach_delphi</code>. Wraps the underlying
 :class:<code>Application</code> and exposes VCL-native selectors — forms and
-components resolved via <code>TForm.Name</code> / <code>TComponent.Name</code> on
-Delphi 10.4+ or caption / adjacency heuristics on LCL.</p>
+components resolved via provider-published UIA IDs or explicit
+caption / index / adjacency selectors on VCL and LCL.</p>
 <p>Fronts the <code>delphi</code> backend. Query supported operations via
 <code>DelphiApp.backend_supports(Capability.INVOKE)</code> etc.</p>
 
@@ -3266,9 +3294,9 @@ Delphi 10.4+ or caption / adjacency heuristics on LCL.</p>
 
         <p>Resolve a top-level TForm.</p>
 <p>Args:
-    name: The Delphi <code>TForm.Name</code> (Object Inspector Name).
-        Preferred selector on Delphi 10.4+ where it maps to
-        UIA AutomationId.
+    name: UIA AutomationId. Resolves <code>TForm.Name</code> only when
+        the application's UIA provider explicitly publishes it.
+        Standard VCL, including Delphi 12, does not guarantee this.
     title: Exact window caption (TForm.Caption).
     title_re: Regex on the window caption.
     timeout: Seconds to wait for the form to appear.</p>
@@ -3323,10 +3351,9 @@ Delphi 10.4+ or caption / adjacency heuristics on LCL.</p>
 
         <p>A single Delphi <code>TForm</code> — the top-level window.</p>
 <p>Provides the primary lookup: :meth:<code>component</code> resolves a child by
-<code>TComponent.Name</code> (the identifier the developer assigned in the
-Object Inspector). Falls back to control-type + caption or adjacent
-label for older Delphi / Lazarus builds that do not publish
-AutomationId.</p>
+a provider-published UIA AutomationId. <code>TComponent.Name</code> is usable
+only when the application's provider explicitly exposes it. Caption,
+index and adjacent-label selectors work with UIA-visible controls.</p>
 
 
 
@@ -3384,10 +3411,11 @@ AutomationId.</p>
 
         <p>Resolve a child component.</p>
 <p>Args:
-    name: The component name assigned in the Delphi Object
-        Inspector (<code>Button1</code>, <code>EdtEmployee</code>, <code>MemoLog</code>).
-        On Delphi 10.4+ maps to UIA AutomationId. On LCL,
-        treated as a fallback caption match.
+    name: Provider-published UIA AutomationId, with a legacy
+        caption fallback. This is <code>TComponent.Name</code> only if the
+        application explicitly publishes that mapping; the Delphi
+        compiler version does not guarantee it. Prefer <code>title</code>
+        for deliberate caption matching.
     cls: Optional Delphi class name (<code>"TButton"</code>,
         <code>"TEdit"</code>, <code>"TMemo"</code>). Portable — resolves to the
         UIA control_type + class-name aliases so the same lookup
@@ -3499,7 +3527,7 @@ Delphi-shaped surface (<code>component(...).click()</code>,
     <div class="doc doc-contents ">
 
         <p>The identifier used to resolve this control (TComponent.Name
-on VCL 10.4+, caption or ordinal on LCL).</p>
+when published by a provider, otherwise caption or ordinal).</p>
 
     </div>
 
@@ -3930,9 +3958,9 @@ via the underlying EM_GETLINE messages — UIA's
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>src\dolphin_desktop\_delphi.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-74">74</a></span>
-<span class="normal"><a href="#__codelineno-0-75">75</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-74" name="__codelineno-0-74"></a><span class="k">class</span><span class="w"> </span><span class="nc">DelphiError</span><span class="p">(</span><span class="n">DolphinError</span><span class="p">):</span>
-<a id="__codelineno-0-75" name="__codelineno-0-75"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Raised when a Delphi / VCL-specific operation fails.&quot;&quot;&quot;</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#dolphin_desktop._delphi.DelphiError--source--__codelineno-0-69">69</a></span>
+<span class="normal"><a href="#dolphin_desktop._delphi.DelphiError--source--__codelineno-0-70">70</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="dolphin_desktop._delphi.DelphiError--source--__codelineno-0-69" name="dolphin_desktop._delphi.DelphiError--source--__codelineno-0-69"></a><span class="k">class</span><span class="w"> </span><span class="nc">DelphiError</span><span class="p">(</span><span class="n">DolphinError</span><span class="p">):</span>
+<a id="dolphin_desktop._delphi.DelphiError--source--__codelineno-0-70" name="dolphin_desktop._delphi.DelphiError--source--__codelineno-0-70"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Raised when a Delphi / VCL-specific operation fails.&quot;&quot;&quot;</span>
 </code></pre></div></td></tr></table></div>
               </details>
 

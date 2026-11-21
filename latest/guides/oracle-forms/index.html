@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/guides/oracle-forms/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/guides/oracle-forms/">
       
       
         <link rel="prev" href="../java/">
@@ -1952,6 +1952,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2475,7 +2503,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2777,16 +2805,15 @@ speaks Forms concepts (<strong>blocks</strong>, <strong>items</strong>, <strong>
 port cleanly across Forms 10g / 11g / 12c and remain readable.</p>
 <h2 id="what-works">What works<a class="headerlink" href="#what-works" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Direct JAB API</strong> for reads and writes. <code>type_text()</code> uses
-  <code>setTextContents</code>; <code>text()</code> / <code>value()</code> use <code>getAccessibleTextRange</code>;
-  buttons and menu items invoke via <code>doAccessibleActions</code>. Zero mouse
-  cursor movement, zero global keyboard capture — the tests run
-  reliably from background processes, RDP sessions, and CI machines
-  where <code>SetForegroundWindow</code> is blocked by the OS.</li>
-<li><strong>Function keys</strong> (F1–F12 + Shift/Ctrl/Alt combinations) delivered
-  via <code>PostMessage(WM_KEYDOWN)</code> to the target HWND. Works without
-  foregrounding the window; hits the Swing <code>InputMap</code>/<code>ActionMap</code>
-  chain the way a real user's keystroke would.</li>
+<li><strong>JAB reads and writes.</strong> Item <code>type_text(clear=True)</code> first tries
+  <code>setTextContents</code>; reads use the target's accessible text/value interfaces.
+  Buttons and menu items first try accessible actions. These paths can avoid
+  physical input, but missing actions or editable-text support can trigger a
+  foreground mouse/keyboard fallback. <code>clear=False</code> also uses keyboard input.
+  Verify the selected operations before relying on background execution.</li>
+<li><strong>Function keys.</strong> Unmodified keys use window-targeted messages.
+  Shift/Ctrl/Alt combinations require foreground input; see the key-binding
+  and modifier limitations below.</li>
 <li><strong>Menu bar</strong> navigation via ALT+first-letter mnemonic and JAB action
   invocation on the resolved menu item.</li>
 <li><strong>List of Values (F9)</strong> wrapper — <code>.lov().select("SMITH")</code> opens
@@ -2799,7 +2826,7 @@ port cleanly across Forms 10g / 11g / 12c and remain readable.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span><span class="p">,</span> <span class="n">OracleFormsKey</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">app</span> <span class="o">=</span> <span class="n">Desktop</span><span class="p">()</span><span class="o">.</span><span class="n">launch_oracle_forms</span><span class="p">(</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">jnlp</span><span class="o">=</span><span class="s2">&quot;http://forms.example.com/forms/frmservlet?config=hr&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">jnlp</span><span class="o">=</span><span class="s2">&quot;https://forms.example.com/forms/frmservlet?config=hr&quot;</span><span class="p">,</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">form</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="n">form</span><span class="p">()</span>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">form</span><span class="o">.</span><span class="n">wait_ready</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>
@@ -2966,7 +2993,7 @@ modifier combos need a usable input desktop.</p>
 named shortcuts (<code>app.enter_query()</code>, <code>app.execute_query()</code>, …).</p>
 <p><strong>F10 caveat.</strong> Swing intercepts F10 for menu-bar activation before
 the InputMap fires. In real Forms 12c the Save keybinding still works
-because Forms overrides the default; in the mock we ship, F10 opens
+because Forms overrides the default; a Swing host can instead open
 the menu bar. If your target Forms build has the same limitation, use
 <code>app.menu("Action").select("Save")</code> instead.</p>
 <h2 id="enabling-the-java-access-bridge">Enabling the Java Access Bridge<a class="headerlink" href="#enabling-the-java-access-bridge" title="Permanent link">&para;</a></h2>
@@ -2978,9 +3005,15 @@ by hand:</p>
 <p>The JVM the Forms client uses must be launched with
 <code>-Djava.accessibility=true</code> (dolphin's <code>launch_oracle_forms</code> adds this
 flag by default) so the JVM loads the JAB helper on startup.</p>
+<p>The bridge DLL and <code>jabswitch.exe</code> are loaded/run only from the absolute
+<code>JAVA_HOME\bin</code> location configured explicitly in the environment. Dolphin does not load a
+bare <code>windowsaccessbridge-64.dll</code> or <code>jabswitch.exe</code> name from the current
+directory or ambient <code>PATH</code>; keep <code>JAVA_HOME</code> pointed at a trusted JRE/JDK
+installation. If that absolute JDK path or executable is unavailable,
+initialization fails closed.</p>
 <h2 id="backend-selection">Backend selection<a class="headerlink" href="#backend-selection" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Java Web Start (real Oracle Forms deployment)</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_oracle_forms</span><span class="p">(</span><span class="n">jnlp</span><span class="o">=</span><span class="s2">&quot;http://forms.example.com/frmservlet&quot;</span><span class="p">)</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_oracle_forms</span><span class="p">(</span><span class="n">jnlp</span><span class="o">=</span><span class="s2">&quot;https://forms.example.com/frmservlet&quot;</span><span class="p">)</span>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Forms Standalone Launcher (FSAL) — bundled JAR</span>
 <a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">app</span> <span class="o">=</span> <span class="n">desktop</span><span class="o">.</span><span class="n">launch_oracle_forms</span><span class="p">(</span><span class="n">jar</span><span class="o">=</span><span class="sa">r</span><span class="s2">&quot;C:\forms\frmsal.jar&quot;</span><span class="p">)</span>
@@ -3020,13 +3053,13 @@ the app directly works too.</p>
 <a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>    <span class="n">form_app</span><span class="o">.</span><span class="n">execute_query</span><span class="p">()</span>
 <a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>    <span class="k">assert</span> <span class="s2">&quot;Record 1&quot;</span> <span class="ow">in</span> <span class="n">form_app</span><span class="o">.</span><span class="n">status_line</span><span class="p">()</span>
 </code></pre></div>
-<p>The <code>tests/oracle_forms/</code> directory ships a full
-Swing mock and a 14-test integration suite as a reference.</p>
+<p>For a runnable Java Access Bridge example, see <code>examples/java_swing/</code>.</p>
 <h2 id="common-failure-modes">Common failure modes<a class="headerlink" href="#common-failure-modes" title="Permanent link">&para;</a></h2>
 <p><strong><code>OracleFormsError: no top-level window found</code></strong>
 : The JVM launched but its window is not surfaced to pywinauto. Check
-  that JAB is enabled (<code>jabswitch /enable</code>) and that
-  <code>windowsaccessbridge-64.dll</code> is on PATH.</p>
+  that JAB is enabled (<code>jabswitch /enable</code>) and that <code>JAVA_HOME</code> points to
+  the trusted JRE/JDK containing <code>bin\windowsaccessbridge-64.dll</code> and
+  <code>bin\jabswitch.exe</code>.</p>
 <p><strong><code>Oracle Forms window did not become ready</code></strong>
 : JAB never established a root-context handshake. Increase
   <code>startup_delay</code> on <code>launch_oracle_forms</code>, or verify with

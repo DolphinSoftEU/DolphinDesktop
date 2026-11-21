@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/guides/cef-legacy/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/guides/cef-legacy/">
       
       
         <link rel="prev" href="../embedded-web/">
@@ -1309,10 +1309,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#legacy-ie-trident" class="md-nav__link">
+  <a href="#legacy-ie-trident-legacy-limited-scope" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Legacy IE / Trident
+        Legacy IE / Trident (legacy, limited scope)
       
     </span>
   </a>
@@ -1908,6 +1908,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2431,7 +2459,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2639,10 +2667,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#legacy-ie-trident" class="md-nav__link">
+  <a href="#legacy-ie-trident-legacy-limited-scope" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Legacy IE / Trident
+        Legacy IE / Trident (legacy, limited scope)
       
     </span>
   </a>
@@ -2708,8 +2736,14 @@
 <p>Capture templates with:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>dolphin<span class="w"> </span>spy<span class="w"> </span>--image-pick<span class="w"> </span>--output-dir<span class="w"> </span>templates
 </code></pre></div>
-<h2 id="legacy-ie-trident">Legacy IE / Trident<a class="headerlink" href="#legacy-ie-trident" title="Permanent link">&para;</a></h2>
+<h2 id="legacy-ie-trident-legacy-limited-scope">Legacy IE / Trident (legacy, limited scope)<a class="headerlink" href="#legacy-ie-trident-legacy-limited-scope" title="Permanent link">&para;</a></h2>
 <p>Older applications may host MSHTML through a WebBrowser control.</p>
+<p>IE/Trident is not a separate DolphinDesktop backend or formal capability in
+the 0.2.0 Support Matrix; the Internet Explorer 11 shell is explicitly
+out-of-scope because the technology is end-of-life. The example below is a
+best-effort UIA/Win32 automation recipe for applications that still expose
+their embedded control. <code>Application.is_legacy_ie()</code> is a diagnostic detector,
+not a guarantee of supported DOM automation or a positive UAT claim.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dolphin_desktop</span><span class="w"> </span><span class="kn">import</span> <span class="n">Desktop</span>
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">desktop</span> <span class="o">=</span> <span class="n">Desktop</span><span class="p">()</span>

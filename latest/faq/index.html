@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/faq/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/faq/">
       
       
         <link rel="prev" href="../reference/cli/">
@@ -1812,6 +1812,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2335,7 +2363,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2877,7 +2905,8 @@
 <h2 id="does-dolphin-work-on-macos-or-linux">Does Dolphin work on macOS or Linux?<a class="headerlink" href="#does-dolphin-work-on-macos-or-linux" title="Permanent link">&para;</a></h2>
 <p>No. The documented runtime target is Windows desktop automation. The package has placeholder backend classes for future or plugin use, but Dolphin's implemented product path depends on Windows UIA, Win32, COM, and pywin32.</p>
 <h2 id="which-python-versions-are-supported">Which Python versions are supported?<a class="headerlink" href="#which-python-versions-are-supported" title="Permanent link">&para;</a></h2>
-<p>Python 3.11 or newer. The package metadata currently allows Python 3.11+.</p>
+<p>For the 0.2.0 release, the supported range is Python 3.11–3.13. The package
+metadata rejects Python 3.14 and newer until a release explicitly adds support.</p>
 <h2 id="do-i-have-to-use-pytest">Do I have to use pytest?<a class="headerlink" href="#do-i-have-to-use-pytest" title="Permanent link">&para;</a></h2>
 <p>No. <code>Desktop</code>, <code>Application</code>, <code>Window</code>, and <code>Locator</code> are normal Python objects. Pytest is recommended because the package provides fixtures, CLI options, retries, traces, screenshots, videos, and cleanup.</p>
 <h2 id="why-does-dolphin-init-my-tests-ask-for-a-template">Why does <code>dolphin init my-tests</code> ask for a template?<a class="headerlink" href="#why-does-dolphin-init-my-tests-ask-for-a-template" title="Permanent link">&para;</a></h2>
@@ -2886,7 +2915,7 @@
 </code></pre></div>
 <h2 id="the-desktop-or-launch-fixture-is-missing">The <code>desktop</code> or <code>launch</code> fixture is missing.<a class="headerlink" href="#the-desktop-or-launch-fixture-is-missing" title="Permanent link">&para;</a></h2>
 <p>Install Dolphin in the same environment that runs pytest:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span>dolphin-desktop<span class="w"> </span>pytest
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[pytest]==0.2.0&quot;</span>
 </code></pre></div>
 <p>The plugin is loaded through the <code>pytest11</code> package entry point. You do not need to import it in <code>conftest.py</code>.</p>
 <h2 id="my-locator-times-out-but-i-can-see-the-element">My locator times out, but I can see the element.<a class="headerlink" href="#my-locator-times-out-but-i-can-see-the-element" title="Permanent link">&para;</a></h2>
@@ -2894,7 +2923,7 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>dolphin<span class="w"> </span>spy<span class="w"> </span>--window<span class="w"> </span><span class="s2">&quot;App Title&quot;</span><span class="w"> </span>--depth<span class="w"> </span><span class="m">3</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>dolphin<span class="w"> </span>spy<span class="w"> </span>--pick
 </code></pre></div>
-<p>The visible label may not be the UIA title, and the control type may differ from what you expect. For example, Windows Notepad exposes the editor as <code>Document</code>.</p>
+<p>The visible label may not be the UIA title, and the control type may differ from what you expect. For example, Windows Notepad can expose the editor as <code>Document</code> or, in classic Windows 10 Notepad, <code>Edit</code>.</p>
 <h2 id="which-selector-should-i-prefer">Which selector should I prefer?<a class="headerlink" href="#which-selector-should-i-prefer" title="Permanent link">&para;</a></h2>
 <p>Prefer selectors in this order when the app exposes them:</p>
 <ol>

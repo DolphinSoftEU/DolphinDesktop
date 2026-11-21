@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/reference/cdp/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/reference/cdp/">
       
       
         <link rel="prev" href="../mainframe/">
@@ -1801,6 +1801,34 @@
     
   
     Qt Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
   
 
     
@@ -3699,7 +3727,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -5336,6 +5364,17 @@ and fall back to the cached page if the scan finds nothing better.</p>
     for a page whose URL is non-blank (i.e. the actual UI
     renderer) so <code>session.page</code> points at a stable target,
     not a short-lived helper that closes moments later.</p>
+<div class="highlight"><pre><span></span><code>Sessions opened on the same thread share one Playwright driver,
+each with its own CDP connection, so a second session (for
+example ``playwright_compat``&#39;s ``connect_over_cdp`` next to a
+session from :meth:`Desktop.launch_electron_cdp`) does not trip
+Playwright&#39;s one-sync-instance-per-thread rule. Closing one
+session leaves the others connected; the driver stops with the
+last of them. Close every session, on the thread that opened it,
+before that thread ends: a session left open keeps the driver
+(a ``node`` process) running until it is closed or garbage
+collected.
+</code></pre></div>
 
 
     </div>
@@ -5379,6 +5418,15 @@ selected page has closed, nothing else clears the selection. The next
     <div class="doc doc-contents ">
 
         <p>Return every non-closed page across every browser context.</p>
+<p>Playwright's sync API delivers protocol events (a window the app just
+opened, a page that closed) only while one of its own calls runs. A
+caller polling this method between plain <code>time.sleep</code> calls would
+therefore get the same list forever. Each call first makes one
+zero-length round trip to the Playwright driver, which delivers every
+event the driver has already sent. A new window is listed once
+Playwright has finished attaching to it, which can take a few round
+trips after it appears: poll this method, or use :meth:<code>expect_popup</code>
+to wait for a popup. The current page is never changed here.</p>
 
 
     </div>
@@ -5480,7 +5528,8 @@ prefer :meth:<code>CDPLocator.press_key</code>.</p>
 
         <p>Capture the current page as a :class:<code>PIL.Image</code>.</p>
 <p>The result is a PIL image (dolphin already depends on Pillow).
-Passing <em>path</em> saves the image before returning it.</p>
+Passing <em>path</em> saves the image before returning it. Only PNG and
+JPEG payloads are decoded — see :func:<code>_decode_screenshot</code>.</p>
 
 
     </div>
@@ -6515,6 +6564,17 @@ roots). Examples:</p>
 session kept in a fixture would otherwise hold the whole dead
 Playwright object graph — pages, contexts, handlers — alive for the
 rest of the run.</p>
+<p>Only this session's CDP connection is closed. The thread's shared
+Playwright driver keeps serving other open sessions and stops when
+the last one closes.</p>
+<p>Raises:
+    DolphinError: if called on a thread other than the one that
+        opened the session with :meth:<code>connect</code>. Playwright's sync
+        objects are bound to that thread (a foreign thread gets
+        <code>greenlet.error</code> and the driver keeps running), so closing
+        from elsewhere could only pretend to succeed. Nothing is
+        changed: the session stays open and its owner thread can
+        still close it.</p>
 
 
     </div>
@@ -6697,14 +6757,15 @@ that does not target an element use :meth:<code>CDPSession.press_key</code>.</p>
 
 
 <a href="#dolphin_desktop._cdp.CDPLocator.type_text" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">type_text</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">10.0</span><span class="p">,</span> <span class="n">clear</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CDPLocator</span>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">type_text</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Secret</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">10.0</span><span class="p">,</span> <span class="n">clear</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CDPLocator</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Fill the element with <em>text</em>.</p>
 <p>By default clears the field first (<code>fill</code> semantics). Pass
-<code>clear=False</code> to append instead (<code>type</code> semantics — key-by-key).</p>
+<code>clear=False</code> to append instead (<code>type</code> semantics — key-by-key).
+A :class:<code>~dolphin_desktop.Secret</code> is accepted for password fields.</p>
 
 
     </div>
@@ -6719,7 +6780,7 @@ that does not target an element use :meth:<code>CDPSession.press_key</code>.</p>
 
 
 <a href="#dolphin_desktop._cdp.CDPLocator.set_text" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_text</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">10.0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CDPLocator</span>
+<div class="doc-signature highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">set_text</span><span class="p">(</span><span class="n">text</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Secret</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">10.0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CDPLocator</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -6866,7 +6927,7 @@ list of actually-selected values (Playwright semantics).</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return the <code>value</code> of an <input>/<textarea>/<select>.</p>
+        <p>Return the <code>value</code> of an <code>&lt;input&gt;</code>, <code>&lt;textarea&gt;</code> or <code>&lt;select&gt;</code>.</p>
 
 
     </div>
@@ -7880,33 +7941,33 @@ its protocol implementation is a separate install
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>src\dolphin_desktop\_cdp.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-218">218</a></span>
-<span class="normal"><a href="#__codelineno-0-219">219</a></span>
-<span class="normal"><a href="#__codelineno-0-220">220</a></span>
-<span class="normal"><a href="#__codelineno-0-221">221</a></span>
-<span class="normal"><a href="#__codelineno-0-222">222</a></span>
-<span class="normal"><a href="#__codelineno-0-223">223</a></span>
-<span class="normal"><a href="#__codelineno-0-224">224</a></span>
-<span class="normal"><a href="#__codelineno-0-225">225</a></span>
-<span class="normal"><a href="#__codelineno-0-226">226</a></span>
-<span class="normal"><a href="#__codelineno-0-227">227</a></span>
-<span class="normal"><a href="#__codelineno-0-228">228</a></span>
-<span class="normal"><a href="#__codelineno-0-229">229</a></span>
-<span class="normal"><a href="#__codelineno-0-230">230</a></span>
-<span class="normal"><a href="#__codelineno-0-231">231</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-218" name="__codelineno-0-218"></a><span class="k">def</span><span class="w"> </span><span class="nf">is_cdp_available</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<a id="__codelineno-0-219" name="__codelineno-0-219"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Return True when the ``[cdp]`` extra is installed.</span>
-<a id="__codelineno-0-220" name="__codelineno-0-220"></a>
-<a id="__codelineno-0-221" name="__codelineno-0-221"></a><span class="sd">    Public probe so tests can ``pytest.skip`` without importing Playwright</span>
-<a id="__codelineno-0-222" name="__codelineno-0-222"></a><span class="sd">    themselves — matches the autonomous-library contract. Note this only</span>
-<a id="__codelineno-0-223" name="__codelineno-0-223"></a><span class="sd">    checks the Python package: the Chromium browser Playwright uses for</span>
-<a id="__codelineno-0-224" name="__codelineno-0-224"></a><span class="sd">    its protocol implementation is a separate install</span>
-<a id="__codelineno-0-225" name="__codelineno-0-225"></a><span class="sd">    (:func:`cdp_install_hint` returns the exact command).</span>
-<a id="__codelineno-0-226" name="__codelineno-0-226"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-227" name="__codelineno-0-227"></a>    <span class="k">try</span><span class="p">:</span>
-<a id="__codelineno-0-228" name="__codelineno-0-228"></a>        <span class="kn">import</span><span class="w"> </span><span class="nn">playwright.sync_api</span>  <span class="c1"># noqa: F401</span>
-<a id="__codelineno-0-229" name="__codelineno-0-229"></a>    <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
-<a id="__codelineno-0-230" name="__codelineno-0-230"></a>        <span class="k">return</span> <span class="kc">False</span>
-<a id="__codelineno-0-231" name="__codelineno-0-231"></a>    <span class="k">return</span> <span class="kc">True</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-268">268</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-269">269</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-270">270</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-271">271</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-272">272</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-273">273</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-274">274</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-275">275</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-276">276</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-277">277</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-278">278</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-279">279</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-280">280</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-281">281</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-268" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-268"></a><span class="k">def</span><span class="w"> </span><span class="nf">is_cdp_available</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-269" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-269"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Return True when the ``[cdp]`` extra is installed.</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-270" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-270"></a>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-271" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-271"></a><span class="sd">    Public probe so tests can ``pytest.skip`` without importing Playwright</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-272" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-272"></a><span class="sd">    themselves — matches the autonomous-library contract. Note this only</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-273" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-273"></a><span class="sd">    checks the Python package: the Chromium browser Playwright uses for</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-274" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-274"></a><span class="sd">    its protocol implementation is a separate install</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-275" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-275"></a><span class="sd">    (:func:`cdp_install_hint` returns the exact command).</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-276" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-276"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-277" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-277"></a>    <span class="k">try</span><span class="p">:</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-278" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-278"></a>        <span class="kn">import</span><span class="w"> </span><span class="nn">playwright.sync_api</span>  <span class="c1"># noqa: F401</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-279" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-279"></a>    <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-280" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-280"></a>        <span class="k">return</span> <span class="kc">False</span>
+<a id="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-281" name="dolphin_desktop._cdp.is_cdp_available--source--__codelineno-0-281"></a>    <span class="k">return</span> <span class="kc">True</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7933,19 +7994,19 @@ have to hardcode the command in every test file.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>src\dolphin_desktop\_cdp.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-234">234</a></span>
-<span class="normal"><a href="#__codelineno-0-235">235</a></span>
-<span class="normal"><a href="#__codelineno-0-236">236</a></span>
-<span class="normal"><a href="#__codelineno-0-237">237</a></span>
-<span class="normal"><a href="#__codelineno-0-238">238</a></span>
-<span class="normal"><a href="#__codelineno-0-239">239</a></span>
-<span class="normal"><a href="#__codelineno-0-240">240</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-234" name="__codelineno-0-234"></a><span class="k">def</span><span class="w"> </span><span class="nf">cdp_install_hint</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
-<a id="__codelineno-0-235" name="__codelineno-0-235"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Return a human-readable install command for the CDP extra.</span>
-<a id="__codelineno-0-236" name="__codelineno-0-236"></a>
-<a id="__codelineno-0-237" name="__codelineno-0-237"></a><span class="sd">    Public helper for skip messages and error surfaces so callers do not</span>
-<a id="__codelineno-0-238" name="__codelineno-0-238"></a><span class="sd">    have to hardcode the command in every test file.</span>
-<a id="__codelineno-0-239" name="__codelineno-0-239"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-240" name="__codelineno-0-240"></a>    <span class="k">return</span> <span class="n">_INSTALL_HINT</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-284">284</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-285">285</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-286">286</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-287">287</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-288">288</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-289">289</a></span>
+<span class="normal"><a href="#dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-290">290</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-284" name="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-284"></a><span class="k">def</span><span class="w"> </span><span class="nf">cdp_install_hint</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-285" name="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-285"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Return a human-readable install command for the CDP extra.</span>
+<a id="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-286" name="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-286"></a>
+<a id="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-287" name="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-287"></a><span class="sd">    Public helper for skip messages and error surfaces so callers do not</span>
+<a id="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-288" name="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-288"></a><span class="sd">    have to hardcode the command in every test file.</span>
+<a id="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-289" name="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-289"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-290" name="dolphin_desktop._cdp.cdp_install_hint--source--__codelineno-0-290"></a>    <span class="k">return</span> <span class="n">_INSTALL_HINT</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

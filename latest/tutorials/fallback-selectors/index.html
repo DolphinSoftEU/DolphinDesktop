@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/tutorials/fallback-selectors/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/tutorials/fallback-selectors/">
       
       
         <link rel="prev" href="../object-repository/">
@@ -1941,6 +1941,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2464,7 +2492,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2773,6 +2801,12 @@ Dolphin tries the primary criteria first; if that times out, it tries each fallb
 </code></pre></div>
 <p>If the primary fails and <code>auto_id="btnSave"</code> matches, Dolphin clicks that element and logs
 a self-healing event.</p>
+<p>Fallbacks are explicit selector criteria. Dolphin does not infer semantic matches or replace
+them with fuzzy/best-match lookup, so a similar title that does not match the declared
+criteria still results in <code>ElementNotFoundError</code> and no self-healing event.</p>
+<p>Each entry in <code>fallback</code> must be a selector mapping. Invalid entries are rejected when the
+locator is created with a <code>ValueError</code> that identifies the zero-based entry, for example
+<code>fallback[1]</code>; no lookup or self-healing event is attempted.</p>
 <hr />
 <h2 id="image-based-fallback">Image-based fallback<a class="headerlink" href="#image-based-fallback" title="Permanent link">&para;</a></h2>
 <p>When UIA criteria all fail, fall back to template matching:</p>
@@ -2787,6 +2821,10 @@ a self-healing event.</p>
 </code></pre></div>
 <p>The template image is matched against the live screen using OpenCV.
 Requires <code>pip install dolphin-desktop[vision]</code>.</p>
+<p>If the template file is missing, <code>FileNotFoundError</code> is raised with the
+<code>image_fallback</code> path. If the file exists but cannot be decoded, <code>ValueError</code> is raised.
+A valid template that simply does not match the screen keeps the normal locator
+not-found behavior.</p>
 <hr />
 <h2 id="inspecting-self-healing-events">Inspecting self-healing events<a class="headerlink" href="#inspecting-self-healing-events" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>dolphin<span class="w"> </span>selfheal-stats<span class="w"> </span>--last<span class="w"> </span><span class="m">20</span>

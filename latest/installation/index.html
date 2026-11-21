@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://dolphinsoft.pl/latest/installation/">
+        <link rel="canonical" href="https://dolphinsoft.pl/docs/latest/installation/">
       
       
         <link rel="prev" href="..">
@@ -653,10 +653,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#basic-install" class="md-nav__link">
+  <a href="#pypi-installation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Basic Install
+        PyPI installation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#base-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Base dependencies
       
     </span>
   </a>
@@ -712,6 +723,17 @@
     <span class="md-ellipsis">
       
         Common Setup Problems
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-these-docs-from-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build these docs from source
       
     </span>
   </a>
@@ -1938,6 +1960,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/qt-agent-system-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Qt Isolation Validation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2461,7 +2511,7 @@
   <span class="md-ellipsis">
     
   
-    Excel / Word
+    Office COM
   
 
     
@@ -2658,10 +2708,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#basic-install" class="md-nav__link">
+  <a href="#pypi-installation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Basic Install
+        PyPI installation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#base-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Base dependencies
       
     </span>
   </a>
@@ -2723,6 +2784,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#build-these-docs-from-source" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build these docs from source
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2747,18 +2819,26 @@
 <h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Windows 10 or Windows 11.</li>
-<li>Python 3.11 or newer.</li>
+<li>Python 3.11, 3.12, or 3.13 for the 0.2.0 release.</li>
 <li>A terminal running as the same Windows user as the application under test.</li>
 </ul>
 <p>Dolphin uses Microsoft UI Automation, Win32 APIs, pywin32, and COM. macOS and Linux are not supported runtime targets for the documented desktop automation flow.</p>
-<h2 id="basic-install">Basic Install<a class="headerlink" href="#basic-install" title="Permanent link">&para;</a></h2>
-<p>Install the package:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>dolphin-desktop
+<h2 id="pypi-installation">PyPI installation<a class="headerlink" href="#pypi-installation" title="Permanent link">&para;</a></h2>
+<p>This documentation describes <strong>0.2.0</strong>, released on <strong>2026-11-21</strong>.
+Install the release from <a href="https://pypi.org/project/dolphin-desktop/">PyPI</a>
+in a dedicated environment:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">python</span> <span class="n">-m</span> <span class="n">venv</span> <span class="p">.</span><span class="n">venv</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="p">.\.</span><span class="n">venv</span><span class="p">\</span><span class="n">Scripts</span><span class="p">\</span><span class="n">Activate</span><span class="p">.</span><span class="n">ps1</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">python</span> <span class="n">-m</span> <span class="n">pip</span> <span class="n">install</span> <span class="s2">&quot;dolphin-desktop[pytest]==0.2.0&quot;</span>
 </code></pre></div>
-<p>For a pytest project, install pytest in the same environment:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span>dolphin-desktop<span class="w"> </span>pytest
+<p>This installs pytest and Allure support with Dolphin's compatible pytest range.
+For repeatable CI, pin Dolphin to <code>0.2.0</code> and lock the full dependency set.
+Generated project metadata names <code>dolphin-desktop</code> without pinning a release.</p>
+<p>To install only the base package:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">python</span> <span class="n">-m</span> <span class="n">pip</span> <span class="n">install</span> <span class="s2">&quot;dolphin-desktop==0.2.0&quot;</span>
 </code></pre></div>
-<p>The base package installs:</p>
+<h2 id="base-dependencies">Base dependencies<a class="headerlink" href="#base-dependencies" title="Permanent link">&para;</a></h2>
+<p>On Windows, the base package installs:</p>
 <table>
 <thead>
 <tr>
@@ -2827,8 +2907,8 @@
 </tr>
 <tr>
 <td><code>all</code></td>
-<td>everything in <code>cdp</code>, <code>fast</code>, <code>pytest</code> and <code>vision</code></td>
-<td>You want every runtime extra in one install. Excludes <code>telemetry</code>, which reports off the machine and is opted into by name.</td>
+<td><code>cdp</code>, <code>fast</code>, <code>pytest</code> and <code>vision</code></td>
+<td>Install these four extras together. <code>docs</code> and <code>telemetry</code> are separate choices.</td>
 </tr>
 <tr>
 <td><code>docs</code></td>
@@ -2837,8 +2917,8 @@
 </tr>
 </tbody>
 </table>
-<p>Working on Dolphin itself needs the development toolchain, which is a
-dependency group rather than an extra: <code>uv sync --group dev</code>.</p>
+<p>In a source checkout, development tools are a dependency group rather than
+a package extra: <code>uv sync --locked --group dev</code>. See <code>CONTRIBUTING.md</code> in the source checkout for component prerequisites.</p>
 <h2 id="stacks-that-need-no-extra">Stacks that need no extra<a class="headerlink" href="#stacks-that-need-no-extra" title="Permanent link">&para;</a></h2>
 <p>SAP, Qt, IBM mainframe and Oracle Forms are supported by the base package —
 there is nothing to add with <code>pip</code>, because what they need is not a Python
@@ -2855,7 +2935,7 @@ wheel:</p>
 <li><strong>Oracle Forms / Java Swing</strong> — the Java Access Bridge ships with the
   Adoptium or Oracle JDK and is enabled with <code>jabswitch /enable</code>.</li>
 </ul>
-<p>Examples:</p>
+<p>After installing Dolphin above, add optional extras in the same environment:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[vision]&quot;</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[fast,pytest]&quot;</span>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;dolphin-desktop[docs]&quot;</span>
@@ -2895,6 +2975,10 @@ wheel:</p>
 <td><code>enterprise</code></td>
 <td>Standard files plus Allure config, GitHub Actions, <code>.gitignore</code>, and pre-commit config</td>
 </tr>
+<tr>
+<td><code>sap</code>, <code>qt</code>, <code>electron</code>, <code>mainframe</code>, <code>oracle-forms</code>, <code>delphi</code></td>
+<td>Stack-specific starter tests and prerequisites; see <code>dolphin init --help</code></td>
+</tr>
 </tbody>
 </table>
 <h2 id="common-setup-problems">Common Setup Problems<a class="headerlink" href="#common-setup-problems" title="Permanent link">&para;</a></h2>
@@ -2908,6 +2992,14 @@ wheel:</p>
 <p>Run the test process as Administrator too. Windows integrity levels prevent a non-elevated process from driving elevated windows.</p>
 <p>Image matching fails:</p>
 <p>Install the <code>vision</code> extra and make sure your template image matches the target DPI and theme.</p>
+<h2 id="build-these-docs-from-source">Build these docs from source<a class="headerlink" href="#build-these-docs-from-source" title="Permanent link">&para;</a></h2>
+<p>From a checkout containing <code>pyproject.toml</code> and <code>uv.lock</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">uv</span> <span class="n">sync</span> <span class="p">-</span><span class="n">-locked</span> <span class="p">-</span><span class="n">-group</span> <span class="n">dev</span> <span class="p">-</span><span class="n">-extra</span> <span class="n">docs</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">uv</span> <span class="n">run</span> <span class="p">-</span><span class="n">-no-sync</span> <span class="n">mkdocs</span> <span class="n">serve</span>
+</code></pre></div>
+<p>Use <code>uv run --no-sync mkdocs build --strict</code> to check a documentation change.
+The navigation, public base URL, release notice and API rendering are configured
+in <code>mkdocs.yml</code>. API pages read signatures from <code>src/</code>.</p>
 
 
 
