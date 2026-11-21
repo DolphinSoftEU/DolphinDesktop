@@ -42,5 +42,4 @@ DelphiVCL runtime regression and `docs/guides/delphi.md` for prerequisites.
 * `TLabel` status assertion (LblStatus)
 
 Focused save/clear and checkbox regressions live at
-`tests/delphi/test_sample_lcl.py`. The complete widget and application workflow
-suite is maintained in the separate acceptance repository.
+`tests/delphi/test_sample_lcl.py`.

@@ -169,7 +169,6 @@ def test_forms_reachable():
 ```
 
 For a public Java Access Bridge example, see `examples/java_swing/`.
-The Forms-specific Swing mock is maintained with the separate acceptance suite.
 
 ### Mainframe 3270 (z/OS TSO, CICS)
 

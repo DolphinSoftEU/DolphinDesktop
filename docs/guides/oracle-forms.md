@@ -113,7 +113,7 @@ named shortcuts (`app.enter_query()`, `app.execute_query()`, …).
 
 **F10 caveat.** Swing intercepts F10 for menu-bar activation before
 the InputMap fires. In real Forms 12c the Save keybinding still works
-because Forms overrides the default; in the separate acceptance mock, F10 opens
+because Forms overrides the default; a Swing host can instead open
 the menu bar. If your target Forms build has the same limitation, use
 `app.menu("Action").select("Save")` instead.
 
@@ -190,8 +190,7 @@ def test_query_runs(form_app):
     assert "Record 1" in form_app.status_line()
 ```
 
-Maintainer acceptance includes a controlled Swing Forms mock in the separate
-test repository. For a runnable public JAB example, see `examples/java_swing/`.
+For a runnable Java Access Bridge example, see `examples/java_swing/`.
 
 ## Common failure modes
 

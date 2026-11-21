@@ -1,7 +1,7 @@
 # DolphinDesktop
 
 [![PyPI](https://img.shields.io/pypi/v/dolphin-desktop.svg)](https://pypi.org/project/dolphin-desktop/)
-[![Python](https://img.shields.io/badge/python-3.11--3.13-blue.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.11--3.13-blue.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/pyproject.toml)
 [![Platform](https://img.shields.io/badge/platform-Windows-informational.svg)](https://github.com/DolphinSoftEU/DolphinDesktop)
 [![CI](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml?query=branch%3Amaster)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/LICENSE)
@@ -12,7 +12,7 @@ mainframe terminals and Office COM. Lazy locators, automatic waits and pytest
 fixtures share a common style, with stack-specific facades where needed.
 
 **Release:** **0.2.0** — **2026-11-21**. See the
-[changelog](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/CHANGELOG.md)
+[changelog](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CHANGELOG.md)
 for changes from 0.1.0.
 
 ## Requirements
@@ -51,7 +51,7 @@ The default scaffold creates a Notepad test and a Page Object under `objects/`.
 Run it in the environment where Dolphin was installed. The generated project's
 dependency metadata names `dolphin-desktop`.
 For locked repository development, follow
-[CONTRIBUTING.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CONTRIBUTING.md).
 
 The underlying API can also be used directly:
 
@@ -156,7 +156,7 @@ prerequisites; their presence in `tests/` does not establish a passing run on
 every product/version. A skipped test is incomplete verification.
 
 See the [current CI runs](https://github.com/DolphinSoftEU/DolphinDesktop/actions/workflows/ci.yml)
-and [contributing guide](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/CONTRIBUTING.md)
+and [contributing guide](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CONTRIBUTING.md)
 for test categories, setup and desktop acceptance commands.
 
 ## Documentation and development
@@ -165,16 +165,16 @@ for test categories, setup and desktop acceptance commands.
   guides and API reference.
 - [Getting Started](https://dolphinsoft.pl/docs/getting-started) and
   [Quickstart](https://dolphinsoft.pl/docs/quickstart).
-- [0.2.0 documentation sources](https://github.com/DolphinSoftEU/DolphinDesktop/tree/v0.2.0/docs)
+- [0.2.0 documentation sources](https://github.com/DolphinSoftEU/DolphinDesktop/tree/master/docs)
   for this release; hosted documentation may lag these changes.
-- [Contributing](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/CONTRIBUTING.md)
+- [Contributing](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/CONTRIBUTING.md)
   for repository setup, checks and local documentation builds.
 
 Package releases are published by designated project maintainers.
 
 ## Security
 
-See [SECURITY.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/v0.2.0/SECURITY.md)
+See [SECURITY.md](https://github.com/DolphinSoftEU/DolphinDesktop/blob/master/SECURITY.md)
 for private vulnerability reporting, recorder scope, local control channels
 and artifact redaction limits. Screenshots, videos and generated scripts can
 contain sensitive application data; review them before sharing.

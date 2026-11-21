@@ -1,5 +1,4 @@
-"""QGraphicsView demo — three named scene items driven by the
-the Qt graphics acceptance suite maintained separately from the library."""
+"""QGraphicsView demo with three named scene items for Qt agent inspection."""
 
 from __future__ import annotations
 

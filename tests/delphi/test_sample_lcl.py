@@ -1,4 +1,4 @@
-"""Controlled LCL locator/action regressions; full application acceptance lives in .ta."""
+"""Controlled LCL locator and action regressions against the bundled sample."""
 
 
 def test_button_click_save_updates_status(lcl_app):

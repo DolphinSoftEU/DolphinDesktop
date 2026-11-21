@@ -2,8 +2,7 @@
 
 Covers the fresh-proxy rebinding after Move(), the removal check after a
 permanent delete, session exit with and without saving, and item creation
-field order. All against mocks; the live counterpart is
-the separate maintainer Office acceptance suite.
+field order. All tests use mocks and require no running Outlook instance.
 """
 
 from unittest.mock import MagicMock, call

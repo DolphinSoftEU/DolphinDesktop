@@ -87,8 +87,8 @@ must use SAP GUI Scripting with their explicit User and Password component IDs.
 
 Run this check on a Windows desktop with SAP GUI 800 and a dedicated test
 account before releasing changes to `keyboard_login()`. The mock unit tests
-do not establish SAP's UIA provider compatibility. The separate maintainer
-acceptance suite covers both Scripting and keyboard-login validation.
+do not establish SAP's UIA provider compatibility. Validate both Scripting
+and keyboard login against your client/server configuration.
 
 1. On a fresh login screen, inspect the UIA automation IDs and confirm that
    User and Password expose writable Value patterns and Password is classified
@@ -107,12 +107,10 @@ acceptance suite covers both Scripting and keyboard-login validation.
 5. If required UIA IDs or Value patterns are unavailable, verify safe rejection
    and document that this client requires the Scripting login path.
 
-The maintainer keyboard-login acceptance checks run this procedure against the
-connection named in `DOLPHIN_SAP_CONNECTION`: it records the UIA inventory of
-the logon screen (ids only, no values), checks the safe rejection of step 5,
-and runs steps 2-4 only where the client exposes the fields. The checks read
-the screen through SAP GUI Scripting, so they do not depend on the UIA path
-they validate.
+During validation, record the logon screen's UIA inventory (IDs only, no values).
+Run steps 2–4 only where the client exposes the required fields, and check safe
+rejection otherwise. Read back the screen through SAP GUI Scripting so that
+verification does not depend on the UIA path being validated.
 
 Recorded result, SAP GUI for Windows 800 (8000.1.15, default options, no
 accessibility mode): UI Automation exposes a single Edit control on the logon
@@ -214,8 +212,8 @@ helpers are intentionally outside the first SAP support version.
 
 ## SAP acceptance
 
-Real SAP acceptance is maintained separately from the library. It requires a
-prepared SAP GUI environment and a dedicated account. Source-level stand-ins
+Real SAP validation requires a prepared SAP GUI environment and a dedicated
+account. Source-level stand-ins
 check the wrapper contract; a passing live run is required to claim compatibility
 with a specific client/server configuration.
 

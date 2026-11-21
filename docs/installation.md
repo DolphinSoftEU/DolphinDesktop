@@ -11,7 +11,7 @@ Dolphin uses Microsoft UI Automation, Win32 APIs, pywin32, and COM. macOS and Li
 ## PyPI installation
 
 This documentation describes **0.2.0**, released on **2026-11-21**.
-Install the release from [PyPI](https://pypi.org/project/dolphin-desktop/0.2.0/)
+Install the release from [PyPI](https://pypi.org/project/dolphin-desktop/)
 in a dedicated environment:
 
 ```powershell

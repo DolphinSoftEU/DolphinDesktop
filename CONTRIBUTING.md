@@ -55,9 +55,9 @@ Tests are classified by [tests/conftest.py](tests/conftest.py):
 | `component` | `tests/mainframe/mock_tn3270`; controlled local server/emulator |
 | `windows_component` | `tests/component`, `tests/qt` and `tests/delphi`; controlled Windows processes |
 
-Full installed-wheel acceptance against real applications and external systems
-is maintained in a separate repository with maintainer access. This checkout
-keeps focused library regressions and public runnable examples in `examples/`.
+This checkout keeps focused library regressions and runnable examples in
+`examples/`. Validate the installed wheel against your target applications
+and external systems before claiming compatibility.
 An unclassified new suite fails collection; update the category map when adding
 one. Running all tests here requires the combined component prerequisites.
 
@@ -144,12 +144,11 @@ desktop. CI installs the Qt bindings before these checks and rejects skips.
 support boundary. Build the bundled LCL fixture as described in its README;
 the stock VCL reference additionally requires `delphivcl==1.0.7`.
 
-Application-specific acceptance, including SAP, Office, Electron, Java/Oracle
-Forms, PowerBuilder and live mainframe hosts, belongs in the maintainer test
-repository. Install the exact wheel under review there, merge any new scenarios
-with its existing suites and run the relevant prepared environments. Preserve
-fixture guards and cleanup tests with the suites they protect. Report passes,
-failures and skips; missing prerequisites are incomplete verification.
+For application-specific validation of SAP, Office, Electron, Java/Oracle Forms,
+PowerBuilder and live mainframe hosts, install the exact wheel under review
+and use prepared test environments. Keep fixture guards and cleanup tests
+with the scenarios they protect. Report passes, failures and skips; missing
+prerequisites are incomplete verification.
 
 ## Code style and documentation
 

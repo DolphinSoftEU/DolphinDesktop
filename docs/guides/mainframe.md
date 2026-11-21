@@ -229,8 +229,7 @@ and screen/cursor reads. It does not use NVT as a 5250 fallback.
 The `s3270` backend supports 3270 only. `session_type="5250"` is rejected;
 select `tn5250` or HLLAPI for IBM i rather than relying on raw Telnet/NVT.
 
-Live-host acceptance is maintained separately from the library. Controlled
-local round trips remain in `tests/mainframe/mock_tn3270/` and are also used by
+Controlled local round trips are available in `tests/mainframe/mock_tn3270/` and are also used by
 `examples/mainframe/test_mainframe.py`. A local protocol run does not establish
 compatibility with a particular external IBM host or emulator configuration.
 

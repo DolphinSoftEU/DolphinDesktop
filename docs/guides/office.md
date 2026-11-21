@@ -67,9 +67,8 @@ These checks verify the wrapper contract, not the Office macro engine.
 
 #### Real Office acceptance
 
-The separate maintainer test repository owns real Office scenarios, reviewed
-macro fixtures, fixture generators and their safety/cleanup checks. These runs
-require isolated Office installations and must preserve organization policies.
+Real Office validation requires reviewed macro fixtures, safety/cleanup checks
+and isolated Office installations. Preserve organization policies.
 A blocked positive control is incomplete verification of the macro engine.
 Record Office versions, policies, passing cases and skips with each run.
 
@@ -281,8 +280,8 @@ preserved. Failed saves/closes raise and retain the affected items for retry.
 
 `OutlookApp.start()` requires a configured MAPI profile. Use a dedicated profile
 with one local PST and no mail account for tests that create, move or delete
-items. Maintainer acceptance verifies the store and folder ownership before
-mutation and keeps its opt-in configuration in the separate test repository.
+items. Verify store and folder ownership before any mutation, and explicitly
+opt in to destructive operations in your test configuration.
 
 Permanent deletion goes through a proxy re-fetched by EntryID: on PST stores
 Outlook silently ignores `Delete()` on the proxy that `Move()` returned, so the
@@ -317,20 +316,12 @@ force-killed. Foreign open presentations block exclusive PowerPoint shutdown.
 Objects from a closed facade are no longer usable. Shared mode (the default)
 and `connect()` never acquire process ownership or quit the operator's session.
 
-The DESKTOP-240/241 UAT scenarios live in the separate `dolphin-desktop.ta`
-repository, under `tests/zt_16_office_com`. They distinguish pre-existing and
-owned processes and validate PDF content independently. Outlook draft UAT
-requires `DOLPHIN_OUTLOOK_UAT=1`, a configured nonproduction profile/mailbox,
-and `DOLPHIN_OUTLOOK_UAT_FOLDER` naming a controlled subfolder of Drafts. Its
-synthetic drafts are moved, soft-deleted, verified and permanently cleaned up;
-the scenarios never send mail. The missing-profile case uses a Windows account
-without configured profiles and verifies no Outlook process was started.
-
-Run the suite from that repository against the built/installed wheel:
-
-```powershell
-python -m pytest tests/zt_16_office_com -q -rs -o junit_family=legacy --junitxml artifacts/office-com.xml
-```
+For end-to-end validation, distinguish pre-existing and owned processes and
+check exported PDF content independently. Use a configured nonproduction
+Outlook profile and controlled draft folders. Create only synthetic drafts,
+verify move/delete outcomes and clean up saved items even after failures.
+To check missing-profile handling, use a Windows account without configured
+profiles and verify that no Outlook process starts.
 
 Repeat on Office 2019 and Microsoft 365, x86 and x64, recording product/version/
 bitness per run. A successful run on one installation does not establish PASS

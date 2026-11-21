@@ -145,9 +145,9 @@ the headline **capabilities** it exposes (against the
 | Limitations   | Domain API, separate from generic `Backend` capabilities. Shared PowerPoint/Outlook sessions are preserved. Opt-in `exclusive=True` requires no existing application process, owns the verified new process and quits/waits for it during cleanup. Outlook requires classic Outlook and an accessible MAPI profile/store; new Outlook has no supported COM facade. Draft move/delete requires item ownership. Dialogs and ribbon UI use UIA/Win32. |
 
 See the [Office guide](guides/office.md) and [COM API reference](reference/office.md).
-Real COM acceptance is maintained separately. PowerPoint scenarios cover
+Validate PowerPoint against the installed Office version, including
 create/open/connect, formatting, tables, charts, save/reopen, PDF output and
-process ownership. Outlook scenarios cover drafts, folders, attachments, MSG
+process ownership. For Outlook, validate drafts, folders, attachments, MSG
 files, appointments and shared/exclusive ownership using an isolated profile
 with one local PST and no account. Repeat acceptance for each supported
 Office/version/architecture combination. Missing COM servers or profiles are
