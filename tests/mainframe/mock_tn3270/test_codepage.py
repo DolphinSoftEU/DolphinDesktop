@@ -17,10 +17,10 @@ from __future__ import annotations
 import pytest
 
 from dolphin_desktop import Desktop
+from tests.mainframe._emulator_env import WS3270  # type: ignore[import-not-found]
 from tests.mainframe.mock_tn3270._mock_server import (
     MockTN3270Server,  # type: ignore[import-not-found]
 )
-from tests.mainframe.pub400._mainframe_env import WS3270  # type: ignore[import-not-found]
 
 
 def _spawn_args(term):

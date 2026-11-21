@@ -1,5 +1,4 @@
-"""QGraphicsView demo — three named scene items driven by the
-``qt_graphics`` marked tests in ``tests/qt/test_qt_graphics.py``."""
+"""QGraphicsView demo with three named scene items for Qt agent inspection."""
 
 from __future__ import annotations
 

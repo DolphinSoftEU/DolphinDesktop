@@ -23,7 +23,10 @@ win = app.window(title="Exact Window Title")
 ```python
 with desktop.launch("notepad.exe") as app:
     win = app.window(class_name="Notepad")
-    win.get_by_role("Document").type_text("hello")
+    editor = win.get_by_role("Document")
+    if not editor.exists():
+        editor = win.get_by_role("Edit")
+    editor.type_text("hello")
 # app.kill() called automatically
 ```
 

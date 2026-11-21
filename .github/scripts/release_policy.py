@@ -1,8 +1,7 @@
 """Read-only preflight of native GitHub policies; GitHub enforces the policies.
 
 Read-only tokens may omit bypass actors. Absence is not evidence of no bypass:
-we inspect visible actors when available and leave enforcement to GitHub.
-No signed evidence, elevated token or private key is needed in Release.
+we inspect visible actors when available and report hidden actors as unknown.
 """
 
 from __future__ import annotations

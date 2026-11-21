@@ -95,8 +95,6 @@ def pytest_configure(config: pytest.Config) -> None:
         "unit: hermetic unit test",
         "windows_component: controlled Windows component test",
         "component: controlled component test",
-        "system: real AUT system test",
-        "external: test requiring an external system",
     ):
         config.addinivalue_line("markers", marker)
 
@@ -145,16 +143,9 @@ def pytest_collection(session: pytest.Session) -> None:
 # from the required unit job.
 _CATEGORY_BY_PATH = {
     "framework": "unit",
-    "test_support": "unit",
     "component": "windows_component",
-    "delphi": "system",
-    "electron": "system",
-    "oracle_forms": "system",
-    "office": "system",
-    "powerbuilder": "system",
-    "qt": "system",
-    "sap": "external",
-    "steam": "external",
+    "delphi": "windows_component",
+    "qt": "windows_component",
 }
 
 
@@ -168,17 +159,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if not relative.parts:
             raise pytest.UsageError(f"Could not classify test: {item.nodeid}")
 
-        # The Qt v2 agent smoke suite launches controlled Qt child processes,
-        # so it belongs in the required Windows component job rather than the
-        # legacy system-test bucket that CI does not select.
-        if relative.as_posix() == "qt/test_qt_agent_v2.py":
-            category = "windows_component"
-        elif relative.parts[0] == "mainframe":
+        if relative.parts[0] == "mainframe":
             category = {
                 "hllapi_mock": "unit",
                 "mock_tn3270": "component",
-                "pub400": "external",
-                "tn5250_native": "external",
             }.get(relative.parts[1] if len(relative.parts) > 1 else "")
         else:
             category = _CATEGORY_BY_PATH.get(relative.parts[0])
@@ -190,12 +174,6 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             )
 
         item.add_marker(getattr(pytest.mark, category))
-        # Preserve the old selector during the migration, but derive it from
-        # the explicit responsibility category. Unit and component tests stay
-        # in the gate; only real-AUT and external tests are legacy
-        # integration tests.
-        if category in {"system", "external"}:
-            item.add_marker(pytest.mark.integration)
 
 
 @pytest.fixture(scope="session")

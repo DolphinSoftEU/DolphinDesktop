@@ -1,4 +1,4 @@
-"""KAN-579: select only distributions produced by successful, protected-source CI."""
+"""Select only distributions produced by successful, protected-source CI."""
 
 from __future__ import annotations
 

@@ -1,27 +1,37 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
 .venv/
 *.egg-info/
 dist/
 build/
 .coverage
+.coverage.*
 coverage.xml
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+.pytest_cache/
+allure-results/
+allure-report/
 
 # Dolphin telemetry / generated artifacts
 /artifacts/
 /release-artifact/
+/pypi-download/
+/testpypi-download/
+/requirements.audit.txt
 .dolphin-selfheal.jsonl
 .dolphin-selfheal.jsonl.lock
 dolphin-screenshots/
 dolphin-traces/
 dolphin-videos/
+dolphin-crashes/
 dolphin-report.html
 dolphin-report-gw*.html
+
+# Private audit records
+/SecurityTasks/
 
 # MkDocs build output
 site/
@@ -36,9 +46,6 @@ obj/
 .vscode/
 *.iml
 
-# pytest
-.pytest_cache/
-
 # Local credentials — the test suites read them from the environment;
 # these patterns are a backstop so a local helper file can never be
 # committed by accident.
@@ -48,28 +55,19 @@ obj/
 *.local.ps1
 secrets.*
 
-# Local scratch output
-hs_err_pid*.log
-test_out*.txt
-Nowy folder*/
-C?Users*/
-
 # Lazarus / Delphi build artifacts
-tests/delphi/sample_lcl/lib/
-tests/delphi/sample_lcl/sample_lcl.exe
-tests/delphi/sample_lcl/*.compiled
-tests/delphi/sample_lcl/*.o
-tests/delphi/sample_lcl/*.ppu
+/tests/delphi/sample_lcl/lib/
+/tests/delphi/sample_lcl/sample_lcl.exe
+/tests/delphi/sample_lcl/*.compiled
+/tests/delphi/sample_lcl/*.o
+/tests/delphi/sample_lcl/*.ppu
+/tests/delphi/sample_lcl/*.lps
 
-# stray dumps
-tree_dump.txt
+# Java bytecode and JVM crash logs
+*.class
+hs_err_pid*.log
 
-# Java Swing demo build output
-examples/java_swing/*.class
-
-# Java mock build output (compile locally: javac --release 21 OracleFormsMock.java)
-tests/oracle_forms/*.class
-
-# Qt installed locally for the Qt5 suite (python -m aqt install-qt ...)
+# Local Qt SDKs (aqtinstall's default output directories)
 /5.15.2/
+/6.10.3/
 aqtinstall.log

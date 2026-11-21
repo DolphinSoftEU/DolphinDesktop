@@ -7,20 +7,12 @@ import pytest
 from dolphin_desktop import (
     Desktop,
     MainframeError,
-    add_import_path,
-    dirname,
     env_var,
-    path_join,
 )
-
-# Put the sibling pub400/ folder on sys.path so its modules are
-# importable directly as well as by dotted path.
-add_import_path(path_join(dirname(__file__), "..", "pub400"))
-
-from tests.mainframe.mock_tn3270._mock_server import MockTN3270Server, ScreenField  # noqa: E402
-from tests.mainframe.pub400._mainframe_env import (  # noqa: E402
+from tests.mainframe._emulator_env import (
     WS3270,  # type: ignore[import-not-found]
 )
+from tests.mainframe.mock_tn3270._mock_server import MockTN3270Server, ScreenField
 
 
 @pytest.fixture

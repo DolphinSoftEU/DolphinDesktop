@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import runpy
@@ -25,6 +26,51 @@ release_target = runpy.run_path(str(RELEASE_SCRIPT))["release_target"]
 def load(name: str) -> dict:
     # BaseLoader keeps GitHub's `on` key a string (YAML 1.1 calls it a boolean).
     return yaml.load((WORKFLOWS / name).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+
+
+@pytest.mark.parametrize("failure", [None, "deploy", "set-default"])
+def test_docs_deploy_preserves_failures_and_stops_after_failed_deploy(tmp_path, failure) -> None:
+    powershell = shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("The documentation deployment step requires PowerShell")
+    log = tmp_path / "calls.jsonl"
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import json, os, sys\n"
+        "command = sys.argv[4]\n"
+        "with open(os.environ['TEST_DOCS_LOG'], 'a', encoding='utf-8') as output:\n"
+        "    output.write(json.dumps(command) + '\\n')\n"
+        "sys.exit(23 if command == os.environ['TEST_DOCS_FAILURE'] else 0)\n",
+        encoding="utf-8",
+    )
+    step = next(
+        step
+        for step in load("docs.yml")["jobs"]["deploy"]["steps"]
+        if step.get("name") == "Deploy with mike"
+    )
+    python_path = sys.executable.replace("'", "''")
+    probe_path = str(probe).replace("'", "''")
+    script = tmp_path / "deploy.ps1"
+    script.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"function uv {{ & '{python_path}' '{probe_path}' @args }}\n"
+        + step["run"]
+        # GitHub's PowerShell wrapper propagates the last native exit code.
+        + "\nexit $LASTEXITCODE\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        cwd=tmp_path,
+        env={**os.environ, "TEST_DOCS_LOG": str(log), "TEST_DOCS_FAILURE": failure or ""},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == (23 if failure else 0), result.stdout + result.stderr
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert calls == (["deploy"] if failure == "deploy" else ["deploy", "set-default"])
 
 
 def test_unit_evidence_keeps_child_pytest_runs_outside_repository_config() -> None:

@@ -7,17 +7,20 @@ Scenario:
   * input email, password
   * click submit (Log In)
   * assert response message
-  * compatible with Dolphin headless mode
 
 Prerequisites
 -------------
 * WebView2 Runtime installed (pre-installed on Windows 11; see
   docs/guides/webview2.md).
-* .NET 8 SDK for the auto-build step (the conftest builds the app on first run).
-* Run: pytest examples/webview2_sample/ -v
+* Build with examples/webview2_sample/build.ps1 using the .NET 10 SDK.
+* Run: uv run --no-sync pytest examples/webview2_sample/ -v
 """
 
 from __future__ import annotations
+
+import pytest
+
+pytestmark = pytest.mark.integration
 
 # ---------------------------------------------------------------------------
 # Test 1 — is_webview2() detection
@@ -81,15 +84,13 @@ def test_submit_and_response(wv2_window):
 
     # Fill email
     email_field = win.locator(control_type="Edit", title_re=".*Email.*").timeout(8)
-    if email_field.exists():
-        email_field.click()
-        email_field.set_text("qa@dolphin_desktop.test")
+    assert email_field.exists()
+    email_field.set_text("qa@example.test")
 
     # Fill password
     password_field = win.locator(control_type="Edit", title_re=".*Password.*").timeout(8)
-    if password_field.exists():
-        password_field.click()
-        password_field.set_text("dolphin123")
+    assert password_field.exists()
+    password_field.set_text("synthetic-password")
 
     # Click submit
     login_btn = win.locator(control_type="Button", title_re=".*(Log In|Login).*").timeout(8)
@@ -97,15 +98,11 @@ def test_submit_and_response(wv2_window):
     login_btn.click()
 
     # Assert HTML response element (core AC: must contain "Logged in as …")
-    response = win.locator(control_type="Text", title_re=".*Response.*").timeout(5)
+    response = win.locator(title="Logged in as qa@example.test", found_index=0).timeout(5)
     # Poll for the response text instead of guessing how long the
     # WebView2 JS handler takes to run.
     response.wait_for_text("Logged in as", timeout=5)
 
     # Also assert native StatusBar updated via JS postMessage
-    status_bar = win.locator(control_type="Text", title_re=".*Status.*").timeout(5)
-    if status_bar.exists():
-        status_text = status_bar.text()
-        assert "Logged in as" in status_text, (
-            f"StatusBar (JS→native interop) not updated after submit: {status_text!r}"
-        )
+    status_bar = win.get_by_automation_id("StatusBar")
+    status_bar.wait_for_text("Logged in as qa@example.test", timeout=5)

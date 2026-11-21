@@ -1,6 +1,10 @@
 # GitHub Actions
 
-GitHub-hosted Windows runners provide an interactive session, so start with plain pytest.
+Start with plain pytest on a Windows runner. Tests that send physical input or
+capture pixels require an unlocked interactive desktop and the target app's
+prerequisites. Verify those conditions for your runner image; use a prepared
+self-hosted desktop when the application or session cannot be provided by a
+hosted runner. See the [full workflow example](../ci-example.md).
 
 ## Minimal Workflow
 
@@ -12,19 +16,24 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
       - name: Install
-        run: pip install dolphin-desktop pytest
+        run: python -m pip install "dolphin-desktop[pytest]==0.2.0"
 
       - name: Check Dolphin environment
         run: dolphin doctor
@@ -37,7 +46,7 @@ jobs:
 
 ```yaml
       - name: Install
-        run: pip install "dolphin-desktop[fast]" pytest
+        run: python -m pip install "dolphin-desktop[fast,pytest]==0.2.0"
 
       - name: Run tests
         env:
@@ -47,7 +56,7 @@ jobs:
 
       - name: Upload traces
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dolphin-traces
           path: dolphin-traces/
@@ -55,7 +64,7 @@ jobs:
 
       - name: Upload videos
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dolphin-videos
           path: dolphin-videos/
@@ -63,7 +72,7 @@ jobs:
 
       - name: Upload screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dolphin-screenshots
           path: dolphin-screenshots/
@@ -84,11 +93,13 @@ Use `dolphin-run` only for tests you have verified on a hidden desktop:
   smoke-headless:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
-      - run: pip install dolphin-desktop pytest
+      - run: python -m pip install "dolphin-desktop[pytest]==0.2.0"
       - run: dolphin-run pytest tests/smoke/ -v --dolphin-backend=uia
 ```
 

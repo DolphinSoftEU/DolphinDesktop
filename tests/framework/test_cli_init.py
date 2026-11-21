@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import runpy
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -95,6 +96,38 @@ def test_standard_notepad_page_has_expected_api(tmp_path):
     assert "def type_text" in content
     assert "def read_text" in content
     assert "def clear" in content
+
+
+@pytest.mark.parametrize("template", ["minimal", "standard", "enterprise"])
+@pytest.mark.parametrize("document_exists", [True, False])
+def test_generated_notepad_uses_available_editor(tmp_path, pytestconfig, template, document_exists):
+    target = tmp_path / "proj"
+    _scaffold(target, "proj", template, "3.11")
+    document, edit = MagicMock(), MagicMock()
+    document.exists.return_value = document_exists
+    editor = document if document_exists else edit
+    editor.text.return_value = "Hello, Dolphin!"
+    window = MagicMock()
+    window.get_by_role.side_effect = {"Document": document, "Edit": edit}.__getitem__
+
+    if template == "minimal":
+        # The generated project's pytest config declares this marker.
+        pytestconfig.addinivalue_line("markers", "integration: generated sample test")
+        sample = runpy.run_path(str(target / "tests" / "test_sample.py"))
+        launch = MagicMock()
+        launch.return_value.window.return_value = window
+        sample["test_notepad_type_and_read"](launch)
+    else:
+        sample = runpy.run_path(str(target / "objects" / "notepad_page.py"))
+        page = sample["NotepadPage"](window)
+        page.type_text("Hello, Dolphin!")
+        assert page.read_text() == "Hello, Dolphin!"
+
+    editor.click.assert_called_once_with()
+    editor.type_text.assert_called_once_with("Hello, Dolphin!")
+    unused = edit if document_exists else document
+    unused.click.assert_not_called()
+    unused.type_text.assert_not_called()
 
 
 def test_standard_test_uses_page_object(tmp_path):

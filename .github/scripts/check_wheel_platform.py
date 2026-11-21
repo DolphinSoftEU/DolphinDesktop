@@ -1,4 +1,4 @@
-"""KAN-586: install an exact wheel normally and verify its native platform contract."""
+"""Install an exact wheel normally and verify its native platform contract."""
 
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ def smoke(wheel: Path, output: Path, expected_version: str) -> None:
                     raise
 
             # Deliberately let pip resolve dependencies from the wheel metadata.
-            # Preinstalling a lock or using --no-deps would hide KAN-586.
+            # Preinstalling a lock or using --no-deps would hide metadata defects.
             run(
                 "-m",
                 "pip",

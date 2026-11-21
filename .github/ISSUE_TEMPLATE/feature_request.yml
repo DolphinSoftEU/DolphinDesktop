@@ -9,6 +9,8 @@ body:
         Please describe the app / workflow that needs this, and what
         you've already tried. Context helps us design something that
         fits multiple users, not just one.
+        Use synthetic examples and remove credentials, personal information
+        and sensitive application content before posting.
   - type: textarea
     id: problem
     attributes:
