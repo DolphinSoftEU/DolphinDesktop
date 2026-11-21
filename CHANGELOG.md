@@ -155,6 +155,9 @@ Changes are relative to the public 0.1.0 release.
 
 ### Fixed
 
+* **Notepad examples and scaffolds:** fall back from the `Document` editor role
+  to `Edit` for classic Windows 10 Notepad.
+
 * **UIA locators:** tree-walk fallbacks honor supported criteria and indices,
   verify uniqueness even when the initial search returns a partial match, and
   reject incomplete scans. Hidden-but-live elements resolve through `exists()`

@@ -122,6 +122,8 @@ def test_notepad_type_and_read(launch):
     app = launch("notepad.exe")
     win = app.window(class_name="Notepad")
     editor = win.get_by_role("Document")
+    if not editor.exists():
+        editor = win.get_by_role("Edit")
 
     editor.click()
     editor.type_text("Hello, Dolphin!")
@@ -159,6 +161,8 @@ class NotepadPage:
     def __init__(self, window: Window) -> None:
         self._win = window
         self._editor = window.get_by_role("Document")
+        if not self._editor.exists():
+            self._editor = window.get_by_role("Edit")
 
     def type_text(self, text: str) -> "NotepadPage":
         self._editor.click()

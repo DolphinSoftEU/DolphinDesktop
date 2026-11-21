@@ -40,7 +40,7 @@ dolphin spy --window "App Title" --depth 3
 dolphin spy --pick
 ```
 
-The visible label may not be the UIA title, and the control type may differ from what you expect. For example, Windows Notepad exposes the editor as `Document`.
+The visible label may not be the UIA title, and the control type may differ from what you expect. For example, Windows Notepad can expose the editor as `Document` or, in classic Windows 10 Notepad, `Edit`.
 
 ## Which selector should I prefer?
 

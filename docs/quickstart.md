@@ -86,6 +86,8 @@ class NotepadPage:
     def __init__(self, window: Window) -> None:
         self._win = window
         self._editor = window.get_by_role("Document")
+        if not self._editor.exists():
+            self._editor = window.get_by_role("Edit")
 
     def type_text(self, text: str) -> "NotepadPage":
         self._editor.click()
@@ -104,7 +106,7 @@ class NotepadPage:
 
 1. `launch("notepad.exe")` starts Notepad through the pytest fixture.
 2. `app.window(class_name="Notepad")` waits for a matching top-level window.
-3. `window.get_by_role("Document")` creates a lazy locator for the editor.
+3. The Page Object checks for a `Document` editor and falls back to `Edit` for classic Windows 10 Notepad.
 4. `click()`, `type_text()`, and `text()` resolve the locator when called.
 5. The `launch` fixture kills the launched application during teardown.
 

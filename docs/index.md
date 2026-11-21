@@ -16,6 +16,8 @@ app = desktop.launch("notepad.exe")
 win = app.window(class_name="Notepad")
 
 editor = win.get_by_role("Document")
+if not editor.exists():
+    editor = win.get_by_role("Edit")
 editor.click()
 editor.type_text("Hello, Dolphin!")
 

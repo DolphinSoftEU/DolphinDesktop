@@ -1,8 +1,7 @@
 # Examples
 
-These samples describe the upcoming **0.2.0** API. Run them from this source
-checkout; installing the current PyPI release (0.1.0) does not provide every API
-used here. Windows and the prerequisites below are required for desktop tests.
+These samples demonstrate the **0.2.0** API. Run them from this source
+checkout. Windows and the prerequisites below are required for desktop tests.
 
 ## Setup and execution
 

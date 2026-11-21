@@ -61,6 +61,8 @@ from dolphin_desktop import Desktop
 with Desktop().launch("notepad.exe") as app:
     win = app.window(class_name="Notepad")
     editor = win.get_by_role("Document")
+    if not editor.exists():
+        editor = win.get_by_role("Edit")
     editor.click()
     editor.type_text("Hello, Dolphin!")
     assert "Hello, Dolphin!" in editor.text()
